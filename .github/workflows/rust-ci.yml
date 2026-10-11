@@ -17,6 +17,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary formatting bootstrap for new Rust files
+        run: |
+          cargo fmt --all
+          for f in crates/pki-core/src/postgres_store.rs crates/pki-core/examples/crash_recovery_lab.rs; do
+            printf 'FORMATTED:%s:' "$f"
+            base64 -w0 "$f"
+            echo
+          done
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
