@@ -70,6 +70,7 @@ impl SigningProvider for EphemeralP256Signer {
 mod tests {
     use super::*;
     use crate::verify_p256_ecdsa_sha256;
+    use p256::pkcs8::DecodePublicKey;
 
     #[test]
     fn laboratory_signer_rejects_wrong_keys_and_algorithms() {
