@@ -56,7 +56,6 @@ impl SigningProvider for UnconfiguredProvider {
     }
 }
 
-
 /// Verify a PKCS#10 ECDSA-with-SHA256 signature over canonical DER bytes.
 ///
 /// The caller MUST check the CSR SignatureAlgorithm OID and the SPKI curve
