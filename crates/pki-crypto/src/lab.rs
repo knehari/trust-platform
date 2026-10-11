@@ -98,9 +98,7 @@ mod tests {
                 b"lab-tbs",
             )
             .unwrap();
-        let spki = signer
-            .public_key_spki_der(signer.key_ref())
-            .unwrap();
+        let spki = signer.public_key_spki_der(signer.key_ref()).unwrap();
         let public = p256::PublicKey::from_public_key_der(&spki).unwrap();
         let sec1 = public.to_sec1_bytes();
         verify_p256_ecdsa_sha256(sec1.as_ref(), b"lab-tbs", &signature).unwrap();
