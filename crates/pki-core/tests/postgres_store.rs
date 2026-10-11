@@ -3,7 +3,7 @@
 #![cfg(feature = "postgres-store")]
 
 use std::env;
-use trust_pki_core::postgres_store::{PgIssuanceStore, StoreError};
+use trust_pki_core::postgres_store::{PgIssuanceStore, SigningIntentInput, StoreError};
 
 #[test]
 fn persists_request_serial_and_signing_intent_without_resigning() {
@@ -68,28 +68,18 @@ fn persists_request_serial_and_signing_intent_without_resigning() {
         .unwrap();
     assert_eq!(first, second);
 
-    let intent = db
-        .record_signing_intent(
-            ca,
-            &created.request_id,
-            "trusted-test-actor",
-            "test-only-ephemeral-key",
-            &[0x22; 32],
-            "v1",
-            "rust-test-op-1",
-        )
-        .unwrap();
+    let input = SigningIntentInput {
+        ca_id: ca,
+        request_id: &created.request_id,
+        actor_id: "trusted-test-actor",
+        signer_key_ref: "test-only-ephemeral-key",
+        tbs_sha256: &[0x22; 32],
+        policy_revision: "v1",
+        operation_ref: "rust-test-op-1",
+    };
+    let intent = db.record_signing_intent(&input).unwrap();
     assert_eq!(intent.outcome, "UNCONFIRMED");
-
-    let repeated = db.record_signing_intent(
-        ca,
-        &created.request_id,
-        "trusted-test-actor",
-        "test-only-ephemeral-key",
-        &[0x22; 32],
-        "v1",
-        "rust-test-op-1",
-    );
+    let repeated = db.record_signing_intent(&input);
     assert!(matches!(repeated, Err(StoreError::ReplayedSigningIntent)));
     assert_eq!(
         db.mark_uncertain(ca, &created.request_id, "trusted-test-actor")
