@@ -69,7 +69,7 @@ impl PgIssuanceStore {
     ) -> Result<PersistedRequest, StoreError> {
         let row = self.client.query_one(
             "SELECT request_id::text, state, replay
-             FROM create_issuance_request($1::uuid,$2,$3,$4,$5)",
+             FROM create_issuance_request($1::text::uuid,$2,$3,$4,$5)",
             &[
                 &ca_id,
                 &idempotency_key,
@@ -94,7 +94,7 @@ impl PgIssuanceStore {
         actor_id: &str,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
-            "SELECT transition_issuance_request($1::uuid,$2::uuid,$3,$4,$5)",
+            "SELECT transition_issuance_request($1::text::uuid,$2::text::uuid,$3,$4,$5)",
             &[&ca_id, &request_id, &expected_state, &next_state, &actor_id],
         )?;
         Ok(row.get(0))
@@ -107,7 +107,7 @@ impl PgIssuanceStore {
         actor_id: &str,
     ) -> Result<Vec<u8>, StoreError> {
         let row = self.client.query_one(
-            "SELECT reserve_issuance_serial($1::uuid,$2::uuid,$3)",
+            "SELECT reserve_issuance_serial($1::text::uuid,$2::text::uuid,$3)",
             &[&ca_id, &request_id, &actor_id],
         )?;
         let serial: Vec<u8> = row.get(0);
@@ -125,7 +125,7 @@ impl PgIssuanceStore {
     ) -> Result<PersistedSigningIntent, StoreError> {
         let row = self.client.query_one(
             "SELECT intent_id::text, operation_ref, outcome, replay
-             FROM create_signing_intent($1::uuid,$2::uuid,$3,$4,$5,$6,$7)",
+             FROM create_signing_intent($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7)",
             &[
                 &input.ca_id,
                 &input.request_id,
@@ -156,7 +156,7 @@ impl PgIssuanceStore {
         actor_id: &str,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
-            "SELECT mark_signing_uncertain($1::uuid,$2::uuid,$3)",
+            "SELECT mark_signing_uncertain($1::text::uuid,$2::text::uuid,$3)",
             &[&ca_id, &request_id, &actor_id],
         )?;
         Ok(row.get(0))
