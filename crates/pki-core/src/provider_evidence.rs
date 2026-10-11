@@ -134,7 +134,7 @@ pub enum AttestedFinding {
         attestation_sha256: [u8; 32],
     },
     /// Absence of a matching event is inconclusive: NO automatic retry.
-    NoResultProven {
+    NoMatchingEventObserved {
         attestation_sha256: [u8; 32],
     },
 }
@@ -183,7 +183,7 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
         EvidenceKind::SigningEventObserved => Ok(AttestedFinding::EventOnly {
             attestation_sha256,
         }),
-        EvidenceKind::NoMatchingEvent => Ok(AttestedFinding::NoResultProven {
+        EvidenceKind::NoMatchingEvent => Ok(AttestedFinding::NoMatchingEventObserved {
             attestation_sha256,
         }),
         EvidenceKind::RetrievedSignedCertificate => {
