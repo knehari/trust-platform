@@ -175,6 +175,19 @@ impl EphemeralLabCa {
         serial: &SerialBytes,
         approved_policy: &ApprovedPolicyBinding,
     ) -> Result<Certificate, LabCaError> {
+        let tbs = self.prepare_leaf_tbs(csr, approval, serial, approved_policy)?;
+        signed_certificate(tbs, &self.signer)
+    }
+
+    /// Create a complete, pre-authorized test-only TBS before persisting intent.
+    /// Calling this method reserves the lab serial in volatile memory.
+    pub fn prepare_leaf_tbs(
+        &mut self,
+        csr: &VerifiedCsr,
+        approval: &Authorization,
+        serial: &SerialBytes,
+        approved_policy: &ApprovedPolicyBinding,
+    ) -> Result<TbsCertificate, LabCaError> {
         if approval.ca_signature_algorithm() != SignatureAlgorithm::EcdsaP256Sha256
             || approval.validity_days() == 0
             || approval.validity_days() > MAX_LAB_LEAF_VALIDITY_DAYS
@@ -241,7 +254,32 @@ impl EphemeralLabCa {
             ]),
         };
 
-        signed_certificate(tbs, &self.signer)
+        Ok(tbs)
+    }
+
+    pub fn lab_signer_key_ref(&self) -> &str {
+        &self.signer.key_ref().0
+    }
+}
+
+/// The CA signing key stays in this ephemeral issuer; this is NOT an HSM.
+impl crate::orchestrator::ExternalSigner for EphemeralLabCa {
+    fn sign_once(
+        &mut self,
+        key_ref: &str,
+        _operation_ref: &str,
+        tbs_der: &[u8],
+    ) -> Result<Vec<u8>, crate::orchestrator::IssueError> {
+        if key_ref != self.signer.key_ref().0 {
+            return Err(crate::orchestrator::IssueError::SigningFailure);
+        }
+        self.signer
+            .sign(
+                self.signer.key_ref(),
+                SignatureAlgorithm::EcdsaP256Sha256,
+                tbs_der,
+            )
+            .map_err(|_| crate::orchestrator::IssueError::SigningFailure)
     }
 }
 
