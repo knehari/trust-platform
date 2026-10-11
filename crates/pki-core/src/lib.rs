@@ -5,6 +5,8 @@
 pub mod csr;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
+#[cfg(feature = "postgres-store")]
+pub mod postgres_store;
 pub mod serial;
 pub mod x509_extensions;
 
