@@ -5,12 +5,12 @@
 //! no persisted key, no revocation authority, no independent security audit.
 
 use crate::csr::VerifiedCsr;
-use crate::serial::{InMemorySerialReservations, SerialNumber as SerialBytes, SerialReservationStore};
+use crate::serial::{
+    InMemorySerialReservations, SerialNumber as SerialBytes, SerialReservationStore,
+};
 use std::str::FromStr;
 use std::time::Duration;
-use trust_pki_crypto::{
-    lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider,
-};
+use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
 use trust_pki_policy::Authorization;
 use x509_cert::{
     der::{
@@ -54,11 +54,7 @@ fn oid(input: &str) -> Result<ObjectIdentifier, LabCaError> {
     ObjectIdentifier::new(input).map_err(|_| LabCaError::InvalidProfile)
 }
 
-fn extension<T: Encode>(
-    oid_str: &str,
-    critical: bool,
-    value: &T,
-) -> Result<Extension, LabCaError> {
+fn extension<T: Encode>(oid_str: &str, critical: bool, value: &T) -> Result<Extension, LabCaError> {
     let der = value.to_der().map_err(|_| LabCaError::InvalidCertificate)?;
     Ok(Extension {
         extn_id: oid(oid_str)?,
@@ -83,11 +79,7 @@ fn signed_certificate(
     }
     let data = tbs.to_der().map_err(|_| LabCaError::InvalidCertificate)?;
     let sig = signer
-        .sign(
-            signer.key_ref(),
-            SignatureAlgorithm::EcdsaP256Sha256,
-            &data,
-        )
+        .sign(signer.key_ref(), SignatureAlgorithm::EcdsaP256Sha256, &data)
         .map_err(|_| LabCaError::SigningFailed)?;
     let cert = Certificate {
         tbs_certificate: tbs,
@@ -96,8 +88,7 @@ fn signed_certificate(
     };
     // Catch internal serialization errors before returning any certificate.
     let encoded = cert.to_der().map_err(|_| LabCaError::InvalidCertificate)?;
-    let parsed =
-        Certificate::from_der(&encoded).map_err(|_| LabCaError::InvalidCertificate)?;
+    let parsed = Certificate::from_der(&encoded).map_err(|_| LabCaError::InvalidCertificate)?;
     if parsed != cert {
         return Err(LabCaError::InvalidCertificate);
     }
@@ -120,17 +111,16 @@ impl EphemeralLabCa {
         }
         let issuer_name = Name::from_str("CN=Sovereign Trust Lab Root")
             .map_err(|_| LabCaError::InvalidProfile)?;
-        let signer =
-            EphemeralP256Signer::generate("ephemeral-lab-root").map_err(|_| LabCaError::InvalidKey)?;
+        let signer = EphemeralP256Signer::generate("ephemeral-lab-root")
+            .map_err(|_| LabCaError::InvalidKey)?;
         let spki_der = signer
             .public_key_spki_der(signer.key_ref())
             .map_err(|_| LabCaError::InvalidKey)?;
-        let spki = SubjectPublicKeyInfoOwned::from_der(&spki_der)
-            .map_err(|_| LabCaError::InvalidKey)?;
-        let validity = Validity::from_now(Duration::from_secs(
-            LAB_ROOT_VALIDITY_DAYS * 24 * 60 * 60,
-        ))
-        .map_err(|_| LabCaError::InvalidCertificate)?;
+        let spki =
+            SubjectPublicKeyInfoOwned::from_der(&spki_der).map_err(|_| LabCaError::InvalidKey)?;
+        let validity =
+            Validity::from_now(Duration::from_secs(LAB_ROOT_VALIDITY_DAYS * 24 * 60 * 60))
+                .map_err(|_| LabCaError::InvalidCertificate)?;
         let constraints = BasicConstraints {
             ca: true,
             path_len_constraint: Some(0),
@@ -142,7 +132,8 @@ impl EphemeralLabCa {
         ];
         let tbs = TbsCertificate {
             version: Version::V3,
-            serial_number: SerialNumber::new(&[0x01]).map_err(|_| LabCaError::InvalidCertificate)?,
+            serial_number: SerialNumber::new(&[0x01])
+                .map_err(|_| LabCaError::InvalidCertificate)?,
             signature: ecdsa_algorithm()?,
             issuer: issuer_name.clone(),
             validity,
@@ -174,7 +165,7 @@ impl EphemeralLabCa {
         approval: &Authorization,
         serial: &SerialBytes,
     ) -> Result<Certificate, LabCaError> {
-        if approval.algorithm() != SignatureAlgorithm::EcdsaP256Sha256
+        if approval.ca_signature_algorithm() != SignatureAlgorithm::EcdsaP256Sha256
             || approval.validity_days() == 0
             || approval.validity_days() > MAX_LAB_LEAF_VALIDITY_DAYS
             || approval.dns_sans().is_empty()
@@ -244,11 +235,12 @@ mod tests {
     use x509_cert::der::DecodePem;
 
     fn authorized() -> (VerifiedCsr, Authorization) {
-        let csr =
-            x509_cert::request::CertReq::from_pem(include_str!("../tests/fixtures/ecdsa-p256-request.pem"))
-                .unwrap()
-                .to_der()
-                .unwrap();
+        let csr = x509_cert::request::CertReq::from_pem(include_str!(
+            "../tests/fixtures/ecdsa-p256-request.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
         let verified = verify_pkcs10_p256(&csr, "api.lab.invalid").unwrap();
         let policy = StaticPolicy {
             profile_id: "lab-server".to_owned(),
