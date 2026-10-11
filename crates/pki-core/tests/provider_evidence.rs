@@ -58,6 +58,8 @@ fn plan<'a>() -> IssuancePlan<'a> {
 fn claim(kind: EvidenceKind) -> EvidenceClaim {
     EvidenceClaim {
         issuer_id: "lab-issuer".into(),
+        request_id: "req-1".into(),
+        policy_revision: "v1".into(),
         operation_ref: "op-1".into(),
         signer_key_ref: "lab-key".into(),
         collector_key_id: "auditor-2026-q4".into(),
