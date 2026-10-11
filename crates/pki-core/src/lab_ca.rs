@@ -315,14 +315,28 @@ mod tests {
         let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
         let serial = SerialBytes::from_positive_der_content(&[0x42]).unwrap();
         let leaf = ca.issue_leaf(&csr, &approval, &serial, &binding).unwrap();
-        let root_extensions = ca.root_certificate().tbs_certificate.extensions.as_ref().unwrap();
+        let root_extensions = ca
+            .root_certificate()
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .unwrap();
         let leaf_extensions = leaf.tbs_certificate.extensions.as_ref().unwrap();
-        let root_ski = root_extensions.iter().find(|e| e.extn_id.to_string() == "2.5.29.14").unwrap();
-        let leaf_aki = leaf_extensions.iter().find(|e| e.extn_id.to_string() == "2.5.29.35").unwrap();
+        let root_ski = root_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.14")
+            .unwrap();
+        let leaf_aki = leaf_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.35")
+            .unwrap();
         let expected_root_key_id = &root_ski.extn_value.as_bytes()[2..];
         assert_eq!(expected_root_key_id.len(), 20);
         assert_eq!(&leaf_aki.extn_value.as_bytes()[4..], expected_root_key_id);
-        let policy_extension = leaf_extensions.iter().find(|e| e.extn_id.to_string() == "2.5.29.32").unwrap();
+        let policy_extension = leaf_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.32")
+            .unwrap();
         let from_binding = x509_extensions::certificate_policies(&binding).unwrap();
         assert_eq!(policy_extension, &from_binding);
         assert!(!policy_extension.critical);
