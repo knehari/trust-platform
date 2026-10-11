@@ -17,12 +17,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Temporary candidate formatter
-        run: |
-          cargo fmt --all
-          printf 'FORMATTED-LAB-CA:'
-          base64 -w0 crates/pki-core/src/lab_ca.rs
-          echo
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
