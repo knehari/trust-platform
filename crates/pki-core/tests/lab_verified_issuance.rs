@@ -14,7 +14,7 @@ use trust_pki_core::{
 };
 use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
-use x509_cert::{der::{DecodePem, Encode}, request::CertReq, Certificate};
+use x509_cert::{der::{Decode, DecodePem, Encode}, request::CertReq, Certificate};
 
 fn context() -> (
     trust_pki_core::csr::VerifiedCsr,
