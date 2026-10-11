@@ -34,6 +34,17 @@ pub struct PersistedSigningIntent {
     pub outcome: String,
 }
 
+/// Request metadata previously verified by a trusted authentication and policy boundary.
+pub struct SigningIntentInput<'a> {
+    pub ca_id: &'a str,
+    pub request_id: &'a str,
+    pub actor_id: &'a str,
+    pub signer_key_ref: &'a str,
+    pub tbs_sha256: &'a [u8; 32],
+    pub policy_revision: &'a str,
+    pub operation_ref: &'a str,
+}
+
 /// A replay is a *reference to a prior attempt*, never authorization to sign again.
 pub struct PgIssuanceStore {
     client: Client,
@@ -110,25 +121,19 @@ impl PgIssuanceStore {
     /// inputs. The DB does not verify certificate profiles or TBS provenance.
     pub fn record_signing_intent(
         &mut self,
-        ca_id: &str,
-        request_id: &str,
-        actor_id: &str,
-        signer_key_ref: &str,
-        tbs_sha256: &[u8; 32],
-        policy_revision: &str,
-        operation_ref: &str,
+        input: &SigningIntentInput<'_>,
     ) -> Result<PersistedSigningIntent, StoreError> {
         let row = self.client.query_one(
             "SELECT intent_id::text, operation_ref, outcome, replay
              FROM create_signing_intent($1::uuid,$2::uuid,$3,$4,$5,$6,$7)",
             &[
-                &ca_id,
-                &request_id,
-                &actor_id,
-                &signer_key_ref,
-                &&tbs_sha256[..],
-                &policy_revision,
-                &operation_ref,
+                &input.ca_id,
+                &input.request_id,
+                &input.actor_id,
+                &input.signer_key_ref,
+                &&input.tbs_sha256[..],
+                &input.policy_revision,
+                &input.operation_ref,
             ],
         )?;
         let replay: bool = row.get(3);
