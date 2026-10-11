@@ -119,7 +119,10 @@ impl PolicyEngine for StaticPolicy {
             || self.allowed_algorithms.is_empty()
             || self.max_validity_days == 0
             || self.max_dns_sans == 0
-            || self.allowed_dns_zones.iter().any(|name| !valid_dns_name(name))
+            || self
+                .allowed_dns_zones
+                .iter()
+                .any(|name| !valid_dns_name(name))
         {
             return Err(Denial::InvalidConfiguration);
         }
@@ -159,10 +162,7 @@ impl PolicyEngine for StaticPolicy {
         }
 
         // The CN is not a TLS hostname authorization substitute: demand matching SAN.
-        if !request
-            .dns_sans
-            .contains(&request.subject_common_name)
-        {
+        if !request.dns_sans.contains(&request.subject_common_name) {
             return Err(Denial::SubjectNotAuthorized);
         }
 
@@ -180,7 +180,11 @@ impl PolicyEngine for StaticPolicy {
             profile_id: self.profile_id.clone(),
             policy_version: self.policy_version.clone(),
             common_name: request.subject_common_name.to_owned(),
-            dns_sans: request.dns_sans.iter().map(|name| (*name).to_owned()).collect(),
+            dns_sans: request
+                .dns_sans
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             validity_days: request.validity_days,
             algorithm: request.signature_algorithm,
         })
