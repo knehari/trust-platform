@@ -3,6 +3,9 @@
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 
 pub mod cp_cps;
+pub mod ca_observation;
+#[cfg(feature = "lab-software")]
+pub mod policy_trace;
 pub mod csr;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
