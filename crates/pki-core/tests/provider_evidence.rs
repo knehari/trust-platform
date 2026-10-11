@@ -317,3 +317,35 @@ fn canonical_envelope_rejects_unbounded_metadata_and_unsigned_result() {
         Err(EvidenceError::InvalidClaim)
     );
 }
+
+#[test]
+fn valid_signature_from_wrong_request_or_policy_is_rejected() {
+    let signer = EphemeralP256Signer::generate("collector").unwrap();
+    let pubkey = pinned_sec1(&signer);
+    let key = PinnedCollectorKey {
+        key_id: "auditor-2026-q4",
+        public_key_sec1: &pubkey,
+    };
+    let hash: [u8; 32] = Sha256::digest(b"authorized-tbs").into();
+    let provider = fixture_provider();
+    let mut claim = claim(EvidenceKind::RetrievedSignedCertificate);
+    claim.request_id = "another-request".into();
+    let attestation = sign_claim(&signer, claim);
+    assert_eq!(
+        inspect_attested_provider(
+            &provider, &StrictFixtureVerifier, &plan(), &hash, &attestation, &key
+        ),
+        Err(EvidenceError::IntentMismatch)
+    );
+
+    let mut claim = claim(EvidenceKind::RetrievedSignedCertificate);
+    claim.policy_revision = "another-policy".into();
+    let attestation = sign_claim(&signer, claim);
+    assert_eq!(
+        inspect_attested_provider(
+            &provider, &StrictFixtureVerifier, &plan(), &hash, &attestation, &key
+        ),
+        Err(EvidenceError::IntentMismatch)
+    );
+    assert_eq!(provider.lookups.get(), 0);
+}
