@@ -17,6 +17,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Generate feature dependency lockfile
+        run: |
+          cargo generate-lockfile
+          printf 'CI_CARGO_LOCK_BASE64='
+          base64 -w0 Cargo.lock
+          echo
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
