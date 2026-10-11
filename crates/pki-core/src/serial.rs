@@ -71,10 +71,7 @@ impl SerialReservationStore for InMemorySerialReservations {
             return Err(SerialReservationError::MissingIssuer);
         }
 
-        if !self
-            .reserved
-            .insert((issuer_id.to_owned(), serial.clone()))
-        {
+        if !self.reserved.insert((issuer_id.to_owned(), serial.clone())) {
             return Err(SerialReservationError::AlreadyReserved);
         }
 
