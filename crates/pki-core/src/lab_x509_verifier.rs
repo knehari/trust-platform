@@ -2,12 +2,14 @@
 //! Does not validate RFC 5280 paths, expiry against trusted time, revocation,
 //! policy provenance, key custody, certificate transparency or QTSP status.
 
-use crate::orchestrator::{CertificateAssembler, CertificateVerifier, IssueError, IssuancePlan};
+use crate::orchestrator::{CertificateAssembler, CertificateVerifier, IssuancePlan, IssueError};
 use crate::x509_extensions::{certificate_policies, ApprovedPolicyBinding};
 use trust_pki_crypto::verify_p256_ecdsa_sha256;
 use x509_cert::{
     der::{asn1::BitString, Decode, Encode},
-    ext::pkix::{name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName},
+    ext::pkix::{
+        name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName,
+    },
     Certificate, TbsCertificate,
 };
 
@@ -23,8 +25,7 @@ const BASIC_CONSTRAINTS_OID: &str = "2.5.29.19";
 pub struct LabCertificateAssembler;
 impl CertificateAssembler for LabCertificateAssembler {
     fn assemble(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>, IssueError> {
-        let tbs = TbsCertificate::from_der(tbs_der)
-            .map_err(|_| IssueError::AssemblyFailure)?;
+        let tbs = TbsCertificate::from_der(tbs_der).map_err(|_| IssueError::AssemblyFailure)?;
         if tbs.signature.oid.to_string() != ECDSA_SHA256 || tbs.signature.parameters.is_some() {
             return Err(IssueError::AssemblyFailure);
         }
@@ -47,7 +48,11 @@ pub struct LabX509Verifier {
 
 impl LabX509Verifier {
     pub fn new(issuer: Certificate, policy: ApprovedPolicyBinding, authorized_dns: String) -> Self {
-        Self { issuer, policy, authorized_dns }
+        Self {
+            issuer,
+            policy,
+            authorized_dns,
+        }
     }
 }
 
@@ -77,11 +82,18 @@ impl CertificateVerifier for LabX509Verifier {
         if issuer_key.algorithm.oid.to_string() != P256_SPKI {
             return Err(fail);
         }
-        let sec1 = issuer_key.subject_public_key.as_bytes().ok_or_else(|| fail.clone())?;
+        let sec1 = issuer_key
+            .subject_public_key
+            .as_bytes()
+            .ok_or_else(|| fail.clone())?;
         let signature = cert.signature.as_bytes().ok_or_else(|| fail.clone())?;
         verify_p256_ecdsa_sha256(sec1, &tbs, signature).map_err(|_| fail.clone())?;
 
-        let extensions = cert.tbs_certificate.extensions.as_ref().ok_or_else(|| fail.clone())?;
+        let extensions = cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .ok_or_else(|| fail.clone())?;
         let expected = certificate_policies(&self.policy).map_err(|_| fail.clone())?;
         let actual: Vec<_> = extensions
             .iter()
@@ -90,17 +102,29 @@ impl CertificateVerifier for LabX509Verifier {
         if actual.len() != 1 || actual[0] != &expected {
             return Err(fail);
         }
-        for id in [SAN_OID, SERVER_AUTH_OID, KEY_USAGE_OID, BASIC_CONSTRAINTS_OID] {
-            if extensions.iter().filter(|e| e.extn_id.to_string() == id).count() != 1 {
+        for id in [
+            SAN_OID,
+            SERVER_AUTH_OID,
+            KEY_USAGE_OID,
+            BASIC_CONSTRAINTS_OID,
+        ] {
+            if extensions
+                .iter()
+                .filter(|e| e.extn_id.to_string() == id)
+                .count()
+                != 1
+            {
                 return Err(fail);
             }
         }
 
         // Decode the actual ASN.1 SAN sequence; never accept raw substring matches.
-        let san = extensions.iter().find(|e| e.extn_id.to_string() == SAN_OID)
+        let san = extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == SAN_OID)
             .ok_or_else(|| fail.clone())?;
-        let san_decoded = SubjectAltName::from_der(san.extn_value.as_bytes())
-            .map_err(|_| fail.clone())?;
+        let san_decoded =
+            SubjectAltName::from_der(san.extn_value.as_bytes()).map_err(|_| fail.clone())?;
         if san_decoded.0.len() != 1 {
             return Err(fail);
         }
@@ -108,24 +132,29 @@ impl CertificateVerifier for LabX509Verifier {
             GeneralName::DnsName(name) if name.as_str() == self.authorized_dns => {}
             _ => return Err(fail),
         }
-        let constraints = extensions.iter().find(|e| e.extn_id.to_string() == BASIC_CONSTRAINTS_OID)
+        let constraints = extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == BASIC_CONSTRAINTS_OID)
             .ok_or_else(|| fail.clone())?;
         let bc = BasicConstraints::from_der(constraints.extn_value.as_bytes())
             .map_err(|_| fail.clone())?;
         if bc.ca || bc.path_len_constraint.is_some() || !constraints.critical {
             return Err(fail);
         }
-        let key_use = extensions.iter().find(|e| e.extn_id.to_string() == KEY_USAGE_OID)
+        let key_use = extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == KEY_USAGE_OID)
             .ok_or_else(|| fail.clone())?;
-        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes())
-            .map_err(|_| fail.clone())?;
+        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes()).map_err(|_| fail.clone())?;
         if ku != KeyUsage(KeyUsages::DigitalSignature.into()) || !key_use.critical {
             return Err(fail);
         }
-        let eku_ext = extensions.iter().find(|e| e.extn_id.to_string() == SERVER_AUTH_OID)
+        let eku_ext = extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == SERVER_AUTH_OID)
             .ok_or_else(|| fail.clone())?;
-        let eku = ExtendedKeyUsage::from_der(eku_ext.extn_value.as_bytes())
-            .map_err(|_| fail.clone())?;
+        let eku =
+            ExtendedKeyUsage::from_der(eku_ext.extn_value.as_bytes()).map_err(|_| fail.clone())?;
         if eku.0.len() != 1 || eku.0[0].to_string() != "1.3.6.1.5.5.7.3.1" {
             return Err(fail);
         }
