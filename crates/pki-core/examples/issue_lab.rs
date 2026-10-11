@@ -52,9 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let serial = SerialNumber::from_positive_der_content(&[0x02])
         .map_err(|e| format!("invalid serial: {e:?}"))?;
     // Example-only policy OID, not an assigned enterprise OID or published CP.
-    let binding = ApprovedPolicyBinding::new(
-        "1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32]
-    ).map_err(|e| format!("invalid policy binding: {e:?}"))?;
+    let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
+        .map_err(|e| format!("invalid policy binding: {e:?}"))?;
     let leaf = ca
         .issue_leaf(&verified, &decision, &serial, &binding)
         .map_err(|e| format!("lab issuance rejected: {e:?}"))?;
