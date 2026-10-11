@@ -17,6 +17,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary v1.3 canonical rustfmt capture
+        run: |
+          cargo fmt --all
+          for f in crates/pki-core/src/ca_observation.rs crates/pki-core/src/policy_trace.rs crates/pki-core/src/postgres_store.rs crates/pki-core/src/lib.rs crates/pki-core/tests/lab_verified_issuance.rs; do
+            printf 'FORMATTED:%s:' "$f"
+            base64 -w0 "$f"
+            echo
+          done
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
