@@ -70,7 +70,7 @@ fn valid_label(s: &str) -> bool {
         && s.len() <= 256
         && !s
             .chars()
-            .any(|c| c.is_control() || matches!(c, '#' | '<' | '>' | '*' | '|'))
+            .any(|c| c.is_control() || matches!(c, '#' | '<' | '>' | '*' | '|' | '[' | ']' | '`'))
 }
 fn valid_oid(s: &str) -> bool {
     if s == "2.5.29.32.0" {
@@ -183,13 +183,14 @@ fn document(
             "Approval, change management, retention and publication of superseded versions."),
     ];
     if kind == DocumentKind::Cps {
-        sections.push(manual(
+        // RFC 3647 section 6.7 belongs before section 7, not after 9.
+        sections.insert(12, manual(
             "6.7",
             "Network security controls",
             "Observed CA isolation, access policy and mutual TLS tests.",
         ));
     }
-    let mut markdown = format!("# {label} Ã¢ÂÂ DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
+    let mut markdown = format!("# {label}  -  DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
         input.edition, digest_hex(source_hash));
     for s in &sections {
         markdown.push_str(&format!(
@@ -345,6 +346,7 @@ mod tests {
         }
         assert!(!a.cp.markdown.contains("private-build-agent"));
         assert!(!a.publication_authorized);
+        assert!(a.cps.markdown.find("## 6.7 ").unwrap() < a.cps.markdown.find("## 7 ").unwrap());
         assert!(a.human_review_sections.len() >= 9);
     }
     #[test]
