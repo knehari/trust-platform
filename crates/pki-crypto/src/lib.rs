@@ -1,9 +1,10 @@
+#![forbid(unsafe_code)]
+//! Signing boundary and algorithm negotiation.
+//! No signing provider is enabled in production builds.
+
 #[cfg(feature = "lab-software")]
 pub mod lab;
 
-#![forbid(unsafe_code)]
-//! Signing boundary and algorithm negotiation.
-//! No real signature provider is configured in Sprint 0.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
