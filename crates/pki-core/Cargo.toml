@@ -1,0 +1,10 @@
+[package]
+name = "trust-pki-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+trust-pki-policy = { path = "../pki-policy" }
+trust-pki-crypto = { path = "../pki-crypto" }
