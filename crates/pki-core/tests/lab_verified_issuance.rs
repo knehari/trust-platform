@@ -8,7 +8,8 @@ use trust_pki_core::{
     lab_ca::EphemeralLabCa,
     lab_x509_verifier::{LabCertificateAssembler, LabX509Verifier},
     orchestrator::{
-        issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuancePlan, IssueError,
+        issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuancePlan,
+        IssueError,
     },
     postgres_store::PgIssuanceStore,
     serial::SerialNumber,
