@@ -28,6 +28,9 @@ jobs:
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
           openssl verify -CAfile "$RUNNER_TEMP/trust-lab/root.pem" -purpose sslserver "$RUNNER_TEMP/trust-lab/leaf.pem"
           openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'DNS:api.lab.invalid'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/root.pem" -noout -text | grep 'X509v3 Subject Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'X509v3 Authority Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep -A3 'X509v3 Certificate Policies' | grep '1.3.6.1.4.1.55555.1.1'
 
 
   schema:

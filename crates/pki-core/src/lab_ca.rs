@@ -8,6 +8,7 @@ use crate::csr::VerifiedCsr;
 use crate::serial::{
     InMemorySerialReservations, SerialNumber as SerialBytes, SerialReservationStore,
 };
+use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::str::FromStr;
 use std::time::Duration;
 use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
@@ -102,6 +103,7 @@ pub struct EphemeralLabCa {
     issuer_name: Name,
     root_certificate: Certificate,
     serials: InMemorySerialReservations,
+    issuer_key_id: [u8; 20],
 }
 
 impl EphemeralLabCa {
@@ -126,9 +128,15 @@ impl EphemeralLabCa {
             path_len_constraint: Some(0),
         };
         let usages = KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign);
+        let issuer_key_id =
+            x509_extensions::key_identifier(&spki).map_err(|_| LabCaError::InvalidKey)?;
         let extensions = vec![
             extension(BASIC_CONSTRAINTS_OID, true, &constraints)?,
             extension(KEY_USAGE_OID, true, &usages)?,
+            x509_extensions::subject_key_identifier(&issuer_key_id)
+                .map_err(|_| LabCaError::InvalidCertificate)?,
+            x509_extensions::authority_key_identifier(&issuer_key_id)
+                .map_err(|_| LabCaError::InvalidCertificate)?,
         ];
         let tbs = TbsCertificate {
             version: Version::V3,
@@ -149,6 +157,7 @@ impl EphemeralLabCa {
             issuer_name,
             root_certificate,
             serials: InMemorySerialReservations::default(),
+            issuer_key_id,
         })
     }
 
@@ -164,6 +173,7 @@ impl EphemeralLabCa {
         csr: &VerifiedCsr,
         approval: &Authorization,
         serial: &SerialBytes,
+        approved_policy: &ApprovedPolicyBinding,
     ) -> Result<Certificate, LabCaError> {
         if approval.ca_signature_algorithm() != SignatureAlgorithm::EcdsaP256Sha256
             || approval.validity_days() == 0
@@ -194,6 +204,8 @@ impl EphemeralLabCa {
             path_len_constraint: None,
         };
         let eku = ExtendedKeyUsage(vec![oid(SERVER_AUTH_OID)?]);
+        let subject_key_id = x509_extensions::key_identifier(csr.subject_public_key())
+            .map_err(|_| LabCaError::InvalidKey)?;
 
         // Lab reservation is process-local. Production MUST have durable,
         // transactionally allocated issuer-scoped serial reservations.
@@ -220,6 +232,12 @@ impl EphemeralLabCa {
                 extension(KEY_USAGE_OID, true, &ku)?,
                 extension(EXTENDED_KEY_USAGE_OID, false, &eku)?,
                 extension(SUBJECT_ALT_NAME_OID, false, &san)?,
+                x509_extensions::subject_key_identifier(&subject_key_id)
+                    .map_err(|_| LabCaError::InvalidCertificate)?,
+                x509_extensions::authority_key_identifier(&self.issuer_key_id)
+                    .map_err(|_| LabCaError::InvalidCertificate)?,
+                x509_extensions::certificate_policies(approved_policy)
+                    .map_err(|_| LabCaError::InvalidProfile)?,
             ]),
         };
 
@@ -266,20 +284,62 @@ mod tests {
         (verified, authorization)
     }
 
+    fn approved_test_policy() -> ApprovedPolicyBinding {
+        // Fixture only: private enterprise OID shown is not assigned to this product.
+        ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32]).unwrap()
+    }
+
     #[test]
     fn creates_x509_v3_leaf_from_verified_csr() {
         let (csr, authorization) = authorized();
         let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
         let serial = SerialBytes::from_positive_der_content(&[0x02]).unwrap();
-        let cert = ca.issue_leaf(&csr, &authorization, &serial).unwrap();
+        let binding = approved_test_policy();
+        let cert = ca
+            .issue_leaf(&csr, &authorization, &serial, &binding)
+            .unwrap();
         assert_eq!(cert.tbs_certificate.version, Version::V3);
         assert_eq!(cert.tbs_certificate.subject, *csr.subject());
         assert_eq!(
             cert.tbs_certificate.issuer,
             ca.root_certificate().tbs_certificate.subject
         );
-        assert_eq!(cert.tbs_certificate.extensions.as_ref().unwrap().len(), 4);
+        assert_eq!(cert.tbs_certificate.extensions.as_ref().unwrap().len(), 7);
         assert!(Certificate::from_der(&cert.to_der().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn leaf_aki_matches_root_ski_and_policy_is_explicit() {
+        let (csr, approval) = authorized();
+        let binding = approved_test_policy();
+        let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let serial = SerialBytes::from_positive_der_content(&[0x42]).unwrap();
+        let leaf = ca.issue_leaf(&csr, &approval, &serial, &binding).unwrap();
+        let root_extensions = ca
+            .root_certificate()
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .unwrap();
+        let leaf_extensions = leaf.tbs_certificate.extensions.as_ref().unwrap();
+        let root_ski = root_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.14")
+            .unwrap();
+        let leaf_aki = leaf_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.35")
+            .unwrap();
+        let expected_root_key_id = &root_ski.extn_value.as_bytes()[2..];
+        assert_eq!(expected_root_key_id.len(), 20);
+        assert_eq!(&leaf_aki.extn_value.as_bytes()[4..], expected_root_key_id);
+        let policy_extension = leaf_extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.32")
+            .unwrap();
+        let from_binding = x509_extensions::certificate_policies(&binding).unwrap();
+        assert_eq!(policy_extension, &from_binding);
+        assert!(!policy_extension.critical);
     }
 
     #[test]
@@ -287,9 +347,11 @@ mod tests {
         let (csr, authorization) = authorized();
         let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
         let serial = SerialBytes::from_positive_der_content(&[0x05]).unwrap();
-        ca.issue_leaf(&csr, &authorization, &serial).unwrap();
+        let binding = approved_test_policy();
+        ca.issue_leaf(&csr, &authorization, &serial, &binding)
+            .unwrap();
         assert!(matches!(
-            ca.issue_leaf(&csr, &authorization, &serial),
+            ca.issue_leaf(&csr, &authorization, &serial, &binding),
             Err(LabCaError::DuplicateSerial)
         ));
     }

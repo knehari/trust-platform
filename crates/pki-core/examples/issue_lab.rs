@@ -3,7 +3,10 @@
 //! Usage: cargo run -p trust-pki-core --features lab-software --example issue_lab -- /tmp/lab-public-certs
 
 use std::{env, fs, path::PathBuf};
-use trust_pki_core::{csr::verify_pkcs10_p256, lab_ca::EphemeralLabCa, serial::SerialNumber};
+use trust_pki_core::{
+    csr::verify_pkcs10_p256, lab_ca::EphemeralLabCa, serial::SerialNumber,
+    x509_extensions::ApprovedPolicyBinding,
+};
 use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
 use x509_cert::{
@@ -51,8 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("cannot initialize lab CA: {e:?}"))?;
     let serial = SerialNumber::from_positive_der_content(&[0x02])
         .map_err(|e| format!("invalid serial: {e:?}"))?;
+    // Example-only policy OID, not an assigned enterprise OID or published CP.
+    let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
+        .map_err(|e| format!("invalid policy binding: {e:?}"))?;
     let leaf = ca
-        .issue_leaf(&verified, &decision, &serial)
+        .issue_leaf(&verified, &decision, &serial, &binding)
         .map_err(|e| format!("lab issuance rejected: {e:?}"))?;
 
     fs::write(
