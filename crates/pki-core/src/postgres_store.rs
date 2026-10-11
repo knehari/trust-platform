@@ -198,8 +198,13 @@ impl PgIssuanceStore {
             "SELECT record_signing_reconciliation_observation(
                 $1::text::uuid,$2::text::uuid,$3,$4,$5
             )::text",
-            &[&ca_id, &request_id, &actor_id, &observation_type,
-              &&evidence_sha256[..]],
+            &[
+                &ca_id,
+                &request_id,
+                &actor_id,
+                &observation_type,
+                &&evidence_sha256[..],
+            ],
         )?;
         Ok(row.get(0))
     }
@@ -214,9 +219,15 @@ impl PgIssuanceStore {
             "SELECT propose_reconciliation_review(
                 $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6,$7
             )",
-            &[&input.ca_id, &input.request_id, &input.observation_id,
-              &input.maker_actor, &input.operation_ref, &&input.tbs_sha256[..],
-              &&input.certificate_sha256[..]],
+            &[
+                &input.ca_id,
+                &input.request_id,
+                &input.observation_id,
+                &input.maker_actor,
+                &input.operation_ref,
+                &&input.tbs_sha256[..],
+                &&input.certificate_sha256[..],
+            ],
         )?;
         Ok(row.get(0))
     }
@@ -235,8 +246,13 @@ impl PgIssuanceStore {
             "SELECT review_reconciliation_proposal(
                 $1::text::uuid,$2::text::uuid,$3,$4,$5
             )",
-            &[&ca_id, &request_id, &checker_actor,
-              &&certificate_sha256[..], &&evidence_sha256[..]],
+            &[
+                &ca_id,
+                &request_id,
+                &checker_actor,
+                &&certificate_sha256[..],
+                &&evidence_sha256[..],
+            ],
         )?;
         Ok(row.get(0))
     }
