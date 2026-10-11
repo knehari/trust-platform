@@ -8,6 +8,7 @@ pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
 pub mod orchestrator;
+pub mod cp_cps;
 #[cfg(feature = "postgres-store")]
 pub mod postgres_store;
 pub mod provider_evidence;
