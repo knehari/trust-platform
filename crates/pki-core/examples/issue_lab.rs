@@ -3,7 +3,12 @@
 //! Usage: cargo run -p trust-pki-core --features lab-software --example issue_lab -- /tmp/lab-public-certs
 
 use std::{env, fs, path::PathBuf};
-use trust_pki_core::{csr::verify_pkcs10_p256, lab_ca::EphemeralLabCa, serial::SerialNumber};
+use trust_pki_core::{
+    csr::verify_pkcs10_p256,
+    lab_ca::EphemeralLabCa,
+    serial::SerialNumber,
+    x509_extensions::ApprovedPolicyBinding,
+};
 use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
 use x509_cert::{
