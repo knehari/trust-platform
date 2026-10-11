@@ -703,7 +703,7 @@ fn pinned_ca_and_draft_cps_are_traced_to_real_issued_x509_without_approval() {
     );
     assert_eq!(validated.issuer_ca_sha256(), observed.certificate_sha256());
 
-    let mut wrong_source = CpCpsInput {
+    let wrong_source = CpCpsInput {
         policy: &policy,
         policy_oid: "1.3.6.1.4.1.55555.1.9",
         edition: "lab-doc-v1",
@@ -722,7 +722,6 @@ fn pinned_ca_and_draft_cps_are_traced_to_real_issued_x509_without_approval() {
         ),
         Err(TraceError::PolicyMismatch)
     );
-    wrong_source.policy_oid = "1.3.6.1.4.1.55555.1.1";
     let another_ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
     let another_root_der = another_ca.root_certificate().to_der().unwrap();
     let other_pin: [u8; 32] = Sha256::digest(&another_root_der).into();
