@@ -404,8 +404,8 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     use sha2::{Digest, Sha256};
     use trust_pki_core::{
         provider_evidence::{
-            verify_collector_evidence, CollectorAttestation, EvidenceClaim,
-            EvidenceKind, PinnedCollectorKey,
+            verify_collector_evidence, CollectorAttestation, EvidenceClaim, EvidenceKind,
+            PinnedCollectorKey,
         },
         reconciliation::{ProviderResponse, ReadOnlySigningProvider, ReconciliationError},
     };
@@ -416,9 +416,7 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
 
     struct ReadOnlyCertificate(ProviderResponse);
     impl ReadOnlySigningProvider for ReadOnlyCertificate {
-        fn lookup(
-            &self, _: &str, _: &str,
-        ) -> Result<ProviderResponse, ReconciliationError> {
+        fn lookup(&self, _: &str, _: &str) -> Result<ProviderResponse, ReconciliationError> {
             Ok(self.0.clone())
         }
     }
@@ -429,15 +427,39 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
     let (csr, authorization, binding) = context();
-    let request = db.create_request(
-        ca_id, "v11-audit-evidence-receipt", csr.fingerprint_sha256(), "lab-actor", "v1"
-    ).unwrap();
-    db.transition(ca_id, &request.request_id, "RECEIVED", "CSR_VALIDATED", "lab-actor").unwrap();
-    db.transition(ca_id, &request.request_id, "CSR_VALIDATED", "AUTHORIZED", "lab-actor").unwrap();
-    let serial_data = db.reserve_serial(ca_id, &request.request_id, "lab-actor").unwrap();
+    let request = db
+        .create_request(
+            ca_id,
+            "v11-audit-evidence-receipt",
+            csr.fingerprint_sha256(),
+            "lab-actor",
+            "v1",
+        )
+        .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "RECEIVED",
+        "CSR_VALIDATED",
+        "lab-actor",
+    )
+    .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "CSR_VALIDATED",
+        "AUTHORIZED",
+        "lab-actor",
+    )
+    .unwrap();
+    let serial_data = db
+        .reserve_serial(ca_id, &request.request_id, "lab-actor")
+        .unwrap();
     let serial = SerialNumber::from_positive_der_content(&serial_data).unwrap();
     let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
-    let tbs = ca.prepare_leaf_tbs(&csr, &authorization, &serial, &binding).unwrap();
+    let tbs = ca
+        .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
+        .unwrap();
     let tbs_der = tbs.to_der().unwrap();
     let key_ref = ca.lab_signer_key_ref().to_owned();
     let hash: [u8; 32] = Sha256::digest(&tbs_der).into();
@@ -450,12 +472,17 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         tbs_sha256: &hash,
         policy_revision: "v1",
         operation_ref: "lab-v11-audit-op",
-    }).unwrap();
-    db.mark_uncertain(ca_id, &request.request_id, "lab-actor").unwrap();
+    })
+    .unwrap();
+    db.mark_uncertain(ca_id, &request.request_id, "lab-actor")
+        .unwrap();
 
-    let signature = ca.sign_once(&key_ref, "lab-v11-audit-op", &tbs_der).unwrap();
+    let signature = ca
+        .sign_once(&key_ref, "lab-v11-audit-op", &tbs_der)
+        .unwrap();
     let certificate_der = LabCertificateAssembler
-        .assemble(&tbs_der, &signature).unwrap();
+        .assemble(&tbs_der, &signature)
+        .unwrap();
     let provider = ReadOnlyCertificate(ProviderResponse::SignedCertificate {
         operation_ref: "lab-v11-audit-op".into(),
         signer_key_ref: key_ref.clone(),
@@ -463,7 +490,9 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         evidence_sha256: [0x93; 32],
     });
     let verifier = LabX509Verifier::new(
-        ca.root_certificate().clone(), binding, "api.lab.invalid".into()
+        ca.root_certificate().clone(),
+        binding,
+        "api.lab.invalid".into(),
     );
     let plan = IssuancePlan {
         ca_id,
@@ -478,8 +507,12 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
 
     let collector = EphemeralP256Signer::generate("lab-collector-v11").unwrap();
     let spki = collector.public_key_spki_der(collector.key_ref()).unwrap();
-    let collector_sec1 = SubjectPublicKeyInfoOwned::from_der(&spki).unwrap()
-        .subject_public_key.as_bytes().unwrap().to_vec();
+    let collector_sec1 = SubjectPublicKeyInfoOwned::from_der(&spki)
+        .unwrap()
+        .subject_public_key
+        .as_bytes()
+        .unwrap()
+        .to_vec();
     let pinned = PinnedCollectorKey {
         key_id: "lab-collector-v11",
         public_key_sec1: &collector_sec1,
@@ -489,7 +522,7 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         request_id: request.request_id.clone(),
         policy_revision: "v1".into(),
         operation_ref: "lab-v11-audit-op".into(),
-        signer_key_ref: key_ref,
+        signer_key_ref: key_ref.clone(),
         collector_key_id: "lab-collector-v11".into(),
         audit_event_id: "lab-event-v11-unique".into(),
         observed_at_unix_seconds: 1_781_200_000,
@@ -498,16 +531,20 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         certificate_sha256: Some(Sha256::digest(&certificate_der).into()),
         kind: EvidenceKind::RetrievedSignedCertificate,
     };
-    let collector_signature = collector.sign(
-        collector.key_ref(), CryptoAlg::EcdsaP256Sha256,
-        &claim.canonical_bytes().unwrap(),
-    ).unwrap();
+    let collector_signature = collector
+        .sign(
+            collector.key_ref(),
+            CryptoAlg::EcdsaP256Sha256,
+            &claim.canonical_bytes().unwrap(),
+        )
+        .unwrap();
     let attestation = CollectorAttestation {
-        claim, signature_der: collector_signature,
+        claim,
+        signature_der: collector_signature,
     };
-    let verified = verify_collector_evidence(
-        &provider, &verifier, &plan, &hash, &attestation, &pinned,
-    ).unwrap();
+    let verified =
+        verify_collector_evidence(&provider, &verifier, &plan, &hash, &attestation, &pinned)
+            .unwrap();
 
     let receipt_id = db.persist_verified_collector_evidence(&verified).unwrap();
     assert!(!receipt_id.is_empty());
@@ -516,15 +553,17 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     assert!(db.persist_verified_collector_evidence(&verified).is_err());
 
     let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let row = reader.query_one(
-        "SELECT c.state, ce.evidence_kind, ce.canonical_claim,
+    let row = reader
+        .query_one(
+            "SELECT c.state, ce.evidence_kind, ce.canonical_claim,
                 ce.collector_signature_der, ce.claim_sha256
          FROM certificate_request c
          JOIN signing_collector_evidence ce
            ON ce.ca_id=c.ca_id AND ce.request_id=c.request_id
          WHERE c.request_id=$1::text::uuid",
-        &[&request.request_id],
-    ).unwrap();
+            &[&request.request_id],
+        )
+        .unwrap();
     let state: String = row.get(0);
     let kind: String = row.get(1);
     let canonical: Vec<u8> = row.get(2);
@@ -536,13 +575,15 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     assert_eq!(saved_signature, verified.signature_der());
     assert_eq!(digest, Sha256::digest(verified.canonical_claim()).to_vec());
 
-    let row = reader.query_one(
-        "SELECT (SELECT count(*) FROM certificate WHERE request_id=$1::text::uuid),
+    let row = reader
+        .query_one(
+            "SELECT (SELECT count(*) FROM certificate WHERE request_id=$1::text::uuid),
                 (SELECT count(*) FROM audit_event
                  WHERE request_id=$1::text::uuid
                    AND event_type='signing.collector.evidence')",
-        &[&request.request_id],
-    ).unwrap();
+            &[&request.request_id],
+        )
+        .unwrap();
     assert_eq!(row.get::<usize, i64>(0), 0);
     assert_eq!(row.get::<usize, i64>(1), 1);
 }
