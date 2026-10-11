@@ -156,8 +156,8 @@ fn document(
                 input.repository)),
         manual("2.4", "Repository controls",
             "Repository availability, integrity, controlled publication and document supersession."),
-        manual("3", "Identification and authentication",
-            "Identity vetting, authorization of RA operators and proof of possession."),
+        section("3", "Identification and authentication", Source::HumanEvidenceRequired,
+            format!("PENDING HUMAN VALIDATION. The policy allowlist contains {} principals. Their identity and deployed authorization are NOT independently verified. Required: identity vetting, RA authorization and proof of possession.", input.policy.allowed_actors.len())),
         section("4", "Certificate life-cycle requirements", Source::Configuration,
             format!("{scope} Signing algorithm(s): {}. Maximum validity: {} days. Maximum DNS SANs: {}. Policy configuration revision: {}.",
                 algorithms.join(", "), input.policy.max_validity_days,
@@ -222,6 +222,7 @@ pub fn generate(input: &Input<'_>) -> Result<DraftBundle, DraftError> {
     if !valid_id(&p.profile_id)
         || !valid_id(&p.policy_version)
         || p.allowed_actors.is_empty()
+        || p.allowed_actors.iter().any(|actor| actor.trim().is_empty())
         || p.allowed_dns_zones.is_empty()
         || p.allowed_ca_signature_algorithms.is_empty()
         || p.max_validity_days == 0
@@ -233,6 +234,10 @@ pub fn generate(input: &Input<'_>) -> Result<DraftBundle, DraftError> {
     let mut zones = p.allowed_dns_zones.clone();
     zones.sort();
     zones.dedup();
+    // Hash the private authorization roster without publishing principal IDs.
+    let mut actors = p.allowed_actors.clone();
+    actors.sort();
+    actors.dedup();
     let mut algorithms: Vec<String> = p
         .allowed_ca_signature_algorithms
         .iter()
@@ -253,6 +258,7 @@ pub fn generate(input: &Input<'_>) -> Result<DraftBundle, DraftError> {
     .into_iter()
     .chain(zones.iter().map(String::as_str))
     .chain(algorithms.iter().map(String::as_str))
+    .chain(actors.iter().map(String::as_str))
     {
         sha.update((field.len() as u32).to_be_bytes());
         sha.update(field.as_bytes());
@@ -384,6 +390,27 @@ mod tests {
         let mut p = policy();
         p.allowed_dns_zones = vec!["*.invalid".into()];
         assert_eq!(generate(&input(&p)), Err(DraftError::InvalidProfile));
+    }
+    #[test]
+    fn authorized_actor_changes_trigger_review_without_disclosing_identities() {
+        let mut p = policy();
+        let old = generate(&input(&p)).unwrap();
+        p.allowed_actors.push("other-privileged-actor".into());
+        let current = generate(&input(&p)).unwrap();
+        let change = compare(&old.cps, &current.cps);
+        assert!(change.reapproval_required);
+        assert!(change.changed_sections.contains(&"3".to_owned()));
+        assert_ne!(old.policy_snapshot_sha256, current.policy_snapshot_sha256);
+        assert!(!current.cps.markdown.contains("other-privileged-actor"));
+    }
+    #[test]
+    fn changing_roster_with_same_count_still_invalidates_source_digest() {
+        let mut p = policy();
+        let before = generate(&input(&p)).unwrap();
+        p.allowed_actors[0] = "renamed-private-actor".into();
+        let after = generate(&input(&p)).unwrap();
+        assert_ne!(before.policy_snapshot_sha256, after.policy_snapshot_sha256);
+        assert!(compare(&before.cp, &after.cp).reapproval_required);
     }
     #[test]
     fn ml_dsa_is_not_claimed_ready() {
