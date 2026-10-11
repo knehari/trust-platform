@@ -17,12 +17,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Temporary canonical format capture for drift regression
-        run: |
-          cargo fmt --all
-          printf 'FORMATTED-DRIFT:'
-          base64 -w0 crates/pki-core/src/cp_cps.rs
-          echo
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
