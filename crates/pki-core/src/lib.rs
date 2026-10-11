@@ -100,7 +100,7 @@ mod tests {
             policy_version: "2026-10".into(),
             allowed_actors: vec!["operator".into()],
             allowed_dns_zones: vec!["lab.invalid".into()],
-            allowed_ca_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+            allowed_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
             max_validity_days: 30,
             max_dns_sans: 5,
         };
