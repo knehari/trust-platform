@@ -7,6 +7,7 @@ use crate::x509_extensions::{certificate_policies, ApprovedPolicyBinding};
 use trust_pki_crypto::verify_p256_ecdsa_sha256;
 use x509_cert::{
     der::{asn1::BitString, Decode, Encode},
+    ext::pkix::{name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName},
     Certificate, TbsCertificate,
 };
 
@@ -95,14 +96,37 @@ impl CertificateVerifier for LabX509Verifier {
             }
         }
 
-        // This narrowly-scoped SAN check also depends on the trusted TBS profile
-        // construction. Full multi-SAN profile and constraints need further work.
+        // Decode the actual ASN.1 SAN sequence; never accept raw substring matches.
         let san = extensions.iter().find(|e| e.extn_id.to_string() == SAN_OID)
             .ok_or_else(|| fail.clone())?;
-        let expected_name = self.authorized_dns.as_bytes();
-        if !san.extn_value.as_bytes().windows(expected_name.len())
-            .any(|window| window == expected_name)
-        {
+        let san_decoded = SubjectAltName::from_der(san.extn_value.as_bytes())
+            .map_err(|_| fail.clone())?;
+        if san_decoded.0.len() != 1 {
+            return Err(fail);
+        }
+        match &san_decoded.0[0] {
+            GeneralName::DnsName(name) if name.as_str() == self.authorized_dns => {}
+            _ => return Err(fail),
+        }
+        let constraints = extensions.iter().find(|e| e.extn_id.to_string() == BASIC_CONSTRAINTS_OID)
+            .ok_or_else(|| fail.clone())?;
+        let bc = BasicConstraints::from_der(constraints.extn_value.as_bytes())
+            .map_err(|_| fail.clone())?;
+        if bc.ca || bc.path_len_constraint.is_some() || !constraints.critical {
+            return Err(fail);
+        }
+        let key_use = extensions.iter().find(|e| e.extn_id.to_string() == KEY_USAGE_OID)
+            .ok_or_else(|| fail.clone())?;
+        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes())
+            .map_err(|_| fail.clone())?;
+        if ku != KeyUsage(KeyUsages::DigitalSignature.into()) || !key_use.critical {
+            return Err(fail);
+        }
+        let eku_ext = extensions.iter().find(|e| e.extn_id.to_string() == SERVER_AUTH_OID)
+            .ok_or_else(|| fail.clone())?;
+        let eku = ExtendedKeyUsage::from_der(eku_ext.extn_value.as_bytes())
+            .map_err(|_| fail.clone())?;
+        if eku.0.len() != 1 || eku.0[0].to_string() != "1.3.6.1.5.5.7.3.1" {
             return Err(fail);
         }
         Ok(())
