@@ -99,7 +99,8 @@ impl EvidenceClaim {
             &self.audit_event_id,
         ] {
             let data = field.as_bytes();
-            if data.is_empty() || data.len() > MAX_ID_LENGTH
+            if data.is_empty()
+                || data.len() > MAX_ID_LENGTH
                 || !data.iter().all(|b| b.is_ascii_graphic())
             {
                 return Err(EvidenceError::InvalidClaim);
@@ -134,13 +135,9 @@ pub enum AttestedFinding {
         attestation_sha256: [u8; 32],
     },
     /// An event was observed, but the signature/certificate cannot be rebuilt.
-    EventOnly {
-        attestation_sha256: [u8; 32],
-    },
+    EventOnly { attestation_sha256: [u8; 32] },
     /// Absence of a matching event is inconclusive: NO automatic retry.
-    NoMatchingEventObserved {
-        attestation_sha256: [u8; 32],
-    },
+    NoMatchingEventObserved { attestation_sha256: [u8; 32] },
 }
 
 /// Read-only evaluation. A successful result is ONLY an audit finding.
@@ -159,7 +156,8 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
 ) -> Result<AttestedFinding, EvidenceError> {
     let claim = &attestation.claim;
     let message = claim.canonical_bytes()?;
-    if pinned_key.key_id.is_empty() || claim.collector_key_id != pinned_key.key_id
+    if pinned_key.key_id.is_empty()
+        || claim.collector_key_id != pinned_key.key_id
         || pinned_key.public_key_sec1.is_empty()
     {
         return Err(EvidenceError::UntrustedCollector);
@@ -186,14 +184,13 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
     }
     let attestation_sha256: [u8; 32] = Sha256::digest(&message).into();
     match claim.kind {
-        EvidenceKind::SigningEventObserved => Ok(AttestedFinding::EventOnly {
-            attestation_sha256,
-        }),
-        EvidenceKind::NoMatchingEvent => Ok(AttestedFinding::NoMatchingEventObserved {
-            attestation_sha256,
-        }),
+        EvidenceKind::SigningEventObserved => Ok(AttestedFinding::EventOnly { attestation_sha256 }),
+        EvidenceKind::NoMatchingEvent => {
+            Ok(AttestedFinding::NoMatchingEventObserved { attestation_sha256 })
+        }
         EvidenceKind::RetrievedSignedCertificate => {
-            let reply = provider.lookup(plan.operation_ref, plan.signer_key_ref)
+            let reply = provider
+                .lookup(plan.operation_ref, plan.signer_key_ref)
                 .map_err(|e| match e {
                     ReconciliationError::ProviderUnavailable => EvidenceError::ProviderUnavailable,
                     _ => EvidenceError::ProviderMismatch,
@@ -210,15 +207,16 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
                         || evidence_sha256 != claim.raw_provider_log_sha256
                         || certificate_der.len() > 65_536
                         || certificate_der.is_empty()
-                        || Some(Sha256::digest(&certificate_der).into())
-                            != claim.certificate_sha256
+                        || Some(Sha256::digest(&certificate_der).into()) != claim.certificate_sha256
                     {
                         return Err(EvidenceError::ProviderMismatch);
                     }
-                    verifier.verify(plan, &certificate_der)
+                    verifier
+                        .verify(plan, &certificate_der)
                         .map_err(|_| EvidenceError::CertificateInvalid)?;
                     Ok(AttestedFinding::VerifiedRecoveredCandidate {
-                        certificate_sha256: claim.certificate_sha256
+                        certificate_sha256: claim
+                            .certificate_sha256
                             .ok_or(EvidenceError::InvalidClaim)?,
                         attestation_sha256,
                     })
