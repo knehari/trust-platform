@@ -269,3 +269,132 @@ fn read_only_reconciliation_checks_real_x509_and_immutable_intent() {
         Err(ReconciliationError::CorrelationMismatch)
     );
 }
+
+#[test]
+fn real_x509_requires_pinned_signed_collector_evidence_before_positive_finding() {
+    use sha2::{Digest, Sha256};
+    use trust_pki_core::{
+        provider_evidence::{
+            inspect_attested_provider, AttestedFinding, CollectorAttestation, EvidenceClaim,
+            EvidenceError, EvidenceKind, PinnedCollectorKey,
+        },
+        reconciliation::{ProviderResponse, ReadOnlySigningProvider, ReconciliationError},
+    };
+    use trust_pki_crypto::{
+        lab::EphemeralP256Signer, SignatureAlgorithm as CryptoAlg, SigningProvider,
+    };
+    use x509_cert::spki::SubjectPublicKeyInfoOwned;
+
+    struct ReadOnlyFixture(ProviderResponse);
+    impl ReadOnlySigningProvider for ReadOnlyFixture {
+        fn lookup(
+            &self,
+            _op: &str,
+            _key_ref: &str,
+        ) -> Result<ProviderResponse, ReconciliationError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let (csr, authorization, binding) = context();
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let serial = SerialNumber::from_positive_der_content(&[0x55]).unwrap();
+    let tbs = ca
+        .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
+        .unwrap();
+    let tbs_der = tbs.to_der().unwrap();
+    let ca_key_ref = ca.lab_signer_key_ref().to_owned();
+    let signature = ca
+        .sign_once(&ca_key_ref, "independent-audit-op", &tbs_der)
+        .unwrap();
+    let certificate_der = LabCertificateAssembler
+        .assemble(&tbs_der, &signature)
+        .unwrap();
+    let verifier = LabX509Verifier::new(
+        ca.root_certificate().clone(),
+        binding,
+        "api.lab.invalid".into(),
+    );
+    let plan = IssuancePlan {
+        ca_id: "lab-ca",
+        request_id: "audit-lab-request",
+        actor_id: "operator",
+        signer_key_ref: &ca_key_ref,
+        policy_revision: "v1",
+        operation_ref: "independent-audit-op",
+        serial_der: serial.as_der_content(),
+        tbs_der: &tbs_der,
+    };
+    let collector = EphemeralP256Signer::generate("independent-audit-collector").unwrap();
+    let spki = collector.public_key_spki_der(collector.key_ref()).unwrap();
+    let audit_public_key = SubjectPublicKeyInfoOwned::from_der(&spki)
+        .unwrap()
+        .subject_public_key
+        .as_bytes()
+        .unwrap()
+        .to_vec();
+    let trusted_key = PinnedCollectorKey {
+        key_id: "audit-collector-1",
+        public_key_sec1: &audit_public_key,
+    };
+    let journal_hash: [u8; 32] = Sha256::digest(&tbs_der).into();
+    let claim = EvidenceClaim {
+        issuer_id: "lab-ca".into(),
+        request_id: "audit-lab-request".into(),
+        policy_revision: "v1".into(),
+        operation_ref: "independent-audit-op".into(),
+        signer_key_ref: ca_key_ref.clone(),
+        collector_key_id: "audit-collector-1".into(),
+        audit_event_id: "independent-event-1".into(),
+        observed_at_unix_seconds: 1_781_200_000,
+        tbs_sha256: journal_hash,
+        raw_provider_log_sha256: [0x71; 32],
+        certificate_sha256: Some(Sha256::digest(&certificate_der).into()),
+        kind: EvidenceKind::RetrievedSignedCertificate,
+    };
+    let signature_der = collector
+        .sign(
+            collector.key_ref(),
+            CryptoAlg::EcdsaP256Sha256,
+            &claim.canonical_bytes().unwrap(),
+        )
+        .unwrap();
+    let mut attestation = CollectorAttestation {
+        claim,
+        signature_der,
+    };
+    let provider = ReadOnlyFixture(ProviderResponse::SignedCertificate {
+        operation_ref: "independent-audit-op".into(),
+        signer_key_ref: ca_key_ref.clone(),
+        certificate_der: certificate_der.clone(),
+        evidence_sha256: [0x71; 32],
+    });
+    let finding = inspect_attested_provider(
+        &provider,
+        &verifier,
+        &plan,
+        &journal_hash,
+        &attestation,
+        &trusted_key,
+    )
+    .unwrap();
+    assert!(matches!(
+        finding,
+        AttestedFinding::VerifiedRecoveredCandidate { .. }
+    ));
+
+    // An attacker cannot silently change the certified result hash in a
+    // previously signed collector statement.
+    attestation.claim.certificate_sha256 = Some([0x99; 32]);
+    assert_eq!(
+        inspect_attested_provider(
+            &provider,
+            &verifier,
+            &plan,
+            &journal_hash,
+            &attestation,
+            &trusted_key
+        ),
+        Err(EvidenceError::InvalidSignature)
+    );
+}

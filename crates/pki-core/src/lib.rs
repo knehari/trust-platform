@@ -10,6 +10,7 @@ pub mod lab_x509_verifier;
 pub mod orchestrator;
 #[cfg(feature = "postgres-store")]
 pub mod postgres_store;
+pub mod provider_evidence;
 pub mod reconciliation;
 pub mod serial;
 pub mod x509_extensions;
