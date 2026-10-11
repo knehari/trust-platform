@@ -6,6 +6,7 @@
 //! It may only be used by a future, reviewed least-privilege service boundary.
 
 use postgres::{Client, Error as PgError, NoTls};
+use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -252,6 +253,51 @@ impl PgIssuanceStore {
                 &checker_actor,
                 &&certificate_sha256[..],
                 &&evidence_sha256[..],
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Persist an already validated collector receipt in PostgreSQL. This
+    /// protects against same-event replay and writes a same-transaction audit
+    /// event; it cannot authenticate raw vendor/HSM logs or runtime DB actors.
+    ///
+    /// The returned UUID is an evidence receipt, NOT permission to recover
+    /// or publish a certificate and NOT an HSM-provided attestation.
+    pub fn persist_verified_collector_evidence(
+        &mut self,
+        evidence: &VerifiedCollectorEvidence,
+    ) -> Result<String, StoreError> {
+        let claim = evidence.claim();
+        let observed: i64 = claim.observed_at_unix_seconds.try_into()
+            .map_err(|_| StoreError::InconsistentResult)?;
+        let kind = match claim.kind {
+            EvidenceKind::SigningEventObserved => "SIGNING_EVENT",
+            EvidenceKind::RetrievedSignedCertificate => "RETRIEVED_CERTIFICATE",
+            EvidenceKind::NoMatchingEvent => "NO_MATCHING_EVENT",
+        };
+        let certificate_digest: Option<&[u8]> =
+            claim.certificate_sha256.as_ref().map(|digest| &digest[..]);
+        let row = self.client.query_one(
+            "SELECT persist_signing_collector_evidence(
+                $1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7,
+                $8::bigint,$9,$10,$11,$12,$13,$14
+            )::text",
+            &[
+                &claim.issuer_id,
+                &claim.request_id,
+                &claim.collector_key_id,
+                &claim.audit_event_id,
+                &claim.operation_ref,
+                &claim.signer_key_ref,
+                &claim.policy_revision,
+                &observed,
+                &kind,
+                &&claim.tbs_sha256[..],
+                &&claim.raw_provider_log_sha256[..],
+                &certificate_digest,
+                &evidence.canonical_claim(),
+                &evidence.signature_der(),
             ],
         )?;
         Ok(row.get(0))
