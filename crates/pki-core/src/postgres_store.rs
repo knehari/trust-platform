@@ -5,6 +5,10 @@
 //! validate signed certificates, own keys, or invoke an HSM.
 //! It may only be used by a future, reviewed least-privilege service boundary.
 
+use crate::ca_observation::ObservedCaPublicCertificate;
+use crate::cp_cps::{generate as generate_cp_cps, Input as CpCpsInput};
+#[cfg(feature = "lab-software")]
+use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
 use postgres::{Client, Error as PgError, NoTls};
 
@@ -300,6 +304,95 @@ impl PgIssuanceStore {
                 &certificate_digest,
                 &evidence.canonical_claim(),
                 &evidence.signature_der(),
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Store DER from a publicly observed, externally pinned lab CA certificate.
+    /// This never confirms which configuration/HSM is actually deployed.
+    pub fn register_ca_public_observation(
+        &mut self,
+        ca_id: &str,
+        actor_id: &str,
+        observed: &ObservedCaPublicCertificate,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT register_ca_public_observation(
+                $1::text::uuid,$2,$3,$4,$5
+             )::text",
+            &[
+                &ca_id,
+                &actor_id,
+                &observed.certificate_sha256().as_slice(),
+                &observed.spki_sha256().as_slice(),
+                &observed.certificate_der(),
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Persist a reproducible CP/CPS proposal. A proposal is NEVER approved.
+    /// Caller input is DECLARATIVE policy; observed issuer DER is separate.
+    pub fn register_cp_cps_draft(
+        &mut self,
+        ca_id: &str,
+        observation_id: &str,
+        actor_id: &str,
+        source: &CpCpsInput<'_>,
+    ) -> Result<String, StoreError> {
+        let docs = generate_cp_cps(source).map_err(|_| StoreError::InconsistentResult)?;
+        if docs.publication_authorized {
+            return Err(StoreError::InconsistentResult);
+        }
+        let row = self.client.query_one(
+            "SELECT register_cp_cps_draft(
+                $1::text::uuid,$2,$3::text::uuid,$4,$5,$6,$7,$8,$9,$10,$11,$12
+             )::text",
+            &[
+                &ca_id,
+                &actor_id,
+                &observation_id,
+                &source.policy.profile_id,
+                &source.policy.policy_version,
+                &source.policy_oid,
+                &source.edition,
+                &docs.policy_snapshot_sha256.as_slice(),
+                &docs.cp.markdown,
+                &docs.cps.markdown,
+                &docs.cp.sha256.as_slice(),
+                &docs.cps.sha256.as_slice(),
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Append a NON-AUTHORITATIVE reference to an already stored signed
+    /// certificate. PostgreSQL also checks all hashes and the signing journal.
+    /// Does not retroactively approve a CP/CPS or authorize future signing.
+    #[cfg(feature = "lab-software")]
+    pub fn record_issued_certificate_draft_trace(
+        &mut self,
+        actor_id: &str,
+        draft_id: &str,
+        verified: &VerifiedDraftCertificateTrace,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT trace_issued_certificate_to_draft(
+                $1::text::uuid,$2::text::uuid,$3,$4::text::uuid,
+                $5,$6,$7,$8,$9,$10
+             )",
+            &[
+                &verified.ca_id(),
+                &verified.request_id(),
+                &actor_id,
+                &draft_id,
+                &verified.certificate_sha256().as_slice(),
+                &verified.issuer_ca_sha256().as_slice(),
+                &verified.source_sha256().as_slice(),
+                &verified.cp_sha256().as_slice(),
+                &verified.cps_sha256().as_slice(),
+                &verified.policy_oid(),
             ],
         )?;
         Ok(row.get(0))
