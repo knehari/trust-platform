@@ -30,7 +30,40 @@ if [ "$count" != 1 ]; then
   exit 1
 fi
 request_id="$request_ids"
-first_count="$(grep -l ':f$' "$workdir"/request-* | wc -l | tr -d ' ')"
+first_count="$(grep -l ':false "$workdir"/request-* | wc -l | tr -d ' ')"
+if [ "$first_count" != 1 ]; then
+  echo "FAIL: expected one initial insertion, got $first_count" >&2
+  exit 1
+fi
+
+run_sql "SELECT transition_issuance_request('$ca','$request_id','RECEIVED','CSR_VALIDATED','concurrent-actor');" >/dev/null
+run_sql "SELECT transition_issuance_request('$ca','$request_id','CSR_VALIDATED','AUTHORIZED','concurrent-actor');" >/dev/null
+
+pids=()
+for i in $(seq 1 12); do
+  (
+    run_sql "SELECT encode(reserve_issuance_serial('$ca','$request_id','concurrent-actor'),'hex');" >"$workdir/serial-$i"
+  ) &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
+
+serial_count="$(cat "$workdir"/serial-* | sort -u | wc -l | tr -d ' ')"
+if [ "$serial_count" != 1 ]; then
+  echo "FAIL: concurrent serial reservation returned $serial_count values" >&2
+  exit 1
+fi
+
+audit_count="$(run_sql "SELECT count(*) FROM audit_event WHERE request_id='$request_id';")"
+state="$(run_sql "SELECT state FROM certificate_request WHERE request_id='$request_id';")"
+reservation_count="$(run_sql "SELECT count(*) FROM serial_reservation WHERE ca_id='$ca' AND request_id='$request_id';")"
+if [ "$audit_count" != 4 ] || [ "$state" != SERIAL_RESERVED ] || [ "$reservation_count" != 1 ]; then
+  echo "FAIL: request state/audit/reservation mismatch: audit=$audit_count state=$state serials=$reservation_count" >&2
+  exit 1
+fi
+
+echo "PASS: 12 concurrent clients, one request, one 126-bit serial, exactly four audit events"
+ "$workdir"/request-* | wc -l | tr -d ' ')"
 if [ "$first_count" != 1 ]; then
   echo "FAIL: expected one initial insertion, got $first_count" >&2
   exit 1
