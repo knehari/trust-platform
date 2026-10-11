@@ -194,18 +194,21 @@ impl PgIssuanceStore {
              )",
             &[&ca_id, &min_age_seconds, &max_items, &recovery_actor],
         )?;
-        rows.into_iter().map(|row| {
-            let digest: Vec<u8> = row.get(4);
-            let digest: [u8; 32] = digest.try_into()
-                .map_err(|_| StoreError::InconsistentResult)?;
-            Ok(RecoveryCandidate {
-                request_id: row.get(0),
-                intent_id: row.get(1),
-                operation_ref: row.get(2),
-                signer_key_ref: row.get(3),
-                tbs_sha256: digest,
+        rows.into_iter()
+            .map(|row| {
+                let digest: Vec<u8> = row.get(4);
+                let digest: [u8; 32] = digest
+                    .try_into()
+                    .map_err(|_| StoreError::InconsistentResult)?;
+                Ok(RecoveryCandidate {
+                    request_id: row.get(0),
+                    intent_id: row.get(1),
+                    operation_ref: row.get(2),
+                    signer_key_ref: row.get(3),
+                    tbs_sha256: digest,
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 
