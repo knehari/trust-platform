@@ -15,24 +15,48 @@ fn persists_request_serial_and_signing_intent_without_resigning() {
     let ca = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     // A dedicated CI issuer is inserted by the schema test job.
     let created = db
-        .create_request(ca, "rust-adapter-req-1", &[0x11; 32], "trusted-test-actor", "v1")
+        .create_request(
+            ca,
+            "rust-adapter-req-1",
+            &[0x11; 32],
+            "trusted-test-actor",
+            "v1",
+        )
         .expect("create request");
     assert_eq!(created.state, "RECEIVED");
     assert!(!created.replay);
     let replay = db
-        .create_request(ca, "rust-adapter-req-1", &[0x11; 32], "trusted-test-actor", "v1")
+        .create_request(
+            ca,
+            "rust-adapter-req-1",
+            &[0x11; 32],
+            "trusted-test-actor",
+            "v1",
+        )
         .expect("idempotent replay");
     assert_eq!(replay.request_id, created.request_id);
     assert!(replay.replay);
 
     assert_eq!(
-        db.transition(ca, &created.request_id, "RECEIVED", "CSR_VALIDATED", "trusted-test-actor")
-            .unwrap(),
+        db.transition(
+            ca,
+            &created.request_id,
+            "RECEIVED",
+            "CSR_VALIDATED",
+            "trusted-test-actor"
+        )
+        .unwrap(),
         "CSR_VALIDATED"
     );
     assert_eq!(
-        db.transition(ca, &created.request_id, "CSR_VALIDATED", "AUTHORIZED", "trusted-test-actor")
-            .unwrap(),
+        db.transition(
+            ca,
+            &created.request_id,
+            "CSR_VALIDATED",
+            "AUTHORIZED",
+            "trusted-test-actor"
+        )
+        .unwrap(),
         "AUTHORIZED"
     );
     let first = db
