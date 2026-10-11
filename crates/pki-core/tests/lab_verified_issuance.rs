@@ -587,3 +587,186 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     assert_eq!(row.get::<usize, i64>(0), 0);
     assert_eq!(row.get::<usize, i64>(1), 1);
 }
+
+#[test]
+fn pinned_ca_and_draft_cps_are_traced_to_real_issued_x509_without_approval() {
+    use sha2::{Digest, Sha256};
+    use trust_pki_core::{
+        ca_observation::observe_pinned_lab_ca,
+        cp_cps::{generate, Input as CpCpsInput},
+        policy_trace::{verify_certificate_draft_trace, TraceError},
+    };
+
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        return;
+    };
+    let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let (csr, authorization, binding) = context();
+    let policy = StaticPolicy {
+        profile_id: "lab-server".into(),
+        policy_version: "v1".into(),
+        allowed_actors: vec!["lab-actor".into()],
+        allowed_dns_zones: vec!["lab.invalid".into()],
+        allowed_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+        max_validity_days: 3,
+        max_dns_sans: 2,
+    };
+    let source = CpCpsInput {
+        policy: &policy,
+        policy_oid: "1.3.6.1.4.1.55555.1.1",
+        edition: "lab-doc-v1",
+        issuer: "Sovereign Trust Lab Root",
+        authority: "Unapproved Lab Policy Board",
+        repository: "lab.invalid/draft",
+    };
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let ca_der = root.to_der().unwrap();
+    // TEST ONLY: the pin here comes from the test fixture. Production must
+    // obtain its trusted pin independently, not from the certificate itself.
+    let pin: [u8; 32] = Sha256::digest(&ca_der).into();
+    let observed = observe_pinned_lab_ca(&ca_der, &pin).unwrap();
+    let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
+    let observation_id = db
+        .register_ca_public_observation(ca_id, "lab-operator", &observed)
+        .unwrap();
+    let observation_replay = db
+        .register_ca_public_observation(ca_id, "lab-operator", &observed)
+        .unwrap();
+    assert_eq!(observation_id, observation_replay);
+    let draft_id = db
+        .register_cp_cps_draft(ca_id, &observation_id, "lab-operator", &source)
+        .unwrap();
+    let draft = generate(&source).unwrap();
+    assert!(!draft.publication_authorized);
+
+    let request = db
+        .create_request(
+            ca_id,
+            "v13-observed-ca-draft-trace",
+            csr.fingerprint_sha256(),
+            "lab-actor",
+            "v1",
+        )
+        .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "RECEIVED",
+        "CSR_VALIDATED",
+        "lab-actor",
+    )
+    .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "CSR_VALIDATED",
+        "AUTHORIZED",
+        "lab-actor",
+    )
+    .unwrap();
+    let serial_data = db
+        .reserve_serial(ca_id, &request.request_id, "lab-actor")
+        .unwrap();
+    let serial = SerialNumber::from_positive_der_content(&serial_data).unwrap();
+    let tbs = ca
+        .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
+        .unwrap();
+    let tbs_der = tbs.to_der().unwrap();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let plan = IssuancePlan {
+        ca_id,
+        request_id: &request.request_id,
+        actor_id: "lab-actor",
+        signer_key_ref: &key_ref,
+        policy_revision: "v1",
+        operation_ref: "v13-observed-ca-issuance",
+        serial_der: &serial_data,
+        tbs_der: &tbs_der,
+    };
+    let verifier = LabX509Verifier::new(root.clone(), binding.clone(), "api.lab.invalid".into());
+    let signed_der =
+        issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan).unwrap();
+
+    let validated = verify_certificate_draft_trace(
+        &observed,
+        &plan,
+        &signed_der,
+        &source,
+        &binding,
+        "api.lab.invalid",
+    )
+    .unwrap();
+    assert_eq!(
+        validated.certificate_sha256(),
+        &<[u8; 32]>::from(Sha256::digest(&signed_der))
+    );
+    assert_eq!(validated.issuer_ca_sha256(), observed.certificate_sha256());
+
+    let wrong_source = CpCpsInput {
+        policy: &policy,
+        policy_oid: "1.3.6.1.4.1.55555.1.9",
+        edition: "lab-doc-v1",
+        issuer: "Sovereign Trust Lab Root",
+        authority: "Unapproved Lab Policy Board",
+        repository: "lab.invalid/draft",
+    };
+    assert_eq!(
+        verify_certificate_draft_trace(
+            &observed,
+            &plan,
+            &signed_der,
+            &wrong_source,
+            &binding,
+            "api.lab.invalid"
+        ),
+        Err(TraceError::PolicyMismatch)
+    );
+    let another_ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let another_root_der = another_ca.root_certificate().to_der().unwrap();
+    let other_pin: [u8; 32] = Sha256::digest(&another_root_der).into();
+    let other_observed = observe_pinned_lab_ca(&another_root_der, &other_pin).unwrap();
+    assert_eq!(
+        verify_certificate_draft_trace(
+            &other_observed,
+            &plan,
+            &signed_der,
+            &source,
+            &binding,
+            "api.lab.invalid"
+        ),
+        Err(TraceError::CertificateInvalid)
+    );
+
+    assert_eq!(
+        db.record_issued_certificate_draft_trace("lab-operator", &draft_id, &validated)
+            .unwrap(),
+        "DRAFT_REFERENCE_ONLY"
+    );
+    // Existing cert is NOT re-signed, and draft is NOT approved or published.
+    assert!(db
+        .record_issued_certificate_draft_trace("lab-operator", &draft_id, &validated)
+        .is_err());
+
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let row = reader
+        .query_one(
+            "SELECT t.trace_state,p.state,p.policy_oid,p.cp_sha256,p.cps_sha256,
+                o.ca_certificate_sha256,c.certificate_der
+         FROM issued_certificate_draft_trace t
+         JOIN certificate c ON c.ca_id=t.ca_id AND c.request_id=t.request_id
+         JOIN cp_cps_draft_snapshot p ON p.ca_id=t.ca_id AND p.draft_id=t.draft_id
+         JOIN ca_public_observation o
+             ON o.ca_id=p.ca_id AND o.observation_id=p.observation_id
+         WHERE t.request_id=$1::text::uuid",
+            &[&request.request_id],
+        )
+        .unwrap();
+    assert_eq!(row.get::<usize, String>(0), "DRAFT_REFERENCE_ONLY");
+    assert_eq!(row.get::<usize, String>(1), "DRAFT_UNAPPROVED");
+    assert_eq!(row.get::<usize, String>(2), source.policy_oid);
+    assert_eq!(row.get::<usize, Vec<u8>>(3), draft.cp.sha256.to_vec());
+    assert_eq!(row.get::<usize, Vec<u8>>(4), draft.cps.sha256.to_vec());
+    assert_eq!(row.get::<usize, Vec<u8>>(5), pin.to_vec());
+    assert_eq!(row.get::<usize, Vec<u8>>(6), signed_der);
+}
