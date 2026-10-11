@@ -28,7 +28,7 @@ fi
 request_id="$request_ids"
 
 # Booleans cast to text are 'true' and 'false' in PostgreSQL.
-first_count="$(grep -lc ':false' "$workdir"/request-* | awk -F: '{s+=$NF} END{print s+0}')"
+first_count="$(awk -F: '$2 == "false" { n++ } END { print n+0 }' "$workdir"/request-*)"
 if [ "$first_count" != 1 ]; then
   echo "FAIL: expected one new insert, received $first_count" >&2
   exit 1
