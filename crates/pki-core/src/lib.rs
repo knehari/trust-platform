@@ -5,6 +5,7 @@
 pub mod csr;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
+pub mod orchestrator;
 #[cfg(feature = "postgres-store")]
 pub mod postgres_store;
 pub mod serial;
