@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+lab-software = ["trust-pki-crypto/lab-software"]
+
 [dependencies]
 trust-pki-policy = { path = "../pki-policy" }
 trust-pki-crypto = { path = "../pki-crypto" }
+x509-cert = { version = "=0.2.5", features = ["pem"] }
+sha2 = "=0.10.9"

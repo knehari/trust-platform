@@ -20,9 +20,15 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --all-features --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Native CA to OpenSSL interop (lab only)
+        run: |
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
+          openssl verify -CAfile "$RUNNER_TEMP/trust-lab/root.pem" -purpose sslserver "$RUNNER_TEMP/trust-lab/leaf.pem"
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'DNS:api.lab.invalid'
+
 
   schema:
     runs-on: ubuntu-latest

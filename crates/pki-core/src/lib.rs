@@ -2,6 +2,9 @@
 //! Native CA orchestration contracts.
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 
+pub mod csr;
+#[cfg(feature = "lab-software")]
+pub mod lab_ca;
 pub mod serial;
 
 use trust_pki_policy::{
