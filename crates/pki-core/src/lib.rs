@@ -3,9 +3,9 @@
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 
 pub mod csr;
-pub mod orchestrator;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
+pub mod orchestrator;
 #[cfg(feature = "postgres-store")]
 pub mod postgres_store;
 pub mod serial;
