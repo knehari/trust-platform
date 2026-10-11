@@ -74,15 +74,17 @@ pub fn verify_pkcs10_p256(
         return Err(CsrValidationError::WrongVersion);
     }
 
-    if csr.algorithm.oid.to_string() != ECDSA_SHA256_OID
-        || csr.algorithm.parameters.is_some()
-    {
+    if csr.algorithm.oid.to_string() != ECDSA_SHA256_OID || csr.algorithm.parameters.is_some() {
         return Err(CsrValidationError::UnsupportedSignatureAlgorithm);
     }
 
     let spki = &csr.info.public_key;
     if spki.algorithm.oid.to_string() != EC_PUBLIC_KEY_OID
-        || spki.algorithm.parameters.as_ref().and_then(|p| p.to_der().ok())
+        || spki
+            .algorithm
+            .parameters
+            .as_ref()
+            .and_then(|p| p.to_der().ok())
             != Some(P256_PARAMS_DER.to_vec())
     {
         return Err(CsrValidationError::UnsupportedSubjectKeyAlgorithm);
@@ -105,7 +107,10 @@ pub fn verify_pkcs10_p256(
         return Err(CsrValidationError::SubjectMismatch);
     }
 
-    let tbs = csr.info.to_der().map_err(|_| CsrValidationError::InvalidDer)?;
+    let tbs = csr
+        .info
+        .to_der()
+        .map_err(|_| CsrValidationError::InvalidDer)?;
     let signature = csr
         .signature
         .as_bytes()
@@ -177,10 +182,12 @@ mod tests {
 
     #[test]
     fn rsa_algorithm_is_explicitly_rejected() {
-        let csr = CertReq::from_pem(include_str!("../tests/fixtures/rsa-unsupported-request.pem"))
-            .unwrap()
-            .to_der()
-            .unwrap();
+        let csr = CertReq::from_pem(include_str!(
+            "../tests/fixtures/rsa-unsupported-request.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
         assert_eq!(
             verify_pkcs10_p256(&csr, "api.lab.invalid"),
             Err(CsrValidationError::UnsupportedSignatureAlgorithm)
