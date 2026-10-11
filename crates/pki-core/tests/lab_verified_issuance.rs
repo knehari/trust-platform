@@ -297,7 +297,7 @@ fn real_x509_requires_pinned_signed_collector_evidence_before_positive_finding()
     }
 
     let (csr, authorization, binding) = context();
-    let mut ca = EphemeralLabCa::new("Audit Evidence Lab Root").unwrap();
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
     let serial = SerialNumber::from_positive_der_content(&[0x55]).unwrap();
     let tbs = ca
         .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
