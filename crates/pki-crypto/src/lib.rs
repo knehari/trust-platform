@@ -1,3 +1,6 @@
+#[cfg(feature = "lab-software")]
+pub mod lab;
+
 #![forbid(unsafe_code)]
 //! Signing boundary and algorithm negotiation.
 //! No real signature provider is configured in Sprint 0.
