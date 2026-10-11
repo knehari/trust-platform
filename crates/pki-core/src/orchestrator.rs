@@ -63,22 +63,14 @@ pub trait ExternalSigner {
 
 /// The assembler cannot mutate the already-journaled TBS.
 pub trait CertificateAssembler {
-    fn assemble(
-        &self,
-        tbs_der: &[u8],
-        signature: &[u8],
-    ) -> Result<Vec<u8>, IssueError>;
+    fn assemble(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>, IssueError>;
 }
 
 /// Verifier MUST independently validate the signature, issuer public key,
 /// serial, TBS equality, profile, SANs, validity and policy OIDs.
 /// A test double MUST NEVER be mistaken for a real X.509 verifier.
 pub trait CertificateVerifier {
-    fn verify(
-        &self,
-        plan: &IssuancePlan<'_>,
-        certificate_der: &[u8],
-    ) -> Result<(), IssueError>;
+    fn verify(&self, plan: &IssuancePlan<'_>, certificate_der: &[u8]) -> Result<(), IssueError>;
 }
 
 fn record_uncertain<J: IssuanceJournal>(journal: &mut J, plan: &IssuancePlan<'_>) {
@@ -222,12 +214,12 @@ mod tests {
 
     struct Verifier(bool);
     impl CertificateVerifier for Verifier {
-        fn verify(
-            &self,
-            _plan: &IssuancePlan<'_>,
-            _certificate: &[u8],
-        ) -> Result<(), IssueError> {
-            if self.0 { Ok(()) } else { Err(IssueError::VerificationFailure) }
+        fn verify(&self, _plan: &IssuancePlan<'_>, _certificate: &[u8]) -> Result<(), IssueError> {
+            if self.0 {
+                Ok(())
+            } else {
+                Err(IssueError::VerificationFailure)
+            }
         }
     }
 
@@ -246,9 +238,19 @@ mod tests {
 
     #[test]
     fn signing_never_happens_before_a_durable_intent() {
-        let mut journal = FakeJournal { fail_intent: true, ..Default::default() };
+        let mut journal = FakeJournal {
+            fail_intent: true,
+            ..Default::default()
+        };
         let mut signer = FakeSigner::default();
-        assert!(issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()).is_err());
+        assert!(issue_once(
+            &mut journal,
+            &mut signer,
+            &Assembler,
+            &Verifier(true),
+            &plan()
+        )
+        .is_err());
         assert_eq!(signer.calls, 0);
         assert!(!journal.stored);
     }
@@ -257,7 +259,14 @@ mod tests {
     fn successful_path_writes_result_and_only_signs_once() {
         let mut journal = FakeJournal::default();
         let mut signer = FakeSigner::default();
-        let cert = issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()).unwrap();
+        let cert = issue_once(
+            &mut journal,
+            &mut signer,
+            &Assembler,
+            &Verifier(true),
+            &plan(),
+        )
+        .unwrap();
         assert!(cert.ends_with(&[0xab, 0xcd]));
         assert_eq!(signer.calls, 1);
         assert!(journal.stored);
@@ -267,14 +276,29 @@ mod tests {
     #[test]
     fn signer_timeout_marks_ambiguous_and_prevents_blind_retry() {
         let mut journal = FakeJournal::default();
-        let mut signer = FakeSigner { fail: true, ..Default::default() };
+        let mut signer = FakeSigner {
+            fail: true,
+            ..Default::default()
+        };
         assert_eq!(
-            issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()),
+            issue_once(
+                &mut journal,
+                &mut signer,
+                &Assembler,
+                &Verifier(true),
+                &plan()
+            ),
             Err(IssueError::SigningFailure)
         );
         assert!(journal.uncertain);
         assert_eq!(
-            issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()),
+            issue_once(
+                &mut journal,
+                &mut signer,
+                &Assembler,
+                &Verifier(true),
+                &plan()
+            ),
             Err(IssueError::ReplayedOrAmbiguousIntent)
         );
         assert_eq!(signer.calls, 1);
@@ -285,7 +309,13 @@ mod tests {
         let mut journal = FakeJournal::default();
         let mut signer = FakeSigner::default();
         assert_eq!(
-            issue_once(&mut journal, &mut signer, &Assembler, &Verifier(false), &plan()),
+            issue_once(
+                &mut journal,
+                &mut signer,
+                &Assembler,
+                &Verifier(false),
+                &plan()
+            ),
             Err(IssueError::VerificationFailure)
         );
         assert!(!journal.stored);
@@ -294,15 +324,30 @@ mod tests {
 
     #[test]
     fn db_failure_after_signature_is_ambiguous_not_reissued() {
-        let mut journal = FakeJournal { fail_persist: true, ..Default::default() };
+        let mut journal = FakeJournal {
+            fail_persist: true,
+            ..Default::default()
+        };
         let mut signer = FakeSigner::default();
         assert_eq!(
-            issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()),
+            issue_once(
+                &mut journal,
+                &mut signer,
+                &Assembler,
+                &Verifier(true),
+                &plan()
+            ),
             Err(IssueError::PersistenceFailure)
         );
         assert!(journal.uncertain);
         assert_eq!(
-            issue_once(&mut journal, &mut signer, &Assembler, &Verifier(true), &plan()),
+            issue_once(
+                &mut journal,
+                &mut signer,
+                &Assembler,
+                &Verifier(true),
+                &plan()
+            ),
             Err(IssueError::ReplayedOrAmbiguousIntent)
         );
         assert_eq!(signer.calls, 1);
