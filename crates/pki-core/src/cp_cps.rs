@@ -184,11 +184,14 @@ fn document(
     ];
     if kind == DocumentKind::Cps {
         // RFC 3647 section 6.7 belongs before section 7, not after 9.
-        sections.insert(12, manual(
-            "6.7",
-            "Network security controls",
-            "Observed CA isolation, access policy and mutual TLS tests.",
-        ));
+        sections.insert(
+            12,
+            manual(
+                "6.7",
+                "Network security controls",
+                "Observed CA isolation, access policy and mutual TLS tests.",
+            ),
+        );
     }
     let mut markdown = format!("# {label}  -  DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
         input.edition, digest_hex(source_hash));
