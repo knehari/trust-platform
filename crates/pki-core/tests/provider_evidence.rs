@@ -12,9 +12,7 @@ use trust_pki_core::{
     },
     reconciliation::{ProviderResponse, ReadOnlySigningProvider, ReconciliationError},
 };
-use trust_pki_crypto::{
-    lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider,
-};
+use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
 use x509_cert::{der::Decode, spki::SubjectPublicKeyInfoOwned};
 
 struct ReadOnlyFixture {
@@ -22,11 +20,7 @@ struct ReadOnlyFixture {
     lookups: Cell<usize>,
 }
 impl ReadOnlySigningProvider for ReadOnlyFixture {
-    fn lookup(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<ProviderResponse, ReconciliationError> {
+    fn lookup(&self, _: &str, _: &str) -> Result<ProviderResponse, ReconciliationError> {
         self.lookups.set(self.lookups.get() + 1);
         Ok(self.reply.clone())
     }
@@ -77,15 +71,14 @@ fn claim(kind: EvidenceKind) -> EvidenceClaim {
     }
 }
 
-fn sign_claim(
-    signer: &EphemeralP256Signer,
-    claim: EvidenceClaim,
-) -> CollectorAttestation {
-    let signature = signer.sign(
-        signer.key_ref(),
-        SignatureAlgorithm::EcdsaP256Sha256,
-        &claim.canonical_bytes().unwrap(),
-    ).unwrap();
+fn sign_claim(signer: &EphemeralP256Signer, claim: EvidenceClaim) -> CollectorAttestation {
+    let signature = signer
+        .sign(
+            signer.key_ref(),
+            SignatureAlgorithm::EcdsaP256Sha256,
+            &claim.canonical_bytes().unwrap(),
+        )
+        .unwrap();
     CollectorAttestation {
         claim,
         signature_der: signature,
@@ -94,8 +87,12 @@ fn sign_claim(
 
 fn pinned_sec1(signer: &EphemeralP256Signer) -> Vec<u8> {
     let spki = signer.public_key_spki_der(signer.key_ref()).unwrap();
-    SubjectPublicKeyInfoOwned::from_der(&spki).unwrap()
-        .subject_public_key.as_bytes().unwrap().to_vec()
+    SubjectPublicKeyInfoOwned::from_der(&spki)
+        .unwrap()
+        .subject_public_key
+        .as_bytes()
+        .unwrap()
+        .to_vec()
 }
 
 fn fixture_provider() -> ReadOnlyFixture {
@@ -122,9 +119,18 @@ fn valid_collector_signature_and_exact_certificate_binding() {
     let provider = fixture_provider();
     let tbs_hash: [u8; 32] = Sha256::digest(b"authorized-tbs").into();
     let finding = inspect_attested_provider(
-        &provider, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key,
-    ).unwrap();
-    assert!(matches!(finding, AttestedFinding::VerifiedRecoveredCandidate { .. }));
+        &provider,
+        &StrictFixtureVerifier,
+        &plan(),
+        &tbs_hash,
+        &att,
+        &key,
+    )
+    .unwrap();
+    assert!(matches!(
+        finding,
+        AttestedFinding::VerifiedRecoveredCandidate { .. }
+    ));
     assert_eq!(provider.lookups.get(), 1);
 }
 
@@ -142,7 +148,12 @@ fn tampering_with_the_signed_claim_or_signature_is_rejected() {
     let provider = fixture_provider();
     assert_eq!(
         inspect_attested_provider(
-            &provider, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key
+            &provider,
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key
         ),
         Err(EvidenceError::InvalidSignature)
     );
@@ -151,7 +162,12 @@ fn tampering_with_the_signed_claim_or_signature_is_rejected() {
     att.signature_der[0] ^= 0x01;
     assert_eq!(
         inspect_attested_provider(
-            &provider, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key
+            &provider,
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key
         ),
         Err(EvidenceError::InvalidSignature)
     );
@@ -169,7 +185,12 @@ fn untrusted_audit_key_and_journal_mismatch_fail_closed() {
     let tbs_hash: [u8; 32] = Sha256::digest(b"authorized-tbs").into();
     assert_eq!(
         inspect_attested_provider(
-            &fixture_provider(), &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key
+            &fixture_provider(),
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key
         ),
         Err(EvidenceError::InvalidSignature)
     );
@@ -180,7 +201,12 @@ fn untrusted_audit_key_and_journal_mismatch_fail_closed() {
     };
     assert_eq!(
         inspect_attested_provider(
-            &fixture_provider(), &StrictFixtureVerifier, &plan(), &[0x12; 32], &att, &trusted_key
+            &fixture_provider(),
+            &StrictFixtureVerifier,
+            &plan(),
+            &[0x12; 32],
+            &att,
+            &trusted_key
         ),
         Err(EvidenceError::IntentMismatch)
     );
@@ -207,7 +233,12 @@ fn signed_claim_cannot_launder_different_certificate_or_provider_log() {
     };
     assert_eq!(
         inspect_attested_provider(
-            &altered, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key
+            &altered,
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key
         ),
         Err(EvidenceError::ProviderMismatch)
     );
@@ -222,7 +253,12 @@ fn signed_claim_cannot_launder_different_certificate_or_provider_log() {
     };
     assert_eq!(
         inspect_attested_provider(
-            &altered_log, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key
+            &altered_log,
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key
         ),
         Err(EvidenceError::ProviderMismatch)
     );
@@ -236,13 +272,22 @@ fn no_log_record_is_not_proof_of_no_signing() {
         key_id: "auditor-2026-q4",
         public_key_sec1: &pubkey,
     };
-    for kind in [EvidenceKind::NoMatchingEvent, EvidenceKind::SigningEventObserved] {
+    for kind in [
+        EvidenceKind::NoMatchingEvent,
+        EvidenceKind::SigningEventObserved,
+    ] {
         let att = sign_claim(&signer, claim(kind));
         let provider = fixture_provider();
         let tbs_hash: [u8; 32] = Sha256::digest(b"authorized-tbs").into();
         let finding = inspect_attested_provider(
-            &provider, &StrictFixtureVerifier, &plan(), &tbs_hash, &att, &key,
-        ).unwrap();
+            &provider,
+            &StrictFixtureVerifier,
+            &plan(),
+            &tbs_hash,
+            &att,
+            &key,
+        )
+        .unwrap();
         assert!(matches!(
             finding,
             AttestedFinding::NoMatchingEventObserved { .. } | AttestedFinding::EventOnly { .. }
@@ -255,11 +300,20 @@ fn no_log_record_is_not_proof_of_no_signing() {
 fn canonical_envelope_rejects_unbounded_metadata_and_unsigned_result() {
     let mut candidate = claim(EvidenceKind::SigningEventObserved);
     candidate.certificate_sha256 = Some([0x15; 32]);
-    assert_eq!(candidate.canonical_bytes(), Err(EvidenceError::InvalidClaim));
+    assert_eq!(
+        candidate.canonical_bytes(),
+        Err(EvidenceError::InvalidClaim)
+    );
     let mut candidate = claim(EvidenceKind::SigningEventObserved);
     candidate.operation_ref = "x".repeat(129);
-    assert_eq!(candidate.canonical_bytes(), Err(EvidenceError::InvalidClaim));
+    assert_eq!(
+        candidate.canonical_bytes(),
+        Err(EvidenceError::InvalidClaim)
+    );
     let mut candidate = claim(EvidenceKind::NoMatchingEvent);
     candidate.audit_event_id = "event id with spaces".into();
-    assert_eq!(candidate.canonical_bytes(), Err(EvidenceError::InvalidClaim));
+    assert_eq!(
+        candidate.canonical_bytes(),
+        Err(EvidenceError::InvalidClaim)
+    );
 }
