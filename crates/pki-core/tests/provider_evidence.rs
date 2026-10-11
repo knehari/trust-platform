@@ -328,22 +328,32 @@ fn valid_signature_from_wrong_request_or_policy_is_rejected() {
     };
     let hash: [u8; 32] = Sha256::digest(b"authorized-tbs").into();
     let provider = fixture_provider();
-    let mut claim = claim(EvidenceKind::RetrievedSignedCertificate);
-    claim.request_id = "another-request".into();
-    let attestation = sign_claim(&signer, claim);
+    let mut first_claim = claim(EvidenceKind::RetrievedSignedCertificate);
+    first_claim.request_id = "another-request".into();
+    let attestation = sign_claim(&signer, first_claim);
     assert_eq!(
         inspect_attested_provider(
-            &provider, &StrictFixtureVerifier, &plan(), &hash, &attestation, &key
+            &provider,
+            &StrictFixtureVerifier,
+            &plan(),
+            &hash,
+            &attestation,
+            &key
         ),
         Err(EvidenceError::IntentMismatch)
     );
 
-    let mut claim = claim(EvidenceKind::RetrievedSignedCertificate);
-    claim.policy_revision = "another-policy".into();
-    let attestation = sign_claim(&signer, claim);
+    let mut second_claim = claim(EvidenceKind::RetrievedSignedCertificate);
+    second_claim.policy_revision = "another-policy".into();
+    let attestation = sign_claim(&signer, second_claim);
     assert_eq!(
         inspect_attested_provider(
-            &provider, &StrictFixtureVerifier, &plan(), &hash, &attestation, &key
+            &provider,
+            &StrictFixtureVerifier,
+            &plan(),
+            &hash,
+            &attestation,
+            &key
         ),
         Err(EvidenceError::IntentMismatch)
     );
