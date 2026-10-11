@@ -32,7 +32,7 @@ pub enum CsrValidationError {
     SubjectMismatch,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedCsr {
     /// Verified public key is safe to include in the subject certificate.
     subject_public_key: SubjectPublicKeyInfoOwned,
