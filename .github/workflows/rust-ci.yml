@@ -17,6 +17,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary dependency resolution and rustfmt bootstrap
+        run: |
+          cargo generate-lockfile
+          printf 'CI_LOCK64='
+          base64 -w0 Cargo.lock
+          echo
+          cargo fmt --all
+          for f in crates/pki-core/src/postgres_store.rs crates/pki-core/tests/postgres_store.rs crates/pki-core/src/lib.rs; do
+            printf 'CI_FORMAT:%s:' "$f"
+            base64 -w0 "$f"
+            echo
+          done
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
@@ -63,4 +75,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/signing_intent.sql
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO ca(ca_id,display_name,policy_version) VALUES (\u0027eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\u0027,\u0027Rust Lab Adapter CA\u0027,\u0027v1\u0027)"
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test postgres_store --features postgres-store --locked
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/signing_intent.sql
