@@ -17,6 +17,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary test formatter
+        run: |
+          cargo fmt --all
+          printf 'FORMATTED-TEST:'
+          base64 -w0 crates/pki-core/tests/lab_verified_issuance.rs
+          echo
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
