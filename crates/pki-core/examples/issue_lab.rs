@@ -3,19 +3,20 @@
 //! Usage: cargo run -p trust-pki-core --features lab-software --example issue_lab -- /tmp/lab-public-certs
 
 use std::{env, fs, path::PathBuf};
-use trust_pki_core::{
-    csr::verify_pkcs10_p256,
-    lab_ca::EphemeralLabCa,
-    serial::SerialNumber,
-};
+use trust_pki_core::{csr::verify_pkcs10_p256, lab_ca::EphemeralLabCa, serial::SerialNumber};
 use trust_pki_crypto::SignatureAlgorithm;
-use trust_pki_policy::{
-    AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy,
+use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
+use x509_cert::{
+    der::{pem::LineEnding, DecodePem, Encode, EncodePem},
+    request::CertReq,
 };
-use x509_cert::{der::{DecodePem, Encode, EncodePem, pem::LineEnding}, request::CertReq};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let output = PathBuf::from(env::args().nth(1).unwrap_or_else(|| "lab-public-certs".into()));
+    let output = PathBuf::from(
+        env::args()
+            .nth(1)
+            .unwrap_or_else(|| "lab-public-certs".into()),
+    );
     fs::create_dir_all(&output)?;
 
     let csr = CertReq::from_pem(include_str!("../tests/fixtures/ecdsa-p256-request.pem"))?;
@@ -54,7 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .issue_leaf(&verified, &decision, &serial)
         .map_err(|e| format!("lab issuance rejected: {e:?}"))?;
 
-    fs::write(output.join("root.pem"), ca.root_certificate().to_pem(LineEnding::LF)?)?;
+    fs::write(
+        output.join("root.pem"),
+        ca.root_certificate().to_pem(LineEnding::LF)?,
+    )?;
     fs::write(output.join("leaf.pem"), leaf.to_pem(LineEnding::LF)?)?;
 
     println!("Generated PUBLIC lab certificates in {}", output.display());
