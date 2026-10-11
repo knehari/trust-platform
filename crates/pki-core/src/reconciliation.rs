@@ -133,11 +133,7 @@ mod tests {
 
     struct FakeProvider(ProviderResponse);
     impl ReadOnlySigningProvider for FakeProvider {
-        fn lookup(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<ProviderResponse, ReconciliationError> {
+        fn lookup(&self, _: &str, _: &str) -> Result<ProviderResponse, ReconciliationError> {
             Ok(self.0.clone())
         }
     }
