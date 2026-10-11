@@ -39,6 +39,8 @@ impl EvidenceKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceClaim {
     pub issuer_id: String,
+    pub request_id: String,
+    pub policy_revision: String,
     pub operation_ref: String,
     pub signer_key_ref: String,
     pub collector_key_id: String,
@@ -89,6 +91,8 @@ impl EvidenceClaim {
         message.extend_from_slice(&self.observed_at_unix_seconds.to_be_bytes());
         for field in [
             &self.issuer_id,
+            &self.request_id,
+            &self.policy_revision,
             &self.operation_ref,
             &self.signer_key_ref,
             &self.collector_key_id,
@@ -169,6 +173,8 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
 
     let actual_tbs: [u8; 32] = Sha256::digest(plan.tbs_der).into();
     if plan.ca_id != claim.issuer_id
+        || plan.request_id != claim.request_id
+        || plan.policy_revision != claim.policy_revision
         || plan.operation_ref != claim.operation_ref
         || plan.signer_key_ref != claim.signer_key_ref
         || claim.tbs_sha256 != actual_tbs
