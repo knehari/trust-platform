@@ -4,9 +4,7 @@
 
 use std::{env, fs, path::PathBuf};
 use trust_pki_core::{
-    csr::verify_pkcs10_p256,
-    lab_ca::EphemeralLabCa,
-    serial::SerialNumber,
+    csr::verify_pkcs10_p256, lab_ca::EphemeralLabCa, serial::SerialNumber,
     x509_extensions::ApprovedPolicyBinding,
 };
 use trust_pki_crypto::SignatureAlgorithm;
