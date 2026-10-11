@@ -23,6 +23,17 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: CP/CPS generation stays draft only
+        run: |
+          cargo run --locked -p trust-pki-core --example draft_cp_cps -- "$RUNNER_TEMP/governance-lab"
+          test -s "$RUNNER_TEMP/governance-lab/certificate-policy.DRAFT.md"
+          test -s "$RUNNER_TEMP/governance-lab/certification-practice-statement.DRAFT.md"
+          grep -q 'DO NOT PUBLISH' "$RUNNER_TEMP/governance-lab/certificate-policy.DRAFT.md"
+          grep -q 'PENDING HUMAN VALIDATION' "$RUNNER_TEMP/governance-lab/certification-practice-statement.DRAFT.md"
+          if find "$RUNNER_TEMP/governance-lab" -type f ! -name '*.DRAFT.md' | grep -q .; then
+            echo 'Unexpected published-looking CP/CPS file' >&2
+            exit 1
+          fi
       - name: Native CA to OpenSSL interop (lab only)
         run: |
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
