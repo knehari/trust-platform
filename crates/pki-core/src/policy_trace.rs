@@ -32,15 +32,33 @@ pub struct VerifiedDraftCertificateTrace {
     source_sha256: [u8; 32],
 }
 impl VerifiedDraftCertificateTrace {
-    pub fn ca_id(&self) -> &str { &self.ca_id }
-    pub fn request_id(&self) -> &str { &self.request_id }
-    pub fn policy_revision(&self) -> &str { &self.policy_revision }
-    pub fn policy_oid(&self) -> &str { &self.policy_oid }
-    pub fn certificate_sha256(&self) -> &[u8; 32] { &self.certificate_sha256 }
-    pub fn issuer_ca_sha256(&self) -> &[u8; 32] { &self.issuer_ca_sha256 }
-    pub fn cp_sha256(&self) -> &[u8; 32] { &self.cp_sha256 }
-    pub fn cps_sha256(&self) -> &[u8; 32] { &self.cps_sha256 }
-    pub fn source_sha256(&self) -> &[u8; 32] { &self.source_sha256 }
+    pub fn ca_id(&self) -> &str {
+        &self.ca_id
+    }
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    pub fn policy_revision(&self) -> &str {
+        &self.policy_revision
+    }
+    pub fn policy_oid(&self) -> &str {
+        &self.policy_oid
+    }
+    pub fn certificate_sha256(&self) -> &[u8; 32] {
+        &self.certificate_sha256
+    }
+    pub fn issuer_ca_sha256(&self) -> &[u8; 32] {
+        &self.issuer_ca_sha256
+    }
+    pub fn cp_sha256(&self) -> &[u8; 32] {
+        &self.cp_sha256
+    }
+    pub fn cps_sha256(&self) -> &[u8; 32] {
+        &self.cps_sha256
+    }
+    pub fn source_sha256(&self) -> &[u8; 32] {
+        &self.source_sha256
+    }
 }
 
 /// A successfully verified link is still *only* a DRAFT reference.
@@ -57,7 +75,8 @@ pub fn verify_certificate_draft_trace(
     certificate_policy: &ApprovedPolicyBinding,
     expected_leaf_dns: &str,
 ) -> Result<VerifiedDraftCertificateTrace, TraceError> {
-    if plan.ca_id.is_empty() || plan.request_id.is_empty()
+    if plan.ca_id.is_empty()
+        || plan.request_id.is_empty()
         || plan.policy_revision != declared_policy.policy.policy_version
         || certificate_policy.oid().to_string() != declared_policy.policy_oid
         || declared_policy.repository.is_empty()
@@ -74,12 +93,10 @@ pub fn verify_certificate_draft_trace(
     }
     let ca = Certificate::from_der(observed_ca.certificate_der())
         .map_err(|_| TraceError::CertificateInvalid)?;
-    let verifier = LabX509Verifier::new(
-        ca,
-        certificate_policy.clone(),
-        expected_leaf_dns.to_owned(),
-    );
-    verifier.verify(plan, leaf_certificate_der)
+    let verifier =
+        LabX509Verifier::new(ca, certificate_policy.clone(), expected_leaf_dns.to_owned());
+    verifier
+        .verify(plan, leaf_certificate_der)
         .map_err(|_| TraceError::CertificateInvalid)?;
 
     Ok(VerifiedDraftCertificateTrace {
