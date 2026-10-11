@@ -189,7 +189,7 @@ fn document(
             "Observed CA isolation, access policy and mutual TLS tests.",
         ));
     }
-    let mut markdown = format!("# {label} â DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
+    let mut markdown = format!("# {label} Ã¢ÂÂ DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
         input.edition, digest_hex(source_hash));
     for s in &sections {
         markdown.push_str(&format!(
