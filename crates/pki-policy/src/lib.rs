@@ -16,7 +16,7 @@ pub struct IssuanceRequest<'a> {
     pub subject_common_name: &'a str,
     pub dns_sans: &'a [&'a str],
     pub validity_days: u16,
-    pub signature_algorithm: SignatureAlgorithm,
+    pub ca_signature_algorithm: SignatureAlgorithm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +68,7 @@ impl Authorization {
         self.validity_days
     }
 
-    pub fn algorithm(&self) -> SignatureAlgorithm {
+    pub fn ca_signature_algorithm(&self) -> SignatureAlgorithm {
         self.algorithm
     }
 }
@@ -101,7 +101,7 @@ pub struct StaticPolicy {
     pub policy_version: String,
     pub allowed_actors: Vec<String>,
     pub allowed_dns_zones: Vec<String>,
-    pub allowed_algorithms: Vec<SignatureAlgorithm>,
+    pub allowed_ca_ca_signature_algorithms: Vec<SignatureAlgorithm>,
     pub max_validity_days: u16,
     pub max_dns_sans: usize,
 }
@@ -116,7 +116,7 @@ impl PolicyEngine for StaticPolicy {
             || self.policy_version.trim().is_empty()
             || self.allowed_actors.is_empty()
             || self.allowed_dns_zones.is_empty()
-            || self.allowed_algorithms.is_empty()
+            || self.allowed_ca_ca_signature_algorithms.is_empty()
             || self.max_validity_days == 0
             || self.max_dns_sans == 0
             || self
@@ -145,8 +145,8 @@ impl PolicyEngine for StaticPolicy {
         }
 
         if !self
-            .allowed_algorithms
-            .contains(&request.signature_algorithm)
+            .allowed_ca_ca_signature_algorithms
+            .contains(&request.ca_signature_algorithm)
         {
             return Err(Denial::AlgorithmNotAllowed);
         }
@@ -186,7 +186,7 @@ impl PolicyEngine for StaticPolicy {
                 .map(|name| (*name).to_owned())
                 .collect(),
             validity_days: request.validity_days,
-            algorithm: request.signature_algorithm,
+            algorithm: request.ca_signature_algorithm,
         })
     }
 }
@@ -204,7 +204,8 @@ pub fn valid_dns_name(name: &str) -> bool {
     }
 
     labels.iter().all(|label| {
-        !label.is_empty()
+        !label.starts_with("xn--")
+            && !label.is_empty()
             && label.len() <= 63
             && label.as_bytes()[0].is_ascii_alphanumeric()
             && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
@@ -233,7 +234,7 @@ mod tests {
             policy_version: "v1".to_owned(),
             allowed_actors: vec!["build-agent".to_owned()],
             allowed_dns_zones: vec!["lab.invalid".to_owned()],
-            allowed_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+            allowed_ca_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
             max_validity_days: 30,
             max_dns_sans: 4,
         }
@@ -245,7 +246,7 @@ mod tests {
             subject_common_name: "api.lab.invalid",
             dns_sans: sans,
             validity_days: 15,
-            signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+            ca_signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
         }
     }
 
@@ -304,6 +305,7 @@ mod tests {
         assert!(!valid_dns_name("api.LAB.invalid"));
         assert!(!valid_dns_name("lab.invalid."));
         assert!(!valid_dns_name("bad..lab.invalid"));
+        assert!(!valid_dns_name("xn--demo.lab.invalid"));
         assert!(valid_dns_name("node-1.lab.invalid"));
     }
 
@@ -314,7 +316,7 @@ mod tests {
             subject_id: "build-agent",
         };
         let mut input = request(&sans);
-        input.signature_algorithm = SignatureAlgorithm::MlDsa65;
+        input.ca_signature_algorithm = SignatureAlgorithm::MlDsa65;
         assert_eq!(
             policy().authorize(&actor, &input),
             Err(Denial::AlgorithmNotAllowed)
