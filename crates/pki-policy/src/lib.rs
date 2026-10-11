@@ -101,7 +101,7 @@ pub struct StaticPolicy {
     pub policy_version: String,
     pub allowed_actors: Vec<String>,
     pub allowed_dns_zones: Vec<String>,
-    pub allowed_ca_ca_signature_algorithms: Vec<SignatureAlgorithm>,
+    pub allowed_ca_signature_algorithms: Vec<SignatureAlgorithm>,
     pub max_validity_days: u16,
     pub max_dns_sans: usize,
 }
@@ -116,7 +116,7 @@ impl PolicyEngine for StaticPolicy {
             || self.policy_version.trim().is_empty()
             || self.allowed_actors.is_empty()
             || self.allowed_dns_zones.is_empty()
-            || self.allowed_ca_ca_signature_algorithms.is_empty()
+            || self.allowed_ca_signature_algorithms.is_empty()
             || self.max_validity_days == 0
             || self.max_dns_sans == 0
             || self
@@ -145,7 +145,7 @@ impl PolicyEngine for StaticPolicy {
         }
 
         if !self
-            .allowed_ca_ca_signature_algorithms
+            .allowed_ca_signature_algorithms
             .contains(&request.ca_signature_algorithm)
         {
             return Err(Denial::AlgorithmNotAllowed);
@@ -234,7 +234,7 @@ mod tests {
             policy_version: "v1".to_owned(),
             allowed_actors: vec!["build-agent".to_owned()],
             allowed_dns_zones: vec!["lab.invalid".to_owned()],
-            allowed_ca_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+            allowed_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
             max_validity_days: 30,
             max_dns_sans: 4,
         }
