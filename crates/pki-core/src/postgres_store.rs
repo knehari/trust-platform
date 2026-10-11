@@ -59,7 +59,13 @@ impl PgIssuanceStore {
         let row = self.client.query_one(
             "SELECT request_id::text, state, replay
              FROM create_issuance_request($1::uuid,$2,$3,$4,$5)",
-            &[&ca_id, &idempotency_key, &&csr_sha256[..], &requester_id, &policy_version],
+            &[
+                &ca_id,
+                &idempotency_key,
+                &&csr_sha256[..],
+                &requester_id,
+                &policy_version,
+            ],
         )?;
         Ok(PersistedRequest {
             request_id: row.get(0),
@@ -116,8 +122,13 @@ impl PgIssuanceStore {
             "SELECT intent_id::text, operation_ref, outcome, replay
              FROM create_signing_intent($1::uuid,$2::uuid,$3,$4,$5,$6,$7)",
             &[
-                &ca_id, &request_id, &actor_id, &signer_key_ref,
-                &&tbs_sha256[..], &policy_revision, &operation_ref,
+                &ca_id,
+                &request_id,
+                &actor_id,
+                &signer_key_ref,
+                &&tbs_sha256[..],
+                &policy_revision,
+                &operation_ref,
             ],
         )?;
         let replay: bool = row.get(3);
