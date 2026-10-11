@@ -5,8 +5,8 @@
 //! validate signed certificates, own keys, or invoke an HSM.
 //! It may only be used by a future, reviewed least-privilege service boundary.
 
-use postgres::{Client, Error as PgError, NoTls};
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
+use postgres::{Client, Error as PgError, NoTls};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -269,7 +269,9 @@ impl PgIssuanceStore {
         evidence: &VerifiedCollectorEvidence,
     ) -> Result<String, StoreError> {
         let claim = evidence.claim();
-        let observed: i64 = claim.observed_at_unix_seconds.try_into()
+        let observed: i64 = claim
+            .observed_at_unix_seconds
+            .try_into()
             .map_err(|_| StoreError::InconsistentResult)?;
         let kind = match claim.kind {
             EvidenceKind::SigningEventObserved => "SIGNING_EVENT",
