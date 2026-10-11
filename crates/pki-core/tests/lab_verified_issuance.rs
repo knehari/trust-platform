@@ -194,14 +194,16 @@ fn lab_verifier_rejects_fake_signature_and_wrong_domain() {
 fn read_only_reconciliation_checks_real_x509_and_immutable_intent() {
     use sha2::{Digest, Sha256};
     use trust_pki_core::reconciliation::{
-        inspect_provider, ProviderResponse, ReadOnlySigningProvider,
-        ReconciliationError, ReconciliationFinding,
+        inspect_provider, ProviderResponse, ReadOnlySigningProvider, ReconciliationError,
+        ReconciliationFinding,
     };
 
     struct LabReadOnlyProvider(ProviderResponse);
     impl ReadOnlySigningProvider for LabReadOnlyProvider {
         fn lookup(
-            &self, _operation: &str, _key_ref: &str,
+            &self,
+            _operation: &str,
+            _key_ref: &str,
         ) -> Result<ProviderResponse, ReconciliationError> {
             Ok(self.0.clone())
         }
@@ -210,11 +212,17 @@ fn read_only_reconciliation_checks_real_x509_and_immutable_intent() {
     let (csr, authorization, binding) = context();
     let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
     let serial = SerialNumber::from_positive_der_content(&[0x43]).unwrap();
-    let tbs = ca.prepare_leaf_tbs(&csr, &authorization, &serial, &binding).unwrap();
+    let tbs = ca
+        .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
+        .unwrap();
     let tbs_der = tbs.to_der().unwrap();
     let signer_key = ca.lab_signer_key_ref().to_owned();
-    let signature = ca.sign_once(&signer_key, "read-only-lab-op", &tbs_der).unwrap();
-    let certificate_der = LabCertificateAssembler.assemble(&tbs_der, &signature).unwrap();
+    let signature = ca
+        .sign_once(&signer_key, "read-only-lab-op", &tbs_der)
+        .unwrap();
+    let certificate_der = LabCertificateAssembler
+        .assemble(&tbs_der, &signature)
+        .unwrap();
     let plan = IssuancePlan {
         ca_id: "lab-ca",
         request_id: "lab-request",
@@ -226,7 +234,9 @@ fn read_only_reconciliation_checks_real_x509_and_immutable_intent() {
         tbs_der: &tbs_der,
     };
     let verifier = LabX509Verifier::new(
-        ca.root_certificate().clone(), binding, "api.lab.invalid".into(),
+        ca.root_certificate().clone(),
+        binding,
+        "api.lab.invalid".into(),
     );
     let hash: [u8; 32] = Sha256::digest(&tbs_der).into();
     let provider = LabReadOnlyProvider(ProviderResponse::SignedCertificate {
@@ -246,7 +256,7 @@ fn read_only_reconciliation_checks_real_x509_and_immutable_intent() {
 
     let fake = LabReadOnlyProvider(ProviderResponse::SignedCertificate {
         operation_ref: "read-only-lab-op".into(),
-        signer_key_ref: signer_key,
+        signer_key_ref: signer_key.clone(),
         certificate_der: vec![1, 2, 3],
         evidence_sha256: [0x19; 32],
     });
