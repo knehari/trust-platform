@@ -162,3 +162,61 @@ impl PgIssuanceStore {
         Ok(row.get(0))
     }
 }
+
+/// Lab binding of the generic orchestrator to the persistent SQL functions.
+/// This does not make the caller a trusted service and MUST NOT be exposed
+/// to a network API before authentication, authorization and cert validation.
+impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
+    fn record_intent(
+        &mut self,
+        plan: &crate::orchestrator::IssuancePlan<'_>,
+        tbs_sha256: &[u8; 32],
+    ) -> Result<(), crate::orchestrator::IssueError> {
+        let input = SigningIntentInput {
+            ca_id: plan.ca_id,
+            request_id: plan.request_id,
+            actor_id: plan.actor_id,
+            signer_key_ref: plan.signer_key_ref,
+            tbs_sha256,
+            policy_revision: plan.policy_revision,
+            operation_ref: plan.operation_ref,
+        };
+        self.record_signing_intent(&input)
+            .map(|_| ())
+            .map_err(|_| crate::orchestrator::IssueError::ReplayedOrAmbiguousIntent)
+    }
+
+    fn mark_uncertain(
+        &mut self,
+        plan: &crate::orchestrator::IssuancePlan<'_>,
+    ) -> Result<(), crate::orchestrator::IssueError> {
+        self.mark_uncertain(plan.ca_id, plan.request_id, plan.actor_id)
+            .map(|_| ())
+            .map_err(|_| crate::orchestrator::IssueError::JournalFailure)
+    }
+
+    fn persist_verified(
+        &mut self,
+        plan: &crate::orchestrator::IssuancePlan<'_>,
+        tbs_sha256: &[u8; 32],
+        certificate_sha256: &[u8; 32],
+        certificate_der: &[u8],
+    ) -> Result<(), crate::orchestrator::IssueError> {
+        let result = self.client.query_one(
+            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7)",
+            &[
+                &plan.ca_id,
+                &plan.request_id,
+                &plan.actor_id,
+                &plan.serial_der,
+                &&tbs_sha256[..],
+                &&certificate_sha256[..],
+                &certificate_der,
+            ],
+        );
+        match result {
+            Ok(row) if row.get::<usize, String>(0) == "SIGNED" => Ok(()),
+            _ => Err(crate::orchestrator::IssueError::PersistenceFailure),
+        }
+    }
+}
