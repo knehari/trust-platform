@@ -176,7 +176,9 @@ END $fn$;
 -- TBS, serial, signature, issuer pin, policy OID and content before this call.
 -- PostgreSQL alone cannot parse arbitrary X.509 and is not a security boundary.
 CREATE FUNCTION trace_issued_certificate_to_draft(
-    p_ca UUID,p_request UUID,p_actor TEXT,p_draft UUID,p_cert_sha256 BYTEA
+    p_ca UUID,p_request UUID,p_actor TEXT,p_draft UUID,p_cert_sha256 BYTEA,
+    p_ca_sha256 BYTEA,p_source_sha256 BYTEA,p_cp_sha256 BYTEA,
+    p_cps_sha256 BYTEA,p_policy_oid TEXT
 ) RETURNS TEXT
 LANGUAGE plpgsql AS $fn$
 DECLARE
@@ -184,9 +186,19 @@ DECLARE
     v_policy TEXT;
     v_actual_cert_hash BYTEA;
     v_draft_policy TEXT;
+    v_observed_ca_sha256 BYTEA;
+    v_source_sha256 BYTEA;
+    v_cp_sha256 BYTEA;
+    v_cps_sha256 BYTEA;
+    v_policy_oid TEXT;
 BEGIN
     IF p_actor IS NULL OR length(p_actor) NOT BETWEEN 1 AND 256
        OR p_cert_sha256 IS NULL OR octet_length(p_cert_sha256)<>32
+       OR p_ca_sha256 IS NULL OR octet_length(p_ca_sha256)<>32
+       OR p_source_sha256 IS NULL OR octet_length(p_source_sha256)<>32
+       OR p_cp_sha256 IS NULL OR octet_length(p_cp_sha256)<>32
+       OR p_cps_sha256 IS NULL OR octet_length(p_cps_sha256)<>32
+       OR p_policy_oid IS NULL OR length(p_policy_oid) NOT BETWEEN 3 AND 128
     THEN RAISE EXCEPTION 'invalid draft trace request' USING ERRCODE='22023'; END IF;
 
     SELECT cr.state,cr.policy_version INTO STRICT v_state,v_policy
@@ -195,13 +207,22 @@ BEGIN
     SELECT cert.fingerprint_sha256 INTO STRICT v_actual_cert_hash
     FROM certificate cert
     WHERE cert.ca_id=p_ca AND cert.request_id=p_request;
-    SELECT p.policy_revision INTO STRICT v_draft_policy
+    SELECT p.policy_revision, o.ca_certificate_sha256,
+           p.source_sha256,p.cp_sha256,p.cps_sha256,p.policy_oid
+    INTO STRICT v_draft_policy,v_observed_ca_sha256,
+        v_source_sha256,v_cp_sha256,v_cps_sha256,v_policy_oid
     FROM cp_cps_draft_snapshot p
+    JOIN ca_public_observation o ON o.ca_id=p.ca_id AND o.observation_id=p.observation_id
     WHERE p.ca_id=p_ca AND p.draft_id=p_draft;
 
     IF v_state NOT IN ('SIGNED','PUBLISHED')
        OR v_actual_cert_hash<>p_cert_sha256
        OR v_policy<>v_draft_policy
+       OR v_observed_ca_sha256<>p_ca_sha256
+       OR v_source_sha256<>p_source_sha256
+       OR v_cp_sha256<>p_cp_sha256
+       OR v_cps_sha256<>p_cps_sha256
+       OR v_policy_oid<>p_policy_oid
        OR NOT EXISTS(
            SELECT 1 FROM signing_intent si
            WHERE si.ca_id=p_ca AND si.request_id=p_request
@@ -228,6 +249,6 @@ REVOKE ALL ON FUNCTION register_cp_cps_draft(
     UUID,TEXT,UUID,TEXT,TEXT,TEXT,TEXT,BYTEA,TEXT,TEXT,BYTEA,BYTEA
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION trace_issued_certificate_to_draft(
-    UUID,UUID,TEXT,UUID,BYTEA
+    UUID,UUID,TEXT,UUID,BYTEA,BYTEA,BYTEA,BYTEA,BYTEA,TEXT
 ) FROM PUBLIC;
 COMMIT;
