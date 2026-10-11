@@ -215,24 +215,44 @@ fn review_workflow_requires_two_actors_and_never_resumes_signing() {
     let request = store
         .create_request(ca, "rust-v09-review", &[0x51; 32], actor, "v1")
         .unwrap();
-    store.transition(ca, &request.request_id, "RECEIVED", "CSR_VALIDATED", actor)
+    store
+        .transition(ca, &request.request_id, "RECEIVED", "CSR_VALIDATED", actor)
         .unwrap();
-    store.transition(ca, &request.request_id, "CSR_VALIDATED", "AUTHORIZED", actor)
+    store
+        .transition(
+            ca,
+            &request.request_id,
+            "CSR_VALIDATED",
+            "AUTHORIZED",
+            actor,
+        )
         .unwrap();
-    store.reserve_serial(ca, &request.request_id, actor).unwrap();
-    store.record_signing_intent(&SigningIntentInput {
-        ca_id: ca,
-        request_id: &request.request_id,
-        actor_id: actor,
-        signer_key_ref: "lab-key-v09",
-        tbs_sha256: &[0x33; 32],
-        policy_revision: "v1",
-        operation_ref: "lab-op-v09",
-    }).unwrap();
-    store.mark_uncertain(ca, &request.request_id, actor).unwrap();
-    let observation_id = store.record_reconciliation_observation(
-        ca, &request.request_id, actor, "PROVIDER_RESULT_OBSERVED", &[0x44; 32],
-    ).unwrap();
+    store
+        .reserve_serial(ca, &request.request_id, actor)
+        .unwrap();
+    store
+        .record_signing_intent(&SigningIntentInput {
+            ca_id: ca,
+            request_id: &request.request_id,
+            actor_id: actor,
+            signer_key_ref: "lab-key-v09",
+            tbs_sha256: &[0x33; 32],
+            policy_revision: "v1",
+            operation_ref: "lab-op-v09",
+        })
+        .unwrap();
+    store
+        .mark_uncertain(ca, &request.request_id, actor)
+        .unwrap();
+    let observation_id = store
+        .record_reconciliation_observation(
+            ca,
+            &request.request_id,
+            actor,
+            "PROVIDER_RESULT_OBSERVED",
+            &[0x44; 32],
+        )
+        .unwrap();
 
     let input = ReconciliationReviewInput {
         ca_id: ca,
@@ -243,22 +263,42 @@ fn review_workflow_requires_two_actors_and_never_resumes_signing() {
         tbs_sha256: &[0x33; 32],
         certificate_sha256: &[0x55; 32],
     };
-    assert_eq!(store.propose_reconciliation_review(&input).unwrap(), "PROPOSED");
-    assert!(store.review_reconciliation_proposal(
-        ca, &request.request_id, actor, &[0x55; 32], &[0x44; 32]
-    ).is_err());
-    assert!(store.review_reconciliation_proposal(
-        ca, &request.request_id, "checker", &[0x66; 32], &[0x44; 32]
-    ).is_err());
-    assert_eq!(store.review_reconciliation_proposal(
-        ca, &request.request_id, "independent-checker", &[0x55; 32], &[0x44; 32]
-    ).unwrap(), "REVIEWED_FOR_MANUAL_DISPOSITION");
+    assert_eq!(
+        store.propose_reconciliation_review(&input).unwrap(),
+        "PROPOSED"
+    );
+    assert!(store
+        .review_reconciliation_proposal(ca, &request.request_id, actor, &[0x55; 32], &[0x44; 32])
+        .is_err());
+    assert!(store
+        .review_reconciliation_proposal(
+            ca,
+            &request.request_id,
+            "checker",
+            &[0x66; 32],
+            &[0x44; 32]
+        )
+        .is_err());
+    assert_eq!(
+        store
+            .review_reconciliation_proposal(
+                ca,
+                &request.request_id,
+                "independent-checker",
+                &[0x55; 32],
+                &[0x44; 32]
+            )
+            .unwrap(),
+        "REVIEWED_FOR_MANUAL_DISPOSITION"
+    );
     let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let row = other.query_one(
-        "SELECT state,(SELECT count(*) FROM certificate WHERE request_id=$1::text::uuid)
+    let row = other
+        .query_one(
+            "SELECT state,(SELECT count(*) FROM certificate WHERE request_id=$1::text::uuid)
          FROM certificate_request WHERE request_id=$1::text::uuid",
-        &[&request.request_id],
-    ).unwrap();
+            &[&request.request_id],
+        )
+        .unwrap();
     let state: String = row.get(0);
     let certificates: i64 = row.get(1);
     assert_eq!(state, "RECONCILIATION_REQUIRED");
