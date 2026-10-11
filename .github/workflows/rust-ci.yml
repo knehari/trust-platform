@@ -17,18 +17,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Temporary dependency resolution and rustfmt bootstrap
-        run: |
-          cargo generate-lockfile
-          printf 'CI_LOCK64='
-          base64 -w0 Cargo.lock
-          echo
-          cargo fmt --all
-          for f in crates/pki-core/src/postgres_store.rs crates/pki-core/tests/postgres_store.rs crates/pki-core/src/lib.rs; do
-            printf 'CI_FORMAT:%s:' "$f"
-            base64 -w0 "$f"
-            echo
-          done
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
