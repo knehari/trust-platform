@@ -1,4 +1,5 @@
 name: Rust CI
+
 on:
   push:
     branches: [main]
@@ -10,7 +11,7 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -18,9 +19,15 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all -- --check
-      - name: Generate lockfile for dependency-free bootstrap
+      - name: Generate initial lockfile
         run: cargo generate-lockfile
       - name: Build and test
         run: cargo test --workspace --all-targets --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Upload generated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          retention-days: 3
