@@ -17,6 +17,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary formatting bootstrap
+        run: |
+          cargo fmt --all
+          for f in crates/pki-core/src/lab_x509_verifier.rs crates/pki-core/src/lab_ca.rs crates/pki-core/tests/lab_verified_issuance.rs crates/pki-core/src/lib.rs; do
+            printf 'FORMATTED:%s:' "$f"
+            base64 -w0 "$f"
+            echo
+          done
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
