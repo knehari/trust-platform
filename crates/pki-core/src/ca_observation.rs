@@ -31,9 +31,15 @@ pub struct ObservedCaPublicCertificate {
     spki_sha256: [u8; 32],
 }
 impl ObservedCaPublicCertificate {
-    pub fn certificate_der(&self) -> &[u8] { &self.certificate_der }
-    pub fn certificate_sha256(&self) -> &[u8; 32] { &self.certificate_sha256 }
-    pub fn spki_sha256(&self) -> &[u8; 32] { &self.spki_sha256 }
+    pub fn certificate_der(&self) -> &[u8] {
+        &self.certificate_der
+    }
+    pub fn certificate_sha256(&self) -> &[u8; 32] {
+        &self.certificate_sha256
+    }
+    pub fn spki_sha256(&self) -> &[u8; 32] {
+        &self.spki_sha256
+    }
 }
 
 /// expected_fingerprint MUST come from trusted independent configuration.
@@ -54,9 +60,11 @@ pub fn observe_pinned_lab_ca(
     if &digest != expected_fingerprint {
         return Err(ObservationError::FingerprintMismatch);
     }
-    let cert = Certificate::from_der(certificate_der)
-        .map_err(|_| ObservationError::InvalidCertificate)?;
-    if cert.to_der().map_err(|_| ObservationError::InvalidCertificate)?
+    let cert =
+        Certificate::from_der(certificate_der).map_err(|_| ObservationError::InvalidCertificate)?;
+    if cert
+        .to_der()
+        .map_err(|_| ObservationError::InvalidCertificate)?
         != certificate_der
     {
         return Err(ObservationError::InvalidCertificate);
@@ -66,19 +74,33 @@ pub fn observe_pinned_lab_ca(
         || cert.signature_algorithm != cert.tbs_certificate.signature
         || cert.signature_algorithm.oid.to_string() != ECDSA_SHA256_OID
         || cert.signature_algorithm.parameters.is_some()
-        || cert.tbs_certificate.subject_public_key_info.algorithm.oid.to_string()
+        || cert
+            .tbs_certificate
+            .subject_public_key_info
+            .algorithm
+            .oid
+            .to_string()
             != EC_PUBLIC_KEY_OID
     {
         return Err(ObservationError::InvalidCaConstraints);
     }
-    let extensions = cert.tbs_certificate.extensions.as_ref()
+    let extensions = cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
         .ok_or(ObservationError::InvalidCaConstraints)?;
-    let constraints: Vec<_> = extensions.iter()
-        .filter(|x| x.extn_id.to_string() == BASIC_CONSTRAINTS_OID).collect();
-    let usages: Vec<_> = extensions.iter()
-        .filter(|x| x.extn_id.to_string() == KEY_USAGE_OID).collect();
-    if constraints.len() != 1 || usages.len() != 1
-        || !constraints[0].critical || !usages[0].critical
+    let constraints: Vec<_> = extensions
+        .iter()
+        .filter(|x| x.extn_id.to_string() == BASIC_CONSTRAINTS_OID)
+        .collect();
+    let usages: Vec<_> = extensions
+        .iter()
+        .filter(|x| x.extn_id.to_string() == KEY_USAGE_OID)
+        .collect();
+    if constraints.len() != 1
+        || usages.len() != 1
+        || !constraints[0].critical
+        || !usages[0].critical
     {
         return Err(ObservationError::InvalidCaConstraints);
     }
@@ -86,21 +108,30 @@ pub fn observe_pinned_lab_ca(
         .map_err(|_| ObservationError::InvalidCaConstraints)?;
     let ku = KeyUsage::from_der(usages[0].extn_value.as_bytes())
         .map_err(|_| ObservationError::InvalidCaConstraints)?;
-    if !bc.ca || bc.path_len_constraint != Some(0)
+    if !bc.ca
+        || bc.path_len_constraint != Some(0)
         || ku != KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign)
     {
         return Err(ObservationError::InvalidCaConstraints);
     }
     let spki = &cert.tbs_certificate.subject_public_key_info;
-    let sec1 = spki.subject_public_key.as_bytes()
+    let sec1 = spki
+        .subject_public_key
+        .as_bytes()
         .ok_or(ObservationError::InvalidCaConstraints)?;
-    let tbs_der = cert.tbs_certificate.to_der()
+    let tbs_der = cert
+        .tbs_certificate
+        .to_der()
         .map_err(|_| ObservationError::InvalidCertificate)?;
-    let signature = cert.signature.as_bytes()
+    let signature = cert
+        .signature
+        .as_bytes()
         .ok_or(ObservationError::InvalidSignature)?;
     verify_p256_ecdsa_sha256(sec1, &tbs_der, signature)
         .map_err(|_| ObservationError::InvalidSignature)?;
-    let spki_der = spki.to_der().map_err(|_| ObservationError::InvalidCertificate)?;
+    let spki_der = spki
+        .to_der()
+        .map_err(|_| ObservationError::InvalidCertificate)?;
     Ok(ObservedCaPublicCertificate {
         certificate_der: certificate_der.to_vec(),
         certificate_sha256: digest,
