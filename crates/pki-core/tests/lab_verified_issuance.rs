@@ -118,6 +118,21 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
     let parsed = Certificate::from_der(&result).unwrap();
     assert_eq!(parsed.tbs_certificate.serial_number.as_bytes(), serial_data);
 
+    // Separate connection confirms that the signed DER is actually persistent,
+    // not merely returned from the signing function.
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let row = reader.query_one(
+        "SELECT c.certificate_der, si.outcome
+         FROM certificate c JOIN signing_intent si
+           ON si.ca_id=c.ca_id AND si.request_id=c.request_id
+         WHERE c.request_id=$1::text::uuid",
+        &[&request.request_id],
+    ).unwrap();
+    let persisted: Vec<u8> = row.get(0);
+    let outcome: String = row.get(1);
+    assert_eq!(persisted, result);
+    assert_eq!(outcome, "CERTIFICATE_STORED");
+
     let replay = issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan);
     assert_eq!(replay, Err(IssueError::ReplayedOrAmbiguousIntent));
 }
@@ -154,23 +169,18 @@ fn lab_verifier_rejects_fake_signature_and_wrong_domain() {
         Err(IssueError::VerificationFailure)
     );
 
-    let leaf = ca
-        .issue_leaf(
-            &csr,
-            &authorization,
-            &SerialNumber::from_positive_der_content(&[0x23]).unwrap(),
-            &binding,
-        )
-        .unwrap();
-    let other_der = leaf.to_der().unwrap();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let signature = ca.sign_once(&key_ref, "single", &tbs_der).unwrap();
+    let authentic_der = LabCertificateAssembler.assemble(&tbs_der, &signature).unwrap();
+    assert_eq!(verifier.verify(&plan, &authentic_der), Ok(()));
+
     let wrong_domain = LabX509Verifier::new(
         ca.root_certificate().clone(),
         binding,
         "other.lab.invalid".into(),
     );
-    // Different TBS must fail even if it carries a valid issuer signature.
     assert_eq!(
-        wrong_domain.verify(&plan, &other_der),
+        wrong_domain.verify(&plan, &authentic_der),
         Err(IssueError::VerificationFailure)
     );
 }
