@@ -29,7 +29,8 @@ CREATE TABLE certificate_request (
     ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (ca_id, idempotency_key)
+    UNIQUE (ca_id, idempotency_key),
+    UNIQUE (ca_id, request_id)
 );
 
 CREATE TABLE serial_reservation (
@@ -37,23 +38,33 @@ CREATE TABLE serial_reservation (
     serial_der_content BYTEA NOT NULL CHECK (
         octet_length(serial_der_content) BETWEEN 1 AND 20
         AND get_byte(serial_der_content, 0) < 128
+        AND serial_der_content <> decode(repeat('00', octet_length(serial_der_content)), 'hex')
+        AND (
+            octet_length(serial_der_content) = 1
+            OR get_byte(serial_der_content, 0) <> 0
+            OR get_byte(serial_der_content, 1) >= 128
+        )
     ),
-    request_id UUID NOT NULL UNIQUE REFERENCES certificate_request (request_id),
+    request_id UUID NOT NULL UNIQUE,
     reserved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (ca_id, serial_der_content)
+    PRIMARY KEY (ca_id, serial_der_content),
+    FOREIGN KEY (ca_id, request_id)
+        REFERENCES certificate_request (ca_id, request_id)
 );
 
 CREATE TABLE certificate (
     ca_id UUID NOT NULL,
     serial_der_content BYTEA NOT NULL,
-    request_id UUID NOT NULL UNIQUE REFERENCES certificate_request (request_id),
+    request_id UUID NOT NULL UNIQUE,
     fingerprint_sha256 BYTEA NOT NULL CHECK (octet_length(fingerprint_sha256) = 32),
     certificate_der BYTEA NOT NULL CHECK (octet_length(certificate_der) > 0),
     signed_at TIMESTAMPTZ NOT NULL,
     published_at TIMESTAMPTZ,
     PRIMARY KEY (ca_id, serial_der_content),
     FOREIGN KEY (ca_id, serial_der_content)
-        REFERENCES serial_reservation (ca_id, serial_der_content)
+        REFERENCES serial_reservation (ca_id, serial_der_content),
+    FOREIGN KEY (ca_id, request_id)
+        REFERENCES certificate_request (ca_id, request_id)
 );
 
 CREATE TABLE revocation (
