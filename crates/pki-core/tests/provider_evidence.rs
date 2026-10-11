@@ -13,7 +13,7 @@ use trust_pki_core::{
     reconciliation::{ProviderResponse, ReadOnlySigningProvider, ReconciliationError},
 };
 use trust_pki_crypto::{
-    lab::EphemeralP256Signer, KeyRef, SignatureAlgorithm, SigningProvider,
+    lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider,
 };
 use x509_cert::{der::Decode, spki::SubjectPublicKeyInfoOwned};
 
