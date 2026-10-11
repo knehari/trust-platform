@@ -214,6 +214,14 @@ $fn$;
 COMMENT ON FUNCTION reserve_issuance_serial(UUID, UUID, TEXT) IS
 'Issuer-unique CSPRNG serial with durable reservation; assumes upstream authenticated authorized caller.';
 
+-- PostgreSQL grants EXECUTE to PUBLIC for new functions by default. Revoke it.
+-- Runtime roles receive narrowly scoped grants only after authentication and
+-- authorization boundaries are implemented, reviewed and deployed.
+REVOKE ALL ON FUNCTION create_issuance_request(UUID, TEXT, BYTEA, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION allowed_issuance_transition(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION transition_issuance_request(UUID, UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION reserve_issuance_serial(UUID, UUID, TEXT) FROM PUBLIC;
+
 -- No direct tables are granted to a runtime role here. Use a distinct database
 -- role with EXECUTE grants only AFTER building a trustworthy authenticated API.
 -- Even EXECUTE permissions alone do not establish issuance authorization.
