@@ -121,13 +121,15 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
     // Separate connection confirms that the signed DER is actually persistent,
     // not merely returned from the signing function.
     let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let row = reader.query_one(
-        "SELECT c.certificate_der, si.outcome
+    let row = reader
+        .query_one(
+            "SELECT c.certificate_der, si.outcome
          FROM certificate c JOIN signing_intent si
            ON si.ca_id=c.ca_id AND si.request_id=c.request_id
          WHERE c.request_id=$1::text::uuid",
-        &[&request.request_id],
-    ).unwrap();
+            &[&request.request_id],
+        )
+        .unwrap();
     let persisted: Vec<u8> = row.get(0);
     let outcome: String = row.get(1);
     assert_eq!(persisted, result);
@@ -171,7 +173,9 @@ fn lab_verifier_rejects_fake_signature_and_wrong_domain() {
 
     let key_ref = ca.lab_signer_key_ref().to_owned();
     let signature = ca.sign_once(&key_ref, "single", &tbs_der).unwrap();
-    let authentic_der = LabCertificateAssembler.assemble(&tbs_der, &signature).unwrap();
+    let authentic_der = LabCertificateAssembler
+        .assemble(&tbs_der, &signature)
+        .unwrap();
     assert_eq!(verifier.verify(&plan, &authentic_der), Ok(()));
 
     let wrong_domain = LabX509Verifier::new(
