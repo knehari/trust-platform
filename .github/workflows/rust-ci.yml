@@ -20,9 +20,9 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --all-features --locked
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   schema:
     runs-on: ubuntu-latest
