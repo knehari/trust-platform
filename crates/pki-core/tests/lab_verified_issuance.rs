@@ -347,7 +347,7 @@ fn real_x509_requires_pinned_signed_collector_evidence_before_positive_finding()
     let mut attestation = CollectorAttestation { claim, signature_der };
     let provider = ReadOnlyFixture(ProviderResponse::SignedCertificate {
         operation_ref: "independent-audit-op".into(),
-        signer_key_ref: ca_key_ref,
+        signer_key_ref: ca_key_ref.clone(),
         certificate_der: certificate_der.clone(),
         evidence_sha256: [0x71; 32],
     });
