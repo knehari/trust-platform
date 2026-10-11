@@ -20,7 +20,7 @@ jobs:
       - name: Format candidate files for bootstrap
         run: |
           cargo fmt --all
-          for f in crates/pki-core/src/lab_ca.rs crates/pki-crypto/src/lab.rs crates/pki-crypto/src/lib.rs crates/pki-core/src/lib.rs; do
+          for f in crates/pki-core/examples/issue_lab.rs crates/pki-core/src/lab_ca.rs crates/pki-crypto/src/lab.rs crates/pki-crypto/src/lib.rs crates/pki-core/src/lib.rs; do
             printf 'FORMATTED:%s:' "$f"
             base64 -w0 "$f"
             echo
@@ -31,6 +31,12 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Native CA to OpenSSL interop (lab only)
+        run: |
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
+          openssl verify -CAfile "$RUNNER_TEMP/trust-lab/root.pem" -purpose sslserver "$RUNNER_TEMP/trust-lab/leaf.pem"
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'DNS:api.lab.invalid'
+
 
   schema:
     runs-on: ubuntu-latest
