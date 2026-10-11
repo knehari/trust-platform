@@ -45,6 +45,16 @@ pub struct SigningIntentInput<'a> {
     pub operation_ref: &'a str,
 }
 
+/// Metadata returned by a recovery worker. This is NOT permission to re-sign.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryCandidate {
+    pub request_id: String,
+    pub intent_id: String,
+    pub operation_ref: String,
+    pub signer_key_ref: String,
+    pub tbs_sha256: [u8; 32],
+}
+
 /// A replay is a *reference to a prior attempt*, never authorization to sign again.
 pub struct PgIssuanceStore {
     client: Client,
@@ -160,6 +170,42 @@ impl PgIssuanceStore {
             &[&ca_id, &request_id, &actor_id],
         )?;
         Ok(row.get(0))
+    }
+
+    /// Fail-closed recovery: scans old UNCONFIRMED signing intents, quarantines
+    /// them in PostgreSQL and returns correlation identifiers for investigation.
+    /// A returned entry MUST NEVER be fed back to the signer automatically.
+    /// min_age_seconds is interpreted by the database clock; CI can use zero.
+    pub fn quarantine_stale(
+        &mut self,
+        ca_id: &str,
+        min_age_seconds: i32,
+        max_items: i32,
+        recovery_actor: &str,
+    ) -> Result<Vec<RecoveryCandidate>, StoreError> {
+        if min_age_seconds < 0 || !(1..=100).contains(&max_items) {
+            return Err(StoreError::InconsistentResult);
+        }
+        let rows = self.client.query(
+            "SELECT request_id::text,intent_id::text,operation_ref,signer_key_ref,tbs_sha256
+             FROM quarantine_stale_signing_intents(
+                 $1::text::uuid, clock_timestamp() - ($2::int * interval '1 second'),
+                 $3::int,$4
+             )",
+            &[&ca_id, &min_age_seconds, &max_items, &recovery_actor],
+        )?;
+        rows.into_iter().map(|row| {
+            let digest: Vec<u8> = row.get(4);
+            let digest: [u8; 32] = digest.try_into()
+                .map_err(|_| StoreError::InconsistentResult)?;
+            Ok(RecoveryCandidate {
+                request_id: row.get(0),
+                intent_id: row.get(1),
+                operation_ref: row.get(2),
+                signer_key_ref: row.get(3),
+                tbs_sha256: digest,
+            })
+        }).collect()
     }
 }
 
