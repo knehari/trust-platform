@@ -5,10 +5,17 @@ use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{valid_dns_name, StaticPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentKind { Cp, Cps }
+pub enum DocumentKind {
+    Cp,
+    Cps,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source { Configuration, AdministrativeDeclaration, HumanEvidenceRequired }
+pub enum Source {
+    Configuration,
+    AdministrativeDeclaration,
+    HumanEvidenceRequired,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
@@ -36,7 +43,12 @@ pub struct DraftBundle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DraftError { InvalidOid, InvalidMetadata, InvalidProfile, InvalidRepository }
+pub enum DraftError {
+    InvalidOid,
+    InvalidMetadata,
+    InvalidProfile,
+    InvalidRepository,
+}
 
 pub struct Input<'a> {
     pub policy: &'a StaticPolicy,
@@ -48,23 +60,39 @@ pub struct Input<'a> {
 }
 
 fn valid_id(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 256 && s.bytes().all(|b|
-        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/'))
+    !s.is_empty()
+        && s.len() <= 256
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/'))
 }
 fn valid_label(s: &str) -> bool {
-    !s.trim().is_empty() && s.len() <= 256 &&
-        !s.chars().any(|c| c.is_control() ||
-            matches!(c, '#' | '<' | '>' | '*' | '|'))
+    !s.trim().is_empty()
+        && s.len() <= 256
+        && !s
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '#' | '<' | '>' | '*' | '|'))
 }
 fn valid_oid(s: &str) -> bool {
-    if s == "2.5.29.32.0" { return false; }
+    if s == "2.5.29.32.0" {
+        return false;
+    }
     let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() < 3 || parts.len() > 32 ||
-        parts.iter().any(|p| p.is_empty() || p.len() > 18 ||
-            (p.len() > 1 && p.starts_with('0')) ||
-            !p.bytes().all(|b| b.is_ascii_digit())) { return false; }
+    if parts.len() < 3
+        || parts.len() > 32
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || p.len() > 18
+                || (p.len() > 1 && p.starts_with('0'))
+                || !p.bytes().all(|b| b.is_ascii_digit())
+        })
+    {
+        return false;
+    }
     let arcs: Option<Vec<u64>> = parts.iter().map(|p| p.parse::<u64>().ok()).collect();
-    match arcs { Some(a) => a[0] <= 2 && (a[0] == 2 || a[1] <= 39), None => false }
+    match arcs {
+        Some(a) => a[0] <= 2 && (a[0] == 2 || a[1] <= 39),
+        None => false,
+    }
 }
 fn algo(a: SignatureAlgorithm) -> &'static str {
     match a {
@@ -76,17 +104,38 @@ fn algo(a: SignatureAlgorithm) -> &'static str {
 pub fn digest_hex(hash: &[u8; 32]) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
 }
-fn section(number: &'static str, heading: &'static str, source: Source, content: String) -> Section {
-    Section { number, heading, source, content }
+fn section(
+    number: &'static str,
+    heading: &'static str,
+    source: Source,
+    content: String,
+) -> Section {
+    Section {
+        number,
+        heading,
+        source,
+        content,
+    }
 }
 fn manual(number: &'static str, heading: &'static str, evidence: &'static str) -> Section {
-    section(number, heading, Source::HumanEvidenceRequired,
-        format!("PENDING HUMAN VALIDATION. Required evidence: {evidence}"))
+    section(
+        number,
+        heading,
+        Source::HumanEvidenceRequired,
+        format!("PENDING HUMAN VALIDATION. Required evidence: {evidence}"),
+    )
 }
-fn document(kind: DocumentKind, input: &Input<'_>, zones: &[String],
-    algorithms: &[String], source_hash: &[u8; 32]) -> Document {
-    let label = match kind { DocumentKind::Cp => "Certificate Policy (CP)",
-        DocumentKind::Cps => "Certification Practice Statement (CPS)" };
+fn document(
+    kind: DocumentKind,
+    input: &Input<'_>,
+    zones: &[String],
+    algorithms: &[String],
+    source_hash: &[u8; 32],
+) -> Document {
+    let label = match kind {
+        DocumentKind::Cp => "Certificate Policy (CP)",
+        DocumentKind::Cps => "Certification Practice Statement (CPS)",
+    };
     let scope = match kind {
         DocumentKind::Cp => "Proposed requirements derived from a policy configuration, pending policy-authority approval.",
         DocumentKind::Cps => "Proposed operating practices from a software configuration; real deployment is NOT verified.",
@@ -134,48 +183,77 @@ fn document(kind: DocumentKind, input: &Input<'_>, zones: &[String],
             "Approval, change management, retention and publication of superseded versions."),
     ];
     if kind == DocumentKind::Cps {
-        sections.push(manual("6.7", "Network security controls",
-            "Observed CA isolation, access policy and mutual TLS tests."));
+        sections.push(manual(
+            "6.7",
+            "Network security controls",
+            "Observed CA isolation, access policy and mutual TLS tests.",
+        ));
     }
-    let mut markdown = format!("# {label} — DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
+    let mut markdown = format!("# {label} â DRAFT {}\n\nSTATUS: NOT APPROVED / DO NOT PUBLISH.\nFramework: RFC 3647.\nPolicy snapshot SHA-256: {}.\nNot an ETSI, ANSSI, ISO or eIDAS compliance assertion.\n",
         input.edition, digest_hex(source_hash));
     for s in &sections {
-        markdown.push_str(&format!("\n## {} {}\n\nSource: {:?}. {}\n",
-            s.number, s.heading, s.source, s.content));
+        markdown.push_str(&format!(
+            "\n## {} {}\n\nSource: {:?}. {}\n",
+            s.number, s.heading, s.source, s.content
+        ));
     }
     markdown.push_str("\nPublication prohibited until operational evidence, OID ownership and policy-authority approval are independently validated.\n");
     let sha256 = Sha256::digest(markdown.as_bytes()).into();
-    Document { kind, markdown, sha256, sections }
+    Document {
+        kind,
+        markdown,
+        sha256,
+        sections,
+    }
 }
 
 /// Generates only draft artifacts. No approval/publication code path exists.
 pub fn generate(input: &Input<'_>) -> Result<DraftBundle, DraftError> {
-    if !valid_oid(input.policy_oid) { return Err(DraftError::InvalidOid); }
+    if !valid_oid(input.policy_oid) {
+        return Err(DraftError::InvalidOid);
+    }
     if !valid_id(input.edition) || !valid_label(input.issuer) || !valid_label(input.authority) {
         return Err(DraftError::InvalidMetadata);
     }
-    if !valid_id(input.repository) { return Err(DraftError::InvalidRepository); }
+    if !valid_id(input.repository) {
+        return Err(DraftError::InvalidRepository);
+    }
     let p = input.policy;
-    if !valid_id(&p.profile_id) || !valid_id(&p.policy_version) ||
-        p.allowed_actors.is_empty() || p.allowed_dns_zones.is_empty() ||
-        p.allowed_ca_signature_algorithms.is_empty() ||
-        p.max_validity_days == 0 || p.max_dns_sans == 0 ||
-        p.allowed_dns_zones.iter().any(|z| !valid_dns_name(z)) {
+    if !valid_id(&p.profile_id)
+        || !valid_id(&p.policy_version)
+        || p.allowed_actors.is_empty()
+        || p.allowed_dns_zones.is_empty()
+        || p.allowed_ca_signature_algorithms.is_empty()
+        || p.max_validity_days == 0
+        || p.max_dns_sans == 0
+        || p.allowed_dns_zones.iter().any(|z| !valid_dns_name(z))
+    {
         return Err(DraftError::InvalidProfile);
     }
     let mut zones = p.allowed_dns_zones.clone();
     zones.sort();
     zones.dedup();
-    let mut algorithms: Vec<String> =
-        p.allowed_ca_signature_algorithms.iter().map(|a| algo(*a).to_owned()).collect();
+    let mut algorithms: Vec<String> = p
+        .allowed_ca_signature_algorithms
+        .iter()
+        .map(|a| algo(*a).to_owned())
+        .collect();
     algorithms.sort();
     algorithms.dedup();
     let mut sha = Sha256::new();
     for field in [
-        input.policy_oid, input.edition, &p.profile_id, &p.policy_version,
-        input.issuer, input.authority, input.repository,
-    ].into_iter().chain(zones.iter().map(String::as_str))
-        .chain(algorithms.iter().map(String::as_str)) {
+        input.policy_oid,
+        input.edition,
+        &p.profile_id,
+        &p.policy_version,
+        input.issuer,
+        input.authority,
+        input.repository,
+    ]
+    .into_iter()
+    .chain(zones.iter().map(String::as_str))
+    .chain(algorithms.iter().map(String::as_str))
+    {
         sha.update((field.len() as u32).to_be_bytes());
         sha.update(field.as_bytes());
     }
@@ -184,12 +262,18 @@ pub fn generate(input: &Input<'_>) -> Result<DraftBundle, DraftError> {
     let source_hash = sha.finalize().into();
     let cp = document(DocumentKind::Cp, input, &zones, &algorithms, &source_hash);
     let cps = document(DocumentKind::Cps, input, &zones, &algorithms, &source_hash);
-    let human_review_sections = cps.sections.iter()
+    let human_review_sections = cps
+        .sections
+        .iter()
         .filter(|s| s.source == Source::HumanEvidenceRequired)
-        .map(|s| s.number).collect();
+        .map(|s| s.number)
+        .collect();
     Ok(DraftBundle {
-        cp, cps, policy_snapshot_sha256: source_hash,
-        human_review_sections, publication_authorized: false,
+        cp,
+        cps,
+        policy_snapshot_sha256: source_hash,
+        human_review_sections,
+        publication_authorized: false,
     })
 }
 
@@ -199,12 +283,19 @@ pub struct ChangeReport {
     pub reapproval_required: bool,
 }
 pub fn compare(previous: &Document, current: &Document) -> ChangeReport {
-    let mut changed: Vec<String> = current.sections.iter()
+    let mut changed: Vec<String> = current
+        .sections
+        .iter()
         .filter(|s| previous.sections.iter().find(|o| o.number == s.number) != Some(*s))
-        .map(|s| s.number.to_owned()).collect();
-    changed.extend(previous.sections.iter()
-        .filter(|s| !current.sections.iter().any(|c| c.number == s.number))
-        .map(|s| s.number.to_owned()));
+        .map(|s| s.number.to_owned())
+        .collect();
+    changed.extend(
+        previous
+            .sections
+            .iter()
+            .filter(|s| !current.sections.iter().any(|c| c.number == s.number))
+            .map(|s| s.number.to_owned()),
+    );
     changed.sort();
     changed.dedup();
     ChangeReport {
@@ -218,18 +309,23 @@ mod tests {
     use super::*;
     fn policy() -> StaticPolicy {
         StaticPolicy {
-            profile_id: "lab-server".into(), policy_version: "v1".into(),
+            profile_id: "lab-server".into(),
+            policy_version: "v1".into(),
             allowed_actors: vec!["private-build-agent".into()],
             allowed_dns_zones: vec!["lab.invalid".into(), "apps.lab.invalid".into()],
             allowed_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
-            max_validity_days: 30, max_dns_sans: 4,
+            max_validity_days: 30,
+            max_dns_sans: 4,
         }
     }
     fn input(p: &StaticPolicy) -> Input<'_> {
         Input {
-            policy: p, policy_oid: "1.3.6.1.4.1.55555.1.1",
-            edition: "v0.1", issuer: "Lab Root CA",
-            authority: "Lab Policy Board", repository: "pki.example.invalid/repository",
+            policy: p,
+            policy_oid: "1.3.6.1.4.1.55555.1.1",
+            edition: "v0.1",
+            issuer: "Lab Root CA",
+            authority: "Lab Policy Board",
+            repository: "pki.example.invalid/repository",
         }
     }
     #[test]
@@ -292,7 +388,8 @@ mod tests {
     #[test]
     fn ml_dsa_is_not_claimed_ready() {
         let mut p = policy();
-        p.allowed_ca_signature_algorithms.push(SignatureAlgorithm::MlDsa65);
+        p.allowed_ca_signature_algorithms
+            .push(SignatureAlgorithm::MlDsa65);
         let docs = generate(&input(&p)).unwrap();
         assert!(docs.cps.markdown.contains("implementation NOT verified"));
         assert!(!docs.publication_authorized);
