@@ -243,7 +243,7 @@ fn no_log_record_is_not_proof_of_no_signing() {
         ).unwrap();
         assert!(matches!(
             finding,
-            AttestedFinding::NoResultProven { .. } | AttestedFinding::EventOnly { .. }
+            AttestedFinding::NoMatchingEventObserved { .. } | AttestedFinding::EventOnly { .. }
         ));
         assert_eq!(provider.lookups.get(), 0);
     }
