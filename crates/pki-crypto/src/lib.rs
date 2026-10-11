@@ -17,6 +17,8 @@ pub enum CryptoError {
     UnsupportedAlgorithm,
     KeyUnavailable,
     SigningFailed,
+    InvalidPublicKey,
+    InvalidSignature,
 }
 
 /// Never passes key material to application callers.
@@ -52,6 +54,27 @@ impl SigningProvider for UnconfiguredProvider {
     ) -> Result<Vec<u8>, CryptoError> {
         Err(CryptoError::SigningFailed)
     }
+}
+
+
+/// Verify a PKCS#10 ECDSA-with-SHA256 signature over canonical DER bytes.
+///
+/// The caller MUST check the CSR SignatureAlgorithm OID and the SPKI curve
+/// parameters before calling this function. No generic algorithm fallback.
+pub fn verify_p256_ecdsa_sha256(
+    public_key_sec1: &[u8],
+    signed_message: &[u8],
+    der_signature: &[u8],
+) -> Result<(), CryptoError> {
+    use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+
+    let verifying_key = VerifyingKey::from_sec1_bytes(public_key_sec1)
+        .map_err(|_| CryptoError::InvalidPublicKey)?;
+    let signature =
+        Signature::from_der(der_signature).map_err(|_| CryptoError::InvalidSignature)?;
+    verifying_key
+        .verify(signed_message, &signature)
+        .map_err(|_| CryptoError::InvalidSignature)
 }
 
 #[cfg(test)]
