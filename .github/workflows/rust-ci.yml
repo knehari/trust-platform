@@ -17,6 +17,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary candidate formatter
+        run: |
+          cargo fmt --all
+          printf 'FORMATTED-LAB-CA:'
+          base64 -w0 crates/pki-core/src/lab_ca.rs
+          echo
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
@@ -28,6 +34,9 @@ jobs:
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
           openssl verify -CAfile "$RUNNER_TEMP/trust-lab/root.pem" -purpose sslserver "$RUNNER_TEMP/trust-lab/leaf.pem"
           openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'DNS:api.lab.invalid'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/root.pem" -noout -text | grep 'X509v3 Subject Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'X509v3 Authority Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep -A3 'X509v3 Certificate Policies' | grep '1.3.6.1.4.1.55555.1.1'
 
 
   schema:
