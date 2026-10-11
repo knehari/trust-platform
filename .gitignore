@@ -1,0 +1,12 @@
+target/
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+*.pem
+*.der
+*.jks
+*.keystore
+.DS_Store
