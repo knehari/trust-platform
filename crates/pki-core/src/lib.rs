@@ -74,7 +74,7 @@ mod tests {
             subject_common_name: "api.lab.invalid",
             dns_sans: &names,
             validity_days: 7,
-            signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+            ca_signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
         };
         assert_eq!(
             authorize_request(&DenyAll, &principal, &request),
@@ -93,14 +93,14 @@ mod tests {
             subject_common_name: "api.lab.invalid",
             dns_sans: &names,
             validity_days: 7,
-            signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+            ca_signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
         };
         let policy = StaticPolicy {
             profile_id: "lab-server".into(),
             policy_version: "2026-10".into(),
             allowed_actors: vec!["operator".into()],
             allowed_dns_zones: vec!["lab.invalid".into()],
-            allowed_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+            allowed_ca_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
             max_validity_days: 30,
             max_dns_sans: 5,
         };
