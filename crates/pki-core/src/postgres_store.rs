@@ -55,6 +55,18 @@ pub struct RecoveryCandidate {
     pub tbs_sha256: [u8; 32],
 }
 
+/// Caller-provided references. Production must verify the certificate DER
+/// and bind every field to immutable issuer, intent and policy records.
+pub struct ReconciliationReviewInput<'a> {
+    pub ca_id: &'a str,
+    pub request_id: &'a str,
+    pub observation_id: &'a str,
+    pub maker_actor: &'a str,
+    pub operation_ref: &'a str,
+    pub tbs_sha256: &'a [u8; 32],
+    pub certificate_sha256: &'a [u8; 32],
+}
+
 /// A replay is a *reference to a prior attempt*, never authorization to sign again.
 pub struct PgIssuanceStore {
     client: Client,
@@ -168,6 +180,79 @@ impl PgIssuanceStore {
         let row = self.client.query_one(
             "SELECT mark_signing_uncertain($1::text::uuid,$2::text::uuid,$3)",
             &[&ca_id, &request_id, &actor_id],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Records only an evidence hash, not evidence authenticity. The actor
+    /// identity must be separately authenticated by a reviewed service.
+    pub fn record_reconciliation_observation(
+        &mut self,
+        ca_id: &str,
+        request_id: &str,
+        actor_id: &str,
+        observation_type: &str,
+        evidence_sha256: &[u8; 32],
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT record_signing_reconciliation_observation(
+                $1::text::uuid,$2::text::uuid,$3,$4,$5
+            )::text",
+            &[
+                &ca_id,
+                &request_id,
+                &actor_id,
+                &observation_type,
+                &&evidence_sha256[..],
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// This is a review *proposal*, NOT a verified signing result or
+    /// a permission to store a recovered certificate.
+    pub fn propose_reconciliation_review(
+        &mut self,
+        input: &ReconciliationReviewInput<'_>,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT propose_reconciliation_review(
+                $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6,$7
+            )",
+            &[
+                &input.ca_id,
+                &input.request_id,
+                &input.observation_id,
+                &input.maker_actor,
+                &input.operation_ref,
+                &&input.tbs_sha256[..],
+                &&input.certificate_sha256[..],
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Maker != checker is validated transactionally in PostgreSQL; this
+    /// does not authenticate either identity, or resume an issuance.
+    pub fn review_reconciliation_proposal(
+        &mut self,
+        ca_id: &str,
+        request_id: &str,
+        checker_actor: &str,
+        certificate_sha256: &[u8; 32],
+        evidence_sha256: &[u8; 32],
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT review_reconciliation_proposal(
+                $1::text::uuid,$2::text::uuid,$3,$4,$5
+            )",
+            &[
+                &ca_id,
+                &request_id,
+                &checker_actor,
+                &&certificate_sha256[..],
+                &&evidence_sha256[..],
+            ],
         )?;
         Ok(row.get(0))
     }
