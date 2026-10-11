@@ -6,6 +6,7 @@ pub mod csr;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
 pub mod serial;
+pub mod x509_extensions;
 
 use trust_pki_policy::{
     AuthenticatedPrincipal, Authorization, Denial, IssuanceRequest, PolicyEngine,
