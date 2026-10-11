@@ -227,7 +227,6 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
     }
 }
 
-
 /// Successful, read-only result of cryptographically verifying a collector
 /// attestation AND correlating it with an immutable signing intent.
 ///
