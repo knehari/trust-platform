@@ -100,8 +100,8 @@ fn persists_request_serial_and_signing_intent_without_resigning() {
 #[test]
 fn persisted_orchestration_is_fail_closed_after_signer_timeout() {
     use trust_pki_core::orchestrator::{
-        issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssueError,
-        IssuancePlan,
+        issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuancePlan,
+        IssueError,
     };
 
     struct TimeoutSigner(u32);
@@ -143,11 +143,25 @@ fn persisted_orchestration_is_fail_closed_after_signer_timeout() {
     let created = db
         .create_request(ca, "orchestrator-timeout", &[0x31; 32], "lab-actor", "v1")
         .unwrap();
-    db.transition(ca, &created.request_id, "RECEIVED", "CSR_VALIDATED", "lab-actor")
+    db.transition(
+        ca,
+        &created.request_id,
+        "RECEIVED",
+        "CSR_VALIDATED",
+        "lab-actor",
+    )
+    .unwrap();
+    db.transition(
+        ca,
+        &created.request_id,
+        "CSR_VALIDATED",
+        "AUTHORIZED",
+        "lab-actor",
+    )
+    .unwrap();
+    let serial = db
+        .reserve_serial(ca, &created.request_id, "lab-actor")
         .unwrap();
-    db.transition(ca, &created.request_id, "CSR_VALIDATED", "AUTHORIZED", "lab-actor")
-        .unwrap();
-    let serial = db.reserve_serial(ca, &created.request_id, "lab-actor").unwrap();
     let plan = IssuancePlan {
         ca_id: ca,
         request_id: &created.request_id,
@@ -160,17 +174,30 @@ fn persisted_orchestration_is_fail_closed_after_signer_timeout() {
     };
     let mut signer = TimeoutSigner(0);
     assert_eq!(
-        issue_once(&mut db, &mut signer, &UnreachableAssembler, &UnreachableVerifier, &plan),
+        issue_once(
+            &mut db,
+            &mut signer,
+            &UnreachableAssembler,
+            &UnreachableVerifier,
+            &plan
+        ),
         Err(IssueError::SigningFailure)
     );
     assert_eq!(signer.0, 1);
     assert_eq!(
-        issue_once(&mut db, &mut signer, &UnreachableAssembler, &UnreachableVerifier, &plan),
+        issue_once(
+            &mut db,
+            &mut signer,
+            &UnreachableAssembler,
+            &UnreachableVerifier,
+            &plan
+        ),
         Err(IssueError::ReplayedOrAmbiguousIntent)
     );
     assert_eq!(signer.0, 1);
     assert_eq!(
-        db.mark_uncertain(ca, &created.request_id, "lab-actor").unwrap(),
+        db.mark_uncertain(ca, &created.request_id, "lab-actor")
+            .unwrap(),
         "RECONCILIATION_REQUIRED"
     );
 }
