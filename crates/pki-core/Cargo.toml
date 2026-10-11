@@ -8,9 +8,11 @@ license.workspace = true
 [features]
 default = []
 lab-software = ["trust-pki-crypto/lab-software"]
+postgres-store = ["dep:postgres"]
 
 [dependencies]
 trust-pki-policy = { path = "../pki-policy" }
 trust-pki-crypto = { path = "../pki-crypto" }
 x509-cert = { version = "=0.2.5", features = ["pem"] }
 sha2 = "=0.10.9"
+postgres = { version = "=0.19.12", optional = true }
