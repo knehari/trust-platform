@@ -5,7 +5,6 @@
 #[cfg(feature = "lab-software")]
 pub mod lab;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
     RsaPssSha256,
