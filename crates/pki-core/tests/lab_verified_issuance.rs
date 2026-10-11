@@ -327,6 +327,8 @@ fn real_x509_requires_pinned_signed_collector_evidence_before_positive_finding()
     let journal_hash: [u8; 32] = Sha256::digest(&tbs_der).into();
     let claim = EvidenceClaim {
         issuer_id: "lab-ca".into(),
+        request_id: "audit-lab-request".into(),
+        policy_revision: "v1".into(),
         operation_ref: "independent-audit-op".into(),
         signer_key_ref: ca_key_ref.clone(),
         collector_key_id: "audit-collector-1".into(),
