@@ -226,3 +226,67 @@ pub fn inspect_attested_provider<P: ReadOnlySigningProvider, V: CertificateVerif
         }
     }
 }
+
+
+/// Successful, read-only result of cryptographically verifying a collector
+/// attestation AND correlating it with an immutable signing intent.
+///
+/// Fields are private so downstream clients cannot construct "verified" data
+/// from an unchecked provider response. This does NOT attest genuine HSM log
+/// provenance, which is a separate trust boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedCollectorEvidence {
+    claim: EvidenceClaim,
+    canonical_claim: Vec<u8>,
+    signature_der: Vec<u8>,
+    finding: AttestedFinding,
+}
+
+impl VerifiedCollectorEvidence {
+    pub fn claim(&self) -> &EvidenceClaim {
+        &self.claim
+    }
+
+    pub fn canonical_claim(&self) -> &[u8] {
+        &self.canonical_claim
+    }
+
+    pub fn signature_der(&self) -> &[u8] {
+        &self.signature_der
+    }
+
+    pub fn finding(&self) -> &AttestedFinding {
+        &self.finding
+    }
+}
+
+/// Creates a typed *laboratory* evidence receipt only after ECDSA/intent
+/// verification and (when applicable) independent X.509 result verification.
+/// No state transition or signing operation is performed here.
+///
+/// Real services must load the pinned collector key from a protected source,
+/// independently validate the raw HSM log's provenance and obtain the
+/// authorized plan from server-controlled immutable database records.
+pub fn verify_collector_evidence<P: ReadOnlySigningProvider, V: CertificateVerifier>(
+    provider: &P,
+    verifier: &V,
+    plan: &IssuancePlan<'_>,
+    expected_tbs_sha256: &[u8; 32],
+    attestation: &CollectorAttestation,
+    pinned_key: &PinnedCollectorKey<'_>,
+) -> Result<VerifiedCollectorEvidence, EvidenceError> {
+    let finding = inspect_attested_provider(
+        provider,
+        verifier,
+        plan,
+        expected_tbs_sha256,
+        attestation,
+        pinned_key,
+    )?;
+    Ok(VerifiedCollectorEvidence {
+        claim: attestation.claim.clone(),
+        canonical_claim: attestation.claim.canonical_bytes()?,
+        signature_der: attestation.signature_der.clone(),
+        finding,
+    })
+}
