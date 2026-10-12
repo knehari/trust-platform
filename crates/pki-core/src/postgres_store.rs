@@ -7,8 +7,8 @@
 
 use crate::ca_observation::ObservedCaPublicCertificate;
 use crate::cp_cps::{generate as generate_cp_cps, Input as CpCpsInput};
-use crate::policy_gate::VerifiedPresignPolicyIntent;
 use crate::policy_decisions::VerifiedDualApproval;
+use crate::policy_gate::VerifiedPresignPolicyIntent;
 #[cfg(feature = "lab-software")]
 use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
@@ -479,32 +479,43 @@ impl PgIssuanceStore {
     /// Persist a cryptographically verified two-key CP/CPS decision receipt.
     /// PostgreSQL does not itself verify ECDSA. No live IdP authority assumed.
     pub fn persist_dual_signature_policy_lab(
-        &mut self, approval_id: &str, verified: &VerifiedDualApproval,
+        &mut self,
+        approval_id: &str,
+        verified: &VerifiedDualApproval,
     ) -> Result<String, StoreError> {
-        let c=verified.claim();
-        let row=self.client.query_one(
+        let c = verified.claim();
+        let row = self.client.query_one(
             "SELECT persist_verified_dual_policy_receipt_lab(
                 $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,
                 $6,$7,$8,$9,$10,$11,$12,$13
              )::text",
             &[
-                &c.ca_id,&approval_id,&c.draft_id,
-                &verified.proposer_key_id(),&verified.approver_key_id(),
-                &verified.claim_canonical(),&verified.proposer_signature(),
-                &verified.approver_signature(),&verified.evidence_sha256().as_slice(),
-                &c.cp_sha256.as_slice(),&c.cps_sha256.as_slice(),
-                &c.policy_oid,&c.policy_revision,
+                &c.ca_id,
+                &approval_id,
+                &c.draft_id,
+                &verified.proposer_key_id(),
+                &verified.approver_key_id(),
+                &verified.claim_canonical(),
+                &verified.proposer_signature(),
+                &verified.approver_signature(),
+                &verified.evidence_sha256().as_slice(),
+                &c.cp_sha256.as_slice(),
+                &c.cps_sha256.as_slice(),
+                &c.policy_oid,
+                &c.policy_revision,
             ],
         )?;
         Ok(row.get(0))
     }
 
     pub fn activate_dual_signature_policy_lab(
-        &mut self, ca_id: &str, actor: &str,
+        &mut self,
+        ca_id: &str,
+        actor: &str,
     ) -> Result<String, StoreError> {
-        let row=self.client.query_one(
+        let row = self.client.query_one(
             "SELECT require_dual_signature_policy_lab($1::text::uuid,$2)",
-            &[&ca_id,&actor],
+            &[&ca_id, &actor],
         )?;
         Ok(row.get(0))
     }
