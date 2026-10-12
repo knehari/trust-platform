@@ -1,6 +1,10 @@
 //! V1.6 policy approval identity-binding guard.
 //! This module does NOT authenticate an IdP token, attest a key, or authorize humans.
 //! Only a trusted authentication/entitlement adapter may construct these inputs.
+use crate::authentication::{
+    evaluate_authentication_context, AuthenticationContext, AuthenticationPolicy,
+    AuthenticationPolicyError,
+};
 use crate::policy_decisions::VerifiedDualApproval;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,4 +111,51 @@ pub fn bind_verified_policy_decision(
         identity_issuer: preparer.identity_issuer.to_owned(),
         evidence_sha256: *verified.evidence_sha256(),
     })
+}
+
+/// Applies independent authentication policy gates before reviewer binding.
+/// Context values MUST originate from verified protocol adapters and must
+/// never be constructed directly from untrusted requests in production.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthenticatedApprovalError {
+    PreparerAuthentication(AuthenticationPolicyError),
+    ApproverAuthentication(AuthenticationPolicyError),
+    IdentityMismatch,
+    ReviewerBinding(ReviewerBindingError),
+}
+
+pub fn bind_authenticated_policy_decision(
+    verified: &VerifiedDualApproval,
+    preparer: &TrustedReviewer<'_>,
+    approver: &TrustedReviewer<'_>,
+    preparer_auth: &AuthenticationContext<'_>,
+    approver_auth: &AuthenticationContext<'_>,
+    preparer_policy: &AuthenticationPolicy<'_>,
+    approver_policy: &AuthenticationPolicy<'_>,
+    trusted_now_unix: i64,
+) -> Result<BoundPolicyDecision, AuthenticatedApprovalError> {
+    evaluate_authentication_context(preparer_auth, preparer_policy, trusted_now_unix)
+        .map_err(AuthenticatedApprovalError::PreparerAuthentication)?;
+    evaluate_authentication_context(approver_auth, approver_policy, trusted_now_unix)
+        .map_err(AuthenticatedApprovalError::ApproverAuthentication)?;
+    if preparer_auth.subject != preparer.subject_id
+        || preparer_auth.issuer != preparer.identity_issuer
+        || preparer_auth.authenticated_at_unix != preparer.authenticated_at_unix
+        || approver_auth.subject != approver.subject_id
+        || approver_auth.issuer != approver.identity_issuer
+        || approver_auth.authenticated_at_unix != approver.authenticated_at_unix
+    {
+        return Err(AuthenticatedApprovalError::IdentityMismatch);
+    }
+    let maximum_age = preparer_policy
+        .maximum_session_age_seconds
+        .min(approver_policy.maximum_session_age_seconds);
+    bind_verified_policy_decision(
+        verified,
+        preparer,
+        approver,
+        trusted_now_unix,
+        maximum_age,
+    )
+    .map_err(AuthenticatedApprovalError::ReviewerBinding)
 }
