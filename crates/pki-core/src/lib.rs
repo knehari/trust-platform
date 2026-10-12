@@ -4,6 +4,7 @@
 
 pub mod authentication;
 pub mod ca_observation;
+pub mod challenge_binding;
 pub mod cp_cps;
 pub mod csr;
 #[cfg(feature = "lab-software")]
