@@ -41,7 +41,8 @@ CREATE FUNCTION persist_verified_dual_policy_receipt_lab(
     p_proposer_key TEXT,p_approver_key TEXT,
     p_canonical BYTEA,p_proposer_sig BYTEA,p_approver_sig BYTEA,
     p_evidence_sha256 BYTEA,p_claim_cp_hash BYTEA,p_claim_cps_hash BYTEA,
-    p_policy_oid TEXT,p_policy_revision TEXT
+    p_policy_oid TEXT,p_policy_revision TEXT,
+    p_effective_from TIMESTAMPTZ,p_effective_until TIMESTAMPTZ
 ) RETURNS UUID LANGUAGE plpgsql AS $fn$
 DECLARE v_approved approved_policy_edition%ROWTYPE;
         v_id UUID;
@@ -57,6 +58,7 @@ BEGIN
        OR p_claim_cp_hash IS NULL OR octet_length(p_claim_cp_hash)<>32
        OR p_claim_cps_hash IS NULL OR octet_length(p_claim_cps_hash)<>32
        OR p_policy_oid IS NULL OR p_policy_revision IS NULL
+       OR p_effective_from IS NULL OR p_effective_until IS NULL
     THEN RAISE EXCEPTION 'invalid policy attestation metadata' USING ERRCODE='22023'; END IF;
     SELECT * INTO STRICT v_approved FROM approved_policy_edition
       WHERE ca_id=p_ca AND approval_id=p_approval FOR SHARE;
@@ -65,6 +67,8 @@ BEGIN
        OR v_approved.cps_sha256<>p_claim_cps_hash
        OR v_approved.policy_oid<>p_policy_oid
        OR v_approved.policy_revision<>p_policy_revision
+       OR v_approved.effective_from<>p_effective_from
+       OR v_approved.effective_until<>p_effective_until
     THEN RAISE EXCEPTION 'signed decision metadata mismatches approved draft'
          USING ERRCODE='23514'; END IF;
     INSERT INTO policy_dual_signature_receipt(
@@ -122,7 +126,7 @@ CREATE TRIGGER signed_policy_decision_gate BEFORE INSERT ON signing_intent
     FOR EACH ROW EXECUTE FUNCTION check_dual_signature_edition_before_signing();
 
 REVOKE ALL ON FUNCTION persist_verified_dual_policy_receipt_lab(
-    UUID,UUID,UUID,TEXT,TEXT,BYTEA,BYTEA,BYTEA,BYTEA,BYTEA,BYTEA,TEXT,TEXT
+    UUID,UUID,UUID,TEXT,TEXT,BYTEA,BYTEA,BYTEA,BYTEA,BYTEA,BYTEA,TEXT,TEXT,TIMESTAMPTZ,TIMESTAMPTZ
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION require_dual_signature_policy_lab(UUID,TEXT) FROM PUBLIC;
 COMMIT;
