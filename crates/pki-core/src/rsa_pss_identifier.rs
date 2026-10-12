@@ -42,11 +42,11 @@ pub fn check_pss_identifiers(
         .map_err(|_| PssIdentifierError::InvalidDer)?;
     // A bare empty sequence encodes the insecure SHA-1 default profile.
     // This is only a preliminary envelope check, not full RSA-PSS decoding.
-    if tbs_der.len() <= 2 || tbs_der[0] != 0x30 {
-        return Err(PssIdentifierError::InvalidParameterEnvelope);
-    }
     if tbs_der != outer_der {
         return Err(PssIdentifierError::InconsistentParameters);
+    }
+    if tbs_der.len() <= 2 || tbs_der[0] != 0x30 {
+        return Err(PssIdentifierError::InvalidParameterEnvelope);
     }
     Ok(())
 }
