@@ -91,20 +91,39 @@ mod tests {
         let bytes = claim.canonical_bytes().unwrap();
         let proposer = SignerStatement {
             key_id: "maker-key".into(),
-            signature_der: maker.sign(maker.key_ref(), SignatureAlgorithm::EcdsaP256Sha256, &bytes).unwrap(),
+            signature_der: maker
+                .sign(maker.key_ref(), SignatureAlgorithm::EcdsaP256Sha256, &bytes)
+                .unwrap(),
         };
         let approver = SignerStatement {
             key_id: "checker-key".into(),
-            signature_der: checker.sign(checker.key_ref(), SignatureAlgorithm::EcdsaP256Sha256, &bytes).unwrap(),
+            signature_der: checker
+                .sign(
+                    checker.key_ref(),
+                    SignatureAlgorithm::EcdsaP256Sha256,
+                    &bytes,
+                )
+                .unwrap(),
         };
         let maker_pub = public(&maker);
         let checker_pub = public(&checker);
         let verified = verify_dual_approval(
-            &DualApproval { claim: &claim, proposer: &proposer, approver: &approver },
-            &PinnedPolicyKey { key_id: "maker-key", sec1_p256_public: &maker_pub },
-            &PinnedPolicyKey { key_id: "checker-key", sec1_p256_public: &checker_pub },
+            &DualApproval {
+                claim: &claim,
+                proposer: &proposer,
+                approver: &approver,
+            },
+            &PinnedPolicyKey {
+                key_id: "maker-key",
+                sec1_p256_public: &maker_pub,
+            },
+            &PinnedPolicyKey {
+                key_id: "checker-key",
+                sec1_p256_public: &checker_pub,
+            },
             &claim,
-        ).unwrap();
+        )
+        .unwrap();
         let decision = BoundPolicyDecision {
             ca_id: claim.ca_id.clone(),
             proposer_subject: "subject-A".into(),
@@ -122,13 +141,25 @@ mod tests {
             issued_at_unix: 100,
             expires_at_unix: 200,
         };
-        assert_eq!(validate_pending_challenge(&verified, &decision, &challenge, 150), Ok(()));
+        assert_eq!(
+            validate_pending_challenge(&verified, &decision, &challenge, 150),
+            Ok(())
+        );
         challenge.nonce_sha256 = [8; 32];
-        assert_eq!(validate_pending_challenge(&verified, &decision, &challenge, 150), Err(ChallengeBindingError::WrongNonce));
+        assert_eq!(
+            validate_pending_challenge(&verified, &decision, &challenge, 150),
+            Err(ChallengeBindingError::WrongNonce)
+        );
         challenge.nonce_sha256 = digest;
         challenge.approver_subject = "other";
-        assert_eq!(validate_pending_challenge(&verified, &decision, &challenge, 150), Err(ChallengeBindingError::WrongDecision));
+        assert_eq!(
+            validate_pending_challenge(&verified, &decision, &challenge, 150),
+            Err(ChallengeBindingError::WrongDecision)
+        );
         challenge.approver_subject = "subject-B";
-        assert_eq!(validate_pending_challenge(&verified, &decision, &challenge, 200), Err(ChallengeBindingError::InvalidWindow));
+        assert_eq!(
+            validate_pending_challenge(&verified, &decision, &challenge, 200),
+            Err(ChallengeBindingError::InvalidWindow)
+        );
     }
 }
