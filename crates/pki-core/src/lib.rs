@@ -10,6 +10,7 @@ pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
 pub mod orchestrator;
+pub mod policy_gate;
 #[cfg(feature = "lab-software")]
 pub mod policy_trace;
 #[cfg(feature = "postgres-store")]
