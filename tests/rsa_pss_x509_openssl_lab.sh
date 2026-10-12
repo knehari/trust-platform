@@ -22,4 +22,33 @@ openssl x509 -in "$work/root.pem" -pubkey -noout > "$work/root.pub"
 openssl x509 -in "$work/root.pem" -outform DER -out "$work/root.der"
 openssl asn1parse -inform DER -in "$work/root.der" > "$work/asn1.txt"
 grep -q 'rsassaPss' "$work/asn1.txt"
+# Sign a leaf with the CA using explicit RSA-PSS parameters; verify the chain.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$work/leaf.key" >/dev/null 2>&1
+openssl req -new -sha256 -key "$work/leaf.key" \
+  -subj "/CN=api.lab.invalid" -out "$work/leaf.csr"
+cat > "$work/leaf.ext" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:api.lab.invalid
+EOF
+openssl x509 -req -in "$work/leaf.csr" \
+  -CA "$work/root.pem" -CAkey "$work/issuer.key" \
+  -set_serial 4242 -days 1 -sha256 \
+  -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 \
+  -sigopt rsa_mgf1_md:sha256 \
+  -extfile "$work/leaf.ext" -out "$work/leaf.pem" >/dev/null
+openssl verify -CAfile "$work/root.pem" -purpose sslserver \
+  -verify_hostname api.lab.invalid "$work/leaf.pem"
+openssl x509 -in "$work/leaf.pem" -noout -text > "$work/leaf.txt"
+grep -q 'Signature Algorithm: rsassaPss' "$work/leaf.txt"
+grep -q 'Hash Algorithm: sha256' "$work/leaf.txt"
+grep -q 'Mask Algorithm: mgf1 with sha256' "$work/leaf.txt"
+grep -q 'Salt Length: 0x20' "$work/leaf.txt"
+grep -q 'DNS:api.lab.invalid' "$work/leaf.txt"
+if openssl verify -CAfile "$work/root.pem" -purpose sslserver \
+  -verify_hostname other.lab.invalid "$work/leaf.pem" >/dev/null 2>&1; then
+  echo "ERROR: mismatched TLS hostname accepted" >&2
+  exit 1
+fi
 echo 'RSA-PSS X.509 OpenSSL lab conformance passed'
