@@ -7,6 +7,7 @@ pub mod algorithm_catalog;
 pub mod lab;
 pub mod provider_capabilities;
 pub mod provider_deployment;
+pub mod rsa_pss_profile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
