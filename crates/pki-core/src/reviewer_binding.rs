@@ -124,16 +124,24 @@ pub enum AuthenticatedApprovalError {
     ReviewerBinding(ReviewerBindingError),
 }
 
+pub struct ReviewerAuthentication<'a, 'b> {
+    pub reviewer: &'a TrustedReviewer<'b>,
+    pub context: &'a AuthenticationContext<'b>,
+    pub policy: &'a AuthenticationPolicy<'b>,
+}
+
 pub fn bind_authenticated_policy_decision(
     verified: &VerifiedDualApproval,
-    preparer: &TrustedReviewer<'_>,
-    approver: &TrustedReviewer<'_>,
-    preparer_auth: &AuthenticationContext<'_>,
-    approver_auth: &AuthenticationContext<'_>,
-    preparer_policy: &AuthenticationPolicy<'_>,
-    approver_policy: &AuthenticationPolicy<'_>,
+    preparer_input: &ReviewerAuthentication<'_, '_>,
+    approver_input: &ReviewerAuthentication<'_, '_>,
     trusted_now_unix: i64,
 ) -> Result<BoundPolicyDecision, AuthenticatedApprovalError> {
+    let preparer = preparer_input.reviewer;
+    let approver = approver_input.reviewer;
+    let preparer_auth = preparer_input.context;
+    let approver_auth = approver_input.context;
+    let preparer_policy = preparer_input.policy;
+    let approver_policy = approver_input.policy;
     evaluate_authentication_context(preparer_auth, preparer_policy, trusted_now_unix)
         .map_err(AuthenticatedApprovalError::PreparerAuthentication)?;
     evaluate_authentication_context(approver_auth, approver_policy, trusted_now_unix)
