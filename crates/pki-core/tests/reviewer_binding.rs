@@ -151,27 +151,35 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
     };
     assert!(bind_authenticated_policy_decision(
         &verified,
-        &preparer,
-        &accepted,
-        &preparer_auth,
-        &approver_auth,
-        &preparer_policy,
-        &approver_policy,
+        &ReviewerAuthentication {
+            reviewer: &preparer,
+            context: &preparer_auth,
+            policy: &preparer_policy,
+        },
+        &ReviewerAuthentication {
+            reviewer: &accepted,
+            context: &approver_auth,
+            policy: &approver_policy,
+        },
         now,
-    )
+        )
     .is_ok());
     approver_auth.subject = "subject-A";
     assert_eq!(
         bind_authenticated_policy_decision(
             &verified,
-            &preparer,
-            &accepted,
-            &preparer_auth,
-            &approver_auth,
-            &preparer_policy,
-            &approver_policy,
+            &ReviewerAuthentication {
+                reviewer: &preparer,
+                context: &preparer_auth,
+                policy: &preparer_policy,
+            },
+            &ReviewerAuthentication {
+                reviewer: &accepted,
+                context: &approver_auth,
+                policy: &approver_policy,
+            },
             now,
-        ),
+            ),
         Err(AuthenticatedApprovalError::IdentityMismatch)
     );
     approver_auth.subject = "subject-B";
@@ -179,14 +187,18 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
     assert_eq!(
         bind_authenticated_policy_decision(
             &verified,
-            &preparer,
-            &accepted,
-            &preparer_auth,
-            &approver_auth,
-            &preparer_policy,
-            &approver_policy,
+            &ReviewerAuthentication {
+                reviewer: &preparer,
+                context: &preparer_auth,
+                policy: &preparer_policy,
+            },
+            &ReviewerAuthentication {
+                reviewer: &accepted,
+                context: &approver_auth,
+                policy: &approver_policy,
+            },
             now,
-        ),
+            ),
         Err(AuthenticatedApprovalError::ApproverAuthentication(
             AuthenticationPolicyError::UnsupportedMethod
         ))
