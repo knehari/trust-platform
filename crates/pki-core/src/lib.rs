@@ -18,6 +18,7 @@ pub mod policy_trace;
 pub mod postgres_store;
 pub mod provider_evidence;
 pub mod reconciliation;
+pub mod reviewer_binding;
 pub mod serial;
 pub mod x509_extensions;
 
