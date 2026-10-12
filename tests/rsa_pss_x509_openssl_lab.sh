@@ -51,4 +51,21 @@ if openssl verify -CAfile "$work/root.pem" -purpose sslserver \
   echo "ERROR: mismatched TLS hostname accepted" >&2
   exit 1
 fi
+# A different trust anchor must not validate the issued certificate.
+openssl req -new -x509 -newkey rsa:3072 -nodes -sha256 -days 1 \
+  -subj "/CN=Unrelated Test Root" \
+  -keyout "$work/other.key" -out "$work/other-root.pem" >/dev/null 2>&1
+if openssl verify -CAfile "$work/other-root.pem" -purpose sslserver \
+  -verify_hostname api.lab.invalid "$work/leaf.pem" >/dev/null 2>&1; then
+  echo "ERROR: unrelated issuer accepted as trust anchor" >&2
+  exit 1
+fi
+# An issued certificate must have an end-entity profile, not CA privileges.
+grep -q 'CA:FALSE' "$work/leaf.txt"
+grep -q 'TLS Web Server Authentication' "$work/leaf.txt"
+# It must not be mistaken for an RSA-PKCS#1 v1.5 signed X.509 certificate.
+if grep -q 'Signature Algorithm: sha256WithRSAEncryption' "$work/leaf.txt"; then
+  echo "ERROR: leaf unexpectedly uses PKCS1 v1.5 signature" >&2
+  exit 1
+fi
 echo 'RSA-PSS X.509 OpenSSL lab conformance passed'
