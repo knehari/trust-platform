@@ -54,7 +54,9 @@ pub fn evaluate_lab_capabilities(
     {
         return Err(CapabilityError::MissingProviderOperation);
     }
-    if policy.required_operations.contains(&CryptoOperation::EncodeX509Certificate)
+    if policy
+        .required_operations
+        .contains(&CryptoOperation::EncodeX509Certificate)
         && !policy.certificate_profile_verified
     {
         return Err(CapabilityError::MissingCertificateProfile);
@@ -113,7 +115,10 @@ mod tests {
 
     #[test]
     fn certificate_profile_is_independent_of_signing_capability() {
-        let operations = [CryptoOperation::Sign, CryptoOperation::EncodeX509Certificate];
+        let operations = [
+            CryptoOperation::Sign,
+            CryptoOperation::EncodeX509Certificate,
+        ];
         let caps = ProviderCapabilities {
             algorithm: SignatureAlgorithm::EcdsaP256Sha256,
             operations: &operations,
