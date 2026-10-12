@@ -7,9 +7,9 @@
 
 use crate::ca_observation::ObservedCaPublicCertificate;
 use crate::cp_cps::{generate as generate_cp_cps, Input as CpCpsInput};
+use crate::policy_gate::VerifiedPresignPolicyIntent;
 #[cfg(feature = "lab-software")]
 use crate::policy_trace::VerifiedDraftCertificateTrace;
-use crate::policy_gate::VerifiedPresignPolicyIntent;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
 use postgres::{Client, Error as PgError, NoTls};
 
@@ -403,7 +403,9 @@ impl PgIssuanceStore {
     /// signing attempt. This disallows plain signing_intent INSERTs lacking
     /// issuer-scoped valid policy grants, but does not authenticate actors.
     pub fn activate_issuer_policy_gate_lab(
-        &mut self, ca_id: &str, actor_id: &str,
+        &mut self,
+        ca_id: &str,
+        actor_id: &str,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
             "SELECT activate_ca_policy_gate_lab($1::text::uuid,$2)",
@@ -415,19 +417,31 @@ impl PgIssuanceStore {
     /// Records separate proposer/approver strings; production must derive
     /// identities from authenticated policy-authority permissions, NOT input.
     pub fn approve_draft_policy_lab(
-        &mut self, ca_id: &str, draft_id: &str,
-        proposer: &str, approver: &str,
-        cp_sha256: &[u8; 32], cps_sha256: &[u8; 32],
-        from: &str, until: &str,
+        &mut self,
+        ca_id: &str,
+        draft_id: &str,
+        proposer: &str,
+        approver: &str,
+        cp_sha256: &[u8; 32],
+        cps_sha256: &[u8; 32],
+        from: &str,
+        until: &str,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
             "SELECT approve_policy_draft_lab(
                 $1::text::uuid,$2::text::uuid,$3,$4,$5,$6,
                 $7::text::timestamptz,$8::text::timestamptz
             )::text",
-            &[&ca_id, &draft_id, &proposer, &approver,
-              &cp_sha256.as_slice(), &cps_sha256.as_slice(),
-              &from, &until],
+            &[
+                &ca_id,
+                &draft_id,
+                &proposer,
+                &approver,
+                &cp_sha256.as_slice(),
+                &cps_sha256.as_slice(),
+                &from,
+                &until,
+            ],
         )?;
         Ok(row.get(0))
     }
@@ -436,16 +450,23 @@ impl PgIssuanceStore {
     /// PostgreSQL checks effective approved edition, immutable request and
     /// corresponding issuer before any signing intent is inserted.
     pub fn grant_presign_policy_lab(
-        &mut self, approval_id: &str,
-        actor_id: &str, verified: &VerifiedPresignPolicyIntent,
+        &mut self,
+        approval_id: &str,
+        actor_id: &str,
+        verified: &VerifiedPresignPolicyIntent,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
             "SELECT grant_request_approved_policy_lab(
                 $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6
             )",
-            &[&verified.ca_id(), &verified.request_id(), &approval_id,
-              &verified.policy_oid(), &verified.tbs_sha256().as_slice(),
-              &actor_id],
+            &[
+                &verified.ca_id(),
+                &verified.request_id(),
+                &approval_id,
+                &verified.policy_oid(),
+                &verified.tbs_sha256().as_slice(),
+                &actor_id,
+            ],
         )?;
         Ok(row.get(0))
     }
