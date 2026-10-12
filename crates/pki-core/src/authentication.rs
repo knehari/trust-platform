@@ -147,29 +147,29 @@ mod tests {
         };
         assert_eq!(
             evaluate_authentication_context(&context, &policy, 110),
-                Err(AuthenticationPolicyError::UnsupportedMethod)
-            );
+            Err(AuthenticationPolicyError::UnsupportedMethod)
+        );
         context.method = AuthenticationMethod::OpenIdConnect;
         context.issuer = "untrusted.example.invalid";
         assert_eq!(
             evaluate_authentication_context(&context, &policy, 110),
-                Err(AuthenticationPolicyError::UntrustedIssuer)
-            );
+            Err(AuthenticationPolicyError::UntrustedIssuer)
+        );
         context.issuer = "trusted.example.invalid";
         context.assurance = AssuranceLevel::Low;
         assert_eq!(
             evaluate_authentication_context(&context, &policy, 110),
-                Err(AuthenticationPolicyError::InsufficientAssurance)
-            );
+            Err(AuthenticationPolicyError::InsufficientAssurance)
+        );
         context.assurance = AssuranceLevel::High;
         assert_eq!(
             evaluate_authentication_context(&context, &policy, 200),
-                Err(AuthenticationPolicyError::ExpiredSession)
-            );
+            Err(AuthenticationPolicyError::ExpiredSession)
+        );
         context.authenticated_at_unix = i64::MAX;
         assert_eq!(
             evaluate_authentication_context(&context, &policy, 200),
-                Err(AuthenticationPolicyError::ExpiredSession)
-            );
+            Err(AuthenticationPolicyError::ExpiredSession)
+        );
     }
 }
