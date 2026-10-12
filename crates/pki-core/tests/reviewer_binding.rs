@@ -41,7 +41,11 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
     let approver = SignerStatement {
         key_id: "checker-key".into(),
         signature_der: checker
-            .sign(checker.key_ref(), SignatureAlgorithm::EcdsaP256Sha256, &bytes)
+            .sign(
+                checker.key_ref(),
+                SignatureAlgorithm::EcdsaP256Sha256,
+                &bytes,
+            )
             .unwrap(),
     };
     let maker_pub = public(&maker);
