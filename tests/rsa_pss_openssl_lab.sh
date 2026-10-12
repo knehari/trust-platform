@@ -42,8 +42,7 @@ if openssl dgst -sha256 -verify "$work/pub.pem" \
   echo "ERROR: PKCS1 v1.5 accepted for RSA-PSS proof" >&2
   exit 1
 fi
-cp "$work/signature" "$work/corrupt-signature"
-printf '\\000' | dd of="$work/corrupt-signature" bs=1 seek=0 count=1 conv=notrunc status=none
+head -c 32 "$work/signature" > "$work/corrupt-signature"
 if openssl dgst -sha256 -verify "$work/pub.pem" \
   -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 \
   -sigopt rsa_mgf1_md:sha256 -signature "$work/corrupt-signature" "$work/message" >/dev/null 2>&1; then
