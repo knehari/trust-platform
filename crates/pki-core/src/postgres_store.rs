@@ -7,6 +7,7 @@
 
 use crate::ca_observation::ObservedCaPublicCertificate;
 use crate::cp_cps::{generate as generate_cp_cps, Input as CpCpsInput};
+use crate::policy_gate::VerifiedPresignPolicyIntent;
 #[cfg(feature = "lab-software")]
 use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
@@ -73,6 +74,19 @@ pub struct ReconciliationReviewInput<'a> {
 }
 
 /// A replay is a *reference to a prior attempt*, never authorization to sign again.
+/// Proposed lab approval parameters. Caller-supplied actor strings are NOT
+/// authenticated or evidence of organizational policy authority.
+pub struct LabDraftApproval<'a> {
+    pub ca_id: &'a str,
+    pub draft_id: &'a str,
+    pub proposer: &'a str,
+    pub approver: &'a str,
+    pub cp_sha256: &'a [u8; 32],
+    pub cps_sha256: &'a [u8; 32],
+    pub effective_from: &'a str,
+    pub effective_until: &'a str,
+}
+
 pub struct PgIssuanceStore {
     client: Client,
 }
@@ -393,6 +407,69 @@ impl PgIssuanceStore {
                 &verified.cp_sha256().as_slice(),
                 &verified.cps_sha256().as_slice(),
                 &verified.policy_oid(),
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// One-way opt-in issuer policy gate, laboratory use only.
+    /// Caller identity is not authenticated by this database adapter.
+    pub fn activate_issuer_policy_gate_lab(
+        &mut self,
+        ca_id: &str,
+        actor_id: &str,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT activate_ca_policy_gate_lab($1::text::uuid,$2)",
+            &[&ca_id, &actor_id],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Two distinct caller-supplied strings, NOT authenticated identities.
+    pub fn approve_draft_policy_lab(
+        &mut self,
+        input: &LabDraftApproval<'_>,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT approve_policy_draft_lab(
+                $1::text::uuid,$2::text::uuid,$3,$4,$5,$6,
+                $7::text::timestamptz,$8::text::timestamptz
+            )::text",
+            &[
+                &input.ca_id,
+                &input.draft_id,
+                &input.proposer,
+                &input.approver,
+                &input.cp_sha256.as_slice(),
+                &input.cps_sha256.as_slice(),
+                &input.effective_from,
+                &input.effective_until,
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Cryptographically verified exact TBS-policy OID supplied by Rust;
+    /// PostgreSQL checks effective approved edition, immutable request and
+    /// corresponding issuer before any signing intent is inserted.
+    pub fn grant_presign_policy_lab(
+        &mut self,
+        approval_id: &str,
+        actor_id: &str,
+        verified: &VerifiedPresignPolicyIntent,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT grant_request_approved_policy_lab(
+                $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6
+            )",
+            &[
+                &verified.ca_id(),
+                &verified.request_id(),
+                &approval_id,
+                &verified.policy_oid(),
+                &verified.tbs_sha256().as_slice(),
+                &actor_id,
             ],
         )?;
         Ok(row.get(0))
