@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn known_but_unimplemented_algorithms_never_become_available() {
         let provider = AdvertisedProvider;
-        for algorithm in [SignatureAlgorithm::RsaPssSha256, SignatureAlgorithm::MlDsa65] {
+        for algorithm in [
+            SignatureAlgorithm::RsaPssSha256,
+            SignatureAlgorithm::MlDsa65,
+        ] {
             assert_eq!(
                 select_lab_algorithm(&provider, algorithm, &[algorithm]),
                 Err(AlgorithmSelectionError::Unimplemented)
@@ -129,14 +132,21 @@ mod tests {
     #[test]
     fn policy_denial_precedes_provider_capabilities() {
         assert_eq!(
-            select_lab_algorithm(&AdvertisedProvider, SignatureAlgorithm::EcdsaP256Sha256, &[]),
+            select_lab_algorithm(
+                &AdvertisedProvider,
+                SignatureAlgorithm::EcdsaP256Sha256,
+                &[]
+            ),
             Err(AlgorithmSelectionError::ForbiddenByPolicy)
         );
     }
 
     #[test]
     fn catalogue_explicitly_marks_pqc_unimplemented() {
-        assert_eq!(descriptor(SignatureAlgorithm::MlDsa65).family, CryptoFamily::PostQuantum);
+        assert_eq!(
+            descriptor(SignatureAlgorithm::MlDsa65).family,
+            CryptoFamily::PostQuantum
+        );
         assert_eq!(
             descriptor(SignatureAlgorithm::MlDsa65).implementation,
             ImplementationStatus::NotImplemented
