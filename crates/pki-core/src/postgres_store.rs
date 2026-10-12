@@ -74,6 +74,19 @@ pub struct ReconciliationReviewInput<'a> {
 }
 
 /// A replay is a *reference to a prior attempt*, never authorization to sign again.
+/// Proposed lab approval parameters. Caller-supplied actor strings are NOT
+/// authenticated or evidence of organizational policy authority.
+pub struct LabDraftApproval<'a> {
+    pub ca_id: &'a str,
+    pub draft_id: &'a str,
+    pub proposer: &'a str,
+    pub approver: &'a str,
+    pub cp_sha256: &'a [u8; 32],
+    pub cps_sha256: &'a [u8; 32],
+    pub effective_from: &'a str,
+    pub effective_until: &'a str,
+}
+
 pub struct PgIssuanceStore {
     client: Client,
 }
@@ -400,36 +413,32 @@ impl PgIssuanceStore {
     }
 
     /// Activate a one-way lab-only policy gate on an issuer before any
-    /// signing attempt. This disallows plain signing_intent INSERTs lacking
-    /// issuer-scoped valid policy grants, but does not authenticate actors.
-    pub fn activate_issuer_policy_gate_lab(
-        &mut self,
-        ca_id: &str,
-        actor_id: &str,
-    ) -> Result<String, StoreError> {
-        let row = self.client.query_one(
-            "SELECT activate_ca_policy_gate_lab($1::text::uuid,$2)",
-            &[&ca_id, &actor_id],
-        )?;
-        Ok(row.get(0))
-    }
-
-    /// Records separate proposer/approver strings; production must derive
+    /// signing attempt. This disallows plain signing_intent INSERTs    /// Records separate proposer/approver strings; production must derive
     /// identities from authenticated policy-authority permissions, NOT input.
     pub fn approve_draft_policy_lab(
         &mut self,
-        ca_id: &str,
-        draft_id: &str,
-        proposer: &str,
-        approver: &str,
-        cp_sha256: &[u8; 32],
-        cps_sha256: &[u8; 32],
-        from: &str,
-        until: &str,
+        input: &LabDraftApproval<'_>,
     ) -> Result<String, StoreError> {
         let row = self.client.query_one(
             "SELECT approve_policy_draft_lab(
                 $1::text::uuid,$2::text::uuid,$3,$4,$5,$6,
+                $7::text::timestamptz,$8::text::timestamptz
+            )::text",
+            &[
+                &input.ca_id,
+                &input.draft_id,
+                &input.proposer,
+                &input.approver,
+                &input.cp_sha256.as_slice(),
+                &input.cps_sha256.as_slice(),
+                &input.effective_from,
+                &input.effective_until,
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+uuid,$2::text::uuid,$3,$4,$5,$6,
                 $7::text::timestamptz,$8::text::timestamptz
             )::text",
             &[
