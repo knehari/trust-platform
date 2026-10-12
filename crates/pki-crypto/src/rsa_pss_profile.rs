@@ -24,6 +24,7 @@ pub enum RsaPssProfileError {
     InvalidSaltLength,
     InvalidTrailer,
     InsufficientKeySize,
+    KeySizeMismatch,
 }
 
 /// Required profile for the planned SHA-256 RSA-PSS implementation:
@@ -61,6 +62,21 @@ pub fn authorize_rsa_pss_sha256_profile(
     validate_rsa_pss_sha256(params)
 }
 
+
+/// Validates that the selected key's measured modulus size matches the
+/// requested profile. The adapter must derive this value from the parsed key,
+/// never from a caller-supplied claim.
+pub fn validate_rsa_pss_key_binding(
+    params: &RsaPssParameters,
+    observed_modulus_bits: u16,
+) -> Result<(), RsaPssProfileError> {
+    validate_rsa_pss_sha256(params)?;
+    if observed_modulus_bits != params.modulus_bits {
+        return Err(RsaPssProfileError::KeySizeMismatch);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +110,19 @@ mod tests {
                 &[crate::SignatureAlgorithm::RsaPssSha256]
             ),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn measured_key_size_must_match_declared_profile() {
+        assert_eq!(validate_rsa_pss_key_binding(&accepted(), 3072), Ok(()));
+        assert_eq!(
+            validate_rsa_pss_key_binding(&accepted(), 2048),
+            Err(RsaPssProfileError::KeySizeMismatch)
+        );
+        assert_eq!(
+            validate_rsa_pss_key_binding(&accepted(), 4096),
+            Err(RsaPssProfileError::KeySizeMismatch)
         );
     }
 
