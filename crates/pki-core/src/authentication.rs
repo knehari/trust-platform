@@ -99,7 +99,11 @@ mod tests {
 
     #[test]
     fn multiple_methods_with_shared_policy_contract() {
-        let methods = [AuthenticationMethod::OpenIdConnect, AuthenticationMethod::Saml2, AuthenticationMethod::MutualTls];
+        let methods = [
+            AuthenticationMethod::OpenIdConnect,
+            AuthenticationMethod::Saml2,
+            AuthenticationMethod::MutualTls,
+        ];
         let issuers = ["idp.example.invalid", "pki.example.invalid"];
         let policy = AuthenticationPolicy {
             allowed_methods: &methods,
@@ -116,7 +120,10 @@ mod tests {
                 authenticated_at_unix: 1000,
                 session_id: "session-123",
             };
-            assert_eq!(evaluate_authentication_context(&context, &policy, 1100), Ok(()));
+            assert_eq!(
+                evaluate_authentication_context(&context, &policy, 1100),
+                Ok(())
+            );
         }
     }
 
@@ -138,16 +145,31 @@ mod tests {
             authenticated_at_unix: 100,
             session_id: "session",
         };
-        assert_eq!(evaluate_authentication_context(&context, &policy, 110), Err(AuthenticationPolicyError::UnsupportedMethod));
+        assert_eq!(
+            evaluate_authentication_context(&context, &policy, 110),
+                Err(AuthenticationPolicyError::UnsupportedMethod)
+            );
         context.method = AuthenticationMethod::OpenIdConnect;
         context.issuer = "untrusted.example.invalid";
-        assert_eq!(evaluate_authentication_context(&context, &policy, 110), Err(AuthenticationPolicyError::UntrustedIssuer));
+        assert_eq!(
+            evaluate_authentication_context(&context, &policy, 110),
+                Err(AuthenticationPolicyError::UntrustedIssuer)
+            );
         context.issuer = "trusted.example.invalid";
         context.assurance = AssuranceLevel::Low;
-        assert_eq!(evaluate_authentication_context(&context, &policy, 110), Err(AuthenticationPolicyError::InsufficientAssurance));
+        assert_eq!(
+            evaluate_authentication_context(&context, &policy, 110),
+                Err(AuthenticationPolicyError::InsufficientAssurance)
+            );
         context.assurance = AssuranceLevel::High;
-        assert_eq!(evaluate_authentication_context(&context, &policy, 200), Err(AuthenticationPolicyError::ExpiredSession));
+        assert_eq!(
+            evaluate_authentication_context(&context, &policy, 200),
+                Err(AuthenticationPolicyError::ExpiredSession)
+            );
         context.authenticated_at_unix = i64::MAX;
-        assert_eq!(evaluate_authentication_context(&context, &policy, 200), Err(AuthenticationPolicyError::ExpiredSession));
+        assert_eq!(
+            evaluate_authentication_context(&context, &policy, 200),
+                Err(AuthenticationPolicyError::ExpiredSession)
+            );
     }
 }
