@@ -412,9 +412,21 @@ impl PgIssuanceStore {
         Ok(row.get(0))
     }
 
-    /// Activate a one-way lab-only policy gate on an issuer before any
-    /// signing attempt. This disallows plain signing_intent INSERTs    /// Records separate proposer/approver strings; production must derive
-    /// identities from authenticated policy-authority permissions, NOT input.
+    /// One-way opt-in issuer policy gate, laboratory use only.
+    /// Caller identity is not authenticated by this database adapter.
+    pub fn activate_issuer_policy_gate_lab(
+        &mut self,
+        ca_id: &str,
+        actor_id: &str,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT activate_ca_policy_gate_lab($1::text::uuid,$2)",
+            &[&ca_id, &actor_id],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Two distinct caller-supplied strings, NOT authenticated identities.
     pub fn approve_draft_policy_lab(
         &mut self,
         input: &LabDraftApproval<'_>,
@@ -433,23 +445,6 @@ impl PgIssuanceStore {
                 &input.cps_sha256.as_slice(),
                 &input.effective_from,
                 &input.effective_until,
-            ],
-        )?;
-        Ok(row.get(0))
-    }
-
-uuid,$2::text::uuid,$3,$4,$5,$6,
-                $7::text::timestamptz,$8::text::timestamptz
-            )::text",
-            &[
-                &ca_id,
-                &draft_id,
-                &proposer,
-                &approver,
-                &cp_sha256.as_slice(),
-                &cps_sha256.as_slice(),
-                &from,
-                &until,
             ],
         )?;
         Ok(row.get(0))
