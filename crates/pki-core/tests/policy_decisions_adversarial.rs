@@ -50,8 +50,14 @@ fn claim_fields_are_all_cryptographically_bound() {
     let checker_sig = signature(&checker, &baseline);
     let maker_pub = public(&maker);
     let checker_pub = public(&checker);
-    let pm = PinnedPolicyKey { key_id: "maker-key", sec1_p256_public: &maker_pub };
-    let pa = PinnedPolicyKey { key_id: "checker-key", sec1_p256_public: &checker_pub };
+    let pm = PinnedPolicyKey {
+        key_id: "maker-key",
+        sec1_p256_public: &maker_pub,
+    };
+    let pa = PinnedPolicyKey {
+        key_id: "checker-key",
+        sec1_p256_public: &checker_pub,
+    };
     let mut variants = Vec::new();
     let mut changed = baseline.clone();
     changed.ca_id = "33333333-3333-4333-8333-333333333333".into();
@@ -70,12 +76,20 @@ fn claim_fields_are_all_cryptographically_bound() {
     variants.push(changed);
 
     for changed in variants {
-        let signed = DualApproval { claim: &changed, proposer: &maker_sig, approver: &checker_sig };
+        let signed = DualApproval {
+            claim: &changed,
+            proposer: &maker_sig,
+            approver: &checker_sig,
+        };
         assert_eq!(
             verify_dual_approval(&signed, &pm, &pa, &changed),
             Err(ApprovalError::InvalidSignature)
         );
-        let original = DualApproval { claim: &baseline, proposer: &maker_sig, approver: &checker_sig };
+        let original = DualApproval {
+            claim: &baseline,
+            proposer: &maker_sig,
+            approver: &checker_sig,
+        };
         assert_eq!(
             verify_dual_approval(&original, &pm, &pa, &changed),
             Err(ApprovalError::PolicyMismatch)
@@ -94,17 +108,37 @@ fn substituted_pinned_key_and_empty_signatures_are_rejected() {
     let maker_pub = public(&maker);
     let checker_pub = public(&checker);
     let impostor_pub = public(&impostor);
-    let pm = PinnedPolicyKey { key_id: "maker-key", sec1_p256_public: &maker_pub };
-    let pa = PinnedPolicyKey { key_id: "checker-key", sec1_p256_public: &checker_pub };
-    let substituted = PinnedPolicyKey { key_id: "checker-key", sec1_p256_public: &impostor_pub };
-    let normal = DualApproval { claim: &baseline, proposer: &maker_sig, approver: &checker_sig };
+    let pm = PinnedPolicyKey {
+        key_id: "maker-key",
+        sec1_p256_public: &maker_pub,
+    };
+    let pa = PinnedPolicyKey {
+        key_id: "checker-key",
+        sec1_p256_public: &checker_pub,
+    };
+    let substituted = PinnedPolicyKey {
+        key_id: "checker-key",
+        sec1_p256_public: &impostor_pub,
+    };
+    let normal = DualApproval {
+            claim: &baseline,
+            proposer: &maker_sig,
+            approver: &checker_sig,
+        };
     assert_eq!(
         verify_dual_approval(&normal, &pm, &substituted, &baseline),
         Err(ApprovalError::InvalidSignature)
     );
 
-    let blank = SignerStatement { key_id: "checker-key".into(), signature_der: Vec::new() };
-    let missing = DualApproval { claim: &baseline, proposer: &maker_sig, approver: &blank };
+    let blank = SignerStatement {
+        key_id: "checker-key".into(),
+        signature_der: Vec::new(),
+    };
+    let missing = DualApproval {
+            claim: &baseline,
+            proposer: &maker_sig,
+            approver: &blank,
+        };
     assert_eq!(
         verify_dual_approval(&missing, &pm, &pa, &baseline),
         Err(ApprovalError::InvalidSignature)
@@ -123,5 +157,8 @@ fn canonicalization_rejects_unbounded_or_control_character_fields() {
     assert_eq!(long.canonical_bytes(), Err(ApprovalError::InvalidClaim));
     let mut zero_hash = claim();
     zero_hash.cps_sha256 = [0; 32];
-    assert_eq!(zero_hash.canonical_bytes(), Err(ApprovalError::InvalidClaim));
+    assert_eq!(
+        zero_hash.canonical_bytes(),
+        Err(ApprovalError::InvalidClaim)
+    );
 }
