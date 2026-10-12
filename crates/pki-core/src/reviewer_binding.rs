@@ -150,12 +150,6 @@ pub fn bind_authenticated_policy_decision(
     let maximum_age = preparer_policy
         .maximum_session_age_seconds
         .min(approver_policy.maximum_session_age_seconds);
-    bind_verified_policy_decision(
-        verified,
-        preparer,
-        approver,
-        trusted_now_unix,
-        maximum_age,
-    )
-    .map_err(AuthenticatedApprovalError::ReviewerBinding)
+    bind_verified_policy_decision(verified, preparer, approver, trusted_now_unix, maximum_age)
+        .map_err(AuthenticatedApprovalError::ReviewerBinding)
 }
