@@ -1,6 +1,7 @@
 //! In-memory security tests only; does not establish production IdP trust.
 #![cfg(feature = "lab-software")]
 
+use trust_pki_core::authentication::*;
 use trust_pki_core::policy_decisions::*;
 use trust_pki_core::reviewer_binding::*;
 use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
@@ -109,6 +110,87 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
         Err(ReviewerBindingError::WrongIssuerScope)
     );
     checker.ca_id = "ca-lab";
+    let accepted = TrustedReviewer {
+        subject_id: "subject-B",
+        identity_issuer: "https://idp.example.invalid",
+        pinned_key_id: "checker-key",
+        role: PolicyRole::Approver,
+        ca_id: "ca-lab",
+        authenticated_at_unix: 1_780_000_000,
+    };
+    let preparer_auth = AuthenticationContext {
+        issuer: "https://idp.example.invalid",
+        subject: "subject-A",
+        method: AuthenticationMethod::OpenIdConnect,
+        assurance: AssuranceLevel::High,
+        authenticated_at_unix: 1_780_000_000,
+        session_id: "preparer-session",
+    };
+    let mut approver_auth = AuthenticationContext {
+        issuer: "https://idp.example.invalid",
+        subject: "subject-B",
+        method: AuthenticationMethod::Saml2,
+        assurance: AssuranceLevel::High,
+        authenticated_at_unix: 1_780_000_000,
+        session_id: "approver-session",
+    };
+    let allowed_preparer = [AuthenticationMethod::OpenIdConnect];
+    let allowed_approver = [AuthenticationMethod::Saml2];
+    let trusted_issuers = ["https://idp.example.invalid"];
+    let preparer_policy = AuthenticationPolicy {
+        allowed_methods: &allowed_preparer,
+        trusted_issuers: &trusted_issuers,
+        minimum_assurance: AssuranceLevel::High,
+        maximum_session_age_seconds: 300,
+    };
+    let approver_policy = AuthenticationPolicy {
+        allowed_methods: &allowed_approver,
+        trusted_issuers: &trusted_issuers,
+        minimum_assurance: AssuranceLevel::High,
+        maximum_session_age_seconds: 300,
+    };
+    assert!(bind_authenticated_policy_decision(
+        &verified,
+        &preparer,
+        &accepted,
+        &preparer_auth,
+        &approver_auth,
+        &preparer_policy,
+        &approver_policy,
+        now,
+    )
+    .is_ok());
+    approver_auth.subject = "subject-A";
+    assert_eq!(
+        bind_authenticated_policy_decision(
+            &verified,
+            &preparer,
+            &accepted,
+            &preparer_auth,
+            &approver_auth,
+            &preparer_policy,
+            &approver_policy,
+            now,
+        ),
+        Err(AuthenticatedApprovalError::IdentityMismatch)
+    );
+    approver_auth.subject = "subject-B";
+    approver_auth.method = AuthenticationMethod::DirectoryPassword;
+    assert_eq!(
+        bind_authenticated_policy_decision(
+            &verified,
+            &preparer,
+            &accepted,
+            &preparer_auth,
+            &approver_auth,
+            &preparer_policy,
+            &approver_policy,
+            now,
+        ),
+        Err(AuthenticatedApprovalError::ApproverAuthentication(
+            AuthenticationPolicyError::UnsupportedMethod
+        ))
+    );
     checker.authenticated_at_unix = now - 301;
     assert_eq!(
         bind_verified_policy_decision(&verified, &preparer, &checker, now, 300),
