@@ -9,6 +9,7 @@ pub enum PssIdentifierError {
     WrongAlgorithm,
     MissingParameters,
     InconsistentParameters,
+    InvalidParameterEnvelope,
     InvalidDer,
 }
 
@@ -39,6 +40,11 @@ pub fn check_pss_identifiers(
     let outer_der = outer_params
         .to_der()
         .map_err(|_| PssIdentifierError::InvalidDer)?;
+    // A bare empty sequence encodes the insecure SHA-1 default profile.
+    // This is only a preliminary envelope check, not full RSA-PSS decoding.
+    if tbs_der.len() <= 2 || tbs_der[0] != 0x30 {
+        return Err(PssIdentifierError::InvalidParameterEnvelope);
+    }
     if tbs_der != outer_der {
         return Err(PssIdentifierError::InconsistentParameters);
     }
@@ -80,8 +86,9 @@ mod tests {
             check_pss_identifiers(&pss, &different),
             Err(PssIdentifierError::InconsistentParameters)
         );
-        // This checks consistency ONLY; empty/default ASN.1 params must still
-        // be rejected by the future strict RSA-PSS parameter decoder.
-        assert_eq!(check_pss_identifiers(&pss, &pss), Ok(()));
+        assert_eq!(
+            check_pss_identifiers(&pss, &pss),
+            Err(PssIdentifierError::InvalidParameterEnvelope)
+        );
     }
 }
