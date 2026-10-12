@@ -162,7 +162,7 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
             policy: &approver_policy,
         },
         now,
-        )
+    )
     .is_ok());
     approver_auth.subject = "subject-A";
     assert_eq!(
@@ -179,7 +179,7 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
                 policy: &approver_policy,
             },
             now,
-            ),
+        ),
         Err(AuthenticatedApprovalError::IdentityMismatch)
     );
     approver_auth.subject = "subject-B";
@@ -198,7 +198,7 @@ fn policy_decision_requires_distinct_scoped_fresh_reviewers() {
                 policy: &approver_policy,
             },
             now,
-            ),
+        ),
         Err(AuthenticatedApprovalError::ApproverAuthentication(
             AuthenticationPolicyError::UnsupportedMethod
         ))
