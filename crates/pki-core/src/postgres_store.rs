@@ -7,6 +7,7 @@
 
 use crate::ca_observation::ObservedCaPublicCertificate;
 use crate::cp_cps::{generate as generate_cp_cps, Input as CpCpsInput};
+use crate::policy_decisions::VerifiedDualApproval;
 use crate::policy_gate::VerifiedPresignPolicyIntent;
 #[cfg(feature = "lab-software")]
 use crate::policy_trace::VerifiedDraftCertificateTrace;
@@ -471,6 +472,53 @@ impl PgIssuanceStore {
                 &verified.tbs_sha256().as_slice(),
                 &actor_id,
             ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    /// Persist a cryptographically verified two-key CP/CPS decision receipt.
+    /// PostgreSQL does not itself verify ECDSA. No live IdP authority assumed.
+    pub fn persist_dual_signature_policy_lab(
+        &mut self,
+        approval_id: &str,
+        verified: &VerifiedDualApproval,
+    ) -> Result<String, StoreError> {
+        let c = verified.claim();
+        let row = self.client.query_one(
+            "SELECT persist_verified_dual_policy_receipt_lab(
+                $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,
+                $6,$7,$8,$9,$10,$11,$12,$13,
+                to_timestamp($14::bigint),to_timestamp($15::bigint)
+             )::text",
+            &[
+                &c.ca_id,
+                &approval_id,
+                &c.draft_id,
+                &verified.proposer_key_id(),
+                &verified.approver_key_id(),
+                &verified.claim_canonical(),
+                &verified.proposer_signature(),
+                &verified.approver_signature(),
+                &verified.evidence_sha256().as_slice(),
+                &c.cp_sha256.as_slice(),
+                &c.cps_sha256.as_slice(),
+                &c.policy_oid,
+                &c.policy_revision,
+                &c.effective_from_unix,
+                &c.effective_until_unix,
+            ],
+        )?;
+        Ok(row.get(0))
+    }
+
+    pub fn activate_dual_signature_policy_lab(
+        &mut self,
+        ca_id: &str,
+        actor: &str,
+    ) -> Result<String, StoreError> {
+        let row = self.client.query_one(
+            "SELECT require_dual_signature_policy_lab($1::text::uuid,$2)",
+            &[&ca_id, &actor],
         )?;
         Ok(row.get(0))
     }
