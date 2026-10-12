@@ -1,6 +1,8 @@
 //! Provider deployment boundary (lab contracts only).
 //! Provider attestations are declarations, not cryptographic evidence.
-use crate::provider_capabilities::{evaluate_lab_capabilities, CapabilityError, CryptoOperationPolicy, ProviderCapabilities};
+use crate::provider_capabilities::{
+    evaluate_lab_capabilities, CapabilityError, CryptoOperationPolicy, ProviderCapabilities,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
