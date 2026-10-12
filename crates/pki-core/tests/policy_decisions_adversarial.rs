@@ -121,10 +121,10 @@ fn substituted_pinned_key_and_empty_signatures_are_rejected() {
         sec1_p256_public: &impostor_pub,
     };
     let normal = DualApproval {
-            claim: &baseline,
-            proposer: &maker_sig,
-            approver: &checker_sig,
-        };
+        claim: &baseline,
+        proposer: &maker_sig,
+        approver: &checker_sig,
+    };
     assert_eq!(
         verify_dual_approval(&normal, &pm, &substituted, &baseline),
         Err(ApprovalError::InvalidSignature)
@@ -135,10 +135,10 @@ fn substituted_pinned_key_and_empty_signatures_are_rejected() {
         signature_der: Vec::new(),
     };
     let missing = DualApproval {
-            claim: &baseline,
-            proposer: &maker_sig,
-            approver: &blank,
-        };
+        claim: &baseline,
+        proposer: &maker_sig,
+        approver: &blank,
+    };
     assert_eq!(
         verify_dual_approval(&missing, &pm, &pa, &baseline),
         Err(ApprovalError::InvalidSignature)
