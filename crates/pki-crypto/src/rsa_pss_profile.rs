@@ -18,6 +18,7 @@ pub struct RsaPssParameters {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsaPssProfileError {
+    AlgorithmNotAuthorized,
     UnsupportedHash,
     MismatchedMgf1Hash,
     InvalidSaltLength,
@@ -48,6 +49,20 @@ pub fn validate_rsa_pss_sha256(params: &RsaPssParameters) -> Result<(), RsaPssPr
     Ok(())
 }
 
+
+    
+/// Checks the RSA-PSS parameter profile and the requested algorithm against
+/// the issuer's explicit allowlist. This still performs no cryptographic work.
+pub fn authorize_rsa_pss_sha256_profile(
+    params: &RsaPssParameters,
+    allowed: &[crate::SignatureAlgorithm],
+) -> Result<(), RsaPssProfileError> {
+    if !allowed.contains(&crate::SignatureAlgorithm::RsaPssSha256) {
+        return Err(RsaPssProfileError::AlgorithmNotAuthorized);
+    }
+    validate_rsa_pss_sha256(params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +75,28 @@ mod tests {
             trailer_field: 1,
             modulus_bits: 3072,
         }
+    }
+
+    #[test]
+    fn policy_must_explicitly_authorize_rsa_pss() {
+        assert_eq!(
+            authorize_rsa_pss_sha256_profile(&accepted(), &[]),
+            Err(RsaPssProfileError::AlgorithmNotAuthorized)
+        );
+        assert_eq!(
+            authorize_rsa_pss_sha256_profile(
+                &accepted(),
+                &[crate::SignatureAlgorithm::EcdsaP256Sha256]
+            ),
+            Err(RsaPssProfileError::AlgorithmNotAuthorized)
+        );
+        assert_eq!(
+            authorize_rsa_pss_sha256_profile(
+                &accepted(),
+                &[crate::SignatureAlgorithm::RsaPssSha256]
+            ),
+            Ok(())
+        );
     }
 
     #[test]
