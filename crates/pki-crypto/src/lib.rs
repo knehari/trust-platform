@@ -3,6 +3,7 @@
 //! No signing provider is enabled in production builds.
 
 pub mod algorithm_catalog;
+pub mod provider_capabilities;
 #[cfg(feature = "lab-software")]
 pub mod lab;
 
