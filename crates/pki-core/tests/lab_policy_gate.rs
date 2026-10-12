@@ -75,18 +75,18 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
         .unwrap();
 
     // Actor identity is NOT authenticated in the laboratory DB.
-    let approval_id = db
-        .approve_draft_policy_lab(
+    let approval_id = db.approve_draft_policy_lab(
+        &trust_pki_core::postgres_store::LabDraftApproval {
             ca_id,
-            &draft_id,
-            "maker",
-            "checker",
-            &drafts.cp.sha256,
-            &drafts.cps.sha256,
-            "2025-01-01T00:00:00Z",
-            "2030-01-01T00:00:00Z",
-        )
-        .unwrap();
+            draft_id: &draft_id,
+            proposer: "maker",
+            approver: "checker",
+            cp_sha256: &drafts.cp.sha256,
+            cps_sha256: &drafts.cps.sha256,
+            effective_from: "2025-01-01T00:00:00Z",
+            effective_until: "2030-01-01T00:00:00Z",
+        },
+    ).unwrap();
     assert_eq!(
         db.activate_issuer_policy_gate_lab(ca_id, "lab-admin")
             .unwrap(),
