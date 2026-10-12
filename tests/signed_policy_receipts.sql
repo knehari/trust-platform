@@ -12,6 +12,8 @@ DECLARE
   v_sig BYTEA:=decode(repeat('a1',70),'hex');
   v_claim BYTEA:=decode(repeat('55',180),'hex');
   v_digest BYTEA:=decode(repeat('77',32),'hex');
+  v_from TIMESTAMPTZ:=date_trunc('second',now()-interval '1 hour');
+  v_until TIMESTAMPTZ:=date_trunc('second',now()+interval '1 hour');
   v_nonce BYTEA:=decode(repeat('32',32),'hex');
 BEGIN
   v_observed:=register_ca_public_observation(v_ca,'operator',
@@ -24,7 +26,7 @@ BEGIN
   v_approval:=approve_policy_draft_lab(v_ca,v_draft,'maker','checker',
     digest(convert_to(v_cp,'UTF8'),'sha256'),
     digest(convert_to(v_cps,'UTF8'),'sha256'),
-    now()-interval '1 hour',now()+interval '1 hour');
+    v_from,v_until);
   PERFORM activate_ca_policy_gate_lab(v_ca,'operator');
   PERFORM require_dual_signature_policy_lab(v_ca,'operator');
 
@@ -46,8 +48,19 @@ BEGIN
       v_ca,v_approval,v_draft,'maker-key','checker-key',
       v_claim,v_sig,v_sig,v_digest,decode(repeat('ee',32),'hex'),
       digest(convert_to(v_cps,'UTF8'),'sha256'),
-      '1.3.6.1.4.1.55555.1.1','v1');
+      '1.3.6.1.4.1.55555.1.1','v1',v_from,v_until);
     RAISE EXCEPTION 'tampered CP hash allowed';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+
+  BEGIN
+    PERFORM persist_verified_dual_policy_receipt_lab(
+      v_ca,v_approval,v_draft,'maker-key','checker-key',
+      v_claim,v_sig,v_sig,v_digest,
+      digest(convert_to(v_cp,'UTF8'),'sha256'),
+      digest(convert_to(v_cps,'UTF8'),'sha256'),
+      '1.3.6.1.4.1.55555.1.1','v1',
+      v_from,v_until+interval '30 seconds');
+    RAISE EXCEPTION 'signed-effective-window tampering accepted';
   EXCEPTION WHEN check_violation THEN NULL; END;
 
   PERFORM persist_verified_dual_policy_receipt_lab(
@@ -55,14 +68,14 @@ BEGIN
     v_claim,v_sig,v_sig,v_digest,
     digest(convert_to(v_cp,'UTF8'),'sha256'),
     digest(convert_to(v_cps,'UTF8'),'sha256'),
-    '1.3.6.1.4.1.55555.1.1','v1');
+    '1.3.6.1.4.1.55555.1.1','v1',v_from,v_until);
   BEGIN
     PERFORM persist_verified_dual_policy_receipt_lab(
       v_ca,v_approval,v_draft,'maker-key','checker-key',
       v_claim,v_sig,v_sig,v_digest,
       digest(convert_to(v_cp,'UTF8'),'sha256'),
       digest(convert_to(v_cps,'UTF8'),'sha256'),
-      '1.3.6.1.4.1.55555.1.1','v1');
+      '1.3.6.1.4.1.55555.1.1','v1',v_from,v_until);
     RAISE EXCEPTION 'duplicate proof replay allowed';
   EXCEPTION WHEN unique_violation THEN NULL; END;
 
