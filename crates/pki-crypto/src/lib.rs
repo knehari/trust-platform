@@ -2,6 +2,7 @@
 //! Signing boundary and algorithm negotiation.
 //! No signing provider is enabled in production builds.
 
+pub mod algorithm_catalog;
 #[cfg(feature = "lab-software")]
 pub mod lab;
 
