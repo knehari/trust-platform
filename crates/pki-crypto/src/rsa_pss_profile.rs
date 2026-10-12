@@ -29,9 +29,7 @@ pub enum RsaPssProfileError {
 /// SHA-256/MGF1-SHA256, 32-byte salt, trailer=1, RSA >=3072 bits.
 /// This is a policy gate only. The adapter must independently check actual
 /// key parameters and verify the complete signed data/signature.
-pub fn validate_rsa_pss_sha256(
-    params: &RsaPssParameters,
-) -> Result<(), RsaPssProfileError> {
+pub fn validate_rsa_pss_sha256(params: &RsaPssParameters) -> Result<(), RsaPssProfileError> {
     if params.message_hash != HashAlgorithm::Sha256 {
         return Err(RsaPssProfileError::UnsupportedHash);
     }
