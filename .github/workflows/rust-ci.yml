@@ -36,6 +36,8 @@ jobs:
           fi
       - name: RSA-PSS OpenSSL conformance (lab only)
         run: bash tests/rsa_pss_openssl_lab.sh
+      - name: RSA-PSS X.509 OpenSSL interoperability (lab only)
+        run: bash tests/rsa_pss_x509_openssl_lab.sh
       - name: Native CA to OpenSSL interop (lab only)
         run: |
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
