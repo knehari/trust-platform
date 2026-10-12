@@ -14,6 +14,7 @@ pub enum CryptoOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityError {
+    InvalidOperationPolicy,
     DeniedByPolicy,
     UnimplementedAlgorithm,
     MissingProviderOperation,
@@ -41,6 +42,9 @@ pub fn evaluate_lab_capabilities(
     capabilities: &ProviderCapabilities<'_>,
     policy: &CryptoOperationPolicy<'_>,
 ) -> Result<(), CapabilityError> {
+    if policy.required_operations.is_empty() {
+        return Err(CapabilityError::InvalidOperationPolicy);
+    }
     if !policy.allowed_algorithms.contains(&capabilities.algorithm) {
         return Err(CapabilityError::DeniedByPolicy);
     }
@@ -67,6 +71,25 @@ pub fn evaluate_lab_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_operation_policy_is_never_an_implicit_grant() {
+        let operations = [CryptoOperation::Sign];
+        let allowed = [SignatureAlgorithm::EcdsaP256Sha256];
+        let caps = ProviderCapabilities {
+            algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+            operations: &operations,
+        };
+        let policy = CryptoOperationPolicy {
+            allowed_algorithms: &allowed,
+            required_operations: &[],
+            certificate_profile_verified: true,
+        };
+        assert_eq!(
+            evaluate_lab_capabilities(&caps, &policy),
+            Err(CapabilityError::InvalidOperationPolicy)
+        );
+    }
 
     #[test]
     fn all_required_operations_must_be_explicit() {
