@@ -6,6 +6,7 @@ pub mod algorithm_catalog;
 #[cfg(feature = "lab-software")]
 pub mod lab;
 pub mod provider_capabilities;
+pub mod provider_deployment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
