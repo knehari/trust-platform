@@ -487,7 +487,8 @@ impl PgIssuanceStore {
         let row = self.client.query_one(
             "SELECT persist_verified_dual_policy_receipt_lab(
                 $1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,
-                $6,$7,$8,$9,$10,$11,$12,$13
+                $6,$7,$8,$9,$10,$11,$12,$13,
+                to_timestamp($14::bigint),to_timestamp($15::bigint)
              )::text",
             &[
                 &c.ca_id,
@@ -503,6 +504,8 @@ impl PgIssuanceStore {
                 &c.cps_sha256.as_slice(),
                 &c.policy_oid,
                 &c.policy_revision,
+                &c.effective_from_unix,
+                &c.effective_until_unix,
             ],
         )?;
         Ok(row.get(0))
