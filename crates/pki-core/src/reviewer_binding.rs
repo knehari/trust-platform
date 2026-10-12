@@ -74,8 +74,12 @@ pub fn bind_verified_policy_decision(
         || approver.authenticated_at_unix <= 0
         || preparer.authenticated_at_unix > trusted_now_unix
         || approver.authenticated_at_unix > trusted_now_unix
-        || trusted_now_unix - preparer.authenticated_at_unix > max_session_age_seconds
-        || trusted_now_unix - approver.authenticated_at_unix > max_session_age_seconds
+        || trusted_now_unix
+            .checked_sub(preparer.authenticated_at_unix)
+            .is_none_or(|age| age > max_session_age_seconds)
+        || trusted_now_unix
+            .checked_sub(approver.authenticated_at_unix)
+            .is_none_or(|age| age > max_session_age_seconds)
     {
         return Err(ReviewerBindingError::ExpiredSession);
     }
