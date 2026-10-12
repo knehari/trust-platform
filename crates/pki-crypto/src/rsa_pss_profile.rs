@@ -49,8 +49,6 @@ pub fn validate_rsa_pss_sha256(params: &RsaPssParameters) -> Result<(), RsaPssPr
     Ok(())
 }
 
-
-    
 /// Checks the RSA-PSS parameter profile and the requested algorithm against
 /// the issuer's explicit allowlist. This still performs no cryptographic work.
 pub fn authorize_rsa_pss_sha256_profile(
