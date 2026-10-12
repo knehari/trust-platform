@@ -62,7 +62,6 @@ pub fn authorize_rsa_pss_sha256_profile(
     validate_rsa_pss_sha256(params)
 }
 
-
 /// Validates that the selected key's measured modulus size matches the
 /// requested profile. The adapter must derive this value from the parsed key,
 /// never from a caller-supplied claim.
