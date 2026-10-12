@@ -55,7 +55,7 @@ pub fn validate_pending_challenge(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab-software"))]
 mod tests {
     use super::*;
     use crate::policy_decisions::*;
@@ -74,7 +74,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "lab-software")]
     fn challenge_is_bound_to_signed_decision_and_reviewer_subjects() {
         let maker = EphemeralP256Signer::generate("maker-key").unwrap();
         let checker = EphemeralP256Signer::generate("checker-key").unwrap();
