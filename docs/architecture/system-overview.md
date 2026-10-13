@@ -1,6 +1,6 @@
 # System architecture — baseline v0.1
 
-Status: proposed, not implemented. Private PKI only, no public WebPKI/QTSP MVP.
+Status: proposed; lab skeleton only (crates/). Private PKI only, no public WebPKI/QTSP MVP.
 
 ## Boundaries
 1. Rust CA Core: CSR parsing, policy evaluation, issuance state, X.509 encoding, revocation and CRL generation.
@@ -15,4 +15,4 @@ The authorization/control plane must not bypass the CA signing policy. Offline r
 Air-gapped capable; no mandatory SaaS; backup and restore tested; least privilege; secure defaults; no private CA keys in DB/logs/source; observability without leaking secrets.
 
 ## Key decisions
-See ADR-0001 and ADR-0002. Full design review required before implementation.
+See ADR-0001 to ADR-0004. Full design review required before implementation.
