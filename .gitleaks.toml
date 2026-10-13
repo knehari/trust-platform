@@ -1,0 +1,15 @@
+# gitleaks configuration: default rules plus PKI-specific ones.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pkcs8-or-legacy-private-key"
+description = "PEM private key (PKCS#1, PKCS#8, SEC1, encrypted or not)"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |ML-DSA |)PRIVATE KEY-----'''
+keywords = ["private key"]
+
+[[rules]]
+id = "pkcs11-pin"
+description = "PKCS#11 / HSM PIN in configuration"
+regex = '''(?i)(?:hsm|pkcs11|so|user)[_-]?pin\s*[:=]\s*["']?[^\s"']{4,}'''
+keywords = ["pin"]

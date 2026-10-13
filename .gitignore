@@ -1,12 +1,49 @@
+# Build output
 target/
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
+# Environment / local configuration
 .env
 .env.*
 !.env.example
+
+# Private keys, keystores and HSM material (never commit; see SECURITY.md).
+# Public test vectors (certificates, CSRs, CRLs) belong in testdata/, which is
+# explicitly re-included below. Secret scanning (gitleaks) runs in pre-commit and
+# CI: .gitignore is a convenience, not a security control.
 *.key
+*.p8
+*.pk8
 *.p12
 *.pfx
-*.pem
-*.der
 *.jks
 *.keystore
+*.bcfks
+*.kdbx
+*.pem
+*.der
+id_rsa*
+id_ecdsa*
+id_ed25519*
+softhsm*/
+tokens/
+*.token
+
+# Database dumps and local data
+*.dump
+*.sql.gz
+*.sqlite
+*.sqlite3
+pgdata/
+
+# Public test vectors only (no private keys: enforced by gitleaks)
+!testdata/**/*.pem
+!testdata/**/*.der
+
+# OS / editors
 .DS_Store
+.idea/
+.vscode/
+*.swp

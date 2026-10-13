@@ -1,0 +1,45 @@
+# cargo-deny: dependency policy (SEC-10). Run: cargo deny check
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licences only: compatible with a commercial core and Apache-2.0
+# connectors. Copyleft (GPL/AGPL/LGPL/MPL) requires an explicit decision.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+
+[licenses.private]
+# Workspace crates are unpublished; their licence is not decided yet.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Internal path dependencies between unpublished workspace crates.
+allow-wildcard-paths = true
+# Crypto implementations must be chosen by ADR, not pulled transitively by surprise.
+deny = [
+    { crate = "openssl", reason = "Use the providers selected in ADR-0004" },
+    { crate = "openssl-sys", reason = "Use the providers selected in ADR-0004" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

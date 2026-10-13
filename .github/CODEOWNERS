@@ -1,0 +1,14 @@
+# Default owner
+*                                   @knehari
+
+# Security-sensitive areas: changes require owner review (enable "Require review
+# from Code Owners" in branch protection for main).
+/crates/crypto-provider/            @knehari
+/crates/ca-core/                    @knehari
+/crates/store/                      @knehari
+/migrations/                        @knehari
+/docs/adr/                          @knehari
+/docs/security/                     @knehari
+/.github/                           @knehari
+/deny.toml                          @knehari
+/.gitleaks.toml                     @knehari
