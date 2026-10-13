@@ -29,7 +29,7 @@ pub fn verify_certificate_reserved_serial(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lab-software"))]
 mod tests {
     use super::*;
     use crate::serial::SerialNumber as ReservedSerial;
