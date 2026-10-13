@@ -43,7 +43,7 @@ pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError
     create_root_and_signer().map(|(root, _)| root)
 }
 
-fn create_root_and_signer() -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError>
+pub(crate) fn create_root_and_signer() -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError>
 {
     let signer = EphemeralRsaPssLabSigner::generate(KeyRef("pss-x509-lab".into()))
         .map_err(|_| RsaPssLabIssueError::Key)?;
