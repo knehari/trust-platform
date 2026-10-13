@@ -30,7 +30,7 @@ pub fn verify_rsa_pss_sha256_spki(
 ) -> Result<(), CryptoError> {
     let public_key =
         RsaPublicKey::from_public_key_der(spki_der).map_err(|_| CryptoError::InvalidPublicKey)?;
-    if public_key.size() < 384 {
+    if public_key.n().bits() < 3072 {
         return Err(CryptoError::InvalidPublicKey);
     }
     let signature = Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
