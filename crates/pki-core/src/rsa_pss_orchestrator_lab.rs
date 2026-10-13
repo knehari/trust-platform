@@ -13,7 +13,9 @@ use trust_pki_crypto::{
 };
 use x509_cert::{
     der::{asn1::BitString, Decode, Encode},
-    ext::pkix::{name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName},
+    ext::pkix::{
+        name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName,
+    },
     Certificate, TbsCertificate,
 };
 
@@ -88,7 +90,11 @@ impl CertificateVerifier for LabRsaPssServerVerifier {
             return Err(error);
         }
         verify_rsa_pss_issuer_signature(&self.issuer, &cert)?;
-        let extensions = cert.tbs_certificate.extensions.as_ref().ok_or(error.clone())?;
+        let extensions = cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .ok_or(error.clone())?;
         if extensions.len() != 7 {
             return Err(error);
         }
@@ -100,14 +106,17 @@ impl CertificateVerifier for LabRsaPssServerVerifier {
             }
             Ok(first)
         };
-        if single("2.5.29.32")? != &x509_extensions::certificate_policies(&self.policy)
-            .map_err(|_| error.clone())? {
+        if single("2.5.29.32")?
+            != &x509_extensions::certificate_policies(&self.policy).map_err(|_| error.clone())?
+        {
             return Err(error);
         }
         let san = single("2.5.29.17")?;
-        let names = SubjectAltName::from_der(san.extn_value.as_bytes())
-            .map_err(|_| error.clone())?;
-        if names.0.len() != 1 || !matches!(&names.0[0], GeneralName::DnsName(n) if n.as_str() == self.authorized_dns) {
+        let names =
+            SubjectAltName::from_der(san.extn_value.as_bytes()).map_err(|_| error.clone())?;
+        if names.0.len() != 1
+            || !matches!(&names.0[0], GeneralName::DnsName(n) if n.as_str() == self.authorized_dns)
+        {
             return Err(error);
         }
         let constraints = single("2.5.29.19")?;
@@ -117,25 +126,28 @@ impl CertificateVerifier for LabRsaPssServerVerifier {
             return Err(error);
         }
         let key_use = single("2.5.29.15")?;
-        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes())
-            .map_err(|_| error.clone())?;
+        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes()).map_err(|_| error.clone())?;
         if !key_use.critical || ku != KeyUsage(KeyUsages::DigitalSignature.into()) {
             return Err(error);
         }
         let eku = single("2.5.29.37")?;
-        let purposes = ExtendedKeyUsage::from_der(eku.extn_value.as_bytes())
-            .map_err(|_| error.clone())?;
+        let purposes =
+            ExtendedKeyUsage::from_der(eku.extn_value.as_bytes()).map_err(|_| error.clone())?;
         if purposes.0.len() != 1 || purposes.0[0].to_string() != "1.3.6.1.5.5.7.3.1" {
             return Err(error);
         }
-        let issuer_id = x509_extensions::key_identifier(&self.issuer.tbs_certificate.subject_public_key_info)
-            .map_err(|_| error.clone())?;
-        let subject_id = x509_extensions::key_identifier(&cert.tbs_certificate.subject_public_key_info)
-            .map_err(|_| error.clone())?;
-        if single("2.5.29.14")? != &x509_extensions::subject_key_identifier(&subject_id)
-            .map_err(|_| error.clone())?
-            || single("2.5.29.35")? != &x509_extensions::authority_key_identifier(&issuer_id)
-                .map_err(|_| error.clone())? {
+        let issuer_id =
+            x509_extensions::key_identifier(&self.issuer.tbs_certificate.subject_public_key_info)
+                .map_err(|_| error.clone())?;
+        let subject_id =
+            x509_extensions::key_identifier(&cert.tbs_certificate.subject_public_key_info)
+                .map_err(|_| error.clone())?;
+        if single("2.5.29.14")?
+            != &x509_extensions::subject_key_identifier(&subject_id).map_err(|_| error.clone())?
+            || single("2.5.29.35")?
+                != &x509_extensions::authority_key_identifier(&issuer_id)
+                    .map_err(|_| error.clone())?
+        {
             return Err(error);
         }
         Ok(())
