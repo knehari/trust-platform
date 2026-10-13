@@ -239,6 +239,7 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
 ) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
     let (root, signer) = create_root_and_signer()?;
     let tbs = prepare_rsa_pss_server_tbs(csr, approval, policy, reserved_serial, &root)?;
+    let algorithm = tbs.signature.clone();
     let message = tbs.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     let signature = signer
         .sign(signer.key_ref(), SignatureAlgorithm::RsaPssSha256, &message)
