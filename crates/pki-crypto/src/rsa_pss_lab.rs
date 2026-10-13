@@ -1,5 +1,5 @@
 //! Ephemeral RSA-PSS laboratory signer. Never use as a production CA key store.
-use rand::rngs::OsRng;
+use rand::{rngs::OsRng, RngCore};
 use rsa::{
     pkcs8::EncodePublicKey,
     pss::{Signature, SigningKey, VerifyingKey},
@@ -9,6 +9,15 @@ use rsa::{
 use sha2::Sha256;
 
 use crate::{CryptoError, KeyRef, SignatureAlgorithm, SigningProvider};
+
+/// Random, positive, canonical 19-octet serial for a disposable lab certificate.
+/// This does not provide durable issuer-scoped uniqueness across processes.
+pub fn generate_lab_serial() -> [u8; 19] {
+    let mut serial = [0u8; 19];
+    OsRng.fill_bytes(&mut serial);
+    serial[0] = (serial[0] & 0x3f) | 0x40;
+    serial
+}
 
 pub struct EphemeralRsaPssLabSigner {
     key_ref: KeyRef,
@@ -71,6 +80,15 @@ impl SigningProvider for EphemeralRsaPssLabSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn randomized_lab_serials_are_positive_canonical_and_distinct() {
+        let first = generate_lab_serial();
+        let second = generate_lab_serial();
+        assert_eq!(first.len(), 19);
+        assert_eq!(first[0] & 0xc0, 0x40);
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn signs_verifies_and_rejects_tampering() {
