@@ -24,7 +24,11 @@ pub fn preflight_issuance_plan(plan: &IssuancePlan<'_>) -> Result<(), IssueError
         plan.policy_revision,
         plan.operation_ref,
     ] {
-        if value.is_empty() || value.len() > 256 || value.trim() != value {
+        if value.is_empty()
+            || value.len() > 256
+            || value.trim() != value
+            || value.chars().any(char::is_control)
+        {
             return Err(IssueError::VerificationFailure);
         }
     }
@@ -206,7 +210,7 @@ mod tests {
         let mut journal = CountingJournal::default();
         let mut signer = CountingSigner::default();
         let long_operation = "x".repeat(257);
-        for operation in ["", " ambiguous", "trailing ", long_operation.as_str()] {
+        for operation in ["", " ambiguous", "trailing ", "line\nfeed", long_operation.as_str()] {
             let plan = IssuancePlan {
                 ca_id: "lab-ca",
                 request_id: "request",
