@@ -1,7 +1,11 @@
 //! Bind externally generated X.509 DER to an issuer-scoped reserved serial.
 //! This is an integrity check, not signature verification or issuance authority.
 use crate::serial::SerialNumber as ReservedSerial;
-use x509_cert::{der::{Decode, Encode}, serial_number::SerialNumber, Certificate};
+use x509_cert::{
+    der::{Decode, Encode},
+    serial_number::SerialNumber,
+    Certificate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialBindingError {
@@ -18,7 +22,11 @@ pub fn verify_certificate_reserved_serial(
     }
     let certificate = Certificate::from_der(certificate_der)
         .map_err(|_| SerialBindingError::InvalidCertificate)?;
-    if certificate.to_der().map_err(|_| SerialBindingError::InvalidCertificate)? != certificate_der {
+    if certificate
+        .to_der()
+        .map_err(|_| SerialBindingError::InvalidCertificate)?
+        != certificate_der
+    {
         return Err(SerialBindingError::InvalidCertificate);
     }
     let expected = SerialNumber::new(reserved.as_der_content())
@@ -32,8 +40,8 @@ pub fn verify_certificate_reserved_serial(
 #[cfg(all(test, feature = "lab-software"))]
 mod tests {
     use super::*;
-    use crate::serial::SerialNumber as ReservedSerial;
     use crate::rsa_pss_x509_lab::issue_ephemeral_rsa_pss_root;
+    use crate::serial::SerialNumber as ReservedSerial;
 
     #[test]
     fn mismatched_reserved_serial_is_rejected() {
