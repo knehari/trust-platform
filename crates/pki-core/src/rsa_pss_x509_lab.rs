@@ -128,12 +128,15 @@ pub fn create_root_and_signer(
 /// data and a policy-issued authorization. This does not replace durable serials,
 /// HSM-backed signing, publication or revocation. The caller supplies a serial
 /// already reserved by its issuer-scoped store; this function does not reserve it.
-pub fn issue_ephemeral_rsa_pss_server_chain(
+/// Prepare a canonical, unsigned TLS-server TBS from approved inputs, using
+/// the serial already atomically reserved by the caller. No signing occurs.
+pub fn prepare_rsa_pss_server_tbs(
     csr: &VerifiedCsr,
     approval: &Authorization,
     policy: &ApprovedPolicyBinding,
     reserved_serial: &ReservedSerial,
-) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
+    root: &Certificate,
+) -> Result<TbsCertificate, RsaPssLabIssueError> {
     if approval.ca_signature_algorithm() != SignatureAlgorithm::RsaPssSha256
         || approval.validity_days() == 0
         || approval.validity_days() > 3
@@ -146,7 +149,6 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     if csr.subject() != &expected {
         return Err(RsaPssLabIssueError::UnauthorizedProfile);
     }
-    let (root, signer) = create_root_and_signer()?;
     let algorithm = root.signature_algorithm.clone();
     let sans = approval
         .dns_sans()
@@ -226,6 +228,17 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
         subject_unique_id: None,
         extensions: Some(extensions),
     };
+    Ok(tbs)
+}
+
+pub fn issue_ephemeral_rsa_pss_server_chain(
+    csr: &VerifiedCsr,
+    approval: &Authorization,
+    policy: &ApprovedPolicyBinding,
+    reserved_serial: &ReservedSerial,
+) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
+    let (root, signer) = create_root_and_signer()?;
+    let tbs = prepare_rsa_pss_server_tbs(csr, approval, policy, reserved_serial, &root)?;
     let message = tbs.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     let signature = signer
         .sign(signer.key_ref(), SignatureAlgorithm::RsaPssSha256, &message)
