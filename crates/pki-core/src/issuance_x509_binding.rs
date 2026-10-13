@@ -1,6 +1,9 @@
 //! Structural X.509 binding for an immutable signing plan.
 //! Does not verify issuer keys, trust chains, crypto signatures or profiles.
-use crate::orchestrator::{CertificateVerifier, IssuancePlan, IssueError};
+use crate::orchestrator::{
+    issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuanceJournal,
+    IssuancePlan, IssueError,
+};
 use crate::serial::SerialNumber as ReservedSerial;
 use crate::serial_binding::verify_certificate_reserved_serial;
 use x509_cert::{
@@ -53,4 +56,24 @@ impl<V: CertificateVerifier> CertificateVerifier for BoundX509Verifier<V> {
             .map_err(|_| IssueError::VerificationFailure)?;
         self.0.verify(plan, certificate_der)
     }
+}
+
+/// Sign only after an issuer-reserved serial matches a canonical X.509 TBS.
+/// The independent verifier supplied by the caller must check cryptographic
+/// signature validity, issuer binding, certificate profile and policy.
+pub fn issue_x509_once<J, S, A, V>(
+    journal: &mut J,
+    signer: &mut S,
+    assembler: &A,
+    verifier: V,
+    plan: &IssuancePlan<'_>,
+) -> Result<Vec<u8>, IssueError>
+where
+    J: IssuanceJournal,
+    S: ExternalSigner,
+    A: CertificateAssembler,
+    V: CertificateVerifier,
+{
+    preflight_issuance_plan(plan)?;
+    issue_once(journal, signer, assembler, &BoundX509Verifier(verifier), plan)
 }
