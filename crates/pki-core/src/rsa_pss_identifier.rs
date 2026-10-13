@@ -4,12 +4,27 @@ use x509_cert::{der::Encode, spki::AlgorithmIdentifierOwned, Certificate};
 
 const RSASSA_PSS_OID: &str = "1.2.840.113549.1.1.10";
 
+// A deliberately narrow DER allowlist: SHA-256, MGF1(SHA-256),
+// saltLength=32, trailerField=1 (DEFAULT, therefore omitted in DER).
+// Supports only explicitly encoded SHA-256 AlgorithmIdentifiers with NULL.
+// This is not a general-purpose ASN.1 RSA-PSS decoder.
+const PSS_SHA256_MGF1_SHA256_SALT32_DER: &[u8] = &[
+    0x30, 0x34,
+    0xa0, 0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+    0x01, 0x05, 0x00,
+    0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+    0x08, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+    0x05, 0x00,
+    0xa2, 0x03, 0x02, 0x01, 0x20,
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PssIdentifierError {
     WrongAlgorithm,
     MissingParameters,
     InconsistentParameters,
     InvalidParameterEnvelope,
+    UnsupportedParameterProfile,
     InvalidDer,
 }
 
@@ -48,6 +63,9 @@ pub fn check_pss_identifiers(
     if tbs_der.len() <= 2 || tbs_der[0] != 0x30 {
         return Err(PssIdentifierError::InvalidParameterEnvelope);
     }
+    if tbs_der != PSS_SHA256_MGF1_SHA256_SALT32_DER {
+        return Err(PssIdentifierError::UnsupportedParameterProfile);
+    }
     Ok(())
 }
 
@@ -61,6 +79,26 @@ mod tests {
             oid: ObjectIdentifier::new(oid).unwrap(),
             parameters: params.map(|bytes| Any::from_der(bytes).unwrap()),
         }
+    }
+
+    #[test]
+    fn accepts_only_strict_sha256_mgf1_sha256_salt32_der() {
+        let good = identifier(RSASSA_PSS_OID, Some(PSS_SHA256_MGF1_SHA256_SALT32_DER));
+        assert_eq!(check_pss_identifiers(&good, &good), Ok(()));
+        let mut wrong_salt = PSS_SHA256_MGF1_SHA256_SALT32_DER.to_vec();
+        *wrong_salt.last_mut().unwrap() = 20;
+        let bad = identifier(RSASSA_PSS_OID, Some(&wrong_salt));
+        assert_eq!(
+            check_pss_identifiers(&bad, &bad),
+            Err(PssIdentifierError::UnsupportedParameterProfile)
+        );
+        let mut wrong_mgf_digest = PSS_SHA256_MGF1_SHA256_SALT32_DER.to_vec();
+        wrong_mgf_digest[48] = 0x02;
+        let bad = identifier(RSASSA_PSS_OID, Some(&wrong_mgf_digest));
+        assert_eq!(
+            check_pss_identifiers(&bad, &bad),
+            Err(PssIdentifierError::UnsupportedParameterProfile)
+        );
     }
 
     #[test]
