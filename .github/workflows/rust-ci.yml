@@ -17,17 +17,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Temporary Rustfmt output for new RSA X509 files
-        run: |
-          cargo fmt --all
-          echo FORMAT_SERVER_BEGIN
-          base64 -w0 crates/pki-core/src/rsa_pss_x509_lab.rs
-          echo
-          echo FORMAT_SERVER_END
-          echo FORMAT_EXAMPLE_BEGIN
-          base64 -w0 crates/pki-core/examples/issue_rsa_pss_server_lab.rs
-          echo
-          echo FORMAT_EXAMPLE_END
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
