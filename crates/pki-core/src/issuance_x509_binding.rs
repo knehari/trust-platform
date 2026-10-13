@@ -20,8 +20,8 @@ pub fn preflight_issuance_plan(plan: &IssuancePlan<'_>) -> Result<(), IssueError
     }
     let reserved = ReservedSerial::from_positive_der_content(plan.serial_der)
         .map_err(|_| IssueError::VerificationFailure)?;
-    let tbs = TbsCertificate::from_der(plan.tbs_der)
-        .map_err(|_| IssueError::VerificationFailure)?;
+    let tbs =
+        TbsCertificate::from_der(plan.tbs_der).map_err(|_| IssueError::VerificationFailure)?;
     if tbs.to_der().map_err(|_| IssueError::VerificationFailure)? != plan.tbs_der {
         return Err(IssueError::VerificationFailure);
     }
@@ -40,8 +40,8 @@ pub struct BoundX509Verifier<V>(pub V);
 impl<V: CertificateVerifier> CertificateVerifier for BoundX509Verifier<V> {
     fn verify(&self, plan: &IssuancePlan<'_>, certificate_der: &[u8]) -> Result<(), IssueError> {
         preflight_issuance_plan(plan)?;
-        let cert = Certificate::from_der(certificate_der)
-            .map_err(|_| IssueError::VerificationFailure)?;
+        let cert =
+            Certificate::from_der(certificate_der).map_err(|_| IssueError::VerificationFailure)?;
         if cert
             .tbs_certificate
             .to_der()
@@ -75,5 +75,11 @@ where
     V: CertificateVerifier,
 {
     preflight_issuance_plan(plan)?;
-    issue_once(journal, signer, assembler, &BoundX509Verifier(verifier), plan)
+    issue_once(
+        journal,
+        signer,
+        assembler,
+        &BoundX509Verifier(verifier),
+        plan,
+    )
 }
