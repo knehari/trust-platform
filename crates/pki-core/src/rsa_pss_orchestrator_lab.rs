@@ -1,0 +1,193 @@
+//! RSA-PSS laboratory adapter for the durable-intent-first X.509 orchestrator.
+//! Never expose ephemeral keys or this verifier as a production trust service.
+use crate::{
+    orchestrator::{
+        CertificateAssembler, CertificateVerifier, ExternalSigner, IssuancePlan, IssueError,
+    },
+    rsa_pss_identifier::preflight_pss_certificate_identifier,
+    rsa_pss_issuer_verify_lab::verify_rsa_pss_issuer_signature,
+};
+use trust_pki_crypto::{
+    rsa_pss_lab::EphemeralRsaPssLabSigner, SignatureAlgorithm, SigningProvider,
+};
+use x509_cert::{
+    der::{asn1::BitString, Decode, Encode},
+    Certificate, TbsCertificate,
+};
+
+/// The signer accepts only its matching key reference and performs one
+/// invocation per call; replay prevention belongs to the durable journal.
+pub struct LabRsaPssExternalSigner(pub EphemeralRsaPssLabSigner);
+
+impl ExternalSigner for LabRsaPssExternalSigner {
+    fn sign_once(
+        &mut self,
+        key_ref: &str,
+        _operation_ref: &str,
+        tbs_der: &[u8],
+    ) -> Result<Vec<u8>, IssueError> {
+        if key_ref != self.0.key_ref().0 {
+            return Err(IssueError::SigningFailure);
+        }
+        self.0
+            .sign(self.0.key_ref(), SignatureAlgorithm::RsaPssSha256, tbs_der)
+            .map_err(|_| IssueError::SigningFailure)
+    }
+}
+
+pub struct LabRsaPssAssembler;
+
+impl CertificateAssembler for LabRsaPssAssembler {
+    fn assemble(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>, IssueError> {
+        let tbs = TbsCertificate::from_der(tbs_der)
+            .map_err(|_| IssueError::AssemblyFailure)?;
+        let cert = Certificate {
+            signature_algorithm: tbs.signature.clone(),
+            tbs_certificate: tbs,
+            signature: BitString::from_bytes(signature)
+                .map_err(|_| IssueError::AssemblyFailure)?,
+        };
+        preflight_pss_certificate_identifier(&cert)
+            .map_err(|_| IssueError::AssemblyFailure)?;
+        cert.to_der().map_err(|_| IssueError::AssemblyFailure)
+    }
+}
+
+pub struct LabRsaPssVerifier {
+    pub issuer: Certificate,
+}
+
+impl CertificateVerifier for LabRsaPssVerifier {
+    fn verify(&self, plan: &IssuancePlan<'_>, bytes: &[u8]) -> Result<(), IssueError> {
+        let cert = Certificate::from_der(bytes).map_err(|_| IssueError::VerificationFailure)?;
+        if cert.tbs_certificate.to_der().map_err(|_| IssueError::VerificationFailure)?
+            != plan.tbs_der
+        {
+            return Err(IssueError::VerificationFailure);
+        }
+        verify_rsa_pss_issuer_signature(&self.issuer, &cert)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        issuance_x509_binding::issue_x509_once,
+        orchestrator::IssuanceJournal,
+        rsa_pss_x509_lab::create_root_and_signer,
+    };
+    use sha2::{Digest, Sha256};
+
+    #[derive(Default)]
+    struct Journal {
+        intent: bool,
+        uncertain: bool,
+        stored: bool,
+        fail_store: bool,
+    }
+
+    impl IssuanceJournal for Journal {
+        fn record_intent(
+            &mut self,
+            _plan: &IssuancePlan<'_>,
+            _tbs_sha256: &[u8; 32],
+        ) -> Result<(), IssueError> {
+            if self.intent {
+                return Err(IssueError::ReplayedOrAmbiguousIntent);
+            }
+            self.intent = true;
+            Ok(())
+        }
+        fn mark_uncertain(&mut self, _plan: &IssuancePlan<'_>) -> Result<(), IssueError> {
+            self.uncertain = true;
+            Ok(())
+        }
+        fn persist_verified(
+            &mut self,
+            _plan: &IssuancePlan<'_>,
+            _tbs_sha256: &[u8; 32],
+            _cert_sha256: &[u8; 32],
+            cert: &[u8],
+        ) -> Result<(), IssueError> {
+            if self.fail_store {
+                return Err(IssueError::PersistenceFailure);
+            }
+            if Sha256::digest(cert).is_empty() {
+                return Err(IssueError::VerificationFailure);
+            }
+            self.stored = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rsa_pss_x509_intent_first_and_replay_blocked() {
+        let (issuer, key) = create_root_and_signer().unwrap();
+        let tbs = issuer.tbs_certificate.to_der().unwrap();
+        let serial = issuer.tbs_certificate.serial_number.as_bytes();
+        let plan = IssuancePlan {
+            ca_id: "lab-ca",
+            request_id: "lab-request",
+            actor_id: "lab-actor",
+            signer_key_ref: &key.key_ref().0,
+            policy_revision: "lab-policy",
+            operation_ref: "unique-op",
+            serial_der: serial,
+            tbs_der: &tbs,
+        };
+        let mut journal = Journal::default();
+        let mut signer = LabRsaPssExternalSigner(key);
+        let cert = issue_x509_once(
+            &mut journal,
+            &mut signer,
+            &LabRsaPssAssembler,
+            LabRsaPssVerifier { issuer: issuer.clone() },
+            &plan,
+        ).unwrap();
+        assert!(journal.stored);
+        assert!(!journal.uncertain);
+        assert_eq!(Certificate::from_der(&cert).unwrap().tbs_certificate, issuer.tbs_certificate);
+        assert_eq!(
+            issue_x509_once(
+                &mut journal,
+                &mut signer,
+                &LabRsaPssAssembler,
+                LabRsaPssVerifier { issuer },
+                &plan,
+            ),
+            Err(IssueError::ReplayedOrAmbiguousIntent)
+        );
+    }
+
+    #[test]
+    fn persistence_failure_is_uncertain_and_never_resigned() {
+        let (issuer, key) = create_root_and_signer().unwrap();
+        let tbs = issuer.tbs_certificate.to_der().unwrap();
+        let serial = issuer.tbs_certificate.serial_number.as_bytes();
+        let plan = IssuancePlan {
+            ca_id: "lab-ca",
+            request_id: "lab-request",
+            actor_id: "lab-actor",
+            signer_key_ref: &key.key_ref().0,
+            policy_revision: "lab-policy",
+            operation_ref: "unique-op",
+            serial_der: serial,
+            tbs_der: &tbs,
+        };
+        let mut journal = Journal { fail_store: true, ..Default::default() };
+        let mut signer = LabRsaPssExternalSigner(key);
+        assert_eq!(
+            issue_x509_once(
+                &mut journal,
+                &mut signer,
+                &LabRsaPssAssembler,
+                LabRsaPssVerifier { issuer },
+                &plan,
+            ),
+            Err(IssueError::PersistenceFailure)
+        );
+        assert!(journal.uncertain);
+        assert!(!journal.stored);
+    }
+}
