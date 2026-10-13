@@ -3,6 +3,7 @@ use rand::{rngs::OsRng, RngCore};
 use rsa::{
     pkcs8::{DecodePublicKey, EncodePublicKey},
     pss::{Signature, SigningKey, VerifyingKey},
+    traits::PublicKeyParts,
     signature::{RandomizedSigner, SignatureEncoding, Verifier},
     RsaPrivateKey, RsaPublicKey,
 };
