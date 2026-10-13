@@ -24,7 +24,8 @@ impl EphemeralRsaPssLabSigner {
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         let public_key = RsaPublicKey::from(&self.key);
         let verifier = VerifyingKey::<Sha256>::new(public_key);
-        let signature = Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
+        let signature =
+            Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
         verifier
             .verify(message, &signature)
             .map_err(|_| CryptoError::InvalidSignature)
