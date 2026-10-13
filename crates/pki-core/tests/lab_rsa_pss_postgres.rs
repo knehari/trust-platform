@@ -7,7 +7,9 @@ use trust_pki_core::{
     issuance_x509_binding::issue_x509_once,
     orchestrator::{IssuancePlan, IssueError},
     postgres_store::PgIssuanceStore,
-    rsa_pss_orchestrator_lab::{LabRsaPssAssembler, LabRsaPssExternalSigner, LabRsaPssVerifier},
+    rsa_pss_orchestrator_lab::{
+        LabRsaPssAssembler, LabRsaPssExternalSigner, LabRsaPssServerVerifier,
+    },
     rsa_pss_x509_lab::{create_root_and_signer, prepare_rsa_pss_server_tbs},
     x509_extensions::ApprovedPolicyBinding,
 };
@@ -96,8 +98,10 @@ fn rsa_pss_intent_signature_and_certificate_are_durable_and_nonreplayable() {
         &mut db,
         &mut signer,
         &LabRsaPssAssembler,
-        LabRsaPssVerifier {
+        LabRsaPssServerVerifier {
             issuer: issuer.clone(),
+            policy: binding.clone(),
+            authorized_dns: "api.lab.invalid".into(),
         },
         &plan,
     )
@@ -123,7 +127,11 @@ fn rsa_pss_intent_signature_and_certificate_are_durable_and_nonreplayable() {
             &mut db,
             &mut signer,
             &LabRsaPssAssembler,
-            LabRsaPssVerifier { issuer },
+            LabRsaPssServerVerifier {
+                issuer,
+                policy: binding,
+                authorized_dns: "api.lab.invalid".into(),
+            },
             &plan,
         ),
         Err(IssueError::ReplayedOrAmbiguousIntent)
