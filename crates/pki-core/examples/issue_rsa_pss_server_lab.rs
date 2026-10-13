@@ -48,6 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (root, leaf) =
         issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding, &serial)
             .map_err(|_| "RSA-PSS lab chain failed")?;
+    trust_pki_core::rsa_pss_issuer_verify_lab::verify_rsa_pss_issuer_signature(&root, &leaf)
+        .map_err(|_| "native RSA-PSS chain signature verification failed")?;
     fs::write(format!("{output}/root.der"), root.to_der()?)?;
     fs::write(format!("{output}/leaf.der"), leaf.to_der()?)?;
     Ok(())
