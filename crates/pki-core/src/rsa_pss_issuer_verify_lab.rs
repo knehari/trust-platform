@@ -30,3 +30,35 @@ pub fn verify_rsa_pss_issuer_signature(
         .ok_or(VerificationFailure)?;
     verify_rsa_pss_sha256_spki(&spki, &tbs, signature).map_err(|_| VerificationFailure)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rsa_pss_x509_lab::issue_ephemeral_rsa_pss_root;
+    use x509_cert::der::asn1::BitString;
+
+    #[test]
+    fn valid_root_signature_verifies_and_tampering_is_rejected() {
+        let issuer = issue_ephemeral_rsa_pss_root().unwrap();
+        assert_eq!(verify_rsa_pss_issuer_signature(&issuer, &issuer), Ok(()));
+
+        let mut forged = issuer.clone();
+        let mut altered = forged.signature.as_bytes().unwrap().to_vec();
+        altered[0] ^= 1;
+        forged.signature = BitString::from_bytes(&altered).unwrap();
+        assert_eq!(
+            verify_rsa_pss_issuer_signature(&issuer, &forged),
+            Err(crate::orchestrator::IssueError::VerificationFailure)
+        );
+    }
+
+    #[test]
+    fn unrelated_issuer_cannot_verify_signature() {
+        let issuer = issue_ephemeral_rsa_pss_root().unwrap();
+        let other = issue_ephemeral_rsa_pss_root().unwrap();
+        assert_eq!(
+            verify_rsa_pss_issuer_signature(&other, &issuer),
+            Err(crate::orchestrator::IssueError::VerificationFailure)
+        );
+    }
+}
