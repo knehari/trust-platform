@@ -210,7 +210,13 @@ mod tests {
         let mut journal = CountingJournal::default();
         let mut signer = CountingSigner::default();
         let long_operation = "x".repeat(257);
-        for operation in ["", " ambiguous", "trailing ", "line\nfeed", long_operation.as_str()] {
+        for operation in [
+            "",
+            " ambiguous",
+            "trailing ",
+            "line\nfeed",
+            long_operation.as_str(),
+        ] {
             let plan = IssuancePlan {
                 ca_id: "lab-ca",
                 request_id: "request",
