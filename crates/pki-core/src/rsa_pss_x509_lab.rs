@@ -1,15 +1,18 @@
 //! Isolated RSA-PSS X.509 root fixture. Not a production CA or general issuer.
+use crate::csr::VerifiedCsr;
 use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_SHA256_SALT32_DER};
+use crate::x509_extensions::{self, ApprovedPolicyBinding};
+use trust_pki_policy::Authorization;
 use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
     rsa_pss_lab::EphemeralRsaPssLabSigner, KeyRef, SignatureAlgorithm, SigningProvider,
 };
 use x509_cert::{
     der::{
-        asn1::{Any, BitString, ObjectIdentifier},
+        asn1::{Any, BitString, Ia5String, ObjectIdentifier, OctetString},
         Decode, Encode,
     },
-    ext::pkix::{BasicConstraints, KeyUsage, KeyUsages},
+    ext::{pkix::{name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName}, Extension},
     name::Name,
     serial_number::SerialNumber,
     spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned},
@@ -22,11 +25,16 @@ pub enum RsaPssLabIssueError {
     Key,
     Encoding,
     Signature,
+    UnauthorizedProfile,
 }
 
 /// Generates a disposable RSA-3072 self-signed root certificate with explicit
 /// RSA-PSS SHA-256/MGF1-SHA256/32-byte salt parameters, for OpenSSL interop.
 pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError> {
+    create_root_and_signer().map(|(root, _)| root)
+}
+
+fn create_root_and_signer() -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError> {
     let signer = EphemeralRsaPssLabSigner::generate(KeyRef("pss-x509-lab".into()))
         .map_err(|_| RsaPssLabIssueError::Key)?;
     let spki_der = signer
@@ -100,7 +108,89 @@ pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError
         .to_der()
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    Ok(certificate)
+    Ok((certificate, signer))
+}
+
+/// Issues one disposable lab server certificate from independently verified CSR
+/// data and a policy-issued authorization. This does not replace durable serials,
+/// HSM-backed signing, publication or revocation.
+pub fn issue_ephemeral_rsa_pss_server_chain(
+    csr: &VerifiedCsr,
+    approval: &Authorization,
+    policy: &ApprovedPolicyBinding,
+) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
+    if approval.ca_signature_algorithm() != SignatureAlgorithm::RsaPssSha256
+        || approval.validity_days() == 0
+        || approval.validity_days() > 3
+        || approval.dns_sans().is_empty()
+    {
+        return Err(RsaPssLabIssueError::UnauthorizedProfile);
+    }
+    let expected = Name::from_str(&format!("CN={}", approval.common_name()))
+        .map_err(|_| RsaPssLabIssueError::UnauthorizedProfile)?;
+    if csr.subject() != &expected {
+        return Err(RsaPssLabIssueError::UnauthorizedProfile);
+    }
+    let (root, signer) = create_root_and_signer()?;
+    let algorithm = root.signature_algorithm.clone();
+    let sans = approval.dns_sans().iter()
+        .map(|name| Ia5String::new(name)
+            .map(GeneralName::DnsName)
+            .map_err(|_| RsaPssLabIssueError::UnauthorizedProfile))
+        .collect::<Result<Vec<_>, _>>()?;
+    let extension = |id: &str, critical: bool, der: Vec<u8>| -> Result<Extension, RsaPssLabIssueError> {
+        Ok(Extension {
+            extn_id: ObjectIdentifier::new(id).map_err(|_| RsaPssLabIssueError::Encoding)?,
+            critical,
+            extn_value: OctetString::new(der).map_err(|_| RsaPssLabIssueError::Encoding)?,
+        })
+    };
+    let subject_key_id = x509_extensions::key_identifier(csr.subject_public_key())
+        .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    let root_key_id = x509_extensions::key_identifier(&root.tbs_certificate.subject_public_key_info)
+        .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    let extensions = vec![
+        extension("2.5.29.19", true, BasicConstraints { ca: false, path_len_constraint: None }
+            .to_der().map_err(|_| RsaPssLabIssueError::Encoding)?)?,
+        extension("2.5.29.15", true, KeyUsage(KeyUsages::DigitalSignature.into())
+            .to_der().map_err(|_| RsaPssLabIssueError::Encoding)?)?,
+        extension("2.5.29.37", false, ExtendedKeyUsage(vec![ObjectIdentifier::new("1.3.6.1.5.5.7.3.1")
+            .map_err(|_| RsaPssLabIssueError::Encoding)?])
+            .to_der().map_err(|_| RsaPssLabIssueError::Encoding)?)?,
+        extension("2.5.29.17", false, SubjectAltName(sans)
+            .to_der().map_err(|_| RsaPssLabIssueError::Encoding)?)?,
+        x509_extensions::subject_key_identifier(&subject_key_id)
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
+        x509_extensions::authority_key_identifier(&root_key_id)
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
+        x509_extensions::certificate_policies(policy)
+            .map_err(|_| RsaPssLabIssueError::UnauthorizedProfile)?,
+    ];
+    let tbs = TbsCertificate {
+        version: Version::V3,
+        serial_number: SerialNumber::new(&[0x02]).map_err(|_| RsaPssLabIssueError::Encoding)?,
+        signature: algorithm.clone(),
+        issuer: root.tbs_certificate.subject.clone(),
+        validity: Validity::from_now(Duration::from_secs(u64::from(approval.validity_days()) * 86_400))
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
+        subject: csr.subject().clone(),
+        subject_public_key_info: csr.subject_public_key().clone(),
+        issuer_unique_id: None,
+        subject_unique_id: None,
+        extensions: Some(extensions),
+    };
+    let message = tbs.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
+    let signature = signer.sign(signer.key_ref(), SignatureAlgorithm::RsaPssSha256, &message)
+        .map_err(|_| RsaPssLabIssueError::Signature)?;
+    signer.verify(&message, &signature).map_err(|_| RsaPssLabIssueError::Signature)?;
+    let leaf = Certificate {
+        tbs_certificate: tbs,
+        signature_algorithm: algorithm,
+        signature: BitString::from_bytes(&signature).map_err(|_| RsaPssLabIssueError::Encoding)?,
+    };
+    let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
+    preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
+    Ok((root, leaf))
 }
 
 #[cfg(test)]
