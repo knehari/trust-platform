@@ -17,17 +17,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Temporary capture formatter outputs for server TBS integration
-        run: |
-          cargo fmt --all
-          echo FORMAT_TBS_BEGIN
-          base64 -w0 crates/pki-core/src/rsa_pss_x509_lab.rs
-          echo
-          echo FORMAT_TBS_END
-          echo FORMAT_DB_BEGIN
-          base64 -w0 crates/pki-core/tests/lab_rsa_pss_postgres.rs
-          echo
-          echo FORMAT_DB_END
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
