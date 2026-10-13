@@ -89,6 +89,99 @@ mod tests {
     use super::*;
     use crate::rsa_pss_x509_lab::issue_ephemeral_rsa_pss_root;
 
+    #[derive(Default)]
+    struct CountingJournal {
+        intent_calls: usize,
+    }
+
+    impl IssuanceJournal for CountingJournal {
+        fn record_intent(
+            &mut self,
+            _plan: &IssuancePlan<'_>,
+            _digest: &[u8; 32],
+        ) -> Result<(), IssueError> {
+            self.intent_calls += 1;
+            Ok(())
+        }
+
+        fn mark_uncertain(&mut self, _plan: &IssuancePlan<'_>) -> Result<(), IssueError> {
+            Ok(())
+        }
+
+        fn persist_verified(
+            &mut self,
+            _plan: &IssuancePlan<'_>,
+            _tbs_digest: &[u8; 32],
+            _certificate_digest: &[u8; 32],
+            _certificate: &[u8],
+        ) -> Result<(), IssueError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingSigner {
+        calls: usize,
+    }
+
+    impl ExternalSigner for CountingSigner {
+        fn sign_once(
+            &mut self,
+            _key_ref: &str,
+            _operation_ref: &str,
+            _tbs: &[u8],
+        ) -> Result<Vec<u8>, IssueError> {
+            self.calls += 1;
+            Err(IssueError::SigningFailure)
+        }
+    }
+
+    struct UnreachableAssembler;
+
+    impl CertificateAssembler for UnreachableAssembler {
+        fn assemble(&self, _tbs: &[u8], _signature: &[u8]) -> Result<Vec<u8>, IssueError> {
+            panic!("assembler must never be called for an invalid TBS")
+        }
+    }
+
+    struct UnreachableVerifier;
+
+    impl CertificateVerifier for UnreachableVerifier {
+        fn verify(&self, _plan: &IssuancePlan<'_>, _der: &[u8]) -> Result<(), IssueError> {
+            panic!("verifier must never be called for an invalid TBS")
+        }
+    }
+
+    #[test]
+    fn invalid_reserved_serial_never_creates_intent_or_calls_signer() {
+        let root = issue_ephemeral_rsa_pss_root().unwrap();
+        let tbs = root.tbs_certificate.to_der().unwrap();
+        let plan = IssuancePlan {
+            ca_id: "lab-ca",
+            request_id: "lab-request",
+            actor_id: "lab-actor",
+            signer_key_ref: "lab-signer",
+            policy_revision: "lab-policy",
+            operation_ref: "lab-operation",
+            serial_der: &[0x42],
+            tbs_der: &tbs,
+        };
+        let mut journal = CountingJournal::default();
+        let mut signer = CountingSigner::default();
+        assert_eq!(
+            issue_x509_once(
+                &mut journal,
+                &mut signer,
+                &UnreachableAssembler,
+                UnreachableVerifier,
+                &plan
+            ),
+            Err(IssueError::VerificationFailure)
+        );
+        assert_eq!(journal.intent_calls, 0);
+        assert_eq!(signer.calls, 0);
+    }
+
     #[test]
     fn rejects_unreserved_tbs_before_signing() {
         let root = issue_ephemeral_rsa_pss_root().unwrap();
