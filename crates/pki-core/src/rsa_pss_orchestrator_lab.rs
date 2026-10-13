@@ -159,7 +159,9 @@ mod tests {
                 &mut journal,
                 &mut signer,
                 &LabRsaPssAssembler,
-                LabRsaPssVerifier { issuer: issuer.clone() },
+                LabRsaPssVerifier {
+                    issuer: issuer.clone()
+                },
                 &plan,
             ),
             Err(IssueError::ReplayedOrAmbiguousIntent)
@@ -192,7 +194,9 @@ mod tests {
                 &mut journal,
                 &mut signer,
                 &LabRsaPssAssembler,
-                LabRsaPssVerifier { issuer: issuer.clone() },
+                LabRsaPssVerifier {
+                    issuer: issuer.clone()
+                },
                 &plan,
             ),
             Err(IssueError::PersistenceFailure)
