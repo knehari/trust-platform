@@ -5,7 +5,8 @@ use crate::serial::SerialNumber as ReservedSerial;
 use crate::serial_binding::verify_certificate_reserved_serial;
 use x509_cert::{
     der::{Decode, Encode},
-    TbsCertificate, Certificate,
+    serial_number::SerialNumber,
+    Certificate, TbsCertificate,
 };
 
 /// Apply before invoking an external signer, so malformed or mismatched TBS
@@ -21,7 +22,9 @@ pub fn preflight_issuance_plan(plan: &IssuancePlan<'_>) -> Result<(), IssueError
     if tbs.to_der().map_err(|_| IssueError::VerificationFailure)? != plan.tbs_der {
         return Err(IssueError::VerificationFailure);
     }
-    if tbs.serial_number.as_bytes() != reserved.as_der_content() {
+    let expected = SerialNumber::new(reserved.as_der_content())
+        .map_err(|_| IssueError::VerificationFailure)?;
+    if tbs.serial_number != expected {
         return Err(IssueError::VerificationFailure);
     }
     Ok(())
@@ -36,7 +39,12 @@ impl<V: CertificateVerifier> CertificateVerifier for BoundX509Verifier<V> {
         preflight_issuance_plan(plan)?;
         let cert = Certificate::from_der(certificate_der)
             .map_err(|_| IssueError::VerificationFailure)?;
-        if cert.tbs_certificate.to_der().map_err(|_| IssueError::VerificationFailure)? != plan.tbs_der {
+        if cert
+            .tbs_certificate
+            .to_der()
+            .map_err(|_| IssueError::VerificationFailure)?
+            != plan.tbs_der
+        {
             return Err(IssueError::VerificationFailure);
         }
         let reserved = ReservedSerial::from_positive_der_content(plan.serial_der)
