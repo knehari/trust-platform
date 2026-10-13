@@ -93,7 +93,7 @@ mod tests {
             Err(PssIdentifierError::UnsupportedParameterProfile)
         );
         let mut wrong_mgf_digest = PSS_SHA256_MGF1_SHA256_SALT32_DER.to_vec();
-        wrong_mgf_digest[48] = 0x02;
+        wrong_mgf_digest[46] = 0x02;
         let bad = identifier(RSASSA_PSS_OID, Some(&wrong_mgf_digest));
         assert_eq!(
             check_pss_identifiers(&bad, &bad),
