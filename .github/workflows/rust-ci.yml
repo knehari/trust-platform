@@ -17,6 +17,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Capture canonical formatting for V2 modules
+        run: |
+          cargo fmt --all
+          for name in audit_chain signer_capabilities capacity_policy audit_manifest release_gate; do
+            echo "CANON_${name}_BEGIN"
+            base64 -w0 "crates/pki-core/src/${name}.rs"
+            echo
+            echo "CANON_${name}_END"
+          done
+          echo "CANON_lib_BEGIN"
+          base64 -w0 crates/pki-core/src/lib.rs
+          echo
+          echo "CANON_lib_END"
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
