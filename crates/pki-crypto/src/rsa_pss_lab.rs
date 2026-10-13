@@ -21,6 +21,10 @@ impl EphemeralRsaPssLabSigner {
         Ok(Self { key_ref, key })
     }
 
+    pub fn key_ref(&self) -> &KeyRef {
+        &self.key_ref
+    }
+
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
         let public_key = RsaPublicKey::from(&self.key);
         let verifier = VerifyingKey::<Sha256>::new(public_key);
