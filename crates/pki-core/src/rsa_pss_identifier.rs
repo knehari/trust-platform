@@ -37,7 +37,11 @@ pub fn preflight_pss_certificate_der(der: &[u8]) -> Result<(), PssIdentifierErro
         return Err(PssIdentifierError::CertificateTooLarge);
     }
     let certificate = Certificate::from_der(der).map_err(|_| PssIdentifierError::InvalidDer)?;
-    if certificate.to_der().map_err(|_| PssIdentifierError::InvalidDer)? != der {
+    if certificate
+        .to_der()
+        .map_err(|_| PssIdentifierError::InvalidDer)?
+        != der
+    {
         return Err(PssIdentifierError::InvalidDer);
     }
     preflight_pss_certificate_identifier(&certificate)
