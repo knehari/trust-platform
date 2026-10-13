@@ -31,6 +31,7 @@ mod tests {
     fn manifest_is_order_sensitive_and_rejects_invalid() {
         let a = [1; 32];
         let b = [2; 32];
+        assert_eq!(manifest_digest(&[a, b]), manifest_digest(&[a, b]));
         assert_ne!(
             manifest_digest(&[a, b]).unwrap(),
             manifest_digest(&[b, a]).unwrap()
