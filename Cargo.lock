@@ -1078,6 +1078,7 @@ dependencies = [
  "p256",
  "rand 0.8.5",
  "rsa",
+ "sha2 0.10.9",
 ]
 
 [[package]]
