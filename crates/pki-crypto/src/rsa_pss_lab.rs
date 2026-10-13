@@ -1,0 +1,96 @@
+//! Ephemeral RSA-PSS laboratory signer. Never use as a production CA key store.
+use rand::rngs::OsRng;
+use rsa::{
+    pkcs8::EncodePublicKey,
+    pss::{Signature, SigningKey, VerifyingKey},
+    signature::{RandomizedSigner, SignatureEncoding, Verifier},
+    RsaPrivateKey, RsaPublicKey,
+};
+use sha2::Sha256;
+
+use crate::{CryptoError, KeyRef, SignatureAlgorithm, SigningProvider};
+
+pub struct EphemeralRsaPssLabSigner {
+    key_ref: KeyRef,
+    key: RsaPrivateKey,
+}
+
+impl EphemeralRsaPssLabSigner {
+    pub fn generate(key_ref: KeyRef) -> Result<Self, CryptoError> {
+        let key = RsaPrivateKey::new(&mut OsRng, 3072).map_err(|_| CryptoError::SigningFailed)?;
+        Ok(Self { key_ref, key })
+    }
+
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+        let public_key = RsaPublicKey::from(&self.key);
+        let verifier = VerifyingKey::<Sha256>::new(public_key);
+        let signature = Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
+        verifier
+            .verify(message, &signature)
+            .map_err(|_| CryptoError::InvalidSignature)
+    }
+}
+
+impl SigningProvider for EphemeralRsaPssLabSigner {
+    fn supports(&self, algorithm: SignatureAlgorithm) -> bool {
+        algorithm == SignatureAlgorithm::RsaPssSha256
+    }
+
+    fn public_key_spki_der(&self, key: &KeyRef) -> Result<Vec<u8>, CryptoError> {
+        if key != &self.key_ref {
+            return Err(CryptoError::KeyUnavailable);
+        }
+        RsaPublicKey::from(&self.key)
+            .to_public_key_der()
+            .map(|document| document.as_bytes().to_vec())
+            .map_err(|_| CryptoError::InvalidPublicKey)
+    }
+
+    fn sign(
+        &self,
+        key: &KeyRef,
+        algorithm: SignatureAlgorithm,
+        message: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        if key != &self.key_ref {
+            return Err(CryptoError::KeyUnavailable);
+        }
+        if !self.supports(algorithm) {
+            return Err(CryptoError::UnsupportedAlgorithm);
+        }
+        let signer = SigningKey::<Sha256>::new(self.key.clone());
+        Ok(signer.sign_with_rng(&mut OsRng, message).to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signs_verifies_and_rejects_tampering() {
+        let key_ref = KeyRef("rsa-pss-lab".into());
+        let provider = EphemeralRsaPssLabSigner::generate(key_ref.clone()).unwrap();
+        let signature = provider
+            .sign(&key_ref, SignatureAlgorithm::RsaPssSha256, b"hello")
+            .unwrap();
+        assert_eq!(provider.verify(b"hello", &signature), Ok(()));
+        assert_eq!(
+            provider.verify(b"modified", &signature),
+            Err(CryptoError::InvalidSignature)
+        );
+        assert_eq!(
+            provider.sign(
+                &KeyRef("wrong".into()),
+                SignatureAlgorithm::RsaPssSha256,
+                b"hello"
+            ),
+            Err(CryptoError::KeyUnavailable)
+        );
+        assert_eq!(
+            provider.sign(&key_ref, SignatureAlgorithm::MlDsa65, b"hello"),
+            Err(CryptoError::UnsupportedAlgorithm)
+        );
+        assert!(!provider.public_key_spki_der(&key_ref).unwrap().is_empty());
+    }
+}
