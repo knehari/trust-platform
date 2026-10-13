@@ -7,6 +7,7 @@ pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod csr;
+pub mod issuance_x509_binding;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
 #[cfg(feature = "lab-software")]
@@ -21,7 +22,11 @@ pub mod postgres_store;
 pub mod provider_evidence;
 pub mod reconciliation;
 pub mod reviewer_binding;
+pub mod rsa_pss_identifier;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_x509_lab;
 pub mod serial;
+pub mod serial_binding;
 pub mod x509_extensions;
 
 use trust_pki_policy::{

@@ -2,8 +2,14 @@
 //! Signing boundary and algorithm negotiation.
 //! No signing provider is enabled in production builds.
 
+pub mod algorithm_catalog;
 #[cfg(feature = "lab-software")]
 pub mod lab;
+pub mod provider_capabilities;
+pub mod provider_deployment;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_lab;
+pub mod rsa_pss_profile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {

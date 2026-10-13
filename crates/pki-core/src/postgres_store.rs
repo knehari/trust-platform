@@ -12,6 +12,7 @@ use crate::policy_gate::VerifiedPresignPolicyIntent;
 #[cfg(feature = "lab-software")]
 use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
+use crate::serial::SerialNumber as ValidatedSerial;
 use postgres::{Client, Error as PgError, NoTls};
 
 #[derive(Debug)]
@@ -157,6 +158,20 @@ impl PgIssuanceStore {
             return Err(StoreError::InconsistentResult);
         }
         Ok(serial)
+    }
+
+    /// Returns a validated positive DER serial from the existing transactional
+    /// issuer-scoped PostgreSQL reservation. No local serial fallback is allowed.
+    /// The caller must persist a signing intent before contacting a signer.
+    pub fn reserve_validated_serial(
+        &mut self,
+        ca_id: &str,
+        request_id: &str,
+        actor_id: &str,
+    ) -> Result<ValidatedSerial, StoreError> {
+        let bytes = self.reserve_serial(ca_id, request_id, actor_id)?;
+        ValidatedSerial::from_positive_der_content(&bytes)
+            .map_err(|_| StoreError::InconsistentResult)
     }
 
     /// The supplied TBS digest and operation reference are already approved
