@@ -4,7 +4,8 @@ use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_S
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
-    rsa_pss_lab::EphemeralRsaPssLabSigner, KeyRef, SignatureAlgorithm, SigningProvider,
+    rsa_pss_lab::{generate_lab_serial, EphemeralRsaPssLabSigner}, KeyRef, SignatureAlgorithm,
+    SigningProvider,
 };
 use trust_pki_policy::Authorization;
 use x509_cert::{
@@ -88,7 +89,8 @@ fn create_root_and_signer() -> Result<(Certificate, EphemeralRsaPssLabSigner), R
     ];
     let tbs = TbsCertificate {
         version: Version::V3,
-        serial_number: SerialNumber::new(&[0x01]).map_err(|_| RsaPssLabIssueError::Encoding)?,
+        serial_number: SerialNumber::new(&generate_lab_serial())
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
         signature: algorithm.clone(),
         issuer: name.clone(),
         validity: Validity::from_now(Duration::from_secs(86_400))
@@ -204,7 +206,8 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     ];
     let tbs = TbsCertificate {
         version: Version::V3,
-        serial_number: SerialNumber::new(&[0x02]).map_err(|_| RsaPssLabIssueError::Encoding)?,
+        serial_number: SerialNumber::new(&generate_lab_serial())
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
         signature: algorithm.clone(),
         issuer: root.tbs_certificate.subject.clone(),
         validity: Validity::from_now(Duration::from_secs(
