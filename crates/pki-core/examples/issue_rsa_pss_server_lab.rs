@@ -2,7 +2,7 @@
 use std::{env, fs};
 use trust_pki_core::{
     csr::verify_pkcs10_p256, rsa_pss_x509_lab::issue_ephemeral_rsa_pss_server_chain,
-    x509_extensions::ApprovedPolicyBinding,
+    serial::SerialNumber as ReservedSerial, x509_extensions::ApprovedPolicyBinding,
 };
 use trust_pki_crypto::{rsa_pss_lab::generate_lab_serial, SignatureAlgorithm};
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
