@@ -7,6 +7,7 @@ pub mod signer_capabilities;
 pub mod audit_chain;
 
 pub mod authentication;
+pub mod release_gate;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
