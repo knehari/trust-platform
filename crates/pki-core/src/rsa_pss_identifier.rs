@@ -1,6 +1,6 @@
 //! RSA-PSS X.509 AlgorithmIdentifier consistency preflight.
 //! This is NOT verification of parameters, key strength or signatures.
-use x509_cert::{der::Encode, spki::AlgorithmIdentifierOwned, Certificate};
+use x509_cert::{der::{Decode, Encode}, spki::AlgorithmIdentifierOwned, Certificate};
 
 const RSASSA_PSS_OID: &str = "1.2.840.113549.1.1.10";
 
@@ -23,9 +23,10 @@ pub enum PssIdentifierError {
     InvalidParameterEnvelope,
     UnsupportedParameterProfile,
     InvalidDer,
+    CertificateTooLarge,
 }
 
-/// Reject inconsistent TBS / outer signature identifiers and absent PSS params.
+/// Strict structural screening of a DER certificate, without trust-chain or\n/// signature verification. Do not use this function as certificate acceptance.\npub fn preflight_pss_certificate_der(der: &[u8]) -> Result<(), PssIdentifierError> {\n    if der.is_empty() || der.len() > 64 * 1024 {\n        return Err(PssIdentifierError::CertificateTooLarge);\n    }\n    let certificate = Certificate::from_der(der).map_err(|_| PssIdentifierError::InvalidDer)?;\n    if certificate.to_der().map_err(|_| PssIdentifierError::InvalidDer)? != der {\n        return Err(PssIdentifierError::InvalidDer);\n    }\n    preflight_pss_certificate_identifier(&certificate)\n}\n\n/// Reject inconsistent TBS / outer signature identifiers and absent PSS params.
 /// Parameter parsing and cryptographic verification MUST follow separately.
 pub fn preflight_pss_certificate_identifier(cert: &Certificate) -> Result<(), PssIdentifierError> {
     check_pss_identifiers(&cert.tbs_certificate.signature, &cert.signature_algorithm)
@@ -79,6 +80,7 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_or_excessive_certificate_der() {\n        assert_eq!(\n            preflight_pss_certificate_der(&[]),\n            Err(PssIdentifierError::CertificateTooLarge)\n        );\n        assert_eq!(\n            preflight_pss_certificate_der(&[0x30, 0x00]),\n            Err(PssIdentifierError::InvalidDer)\n        );\n        assert_eq!(\n            preflight_pss_certificate_der(&vec![0; 64 * 1024 + 1]),\n            Err(PssIdentifierError::CertificateTooLarge)\n        );\n    }\n\n    #[test]
     fn accepts_only_strict_sha256_mgf1_sha256_salt32_der() {
         let good = identifier(RSASSA_PSS_OID, Some(PSS_SHA256_MGF1_SHA256_SALT32_DER));
         assert_eq!(check_pss_identifiers(&good, &good), Ok(()));
