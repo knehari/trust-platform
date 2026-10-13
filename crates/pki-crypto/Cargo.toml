@@ -13,3 +13,5 @@ lab-software = ["dep:rsa", "dep:rand"]
 p256 = { version = "=0.13.2", features = ["ecdsa", "pkcs8"] }
 rsa = { version = "=0.9.8", features = ["sha2"], optional = true }
 rand = { version = "=0.8.5", optional = true }
+
+sha2 = "=0.10.9"
