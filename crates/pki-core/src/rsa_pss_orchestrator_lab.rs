@@ -6,12 +6,14 @@ use crate::{
     },
     rsa_pss_identifier::preflight_pss_certificate_identifier,
     rsa_pss_issuer_verify_lab::verify_rsa_pss_issuer_signature,
+    x509_extensions::{self, ApprovedPolicyBinding},
 };
 use trust_pki_crypto::{
     rsa_pss_lab::EphemeralRsaPssLabSigner, SignatureAlgorithm, SigningProvider,
 };
 use x509_cert::{
     der::{asn1::BitString, Decode, Encode},
+    ext::pkix::{name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName},
     Certificate, TbsCertificate,
 };
 
@@ -66,6 +68,77 @@ impl CertificateVerifier for LabRsaPssVerifier {
             return Err(IssueError::VerificationFailure);
         }
         verify_rsa_pss_issuer_signature(&self.issuer, &cert)
+    }
+}
+
+/// Laboratory server profile verification: checks exact authorized DNS and
+/// policy binding as well as RSA-PSS issuer signature. This is not full RFC 5280
+/// path validation (trusted clock, revocation, chain building, name constraints).
+pub struct LabRsaPssServerVerifier {
+    pub issuer: Certificate,
+    pub policy: ApprovedPolicyBinding,
+    pub authorized_dns: String,
+}
+
+impl CertificateVerifier for LabRsaPssServerVerifier {
+    fn verify(&self, plan: &IssuancePlan<'_>, bytes: &[u8]) -> Result<(), IssueError> {
+        let error = IssueError::VerificationFailure;
+        let cert = Certificate::from_der(bytes).map_err(|_| error.clone())?;
+        if cert.tbs_certificate.to_der().map_err(|_| error.clone())? != plan.tbs_der {
+            return Err(error);
+        }
+        verify_rsa_pss_issuer_signature(&self.issuer, &cert)?;
+        let extensions = cert.tbs_certificate.extensions.as_ref().ok_or(error.clone())?;
+        if extensions.len() != 7 {
+            return Err(error);
+        }
+        let single = |oid: &str| -> Result<&x509_cert::ext::Extension, IssueError> {
+            let mut matching = extensions.iter().filter(|e| e.extn_id.to_string() == oid);
+            let first = matching.next().ok_or(IssueError::VerificationFailure)?;
+            if matching.next().is_some() {
+                return Err(IssueError::VerificationFailure);
+            }
+            Ok(first)
+        };
+        if single("2.5.29.32")? != &x509_extensions::certificate_policies(&self.policy)
+            .map_err(|_| error.clone())? {
+            return Err(error);
+        }
+        let san = single("2.5.29.17")?;
+        let names = SubjectAltName::from_der(san.extn_value.as_bytes())
+            .map_err(|_| error.clone())?;
+        if names.0.len() != 1 || !matches!(&names.0[0], GeneralName::DnsName(n) if n.as_str() == self.authorized_dns) {
+            return Err(error);
+        }
+        let constraints = single("2.5.29.19")?;
+        let basic = BasicConstraints::from_der(constraints.extn_value.as_bytes())
+            .map_err(|_| error.clone())?;
+        if !constraints.critical || basic.ca || basic.path_len_constraint.is_some() {
+            return Err(error);
+        }
+        let key_use = single("2.5.29.15")?;
+        let ku = KeyUsage::from_der(key_use.extn_value.as_bytes())
+            .map_err(|_| error.clone())?;
+        if !key_use.critical || ku != KeyUsage(KeyUsages::DigitalSignature.into()) {
+            return Err(error);
+        }
+        let eku = single("2.5.29.37")?;
+        let purposes = ExtendedKeyUsage::from_der(eku.extn_value.as_bytes())
+            .map_err(|_| error.clone())?;
+        if purposes.0.len() != 1 || purposes.0[0].to_string() != "1.3.6.1.5.5.7.3.1" {
+            return Err(error);
+        }
+        let issuer_id = x509_extensions::key_identifier(&self.issuer.tbs_certificate.subject_public_key_info)
+            .map_err(|_| error.clone())?;
+        let subject_id = x509_extensions::key_identifier(&cert.tbs_certificate.subject_public_key_info)
+            .map_err(|_| error.clone())?;
+        if single("2.5.29.14")? != &x509_extensions::subject_key_identifier(&subject_id)
+            .map_err(|_| error.clone())?
+            || single("2.5.29.35")? != &x509_extensions::authority_key_identifier(&issuer_id)
+                .map_err(|_| error.clone())? {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 
