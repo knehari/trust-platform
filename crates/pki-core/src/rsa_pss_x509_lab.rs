@@ -4,8 +4,8 @@ use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_S
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
-    rsa_pss_lab::{generate_lab_serial, EphemeralRsaPssLabSigner}, KeyRef, SignatureAlgorithm,
-    SigningProvider,
+    rsa_pss_lab::{generate_lab_serial, EphemeralRsaPssLabSigner},
+    KeyRef, SignatureAlgorithm, SigningProvider,
 };
 use trust_pki_policy::Authorization;
 use x509_cert::{
