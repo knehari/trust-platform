@@ -1,0 +1,22 @@
+[package]
+name = "trust-platform-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ca-core = { path = "../crates/ca-core" }
+
+# Not part of the main workspace: requires a nightly toolchain (cargo +nightly fuzz).
+[workspace]
+
+[[bin]]
+name = "csr_parse"
+path = "fuzz_targets/csr_parse.rs"
+test = false
+doc = false
+bench = false
