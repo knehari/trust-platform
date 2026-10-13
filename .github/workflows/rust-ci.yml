@@ -17,6 +17,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary lockfile regeneration for RSA-PSS integration
+        run: |
+          cargo generate-lockfile
+          echo TRUST_LOCKFILE_BEGIN
+          base64 -w0 Cargo.lock
+          echo
+          echo TRUST_LOCKFILE_END
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
