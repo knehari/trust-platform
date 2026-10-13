@@ -1,13 +1,15 @@
 //! Disposable RSA-PSS signed server chain for OpenSSL interop testing.
 use std::{env, fs};
 use trust_pki_core::{
-    csr::verify_pkcs10_p256,
-    rsa_pss_x509_lab::issue_ephemeral_rsa_pss_server_chain,
+    csr::verify_pkcs10_p256, rsa_pss_x509_lab::issue_ephemeral_rsa_pss_server_chain,
     x509_extensions::ApprovedPolicyBinding,
 };
 use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
-use x509_cert::{der::{DecodePem, Encode}, request::CertReq};
+use x509_cert::{
+    der::{DecodePem, Encode},
+    request::CertReq,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = env::args().nth(1).ok_or("output directory required")?;
@@ -24,7 +26,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_validity_days: 3,
         max_dns_sans: 3,
     };
-    let principal = AuthenticatedPrincipal { subject_id: "lab-requester" };
+    let principal = AuthenticatedPrincipal {
+        subject_id: "lab-requester",
+    };
     let names = ["api.lab.invalid"];
     let request = IssuanceRequest {
         profile_id: "lab-rsa-server",
@@ -33,7 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         validity_days: 1,
         ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
     };
-    let approved = policy.authorize(&principal, &request)?;
+    let approved = policy.authorize(&principal, &request)
+        .map_err(|_| "lab authorization denied")?;
     let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
         .map_err(|_| "policy binding failed")?;
     let (root, leaf) = issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding)
