@@ -39,16 +39,13 @@ pub struct LabRsaPssAssembler;
 
 impl CertificateAssembler for LabRsaPssAssembler {
     fn assemble(&self, tbs_der: &[u8], signature: &[u8]) -> Result<Vec<u8>, IssueError> {
-        let tbs = TbsCertificate::from_der(tbs_der)
-            .map_err(|_| IssueError::AssemblyFailure)?;
+        let tbs = TbsCertificate::from_der(tbs_der).map_err(|_| IssueError::AssemblyFailure)?;
         let cert = Certificate {
             signature_algorithm: tbs.signature.clone(),
             tbs_certificate: tbs,
-            signature: BitString::from_bytes(signature)
-                .map_err(|_| IssueError::AssemblyFailure)?,
+            signature: BitString::from_bytes(signature).map_err(|_| IssueError::AssemblyFailure)?,
         };
-        preflight_pss_certificate_identifier(&cert)
-            .map_err(|_| IssueError::AssemblyFailure)?;
+        preflight_pss_certificate_identifier(&cert).map_err(|_| IssueError::AssemblyFailure)?;
         cert.to_der().map_err(|_| IssueError::AssemblyFailure)
     }
 }
@@ -60,7 +57,10 @@ pub struct LabRsaPssVerifier {
 impl CertificateVerifier for LabRsaPssVerifier {
     fn verify(&self, plan: &IssuancePlan<'_>, bytes: &[u8]) -> Result<(), IssueError> {
         let cert = Certificate::from_der(bytes).map_err(|_| IssueError::VerificationFailure)?;
-        if cert.tbs_certificate.to_der().map_err(|_| IssueError::VerificationFailure)?
+        if cert
+            .tbs_certificate
+            .to_der()
+            .map_err(|_| IssueError::VerificationFailure)?
             != plan.tbs_der
         {
             return Err(IssueError::VerificationFailure);
@@ -73,8 +73,7 @@ impl CertificateVerifier for LabRsaPssVerifier {
 mod tests {
     use super::*;
     use crate::{
-        issuance_x509_binding::issue_x509_once,
-        orchestrator::IssuanceJournal,
+        issuance_x509_binding::issue_x509_once, orchestrator::IssuanceJournal,
         rsa_pss_x509_lab::create_root_and_signer,
     };
     use sha2::{Digest, Sha256};
@@ -125,15 +124,16 @@ mod tests {
     fn rsa_pss_x509_intent_first_and_replay_blocked() {
         let (issuer, key) = create_root_and_signer().unwrap();
         let tbs = issuer.tbs_certificate.to_der().unwrap();
-        let serial = issuer.tbs_certificate.serial_number.as_bytes();
+        let serial = issuer.tbs_certificate.serial_number.as_bytes().to_vec();
+        let key_reference = key.key_ref().0.clone();
         let plan = IssuancePlan {
             ca_id: "lab-ca",
             request_id: "lab-request",
             actor_id: "lab-actor",
-            signer_key_ref: &key.key_ref().0,
+            signer_key_ref: &key_reference,
             policy_revision: "lab-policy",
             operation_ref: "unique-op",
-            serial_der: serial,
+            serial_der: &serial,
             tbs_der: &tbs,
         };
         let mut journal = Journal::default();
@@ -142,18 +142,24 @@ mod tests {
             &mut journal,
             &mut signer,
             &LabRsaPssAssembler,
-            LabRsaPssVerifier { issuer: issuer.clone() },
+            LabRsaPssVerifier {
+                issuer: issuer.clone(),
+            },
             &plan,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(journal.stored);
         assert!(!journal.uncertain);
-        assert_eq!(Certificate::from_der(&cert).unwrap().tbs_certificate, issuer.tbs_certificate);
+        assert_eq!(
+            Certificate::from_der(&cert).unwrap().tbs_certificate,
+            issuer.tbs_certificate
+        );
         assert_eq!(
             issue_x509_once(
                 &mut journal,
                 &mut signer,
                 &LabRsaPssAssembler,
-                LabRsaPssVerifier { issuer },
+                LabRsaPssVerifier { issuer: issuer.clone() },
                 &plan,
             ),
             Err(IssueError::ReplayedOrAmbiguousIntent)
@@ -164,25 +170,29 @@ mod tests {
     fn persistence_failure_is_uncertain_and_never_resigned() {
         let (issuer, key) = create_root_and_signer().unwrap();
         let tbs = issuer.tbs_certificate.to_der().unwrap();
-        let serial = issuer.tbs_certificate.serial_number.as_bytes();
+        let serial = issuer.tbs_certificate.serial_number.as_bytes().to_vec();
+        let key_reference = key.key_ref().0.clone();
         let plan = IssuancePlan {
             ca_id: "lab-ca",
             request_id: "lab-request",
             actor_id: "lab-actor",
-            signer_key_ref: &key.key_ref().0,
+            signer_key_ref: &key_reference,
             policy_revision: "lab-policy",
             operation_ref: "unique-op",
-            serial_der: serial,
+            serial_der: &serial,
             tbs_der: &tbs,
         };
-        let mut journal = Journal { fail_store: true, ..Default::default() };
+        let mut journal = Journal {
+            fail_store: true,
+            ..Default::default()
+        };
         let mut signer = LabRsaPssExternalSigner(key);
         assert_eq!(
             issue_x509_once(
                 &mut journal,
                 &mut signer,
                 &LabRsaPssAssembler,
-                LabRsaPssVerifier { issuer },
+                LabRsaPssVerifier { issuer: issuer.clone() },
                 &plan,
             ),
             Err(IssueError::PersistenceFailure)
