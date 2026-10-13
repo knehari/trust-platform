@@ -1,6 +1,12 @@
 //! A fail-closed release gate model, not itself a legal or security approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateError { LegalClearance, SecurityReview, HardwareKeyCustody, Recovery, AuditEvidence }
+pub enum GateError {
+    LegalClearance,
+    SecurityReview,
+    HardwareKeyCustody,
+    Recovery,
+    AuditEvidence,
+}
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReleaseEvidence {
     pub legal_ip_approved: bool,
@@ -10,11 +16,21 @@ pub struct ReleaseEvidence {
     pub independently_anchored_audit: bool,
 }
 pub fn evaluate_release(e: ReleaseEvidence) -> Result<(), GateError> {
-    if !e.legal_ip_approved { return Err(GateError::LegalClearance); }
-    if !e.independent_security_review { return Err(GateError::SecurityReview); }
-    if !e.hardware_key_custody_verified { return Err(GateError::HardwareKeyCustody); }
-    if !e.operational_recovery_tested { return Err(GateError::Recovery); }
-    if !e.independently_anchored_audit { return Err(GateError::AuditEvidence); }
+    if !e.legal_ip_approved {
+        return Err(GateError::LegalClearance);
+    }
+    if !e.independent_security_review {
+        return Err(GateError::SecurityReview);
+    }
+    if !e.hardware_key_custody_verified {
+        return Err(GateError::HardwareKeyCustody);
+    }
+    if !e.operational_recovery_tested {
+        return Err(GateError::Recovery);
+    }
+    if !e.independently_anchored_audit {
+        return Err(GateError::AuditEvidence);
+    }
     Ok(())
 }
 #[cfg(test)]
@@ -22,7 +38,10 @@ mod tests {
     use super::*;
     #[test]
     fn release_requires_all_independent_gates() {
-        assert_eq!(evaluate_release(ReleaseEvidence::default()), Err(GateError::LegalClearance));
+        assert_eq!(
+            evaluate_release(ReleaseEvidence::default()),
+            Err(GateError::LegalClearance)
+        );
         let mut e = ReleaseEvidence {
             legal_ip_approved: true,
             independent_security_review: true,
