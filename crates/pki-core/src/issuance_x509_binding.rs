@@ -15,6 +15,19 @@ use x509_cert::{
 /// Apply before invoking an external signer, so malformed or mismatched TBS
 /// never leads to a signing intent or cryptographic operation.
 pub fn preflight_issuance_plan(plan: &IssuancePlan<'_>) -> Result<(), IssueError> {
+    // Refuse missing or unbounded trusted metadata before any durable intent.
+    for value in [
+        plan.ca_id,
+        plan.request_id,
+        plan.actor_id,
+        plan.signer_key_ref,
+        plan.policy_revision,
+        plan.operation_ref,
+    ] {
+        if value.is_empty() || value.len() > 256 || value.trim() != value {
+            return Err(IssueError::VerificationFailure);
+        }
+    }
     if plan.tbs_der.is_empty() || plan.tbs_der.len() > 64 * 1024 {
         return Err(IssueError::VerificationFailure);
     }
@@ -40,6 +53,9 @@ pub struct BoundX509Verifier<V>(pub V);
 impl<V: CertificateVerifier> CertificateVerifier for BoundX509Verifier<V> {
     fn verify(&self, plan: &IssuancePlan<'_>, certificate_der: &[u8]) -> Result<(), IssueError> {
         preflight_issuance_plan(plan)?;
+        if certificate_der.is_empty() || certificate_der.len() > 64 * 1024 {
+            return Err(IssueError::VerificationFailure);
+        }
         let cert =
             Certificate::from_der(certificate_der).map_err(|_| IssueError::VerificationFailure)?;
         if cert
@@ -178,6 +194,40 @@ mod tests {
             ),
             Err(IssueError::VerificationFailure)
         );
+        assert_eq!(journal.intent_calls, 0);
+        assert_eq!(signer.calls, 0);
+    }
+
+    #[test]
+    fn invalid_operational_metadata_is_rejected_before_journal_or_signer() {
+        let root = issue_ephemeral_rsa_pss_root().unwrap();
+        let tbs = root.tbs_certificate.to_der().unwrap();
+        let serial = root.tbs_certificate.serial_number.as_bytes();
+        let mut journal = CountingJournal::default();
+        let mut signer = CountingSigner::default();
+        let long_operation = "x".repeat(257);
+        for operation in ["", " ambiguous", "trailing ", long_operation.as_str()] {
+            let plan = IssuancePlan {
+                ca_id: "lab-ca",
+                request_id: "request",
+                actor_id: "actor",
+                signer_key_ref: "signer",
+                policy_revision: "v1",
+                operation_ref: operation,
+                serial_der: serial,
+                tbs_der: &tbs,
+            };
+            assert_eq!(
+                issue_x509_once(
+                    &mut journal,
+                    &mut signer,
+                    &UnreachableAssembler,
+                    UnreachableVerifier,
+                    &plan,
+                ),
+                Err(IssueError::VerificationFailure)
+            );
+        }
         assert_eq!(journal.intent_calls, 0);
         assert_eq!(signer.calls, 0);
     }
