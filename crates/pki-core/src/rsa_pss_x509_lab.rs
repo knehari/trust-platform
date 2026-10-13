@@ -1,5 +1,7 @@
 //! Isolated RSA-PSS X.509 root fixture. Not a production CA or general issuer.
 use crate::csr::VerifiedCsr;
+use crate::serial::SerialNumber as ReservedSerial;
+use crate::serial_binding::verify_certificate_reserved_serial;
 use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_SHA256_SALT32_DER};
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::{str::FromStr, time::Duration};
@@ -122,11 +124,13 @@ fn create_root_and_signer() -> Result<(Certificate, EphemeralRsaPssLabSigner), R
 
 /// Issues one disposable lab server certificate from independently verified CSR
 /// data and a policy-issued authorization. This does not replace durable serials,
-/// HSM-backed signing, publication or revocation.
+/// HSM-backed signing, publication or revocation. The caller supplies a serial
+/// already reserved by its issuer-scoped store; this function does not reserve it.
 pub fn issue_ephemeral_rsa_pss_server_chain(
     csr: &VerifiedCsr,
     approval: &Authorization,
     policy: &ApprovedPolicyBinding,
+    reserved_serial: &ReservedSerial,
 ) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
     if approval.ca_signature_algorithm() != SignatureAlgorithm::RsaPssSha256
         || approval.validity_days() == 0
@@ -206,7 +210,7 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     ];
     let tbs = TbsCertificate {
         version: Version::V3,
-        serial_number: SerialNumber::new(&generate_lab_serial())
+        serial_number: SerialNumber::new(reserved_serial.as_der_content())
             .map_err(|_| RsaPssLabIssueError::Encoding)?,
         signature: algorithm.clone(),
         issuer: root.tbs_certificate.subject.clone(),
@@ -234,6 +238,8 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     };
     let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
+    verify_certificate_reserved_serial(&der, reserved_serial)
+        .map_err(|_| RsaPssLabIssueError::Encoding)?;
     Ok((root, leaf))
 }
 
