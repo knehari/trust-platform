@@ -3,8 +3,8 @@ use rand::{rngs::OsRng, RngCore};
 use rsa::{
     pkcs8::{DecodePublicKey, EncodePublicKey},
     pss::{Signature, SigningKey, VerifyingKey},
-    traits::PublicKeyParts,
     signature::{RandomizedSigner, SignatureEncoding, Verifier},
+    traits::PublicKeyParts,
     RsaPrivateKey, RsaPublicKey,
 };
 use sha2::Sha256;
@@ -33,8 +33,7 @@ pub fn verify_rsa_pss_sha256_spki(
     if public_key.size() < 384 {
         return Err(CryptoError::InvalidPublicKey);
     }
-    let signature =
-        Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
+    let signature = Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
     VerifyingKey::<Sha256>::new(public_key)
         .verify(message, &signature)
         .map_err(|_| CryptoError::InvalidSignature)
@@ -136,7 +135,10 @@ mod tests {
             Err(CryptoError::UnsupportedAlgorithm)
         );
         let spki = provider.public_key_spki_der(&key_ref).unwrap();
-        assert_eq!(verify_rsa_pss_sha256_spki(&spki, b"hello", &signature), Ok(()));
+        assert_eq!(
+            verify_rsa_pss_sha256_spki(&spki, b"hello", &signature),
+            Ok(())
+        );
         assert_eq!(
             verify_rsa_pss_sha256_spki(&spki, b"altered", &signature),
             Err(CryptoError::InvalidSignature)
