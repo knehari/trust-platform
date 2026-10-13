@@ -37,7 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         validity_days: 1,
         ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
     };
-    let approved = policy.authorize(&principal, &request)
+    let approved = policy
+        .authorize(&principal, &request)
         .map_err(|_| "lab authorization denied")?;
     let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
         .map_err(|_| "policy binding failed")?;
