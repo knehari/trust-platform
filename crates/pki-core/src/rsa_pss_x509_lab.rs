@@ -67,7 +67,8 @@ pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError
             critical: true,
             extn_value: x509_cert::der::asn1::OctetString::new(
                 usages.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?,
-            ).map_err(|_| RsaPssLabIssueError::Encoding)?,
+            )
+            .map_err(|_| RsaPssLabIssueError::Encoding)?,
         },
     ];
     let tbs = TbsCertificate {
