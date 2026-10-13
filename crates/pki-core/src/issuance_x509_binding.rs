@@ -83,3 +83,36 @@ where
         plan,
     )
 }
+
+#[cfg(all(test, feature = "lab-software"))]
+mod tests {
+    use super::*;
+    use crate::rsa_pss_x509_lab::issue_ephemeral_rsa_pss_root;
+
+    #[test]
+    fn rejects_unreserved_tbs_before_signing() {
+        let root = issue_ephemeral_rsa_pss_root().unwrap();
+        let tbs = root.tbs_certificate.to_der().unwrap();
+        let serial_der = root.tbs_certificate.serial_number.to_der().unwrap();
+        let valid_serial = &serial_der[2..];
+        let plan = IssuancePlan {
+            ca_id: "lab-ca",
+            request_id: "lab-request",
+            actor_id: "lab-actor",
+            signer_key_ref: "lab-signer",
+            policy_revision: "lab-policy",
+            operation_ref: "lab-operation",
+            serial_der: valid_serial,
+            tbs_der: &tbs,
+        };
+        assert_eq!(preflight_issuance_plan(&plan), Ok(()));
+        let mismatch = IssuancePlan {
+            serial_der: &[0x42],
+            ..plan
+        };
+        assert_eq!(
+            preflight_issuance_plan(&mismatch),
+            Err(IssueError::VerificationFailure)
+        );
+    }
+}
