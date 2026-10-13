@@ -45,8 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Local fixture only: production must retrieve this from PostgreSQL.
     let serial = ReservedSerial::from_positive_der_content(&generate_lab_serial())
         .map_err(|_| "invalid lab serial")?;
-    let (root, leaf) = issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding, &serial)
-        .map_err(|_| "RSA-PSS lab chain failed")?;
+    let (root, leaf) =
+        issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding, &serial)
+            .map_err(|_| "RSA-PSS lab chain failed")?;
     fs::write(format!("{output}/root.der"), root.to_der()?)?;
     fs::write(format!("{output}/leaf.der"), leaf.to_der()?)?;
     Ok(())
