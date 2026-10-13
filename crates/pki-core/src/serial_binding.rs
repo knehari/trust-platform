@@ -33,13 +33,20 @@ pub fn verify_certificate_reserved_serial(
 mod tests {
     use super::*;
     use crate::serial::SerialNumber as ReservedSerial;
-    use x509_cert::der::DecodePem;
+    use crate::rsa_pss_x509_lab::issue_ephemeral_rsa_pss_root;
 
     #[test]
     fn mismatched_reserved_serial_is_rejected() {
-        let pem = include_str!("../tests/fixtures/ecdsa-p256-request.pem");
-        assert!(!pem.is_empty());
+        let cert = issue_ephemeral_rsa_pss_root().unwrap();
+        let der = cert.to_der().unwrap();
+        let serial_der = cert.tbs_certificate.serial_number.to_der().unwrap();
+        let correct = ReservedSerial::from_positive_der_content(&serial_der[2..]).unwrap();
+        assert_eq!(verify_certificate_reserved_serial(&der, &correct), Ok(()));
         let fake = ReservedSerial::from_positive_der_content(&[0x42]).unwrap();
+        assert_eq!(
+            verify_certificate_reserved_serial(&der, &fake),
+            Err(SerialBindingError::MismatchedSerial)
+        );
         assert_eq!(
             verify_certificate_reserved_serial(&[0x30, 0x00], &fake),
             Err(SerialBindingError::InvalidCertificate)
