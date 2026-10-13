@@ -1,9 +1,10 @@
 //! Ephemeral RSA-PSS laboratory signer. Never use as a production CA key store.
 use rand::{rngs::OsRng, RngCore};
 use rsa::{
-    pkcs8::EncodePublicKey,
+    pkcs8::{DecodePublicKey, EncodePublicKey},
     pss::{Signature, SigningKey, VerifyingKey},
     signature::{RandomizedSigner, SignatureEncoding, Verifier},
+    traits::PublicKeyParts,
     RsaPrivateKey, RsaPublicKey,
 };
 use sha2::Sha256;
@@ -17,6 +18,25 @@ pub fn generate_lab_serial() -> [u8; 19] {
     OsRng.fill_bytes(&mut serial);
     serial[0] = (serial[0] & 0x3f) | 0x40;
     serial
+}
+
+/// Verify RSA-PSS SHA-256 with an explicit 32-octet salt against a public
+/// SubjectPublicKeyInfo. Laboratory interoperability only: callers must first
+/// validate the X.509 AlgorithmIdentifiers and certificate profile.
+pub fn verify_rsa_pss_sha256_spki(
+    spki_der: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), CryptoError> {
+    let public_key =
+        RsaPublicKey::from_public_key_der(spki_der).map_err(|_| CryptoError::InvalidPublicKey)?;
+    if public_key.n().bits() < 3072 {
+        return Err(CryptoError::InvalidPublicKey);
+    }
+    let signature = Signature::try_from(signature).map_err(|_| CryptoError::InvalidSignature)?;
+    VerifyingKey::<Sha256>::new(public_key)
+        .verify(message, &signature)
+        .map_err(|_| CryptoError::InvalidSignature)
 }
 
 pub struct EphemeralRsaPssLabSigner {
@@ -114,6 +134,14 @@ mod tests {
             provider.sign(&key_ref, SignatureAlgorithm::MlDsa65, b"hello"),
             Err(CryptoError::UnsupportedAlgorithm)
         );
-        assert!(!provider.public_key_spki_der(&key_ref).unwrap().is_empty());
+        let spki = provider.public_key_spki_der(&key_ref).unwrap();
+        assert_eq!(
+            verify_rsa_pss_sha256_spki(&spki, b"hello", &signature),
+            Ok(())
+        );
+        assert_eq!(
+            verify_rsa_pss_sha256_spki(&spki, b"altered", &signature),
+            Err(CryptoError::InvalidSignature)
+        );
     }
 }

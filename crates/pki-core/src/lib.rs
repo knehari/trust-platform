@@ -24,6 +24,10 @@ pub mod reconciliation;
 pub mod reviewer_binding;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
+pub mod rsa_pss_issuer_verify_lab;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_orchestrator_lab;
+#[cfg(feature = "lab-software")]
 pub mod rsa_pss_x509_lab;
 pub mod serial;
 pub mod serial_binding;
