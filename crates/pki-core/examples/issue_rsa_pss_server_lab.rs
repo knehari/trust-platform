@@ -4,7 +4,7 @@ use trust_pki_core::{
     csr::verify_pkcs10_p256, rsa_pss_x509_lab::issue_ephemeral_rsa_pss_server_chain,
     x509_extensions::ApprovedPolicyBinding,
 };
-use trust_pki_crypto::SignatureAlgorithm;
+use trust_pki_crypto::{rsa_pss_lab::generate_lab_serial, SignatureAlgorithm};
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
 use x509_cert::{
     der::{DecodePem, Encode},
@@ -42,7 +42,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "lab authorization denied")?;
     let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
         .map_err(|_| "policy binding failed")?;
-    let (root, leaf) = issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding)
+    // Local fixture only: production must retrieve this from PostgreSQL.
+    let serial = ReservedSerial::from_positive_der_content(&generate_lab_serial())
+        .map_err(|_| "invalid lab serial")?;
+    let (root, leaf) = issue_ephemeral_rsa_pss_server_chain(&verified, &approved, &binding, &serial)
         .map_err(|_| "RSA-PSS lab chain failed")?;
     fs::write(format!("{output}/root.der"), root.to_der()?)?;
     fs::write(format!("{output}/leaf.der"), leaf.to_der()?)?;
