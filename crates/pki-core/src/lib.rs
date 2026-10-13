@@ -1,13 +1,12 @@
 #![forbid(unsafe_code)]
 //! Native CA orchestration contracts.
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
+pub mod audit_chain;
 pub mod audit_manifest;
 pub mod capacity_policy;
 pub mod signer_capabilities;
-pub mod audit_chain;
 
 pub mod authentication;
-pub mod release_gate;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
@@ -27,6 +26,7 @@ pub mod policy_trace;
 pub mod postgres_store;
 pub mod provider_evidence;
 pub mod reconciliation;
+pub mod release_gate;
 pub mod reviewer_binding;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
