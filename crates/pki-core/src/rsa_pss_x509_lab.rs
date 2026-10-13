@@ -43,7 +43,9 @@ pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError
     create_root_and_signer().map(|(root, _)| root)
 }
 
-pub(crate) fn create_root_and_signer(
+/// Returns a disposable issuer and private signer for isolated integration tests.
+/// Never persist or expose the ephemeral private key in production.
+pub fn create_root_and_signer(
 ) -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError> {
     let signer = EphemeralRsaPssLabSigner::generate(KeyRef("pss-x509-lab".into()))
         .map_err(|_| RsaPssLabIssueError::Key)?;
