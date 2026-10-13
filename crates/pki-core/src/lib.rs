@@ -2,6 +2,7 @@
 //! Native CA orchestration contracts.
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 pub mod audit_chain;
+pub mod signer_capabilities;
 
 pub mod authentication;
 pub mod ca_observation;
