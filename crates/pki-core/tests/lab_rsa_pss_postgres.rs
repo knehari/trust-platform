@@ -38,19 +38,20 @@ fn rsa_pss_intent_signature_and_certificate_are_durable_and_nonreplayable() {
         max_dns_sans: 2,
     };
     let dns = ["api.lab.invalid"];
-    let authorization = allowed.authorize(
-        &AuthenticatedPrincipal { subject_id: actor },
-        &IssuanceRequest {
-            profile_id: "lab-server-rsa-pss",
-            subject_common_name: "api.lab.invalid",
-            dns_sans: &dns,
-            validity_days: 1,
-            ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
-        },
-    ).unwrap();
-    let binding = ApprovedPolicyBinding::new(
-        "1.3.6.1.4.1.55555.1.1", "lab-doc-v1", [7; 32],
-    ).unwrap();
+    let authorization = allowed
+        .authorize(
+            &AuthenticatedPrincipal { subject_id: actor },
+            &IssuanceRequest {
+                profile_id: "lab-server-rsa-pss",
+                subject_common_name: "api.lab.invalid",
+                dns_sans: &dns,
+                validity_days: 1,
+                ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
+            },
+        )
+        .unwrap();
+    let binding =
+        ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-doc-v1", [7; 32]).unwrap();
     let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
     let request = db
         .create_request(ca_id, "v18-rsa-pss-persist-once", &[0x81; 32], actor, "v1")
@@ -77,9 +78,8 @@ fn rsa_pss_intent_signature_and_certificate_are_durable_and_nonreplayable() {
         .unwrap();
     let (issuer, key) = create_root_and_signer().unwrap();
     let signer_ref = key.key_ref().0.clone();
-    let tbs = prepare_rsa_pss_server_tbs(
-        &verified, &authorization, &binding, &serial, &issuer,
-    ).unwrap();
+    let tbs =
+        prepare_rsa_pss_server_tbs(&verified, &authorization, &binding, &serial, &issuer).unwrap();
     let tbs_der = tbs.to_der().unwrap();
     let plan = IssuancePlan {
         ca_id,
