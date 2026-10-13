@@ -1,8 +1,8 @@
 //! Isolated RSA-PSS X.509 root fixture. Not a production CA or general issuer.
 use crate::csr::VerifiedCsr;
+use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_SHA256_SALT32_DER};
 use crate::serial::SerialNumber as ReservedSerial;
 use crate::serial_binding::verify_certificate_reserved_serial;
-use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_SHA256_SALT32_DER};
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
