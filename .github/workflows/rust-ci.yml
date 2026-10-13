@@ -44,6 +44,14 @@ jobs:
           openssl x509 -inform DER -in "$RUNNER_TEMP/native-rsa-root.der" -out "$RUNNER_TEMP/native-rsa-root.pem"
           openssl verify -CAfile "$RUNNER_TEMP/native-rsa-root.pem" -check_ss_sig "$RUNNER_TEMP/native-rsa-root.pem"
           openssl x509 -in "$RUNNER_TEMP/native-rsa-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: Native RSA-PSS server chain verified by OpenSSL (lab only)
+        run: |
+          mkdir -p "$RUNNER_TEMP/rsa-pss-server"
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_server_lab -- "$RUNNER_TEMP/rsa-pss-server"
+          openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/root.der" -out "$RUNNER_TEMP/rsa-pss-server/root.pem"
+          openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/leaf.der" -out "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
+          openssl verify -CAfile "$RUNNER_TEMP/rsa-pss-server/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
+          openssl x509 -in "$RUNNER_TEMP/rsa-pss-server/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
       - name: Native CA to OpenSSL interop (lab only)
         run: |
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
