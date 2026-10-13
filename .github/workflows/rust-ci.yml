@@ -17,6 +17,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Temporary capture formatted V1.8 laboratory module
+        run: |
+          cargo fmt --all
+          echo FORMAT_V18_BEGIN
+          base64 -w0 crates/pki-core/src/rsa_pss_orchestrator_lab.rs
+          echo
+          echo FORMAT_V18_END
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
