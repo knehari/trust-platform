@@ -7,6 +7,7 @@ pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod csr;
+pub mod issuance_evidence;
 pub mod issuance_x509_binding;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
