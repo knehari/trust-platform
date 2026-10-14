@@ -5,7 +5,11 @@ pub enum GateError {
     PeerIncompatible,
     FallbackNotApproved,
 }
-pub fn check(hybrid_supported: bool, peer_compatible: bool, fallback_approved: bool) -> Result<(), GateError> {
+pub fn check(
+    hybrid_supported: bool,
+    peer_compatible: bool,
+    fallback_approved: bool,
+) -> Result<(), GateError> {
     if !hybrid_supported {
         return Err(GateError::NoHybrid);
     }
@@ -22,9 +26,6 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_first_missing_requirement() {
-        assert_eq!(
-            check(false, true, true),
-            Err(GateError::NoHybrid)
-        );
+        assert_eq!(check(false, true, true), Err(GateError::NoHybrid));
     }
 }
