@@ -22,6 +22,6 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_first_missing_requirement() {
-        assert_eq!(check(1, 1, true), Err(GateError::UnknownOperation));
+        assert_eq!(check(1, 0, false), Err(GateError::UnknownOperation));
     }
 }
