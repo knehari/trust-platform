@@ -5,7 +5,11 @@ pub enum PreflightError {
     CrossTenant,
     MissingRole,
 }
-pub fn check(tenant: &str, resource_tenant: &str, allowed_role: bool) -> Result<(), PreflightError> {
+pub fn check(
+    tenant: &str,
+    resource_tenant: &str,
+    allowed_role: bool,
+) -> Result<(), PreflightError> {
     if tenant.is_empty() {
         return Err(PreflightError::MissingTenant);
     }
@@ -23,7 +27,7 @@ mod tests {
     #[test]
     fn denies_missing_first_requirement() {
         assert_eq!(
-            check( "", "tenant-b", true),
+            check("", "tenant-b", true),
             Err(PreflightError::MissingTenant)
         );
     }
