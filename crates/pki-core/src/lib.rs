@@ -7,6 +7,7 @@ pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
+pub mod revocation_policy;
 pub mod crypto_migration;
 pub mod key_ceremony;
 pub mod ca_observation;
