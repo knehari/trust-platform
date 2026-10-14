@@ -3,23 +3,21 @@
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 pub mod audit_chain;
 pub mod audit_manifest;
-pub mod audit_retention;
 pub mod capacity_policy;
-pub mod certificate_profile;
-pub mod identity_boundary;
-pub mod key_attestation;
-pub mod recovery_budget;
-pub mod request_rate;
 pub mod signer_capabilities;
 
+pub mod audit_retention;
 pub mod authentication;
 pub mod ca_observation;
+pub mod certificate_profile;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod crypto_migration;
 pub mod csr;
+pub mod identity_boundary;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
+pub mod key_attestation;
 pub mod key_ceremony;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
@@ -35,7 +33,9 @@ pub mod postgres_store;
 pub mod production_gates;
 pub mod provider_evidence;
 pub mod reconciliation;
+pub mod recovery_budget;
 pub mod release_gate;
+pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
 pub mod revocation_policy;
