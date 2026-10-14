@@ -5,7 +5,11 @@ pub enum GateError {
     NotAnchored,
     InvalidSignature,
 }
-pub fn check(digest: &[u8; 32], externally_anchored: bool, signature_verified: bool) -> Result<(), GateError> {
+pub fn check(
+    digest: &[u8; 32],
+    externally_anchored: bool,
+    signature_verified: bool,
+) -> Result<(), GateError> {
     if digest == &[0; 32] {
         return Err(GateError::EmptyDigest);
     }
@@ -22,9 +26,6 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_first_missing_requirement() {
-        assert_eq!(
-            check(&[0; 32], true, true),
-            Err(GateError::EmptyDigest)
-        );
+        assert_eq!(check(&[0; 32], true, true), Err(GateError::EmptyDigest));
     }
 }
