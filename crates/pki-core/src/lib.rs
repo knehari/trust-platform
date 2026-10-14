@@ -7,12 +7,12 @@ pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
-pub mod identity_boundary;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod crypto_migration;
 pub mod csr;
+pub mod identity_boundary;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
 pub mod key_ceremony;
