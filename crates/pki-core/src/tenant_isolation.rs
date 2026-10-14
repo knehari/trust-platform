@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn denies_missing_first_requirement() {
         assert_eq!(
-            check( "", "tenant-b", true),
+            check("", "tenant-b", true),
             Err(PreflightError::MissingTenant)
         );
     }
