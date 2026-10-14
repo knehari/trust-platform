@@ -13,6 +13,7 @@ pub mod cp_cps;
 pub mod csr;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
+pub mod key_ceremony;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
 #[cfg(feature = "lab-software")]
