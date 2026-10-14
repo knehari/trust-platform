@@ -17,6 +17,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Capture canonical Rust modules
+        run: |
+          cargo fmt --all
+          for name in key_ceremony crypto_migration revocation_policy resilience_policy production_gates; do
+            echo "CANON_${name}_BEGIN"
+            base64 -w0 "crates/pki-core/src/${name}.rs"
+            echo
+            echo "CANON_${name}_END"
+          done
+          echo "CANON_lib_BEGIN"
+          base64 -w0 crates/pki-core/src/lib.rs
+          echo
+          echo "CANON_lib_END"
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
