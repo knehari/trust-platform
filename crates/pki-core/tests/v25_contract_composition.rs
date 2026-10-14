@@ -43,13 +43,7 @@ fn issuance_commitment_flows_to_audit_manifest_without_bypassing_release_gates()
         attested: false,
         algorithms: &[Algorithm::RsaPssSha256],
     }];
-    assert!(authorize_signer(
-        &signer,
-        "issuer-key-1",
-        Algorithm::RsaPssSha256,
-        true
-    )
-    .is_err());
+    assert!(authorize_signer(&signer, "issuer-key-1", Algorithm::RsaPssSha256, true).is_err());
 
     assert_eq!(
         evaluate_release(ReleaseEvidence::default()),
