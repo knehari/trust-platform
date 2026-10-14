@@ -5,7 +5,11 @@ pub enum PreflightError {
     MissingEvidence,
     UntrustedProvider,
 }
-pub fn check(key_ref: &str, evidence_digest: &[u8; 32], trusted_provider: bool) -> Result<(), PreflightError> {
+pub fn check(
+    key_ref: &str,
+    evidence_digest: &[u8; 32],
+    trusted_provider: bool,
+) -> Result<(), PreflightError> {
     if key_ref.is_empty() {
         return Err(PreflightError::MissingKey);
     }
@@ -22,9 +26,6 @@ mod tests {
     use super::*;
     #[test]
     fn denies_missing_first_requirement() {
-        assert_eq!(
-            check( "", &[1; 32], true),
-            Err(PreflightError::MissingKey)
-        );
+        assert_eq!(check("", &[1; 32], true), Err(PreflightError::MissingKey));
     }
 }
