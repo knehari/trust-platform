@@ -22,9 +22,6 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_first_missing_requirement() {
-        assert_eq!(
-            check(0, 0, 10),
-            Err(GateError::InvalidWindow)
-        );
+        assert_eq!(check(0, 0, 10), Err(GateError::InvalidWindow));
     }
 }
