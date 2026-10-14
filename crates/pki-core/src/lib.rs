@@ -33,6 +33,7 @@ pub mod postgres_store;
 pub mod production_gates;
 pub mod provider_evidence;
 pub mod reconciliation;
+pub mod recovery_budget;
 pub mod release_gate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
