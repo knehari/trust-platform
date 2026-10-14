@@ -7,6 +7,7 @@ pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
+pub mod request_rate;
 pub mod recovery_budget;
 pub mod audit_retention;
 pub mod certificate_profile;
