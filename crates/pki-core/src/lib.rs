@@ -6,6 +6,7 @@ pub mod audit_manifest;
 pub mod capacity_policy;
 pub mod signer_capabilities;
 
+pub mod audit_retention;
 pub mod authentication;
 pub mod ca_observation;
 pub mod certificate_profile;
