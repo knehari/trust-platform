@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn denies_missing_first_requirement() {
         assert_eq!(
-            check( "", "trusted-issuer", 10, 0),
+            check("", "trusted-issuer", 10, 0),
             Err(PreflightError::MissingSubject)
         );
     }
