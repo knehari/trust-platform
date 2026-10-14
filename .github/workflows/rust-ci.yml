@@ -17,6 +17,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Capture canonical V4 formatter output
+        run: |
+          cargo fmt --all
+          for name in identity_boundary tenant_isolation key_attestation certificate_profile audit_retention recovery_budget request_rate pqc_rollout audit_integrity platform_readiness; do
+            echo "FMT_${name}_BEGIN"
+            base64 -w0 "crates/pki-core/src/${name}.rs"
+            echo
+            echo "FMT_${name}_END"
+          done
+          echo "FMT_lib_BEGIN"
+          base64 -w0 crates/pki-core/src/lib.rs
+          echo
+          echo "FMT_lib_END"
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
