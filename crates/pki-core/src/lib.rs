@@ -10,6 +10,7 @@ pub mod authentication;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
+pub mod crypto_migration;
 pub mod csr;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
