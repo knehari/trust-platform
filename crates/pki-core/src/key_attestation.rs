@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn denies_missing_first_requirement() {
         assert_eq!(
-            check( "", &[1; 32], true),
+            check("", &[1; 32], true),
             Err(PreflightError::MissingKey)
         );
     }
