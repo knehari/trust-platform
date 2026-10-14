@@ -26,6 +26,7 @@ pub mod policy_gate;
 pub mod policy_trace;
 #[cfg(feature = "postgres-store")]
 pub mod postgres_store;
+pub mod production_gates;
 pub mod provider_evidence;
 pub mod reconciliation;
 pub mod release_gate;
