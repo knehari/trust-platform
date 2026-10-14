@@ -12,6 +12,7 @@ pub mod challenge_binding;
 pub mod cp_cps;
 pub mod crypto_migration;
 pub mod csr;
+pub mod identity_boundary;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
 pub mod key_ceremony;
