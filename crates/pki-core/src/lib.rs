@@ -3,11 +3,11 @@
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 pub mod audit_chain;
 pub mod audit_manifest;
+pub mod audit_retention;
 pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
-pub mod audit_retention;
 pub mod certificate_profile;
 pub mod key_attestation;
 pub mod tenant_isolation;
