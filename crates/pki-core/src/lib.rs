@@ -15,6 +15,7 @@ pub mod csr;
 pub mod identity_boundary;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
+pub mod key_attestation;
 pub mod key_ceremony;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
