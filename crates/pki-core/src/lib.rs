@@ -30,6 +30,7 @@ pub mod provider_evidence;
 pub mod reconciliation;
 pub mod release_gate;
 pub mod reviewer_binding;
+pub mod revocation_policy;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_issuer_verify_lab;
