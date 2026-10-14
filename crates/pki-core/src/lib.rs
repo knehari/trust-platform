@@ -35,6 +35,7 @@ pub mod provider_evidence;
 pub mod reconciliation;
 pub mod recovery_budget;
 pub mod release_gate;
+pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
 pub mod revocation_policy;
