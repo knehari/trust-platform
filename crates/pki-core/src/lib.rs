@@ -8,6 +8,7 @@ pub mod signer_capabilities;
 
 pub mod authentication;
 pub mod ca_observation;
+pub mod certificate_profile;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod crypto_migration;
