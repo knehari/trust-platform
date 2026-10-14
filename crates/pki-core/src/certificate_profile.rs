@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn denies_missing_first_requirement() {
         assert_eq!(
-            check( 0, 1, false),
+            check(0, 1, false),
             Err(PreflightError::InvalidLifetime)
         );
     }
