@@ -25,6 +25,7 @@ pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
 pub mod orchestrator;
+pub mod platform_readiness;
 pub mod policy_decisions;
 pub mod policy_gate;
 #[cfg(feature = "lab-software")]
