@@ -3,16 +3,15 @@
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
 pub mod audit_chain;
 pub mod audit_manifest;
+pub mod audit_retention;
 pub mod capacity_policy;
+pub mod certificate_profile;
+pub mod identity_boundary;
+pub mod key_attestation;
+pub mod recovery_budget;
 pub mod signer_capabilities;
 
 pub mod authentication;
-pub mod recovery_budget;
-pub mod audit_retention;
-pub mod certificate_profile;
-pub mod key_attestation;
-pub mod tenant_isolation;
-pub mod identity_boundary;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
@@ -48,6 +47,7 @@ pub mod rsa_pss_orchestrator_lab;
 pub mod rsa_pss_x509_lab;
 pub mod serial;
 pub mod serial_binding;
+pub mod tenant_isolation;
 pub mod x509_extensions;
 
 use trust_pki_policy::{
