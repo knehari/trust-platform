@@ -4,10 +4,10 @@
 pub mod audit_chain;
 pub mod audit_manifest;
 pub mod capacity_policy;
+pub mod key_attestation;
 pub mod signer_capabilities;
 
 pub mod authentication;
-pub mod key_attestation;
 pub mod tenant_isolation;
 pub mod identity_boundary;
 pub mod ca_observation;
