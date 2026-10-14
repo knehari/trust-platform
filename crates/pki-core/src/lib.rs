@@ -7,15 +7,14 @@ pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
-pub mod revocation_policy;
-pub mod crypto_migration;
-pub mod key_ceremony;
 pub mod ca_observation;
 pub mod challenge_binding;
 pub mod cp_cps;
+pub mod crypto_migration;
 pub mod csr;
 pub mod issuance_evidence;
 pub mod issuance_x509_binding;
+pub mod key_ceremony;
 #[cfg(feature = "lab-software")]
 pub mod lab_ca;
 #[cfg(feature = "lab-software")]
@@ -31,6 +30,7 @@ pub mod provider_evidence;
 pub mod reconciliation;
 pub mod release_gate;
 pub mod reviewer_binding;
+pub mod revocation_policy;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_issuer_verify_lab;
