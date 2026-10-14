@@ -7,6 +7,7 @@ pub mod capacity_policy;
 pub mod signer_capabilities;
 
 pub mod authentication;
+pub mod certificate_profile;
 pub mod key_attestation;
 pub mod tenant_isolation;
 pub mod identity_boundary;
