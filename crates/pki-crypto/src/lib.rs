@@ -12,6 +12,8 @@ pub mod legacy_algorithm_bridge;
 pub mod provider_capabilities;
 pub mod provider_deployment;
 #[cfg(feature = "lab-software")]
+pub mod rsa_pss_agile_lab;
+#[cfg(feature = "lab-software")]
 pub mod rsa_pss_lab;
 pub mod rsa_pss_profile;
 pub mod typed_algorithm_catalog;
