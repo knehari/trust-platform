@@ -11,6 +11,8 @@ pub mod issuer_key_binding;
 #[cfg(feature = "lab-software")]
 pub mod lab;
 pub mod legacy_algorithm_bridge;
+#[cfg(feature = "lab-software")]
+pub mod multi_algorithm_lab;
 pub mod provider_capabilities;
 pub mod provider_deployment;
 #[cfg(feature = "lab-software")]
