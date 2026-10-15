@@ -189,5 +189,4 @@ mod tests {
             Err(AlgorithmIdentifierError::CertificateMismatch)
         );
     }
-
 }
