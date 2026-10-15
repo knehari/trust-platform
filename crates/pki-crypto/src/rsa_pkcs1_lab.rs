@@ -28,7 +28,10 @@ fn bits(key: KeyParameter) -> Option<usize> {
 
 fn validate(suite: AlgorithmSuite, observed_bits: usize) -> Result<(), RsaPkcs1LabError> {
     if suite.scheme != SignatureScheme::RsaPkcs1V15
-        || !matches!(suite.digest, Digest::Sha256 | Digest::Sha384 | Digest::Sha512)
+        || !matches!(
+            suite.digest,
+            Digest::Sha256 | Digest::Sha384 | Digest::Sha512
+        )
     {
         return Err(RsaPkcs1LabError::UnsupportedSuite);
     }
@@ -45,9 +48,15 @@ pub fn sign_pkcs1_lab(
 ) -> Result<Vec<u8>, RsaPkcs1LabError> {
     validate(suite, RsaPublicKey::from(private).n().bits())?;
     let signature = match suite.digest {
-        Digest::Sha256 => SigningKey::<Sha256>::new(private.clone()).sign(message).to_vec(),
-        Digest::Sha384 => SigningKey::<Sha384>::new(private.clone()).sign(message).to_vec(),
-        Digest::Sha512 => SigningKey::<Sha512>::new(private.clone()).sign(message).to_vec(),
+        Digest::Sha256 => SigningKey::<Sha256>::new(private.clone())
+            .sign(message)
+            .to_vec(),
+        Digest::Sha384 => SigningKey::<Sha384>::new(private.clone())
+            .sign(message)
+            .to_vec(),
+        Digest::Sha512 => SigningKey::<Sha512>::new(private.clone())
+            .sign(message)
+            .to_vec(),
         Digest::Intrinsic => return Err(RsaPkcs1LabError::UnsupportedSuite),
     };
     Ok(signature)
@@ -60,8 +69,8 @@ pub fn verify_pkcs1_lab(
     signature: &[u8],
 ) -> Result<(), RsaPkcs1LabError> {
     validate(suite, public.n().bits())?;
-    let signature = Signature::try_from(signature)
-        .map_err(|_| RsaPkcs1LabError::InvalidSignature)?;
+    let signature =
+        Signature::try_from(signature).map_err(|_| RsaPkcs1LabError::InvalidSignature)?;
     let result = match suite.digest {
         Digest::Sha256 => VerifyingKey::<Sha256>::new(public.clone()).verify(message, &signature),
         Digest::Sha384 => VerifyingKey::<Sha384>::new(public.clone()).verify(message, &signature),
