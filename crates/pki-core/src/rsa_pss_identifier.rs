@@ -23,18 +23,18 @@ pub(crate) const PSS_SHA256_MGF1_SHA256_SALT32_DER: &[u8] = &[
  // Exact DER is intentionally pinned: RSASSA-PSS-params, RFC 4055 / RFC 8017.
  // Both hashAlgorithm and MGF1 hashAlgorithm must match; salt = digest length.
  // trailerField = 1 is DEFAULT and must not appear in canonical DER.
- const fn pss_params_variant(hash_oid_suffix: u8, salt_bytes: u8) -> [u8; 54] {
-     let mut der = [0u8; 54];
-     let mut i = 0;
-     while i < 54 {
-         der[i] = PSS_SHA256_MGF1_SHA256_SALT32_DER[i];
-         i += 1;
-     }
-     der[16] = hash_oid_suffix;
-     der[46] = hash_oid_suffix;
-     der[53] = salt_bytes;
-     der
- }
+const fn pss_params_variant(hash_oid_suffix: u8, salt_bytes: u8) -> [u8; 54] {
+    let mut der = [0u8; 54];
+    let mut i = 0;
+    while i < 54 {
+        der[i] = PSS_SHA256_MGF1_SHA256_SALT32_DER[i];
+        i += 1;
+    }
+    der[16] = hash_oid_suffix;
+    der[46] = hash_oid_suffix;
+    der[53] = salt_bytes;
+    der
+}
 
  pub(crate) const PSS_SHA384_MGF1_SHA384_SALT48_DER: [u8; 54] =
      pss_params_variant(0x02, 48);
@@ -82,11 +82,7 @@ pub fn check_pss_identifiers(
     tbs: &AlgorithmIdentifierOwned,
     outer: &AlgorithmIdentifierOwned,
 ) -> Result<(), PssIdentifierError> {
-    check_pss_identifiers_with_profile(
-        tbs,
-        outer,
-        PSS_SHA256_MGF1_SHA256_SALT32_DER,
-    )
+    check_pss_identifiers_with_profile(tbs, outer, PSS_SHA256_MGF1_SHA256_SALT32_DER)
 }
 
 /// Strict typed parameter preflight for SHA-256, SHA-384 and SHA-512.
@@ -221,11 +217,22 @@ mod tests {
     fn supports_strict_sha384_and_sha512_without_weakening_sha256_verifier() {
         use trust_pki_crypto::crypto_agility::Digest;
         for (digest, params, salt) in [
-            (Digest::Sha384, PSS_SHA384_MGF1_SHA384_SALT48_DER.as_slice(), 48u8),
-            (Digest::Sha512, PSS_SHA512_MGF1_SHA512_SALT64_DER.as_slice(), 64u8),
+            (
+                Digest::Sha384,
+                PSS_SHA384_MGF1_SHA384_SALT48_DER.as_slice(),
+                48u8,
+            ),
+            (
+                Digest::Sha512,
+                PSS_SHA512_MGF1_SHA512_SALT64_DER.as_slice(),
+                64u8,
+            ),
         ] {
             let good = identifier(RSASSA_PSS_OID, Some(params));
-            assert_eq!(check_pss_identifiers_for_digest(&good, &good, digest), Ok(()));
+            assert_eq!(
+                check_pss_identifiers_for_digest(&good, &good, digest),
+                Ok(())
+            );
             assert_eq!(
                 check_pss_identifiers(&good, &good),
                 Err(PssIdentifierError::UnsupportedParameterProfile)
@@ -251,5 +258,4 @@ mod tests {
             );
         }
     }
-
 }
