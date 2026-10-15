@@ -1,6 +1,6 @@
 //! Isolated RSA-PSS X.509 root fixture. Not a production CA or general issuer.
 use crate::csr::VerifiedCsr;
-use crate::rsa_pss_identifier::{preflight_pss_certificate_der, PSS_SHA256_MGF1_SHA256_SALT32_DER};
+use crate::rsa_pss_identifier::preflight_pss_certificate_der;
 use crate::serial::SerialNumber as ReservedSerial;
 use crate::serial_binding::verify_certificate_reserved_serial;
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
@@ -13,7 +13,7 @@ use trust_pki_crypto::{
 use trust_pki_policy::Authorization;
 use x509_cert::{
     der::{
-        asn1::{Any, BitString, Ia5String, ObjectIdentifier, OctetString},
+        asn1::{BitString, Ia5String, ObjectIdentifier, OctetString},
         Decode, Encode,
     },
     ext::{
@@ -25,7 +25,7 @@ use x509_cert::{
     },
     name::Name,
     serial_number::SerialNumber,
-    spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned},
+    spki::SubjectPublicKeyInfoOwned,
     time::Validity,
     Certificate, TbsCertificate, Version,
 };
@@ -38,11 +38,14 @@ pub enum RsaPssLabIssueError {
     UnauthorizedProfile,
 }
 
-fn preflight_typed_pss_algorithm(certificate: &Certificate) -> Result<(), RsaPssLabIssueError> {
+fn preflight_typed_pss_algorithm(
+    certificate: &Certificate,
+    digest: Digest,
+) -> Result<(), RsaPssLabIssueError> {
     let suite = AlgorithmSuite {
         scheme: SignatureScheme::RsaPss,
         key: KeyParameter::Rsa3072,
-        digest: Digest::Sha256,
+        digest,
     };
     let expected = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
@@ -60,6 +63,19 @@ pub fn issue_ephemeral_rsa_pss_root() -> Result<Certificate, RsaPssLabIssueError
 /// Never persist or expose the ephemeral private key in production.
 pub fn create_root_and_signer(
 ) -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError> {
+    create_root_and_signer_for_digest(Digest::Sha256)
+}
+
+/// Creates a self-signed disposable RSA-3072 lab root with an explicit typed
+/// SHA-256/384/512 RSASSA-PSS profile. Not a production issuer.
+pub fn create_root_and_signer_for_digest(
+    digest: Digest,
+) -> Result<(Certificate, EphemeralRsaPssLabSigner), RsaPssLabIssueError> {
+    let suite = AlgorithmSuite {
+        scheme: SignatureScheme::RsaPss,
+        key: KeyParameter::Rsa3072,
+        digest,
+    };
     let signer = EphemeralRsaPssLabSigner::generate(KeyRef("pss-x509-lab".into()))
         .map_err(|_| RsaPssLabIssueError::Key)?;
     let spki_der = signer
@@ -69,14 +85,8 @@ pub fn create_root_and_signer(
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     let name = Name::from_str("CN=Sovereign Trust RSA-PSS Lab Root")
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
-    let oid = ObjectIdentifier::new("1.2.840.113549.1.1.10")
-        .map_err(|_| RsaPssLabIssueError::Encoding)?;
-    let params = Any::from_der(PSS_SHA256_MGF1_SHA256_SALT32_DER)
-        .map_err(|_| RsaPssLabIssueError::Encoding)?;
-    let algorithm = AlgorithmIdentifierOwned {
-        oid,
-        parameters: Some(params),
-    };
+    let algorithm = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
+        .map_err(|_| RsaPssLabIssueError::UnauthorizedProfile)?;
     let constraints = BasicConstraints {
         ca: true,
         path_len_constraint: Some(0),
@@ -120,10 +130,10 @@ pub fn create_root_and_signer(
     };
     let message = tbs.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     let signature = signer
-        .sign(signer.key_ref(), SignatureAlgorithm::RsaPssSha256, &message)
+        .sign_suite(signer.key_ref(), suite, &message)
         .map_err(|_| RsaPssLabIssueError::Signature)?;
     signer
-        .verify(&message, &signature)
+        .verify_suite(suite, &message, &signature)
         .map_err(|_| RsaPssLabIssueError::Signature)?;
     let certificate = Certificate {
         tbs_certificate: tbs,
@@ -133,8 +143,20 @@ pub fn create_root_and_signer(
     let der = certificate
         .to_der()
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
-    preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    preflight_typed_pss_algorithm(&certificate)?;
+    if digest == Digest::Sha256 {
+        preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
+    } else if Certificate::from_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?
+        != certificate
+    {
+        return Err(RsaPssLabIssueError::Encoding);
+    }
+    crate::rsa_pss_identifier::check_pss_identifiers_for_digest(
+        &certificate.tbs_certificate.signature,
+        &certificate.signature_algorithm,
+        digest,
+    )
+    .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    preflight_typed_pss_algorithm(&certificate, digest)?;
     Ok((certificate, signer))
 }
 
@@ -268,7 +290,7 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     };
     let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    preflight_typed_pss_algorithm(&leaf)?;
+    preflight_typed_pss_algorithm(&leaf, Digest::Sha256)?;
     verify_certificate_reserved_serial(&der, reserved_serial)
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     Ok((root, leaf))
@@ -291,5 +313,29 @@ mod tests {
             Certificate::from_der(&cert.to_der().unwrap()).unwrap(),
             cert
         );
+    }
+    #[test]
+    fn rsa_pss_root_sha384_sha512_validate_typed_issuer_signature() {
+        use crate::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature;
+        for digest in [Digest::Sha384, Digest::Sha512] {
+            let (root, _) = create_root_and_signer_for_digest(digest).unwrap();
+            let suite = AlgorithmSuite {
+                scheme: SignatureScheme::RsaPss,
+                key: KeyParameter::Rsa3072,
+                digest,
+            };
+            assert_eq!(
+                verify_typed_rsa_pss_issuer_signature(&root, &root, suite),
+                Ok(())
+            );
+            let wrong_digest = AlgorithmSuite {
+                digest: Digest::Sha256,
+                ..suite
+            };
+            assert!(verify_typed_rsa_pss_issuer_signature(
+                &root, &root, wrong_digest
+            )
+            .is_err());
+        }
     }
 }
