@@ -156,4 +156,38 @@ mod tests {
             assert!(value.parameters.is_none());
         }
     }
+    #[cfg(feature = "lab-software")]
+    #[test]
+    fn live_lab_root_rejects_inner_and_outer_algorithm_mismatches() {
+        let root = crate::lab_ca::EphemeralLabCa::new("Sovereign Trust Lab Root")
+            .unwrap()
+            .root_certificate()
+            .clone();
+        let ecdsa = signature_algorithm_identifier(suite(
+            SignatureScheme::Ecdsa,
+            KeyParameter::P256,
+            Digest::Sha256,
+        ))
+        .unwrap();
+        let pss = signature_algorithm_identifier(suite(
+            SignatureScheme::RsaPss,
+            KeyParameter::Rsa3072,
+            Digest::Sha256,
+        ))
+        .unwrap();
+        assert_eq!(preflight_certificate_algorithm(&root, &ecdsa), Ok(()));
+        let mut wrong_outer = root.clone();
+        wrong_outer.signature_algorithm = pss.clone();
+        assert_eq!(
+            preflight_certificate_algorithm(&wrong_outer, &ecdsa),
+            Err(AlgorithmIdentifierError::CertificateMismatch)
+        );
+        let mut wrong_tbs = root;
+        wrong_tbs.tbs_certificate.signature = pss;
+        assert_eq!(
+            preflight_certificate_algorithm(&wrong_tbs, &ecdsa),
+            Err(AlgorithmIdentifierError::CertificateMismatch)
+        );
+    }
+
 }
