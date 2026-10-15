@@ -5,6 +5,7 @@
 pub mod algorithm_catalog;
 pub mod certificate_algorithm_binding;
 pub mod crypto_agility;
+pub mod issuer_key_binding;
 #[cfg(feature = "lab-software")]
 pub mod ecdsa_p256_lab;
 #[cfg(feature = "lab-software")]
