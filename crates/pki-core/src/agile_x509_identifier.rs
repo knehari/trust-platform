@@ -2,11 +2,12 @@
 //! Encoding an algorithm does NOT enable signing or certify a provider.
 //! The CA must use the same identifier in TBS and outer Certificate fields.
 use crate::rsa_pss_identifier::PSS_SHA256_MGF1_SHA256_SALT32_DER;
-use trust_pki_crypto::crypto_agility::{
-    validate_suite, AlgorithmSuite, Digest, SignatureScheme,
-};
+use trust_pki_crypto::crypto_agility::{validate_suite, AlgorithmSuite, Digest, SignatureScheme};
 use x509_cert::{
-    der::{asn1::{Any, ObjectIdentifier}, Decode},
+    der::{
+        asn1::{Any, ObjectIdentifier},
+        Decode,
+    },
     spki::AlgorithmIdentifierOwned,
     Certificate,
 };
@@ -28,18 +29,15 @@ pub fn signature_algorithm_identifier(
             "1.2.840.113549.1.1.10",
             Some(PSS_SHA256_MGF1_SHA256_SALT32_DER),
         ),
-        (SignatureScheme::RsaPkcs1V15, Digest::Sha256) => (
-            "1.2.840.113549.1.1.11",
-            Some(&[0x05, 0x00]),
-        ),
-        (SignatureScheme::RsaPkcs1V15, Digest::Sha384) => (
-            "1.2.840.113549.1.1.12",
-            Some(&[0x05, 0x00]),
-        ),
-        (SignatureScheme::RsaPkcs1V15, Digest::Sha512) => (
-            "1.2.840.113549.1.1.13",
-            Some(&[0x05, 0x00]),
-        ),
+        (SignatureScheme::RsaPkcs1V15, Digest::Sha256) => {
+            ("1.2.840.113549.1.1.11", Some(&[0x05, 0x00]))
+        }
+        (SignatureScheme::RsaPkcs1V15, Digest::Sha384) => {
+            ("1.2.840.113549.1.1.12", Some(&[0x05, 0x00]))
+        }
+        (SignatureScheme::RsaPkcs1V15, Digest::Sha512) => {
+            ("1.2.840.113549.1.1.13", Some(&[0x05, 0x00]))
+        }
         (SignatureScheme::Ecdsa, Digest::Sha256) => ("1.2.840.10045.4.3.2", None),
         (SignatureScheme::Ecdsa, Digest::Sha384) => ("1.2.840.10045.4.3.3", None),
         (SignatureScheme::Ecdsa, Digest::Sha512) => ("1.2.840.10045.4.3.4", None),
@@ -76,12 +74,12 @@ mod tests {
     use trust_pki_crypto::crypto_agility::{KeyParameter, SignatureScheme};
     use x509_cert::der::Encode;
 
-    fn suite(
-        scheme: SignatureScheme,
-        key: KeyParameter,
-        digest: Digest,
-    ) -> AlgorithmSuite {
-        AlgorithmSuite { scheme, key, digest }
+    fn suite(scheme: SignatureScheme, key: KeyParameter, digest: Digest) -> AlgorithmSuite {
+        AlgorithmSuite {
+            scheme,
+            key,
+            digest,
+        }
     }
 
     #[test]
@@ -92,8 +90,7 @@ mod tests {
             (KeyParameter::P521, Digest::Sha512, "1.2.840.10045.4.3.4"),
         ] {
             let identifier =
-                signature_algorithm_identifier(suite(SignatureScheme::Ecdsa, key, digest))
-                    .unwrap();
+                signature_algorithm_identifier(suite(SignatureScheme::Ecdsa, key, digest)).unwrap();
             assert_eq!(identifier.oid.to_string(), expected);
             assert!(identifier.parameters.is_none());
         }
@@ -113,7 +110,10 @@ mod tests {
             ))
             .unwrap();
             assert_eq!(identifier.oid.to_string(), oid);
-            assert_eq!(identifier.parameters.unwrap().to_der().unwrap(), [0x05, 0x00]);
+            assert_eq!(
+                identifier.parameters.unwrap().to_der().unwrap(),
+                [0x05, 0x00]
+            );
         }
     }
 
@@ -143,7 +143,11 @@ mod tests {
     #[test]
     fn eddsa_parameters_must_be_absent() {
         for (scheme, key, oid) in [
-            (SignatureScheme::Ed25519, KeyParameter::Ed25519, "1.3.101.112"),
+            (
+                SignatureScheme::Ed25519,
+                KeyParameter::Ed25519,
+                "1.3.101.112",
+            ),
             (SignatureScheme::Ed448, KeyParameter::Ed448, "1.3.101.113"),
         ] {
             let value =
