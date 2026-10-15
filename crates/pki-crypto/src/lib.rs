@@ -4,15 +4,15 @@
 
 pub mod algorithm_catalog;
 pub mod crypto_agility;
-pub mod typed_algorithm_catalog;
-pub mod legacy_algorithm_bridge;
 #[cfg(feature = "lab-software")]
 pub mod lab;
+pub mod legacy_algorithm_bridge;
 pub mod provider_capabilities;
 pub mod provider_deployment;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_lab;
 pub mod rsa_pss_profile;
+pub mod typed_algorithm_catalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
