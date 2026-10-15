@@ -1,7 +1,6 @@
 //! Algorithm-neutral classical signing policy and provider conformance gate.
 //! This is a policy contract, NOT a signing implementation, HSM attestation or
 //! evidence that any algorithm is production-ready.
-#![allow(dead_code)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureScheme {
@@ -32,7 +31,7 @@ pub enum CryptoAgilityError {
 pub fn validate_suite(s: AlgorithmSuite) -> Result<(), CryptoAgilityError> {
     use Digest::*;
     use KeyParameter::*;
-    use SignatureScheme::*;
+    use SignatureScheme::{Ecdsa, RsaPkcs1V15, RsaPss};
     let valid = match (s.scheme, s.key, s.digest) {
         (RsaPss | RsaPkcs1V15, Rsa2048 | Rsa3072 | Rsa4096 | Rsa8192, Sha256 | Sha384 | Sha512) => true,
         (Ecdsa, P256, Sha256) | (Ecdsa, P384, Sha384) | (Ecdsa, P521, Sha512) => true,
