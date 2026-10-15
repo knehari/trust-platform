@@ -1,7 +1,10 @@
 //! Strict X.509 signature AlgorithmIdentifier serialization for typed suites.
 //! Encoding an algorithm does NOT enable signing or certify a provider.
 //! The CA must use the same identifier in TBS and outer Certificate fields.
-use crate::rsa_pss_identifier::PSS_SHA256_MGF1_SHA256_SALT32_DER;
+use crate::rsa_pss_identifier::{
+    PSS_SHA256_MGF1_SHA256_SALT32_DER, PSS_SHA384_MGF1_SHA384_SALT48_DER,
+    PSS_SHA512_MGF1_SHA512_SALT64_DER,
+};
 use trust_pki_crypto::crypto_agility::{validate_suite, AlgorithmSuite, Digest, SignatureScheme};
 use x509_cert::{
     der::{
@@ -29,6 +32,14 @@ pub fn signature_algorithm_identifier(
             "1.2.840.113549.1.1.10",
             Some(PSS_SHA256_MGF1_SHA256_SALT32_DER),
         ),
+        (SignatureScheme::RsaPss, Digest::Sha384) => (
+            "1.2.840.113549.1.1.10",
+            Some(&PSS_SHA384_MGF1_SHA384_SALT48_DER),
+        ),
+        (SignatureScheme::RsaPss, Digest::Sha512) => (
+            "1.2.840.113549.1.1.10",
+            Some(&PSS_SHA512_MGF1_SHA512_SALT64_DER),
+        ),
         (SignatureScheme::RsaPkcs1V15, Digest::Sha256) => {
             ("1.2.840.113549.1.1.11", Some(&[0x05, 0x00]))
         }
@@ -43,8 +54,7 @@ pub fn signature_algorithm_identifier(
         (SignatureScheme::Ecdsa, Digest::Sha512) => ("1.2.840.10045.4.3.4", None),
         (SignatureScheme::Ed25519, Digest::Intrinsic) => ("1.3.101.112", None),
         (SignatureScheme::Ed448, Digest::Intrinsic) => ("1.3.101.113", None),
-        // SHA-384/512 PSS parameter DER must be implemented and independently
-        // verified before any X.509 certificate may advertise those suites.
+        // OID serialization is not provider certification or CA authorization.
         _ => return Err(AlgorithmIdentifierError::UnsupportedEncoding),
     };
     let oid = ObjectIdentifier::new(oid).map_err(|_| AlgorithmIdentifierError::InvalidDer)?;
@@ -118,26 +128,23 @@ mod tests {
     }
 
     #[test]
-    fn rsa_pss_only_encodes_the_tested_explicit_profile() {
-        let pss = signature_algorithm_identifier(suite(
-            SignatureScheme::RsaPss,
-            KeyParameter::Rsa3072,
-            Digest::Sha256,
-        ))
-        .unwrap();
-        assert_eq!(pss.oid.to_string(), "1.2.840.113549.1.1.10");
-        assert_eq!(
-            pss.parameters.unwrap().to_der().unwrap(),
-            PSS_SHA256_MGF1_SHA256_SALT32_DER
-        );
-        assert_eq!(
-            signature_algorithm_identifier(suite(
+    fn rsa_pss_encodes_exact_hash_mgf1_and_digest_length_salt() {
+        use crate::rsa_pss_identifier::check_pss_identifiers_for_digest;
+        for (hash, profile) in [
+            (Digest::Sha256, PSS_SHA256_MGF1_SHA256_SALT32_DER),
+            (Digest::Sha384, PSS_SHA384_MGF1_SHA384_SALT48_DER.as_slice()),
+            (Digest::Sha512, PSS_SHA512_MGF1_SHA512_SALT64_DER.as_slice()),
+        ] {
+            let pss = signature_algorithm_identifier(suite(
                 SignatureScheme::RsaPss,
                 KeyParameter::Rsa3072,
-                Digest::Sha384,
-            )),
-            Err(AlgorithmIdentifierError::UnsupportedEncoding)
-        );
+                hash,
+            ))
+            .unwrap();
+            assert_eq!(pss.oid.to_string(), "1.2.840.113549.1.1.10");
+            assert_eq!(pss.parameters.as_ref().unwrap().to_der().unwrap(), profile);
+            assert_eq!(check_pss_identifiers_for_digest(&pss, &pss, hash), Ok(()));
+        }
     }
 
     #[test]
