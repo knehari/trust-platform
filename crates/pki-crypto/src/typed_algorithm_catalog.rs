@@ -18,7 +18,7 @@ pub struct SuiteRecordOwned {
 /// Every candidate starts disabled until independently qualified.
 pub fn planned_classical_suites() -> Vec<SuiteRecordOwned> {
     use Digest::{Intrinsic, Sha256, Sha384, Sha512};
-    use KeyParameter::{P256, P384, P521, Rsa2048, Rsa3072, Rsa4096, Rsa8192};
+    use KeyParameter::{Rsa2048, Rsa3072, Rsa4096, Rsa8192, P256, P384, P521};
     use SignatureScheme::{Ecdsa, RsaPkcs1V15, RsaPss};
 
     let mut result = Vec::new();
@@ -28,11 +28,7 @@ pub fn planned_classical_suites() -> Vec<SuiteRecordOwned> {
         (Rsa4096, "4096"),
         (Rsa8192, "8192"),
     ] {
-        for (digest, hash) in [
-            (Sha256, "sha256"),
-            (Sha384, "sha384"),
-            (Sha512, "sha512"),
-        ] {
+        for (digest, hash) in [(Sha256, "sha256"), (Sha384, "sha384"), (Sha512, "sha512")] {
             for (scheme, prefix) in [(RsaPss, "rsa-pss"), (RsaPkcs1V15, "rsa-pkcs1v15")] {
                 result.push(SuiteRecordOwned {
                     suite: AlgorithmSuite {
@@ -62,11 +58,7 @@ pub fn planned_classical_suites() -> Vec<SuiteRecordOwned> {
         });
     }
     for (scheme, key, identifier) in [
-        (
-            SignatureScheme::Ed25519,
-            KeyParameter::Ed25519,
-            "ed25519",
-        ),
+        (SignatureScheme::Ed25519, KeyParameter::Ed25519, "ed25519"),
         (SignatureScheme::Ed448, KeyParameter::Ed448, "ed448"),
     ] {
         result.push(SuiteRecordOwned {
@@ -96,19 +88,14 @@ mod tests {
         let suites = planned_classical_suites();
         assert_eq!(suites.len(), 29);
         assert!(suites.iter().all(|s| !production_enabled(s)));
-        assert!(suites
-            .iter()
-            .any(|s| s.identifier == "rsa-pss-8192-sha512"));
-        assert!(suites
-            .iter()
-            .any(|s| s.identifier == "ecdsa-p384-sha384"));
+        assert!(suites.iter().any(|s| s.identifier == "rsa-pss-8192-sha512"));
+        assert!(suites.iter().any(|s| s.identifier == "ecdsa-p384-sha384"));
     }
 
     #[test]
     fn identifiers_are_unique() {
         let suites = planned_classical_suites();
-        let names: std::collections::HashSet<_> =
-            suites.iter().map(|s| &s.identifier).collect();
+        let names: std::collections::HashSet<_> = suites.iter().map(|s| &s.identifier).collect();
         assert_eq!(names.len(), suites.len());
     }
 }
