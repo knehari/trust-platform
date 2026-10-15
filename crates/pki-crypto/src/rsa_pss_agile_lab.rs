@@ -2,6 +2,7 @@
 //! Ephemeral laboratory keys only: not a HSM, CA or production key store.
 use crate::crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme};
 use rsa::{
+    pkcs8::DecodePublicKey,
     pss::{Signature, SigningKey, VerifyingKey},
     signature::{RandomizedSigner, SignatureEncoding, Verifier},
     traits::PublicKeyParts,
@@ -13,6 +14,7 @@ use sha2::{Sha256, Sha384, Sha512};
 pub enum RsaLabError {
     InvalidParameters,
     InvalidKeySize,
+    InvalidPublicKey,
     InvalidSignature,
     SigningFailure,
 }
@@ -80,9 +82,24 @@ pub fn verify_rsa_pss_lab(
     valid.map_err(|_| RsaLabError::InvalidSignature)
 }
 
+
+/// Parse the issuer's actual RSA SPKI and verify a typed RSA-PSS signature.
+/// This does not check certificate path trust, validity or revocation.
+pub fn verify_rsa_pss_spki_lab(
+    suite: AlgorithmSuite,
+    spki_der: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), RsaLabError> {
+    let public = RsaPublicKey::from_public_key_der(spki_der)
+        .map_err(|_| RsaLabError::InvalidPublicKey)?;
+    verify_rsa_pss_lab(suite, &public, message, signature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::pkcs8::EncodePublicKey;
 
     #[test]
     fn rsa_pss_digest_agility_and_tamper_rejection() {
@@ -98,6 +115,15 @@ mod tests {
             assert_eq!(
                 verify_rsa_pss_lab(suite, &public, b"tbs", &signature),
                 Ok(())
+            );
+            let spki = public.to_public_key_der().unwrap();
+            assert_eq!(
+                verify_rsa_pss_spki_lab(suite, spki.as_bytes(), b"tbs", &signature),
+                Ok(())
+            );
+            assert_eq!(
+                verify_rsa_pss_spki_lab(suite, b"not-spki", b"tbs", &signature),
+                Err(RsaLabError::InvalidPublicKey)
             );
             assert_eq!(
                 verify_rsa_pss_lab(suite, &public, b"other", &signature),
