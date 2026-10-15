@@ -11,8 +11,15 @@ pub enum Maturity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuiteRecordOwned {
     pub suite: AlgorithmSuite,
-    pub maturity: Maturity,
+    // Private: consumers must not self-assert production qualification.
+    maturity: Maturity,
     pub identifier: String,
+}
+
+impl SuiteRecordOwned {
+    pub fn maturity(&self) -> Maturity {
+        self.maturity
+    }
 }
 
 /// Every candidate starts disabled until independently qualified.
