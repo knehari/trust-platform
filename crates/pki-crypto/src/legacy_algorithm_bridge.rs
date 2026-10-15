@@ -27,9 +27,7 @@ pub const fn legacy_suite(
     }
 }
 
-pub fn legacy_identifier(
-    suite: AlgorithmSuite,
-) -> Result<SignatureAlgorithm, LegacyBridgeError> {
+pub fn legacy_identifier(suite: AlgorithmSuite) -> Result<SignatureAlgorithm, LegacyBridgeError> {
     match (suite.scheme, suite.key, suite.digest) {
         (SignatureScheme::Ecdsa, KeyParameter::P256, Digest::Sha256) => {
             Ok(SignatureAlgorithm::EcdsaP256Sha256)
@@ -62,9 +60,7 @@ mod tests {
             KeyParameter::P256
         );
         assert_eq!(
-            legacy_suite(SignatureAlgorithm::MlDsa65)
-                .unwrap()
-                .scheme,
+            legacy_suite(SignatureAlgorithm::MlDsa65).unwrap().scheme,
             SignatureScheme::MlDsa
         );
     }
