@@ -3,6 +3,7 @@
 //! No signing provider is enabled in production builds.
 
 pub mod algorithm_catalog;
+pub mod certificate_algorithm_binding;
 pub mod crypto_agility;
 #[cfg(feature = "lab-software")]
 pub mod ecdsa_p256_lab;
