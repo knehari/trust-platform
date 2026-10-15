@@ -1,8 +1,7 @@
 //! Cross-module laboratory preflight composition; not a production controller.
 use trust_pki_core::{
-    audit_integrity, audit_retention, certificate_profile, identity_boundary,
-    key_attestation, platform_readiness, pqc_rollout, recovery_budget,
-    request_rate, tenant_isolation,
+    audit_integrity, audit_retention, certificate_profile, identity_boundary, key_attestation,
+    platform_readiness, pqc_rollout, recovery_budget, request_rate, tenant_isolation,
 };
 
 #[test]
