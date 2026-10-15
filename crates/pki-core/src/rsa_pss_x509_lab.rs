@@ -6,6 +6,7 @@ use crate::serial_binding::verify_certificate_reserved_serial;
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
+    crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme},
     rsa_pss_lab::{generate_lab_serial, EphemeralRsaPssLabSigner},
     KeyRef, SignatureAlgorithm, SigningProvider,
 };
@@ -35,6 +36,20 @@ pub enum RsaPssLabIssueError {
     Encoding,
     Signature,
     UnauthorizedProfile,
+}
+
+fn preflight_typed_pss_algorithm(
+    certificate: &Certificate,
+) -> Result<(), RsaPssLabIssueError> {
+    let suite = AlgorithmSuite {
+        scheme: SignatureScheme::RsaPss,
+        key: KeyParameter::Rsa3072,
+        digest: Digest::Sha256,
+    };
+    let expected = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
+        .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    crate::agile_x509_identifier::preflight_certificate_algorithm(certificate, &expected)
+        .map_err(|_| RsaPssLabIssueError::Encoding)
 }
 
 /// Generates a disposable RSA-3072 self-signed root certificate with explicit
@@ -121,6 +136,7 @@ pub fn create_root_and_signer(
         .to_der()
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
+    preflight_typed_pss_algorithm(&leaf)?;
     Ok((certificate, signer))
 }
 
@@ -254,6 +270,7 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     };
     let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
+    preflight_typed_pss_algorithm(&CERT)?;
     verify_certificate_reserved_serial(&der, reserved_serial)
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     Ok((root, leaf))
