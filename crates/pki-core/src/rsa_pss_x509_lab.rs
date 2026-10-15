@@ -38,9 +38,7 @@ pub enum RsaPssLabIssueError {
     UnauthorizedProfile,
 }
 
-fn preflight_typed_pss_algorithm(
-    certificate: &Certificate,
-) -> Result<(), RsaPssLabIssueError> {
+fn preflight_typed_pss_algorithm(certificate: &Certificate) -> Result<(), RsaPssLabIssueError> {
     let suite = AlgorithmSuite {
         scheme: SignatureScheme::RsaPss,
         key: KeyParameter::Rsa3072,
