@@ -82,7 +82,6 @@ pub fn verify_rsa_pss_lab(
     valid.map_err(|_| RsaLabError::InvalidSignature)
 }
 
-
 /// Parse the issuer's actual RSA SPKI and verify a typed RSA-PSS signature.
 /// This does not check certificate path trust, validity or revocation.
 pub fn verify_rsa_pss_spki_lab(
@@ -91,8 +90,8 @@ pub fn verify_rsa_pss_spki_lab(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), RsaLabError> {
-    let public = RsaPublicKey::from_public_key_der(spki_der)
-        .map_err(|_| RsaLabError::InvalidPublicKey)?;
+    let public =
+        RsaPublicKey::from_public_key_der(spki_der).map_err(|_| RsaLabError::InvalidPublicKey)?;
     verify_rsa_pss_lab(suite, &public, message, signature)
 }
 
