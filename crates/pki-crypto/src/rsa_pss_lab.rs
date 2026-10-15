@@ -9,7 +9,10 @@ use rsa::{
 };
 use sha2::Sha256;
 
-use crate::{CryptoError, KeyRef, SignatureAlgorithm, SigningProvider};
+use crate::{
+    crypto_agility::{AlgorithmSuite, KeyParameter, SignatureScheme},
+    CryptoError, KeyRef, SignatureAlgorithm, SigningProvider,
+};
 
 /// Random, positive, canonical 19-octet serial for a disposable lab certificate.
 /// This does not provide durable issuer-scoped uniqueness across processes.
@@ -52,6 +55,38 @@ impl EphemeralRsaPssLabSigner {
 
     pub fn key_ref(&self) -> &KeyRef {
         &self.key_ref
+    }
+
+    /// Typed signing for disposable RSA-3072 lab keys only; never a default
+    /// fallback when a certificate policy requests another suite.
+    pub fn sign_suite(
+        &self,
+        key: &KeyRef,
+        suite: AlgorithmSuite,
+        message: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        if key != &self.key_ref {
+            return Err(CryptoError::KeyUnavailable);
+        }
+        if suite.scheme != SignatureScheme::RsaPss || suite.key != KeyParameter::Rsa3072 {
+            return Err(CryptoError::UnsupportedAlgorithm);
+        }
+        crate::rsa_pss_agile_lab::sign_rsa_pss_lab(suite, &self.key, message)
+            .map_err(|_| CryptoError::UnsupportedAlgorithm)
+    }
+
+    pub fn verify_suite(
+        &self,
+        suite: AlgorithmSuite,
+        message: &[u8],
+        signature: &[u8],
+    ) -> Result<(), CryptoError> {
+        if suite.scheme != SignatureScheme::RsaPss || suite.key != KeyParameter::Rsa3072 {
+            return Err(CryptoError::UnsupportedAlgorithm);
+        }
+        let public = RsaPublicKey::from(&self.key);
+        crate::rsa_pss_agile_lab::verify_rsa_pss_lab(suite, &public, message, signature)
+            .map_err(|_| CryptoError::InvalidSignature)
     }
 
     pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
@@ -134,6 +169,22 @@ mod tests {
             provider.sign(&key_ref, SignatureAlgorithm::MlDsa65, b"hello"),
             Err(CryptoError::UnsupportedAlgorithm)
         );
+        for digest in [
+            crate::crypto_agility::Digest::Sha384,
+            crate::crypto_agility::Digest::Sha512,
+        ] {
+            let suite = AlgorithmSuite {
+                scheme: SignatureScheme::RsaPss,
+                key: KeyParameter::Rsa3072,
+                digest,
+            };
+            let signed = provider.sign_suite(&key_ref, suite, b"typed-root").unwrap();
+            assert_eq!(provider.verify_suite(suite, b"typed-root", &signed), Ok(()));
+            assert_eq!(
+                provider.verify_suite(suite, b"wrong", &signed),
+                Err(CryptoError::InvalidSignature)
+            );
+        }
         let spki = provider.public_key_spki_der(&key_ref).unwrap();
         assert_eq!(
             verify_rsa_pss_sha256_spki(&spki, b"hello", &signature),
