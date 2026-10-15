@@ -136,7 +136,7 @@ pub fn create_root_and_signer(
         .to_der()
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    preflight_typed_pss_algorithm(&leaf)?;
+    preflight_typed_pss_algorithm(&certificate)?;
     Ok((certificate, signer))
 }
 
@@ -270,7 +270,7 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     };
     let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
     preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    preflight_typed_pss_algorithm(&CERT)?;
+    preflight_typed_pss_algorithm(&leaf)?;
     verify_certificate_reserved_serial(&der, reserved_serial)
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     Ok((root, leaf))
