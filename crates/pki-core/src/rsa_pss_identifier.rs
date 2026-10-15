@@ -19,10 +19,9 @@ pub(crate) const PSS_SHA256_MGF1_SHA256_SALT32_DER: &[u8] = &[
     0x00, 0xa2, 0x03, 0x02, 0x01, 0x20,
 ];
 
-
- // Exact DER is intentionally pinned: RSASSA-PSS-params, RFC 4055 / RFC 8017.
- // Both hashAlgorithm and MGF1 hashAlgorithm must match; salt = digest length.
- // trailerField = 1 is DEFAULT and must not appear in canonical DER.
+// Exact DER is intentionally pinned: RSASSA-PSS-params, RFC 4055 / RFC 8017.
+// Both hashAlgorithm and MGF1 hashAlgorithm must match; salt = digest length.
+// trailerField = 1 is DEFAULT and must not appear in canonical DER.
 const fn pss_params_variant(hash_oid_suffix: u8, salt_bytes: u8) -> [u8; 54] {
     let mut der = [0u8; 54];
     let mut i = 0;
@@ -36,11 +35,8 @@ const fn pss_params_variant(hash_oid_suffix: u8, salt_bytes: u8) -> [u8; 54] {
     der
 }
 
- pub(crate) const PSS_SHA384_MGF1_SHA384_SALT48_DER: [u8; 54] =
-     pss_params_variant(0x02, 48);
- pub(crate) const PSS_SHA512_MGF1_SHA512_SALT64_DER: [u8; 54] =
-     pss_params_variant(0x03, 64);
-
+pub(crate) const PSS_SHA384_MGF1_SHA384_SALT48_DER: [u8; 54] = pss_params_variant(0x02, 48);
+pub(crate) const PSS_SHA512_MGF1_SHA512_SALT64_DER: [u8; 54] = pss_params_variant(0x03, 64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PssIdentifierError {
