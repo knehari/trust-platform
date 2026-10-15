@@ -7,7 +7,7 @@ use crate::{crypto_agility::CryptoAgilityError, KeyRef};
 use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 
 pub enum LaboratoryKey {
-    Rsa(RsaPrivateKey),
+    Rsa(Box<RsaPrivateKey>),
     EcdsaP256(p256::ecdsa::SigningKey),
 }
 
@@ -28,7 +28,7 @@ impl LaboratorySigner {
     pub fn rsa(key_ref: KeyRef, key: RsaPrivateKey) -> Self {
         Self {
             key_ref,
-            key: LaboratoryKey::Rsa(key),
+            key: LaboratoryKey::Rsa(Box::new(key)),
         }
     }
 
@@ -42,7 +42,7 @@ impl LaboratorySigner {
     /// Observed from the actual in-memory laboratory key, never caller metadata.
     fn observed_key_parameter(&self) -> Option<KeyParameter> {
         match &self.key {
-            LaboratoryKey::Rsa(private) => match RsaPublicKey::from(private).n().bits() {
+            LaboratoryKey::Rsa(private) => match RsaPublicKey::from(private.as_ref()).n().bits() {
                 2048 => Some(KeyParameter::Rsa2048),
                 3072 => Some(KeyParameter::Rsa3072),
                 4096 => Some(KeyParameter::Rsa4096),
@@ -110,12 +110,12 @@ impl LaboratorySigner {
         self.authorize(key_ref, suite, policy_allowlist)?;
         match (&self.key, suite.scheme) {
             (LaboratoryKey::Rsa(private), SignatureScheme::RsaPss) => {
-                let public = RsaPublicKey::from(private);
+                let public = RsaPublicKey::from(private.as_ref());
                 crate::rsa_pss_agile_lab::verify_rsa_pss_lab(suite, &public, message, signature)
                     .map_err(|_| DispatchError::InvalidSignature)
             }
             (LaboratoryKey::Rsa(private), SignatureScheme::RsaPkcs1V15) => {
-                let public = RsaPublicKey::from(private);
+                let public = RsaPublicKey::from(private.as_ref());
                 crate::rsa_pkcs1_lab::verify_pkcs1_lab(suite, &public, message, signature)
                     .map_err(|_| DispatchError::InvalidSignature)
             }
