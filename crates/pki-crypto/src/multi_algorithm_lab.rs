@@ -1,9 +1,10 @@
 //! Typed laboratory signing dispatcher. No production key custody or PKI issuance.
 //! A signature suite and key reference must be explicitly authorized together.
 //! No downgrade or fallback is permitted when a suite is unsupported.
-use crate::crypto_agility::{validate_suite, AlgorithmSuite, SignatureScheme};
+use crate::crypto_agility::{validate_suite, AlgorithmSuite, KeyParameter, SignatureScheme};
+use crate::issuer_key_binding::require_issuer_key_binding;
 use crate::{crypto_agility::CryptoAgilityError, KeyRef};
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 
 pub enum LaboratoryKey {
     Rsa(RsaPrivateKey),
@@ -38,6 +39,20 @@ impl LaboratorySigner {
         }
     }
 
+    /// Observed from the actual in-memory laboratory key, never caller metadata.
+    fn observed_key_parameter(&self) -> Option<KeyParameter> {
+        match &self.key {
+            LaboratoryKey::Rsa(private) => match RsaPublicKey::from(private).n().bits() {
+                2048 => Some(KeyParameter::Rsa2048),
+                3072 => Some(KeyParameter::Rsa3072),
+                4096 => Some(KeyParameter::Rsa4096),
+                8192 => Some(KeyParameter::Rsa8192),
+                _ => None,
+            },
+            LaboratoryKey::EcdsaP256(_) => Some(KeyParameter::P256),
+        }
+    }
+
     fn authorize(
         &self,
         key_ref: &KeyRef,
@@ -50,7 +65,12 @@ impl LaboratorySigner {
         if !policy_allowlist.contains(&suite) {
             return Err(DispatchError::ForbiddenByPolicy);
         }
-        validate_suite(suite).map_err(|_e: CryptoAgilityError| DispatchError::UnsupportedSuite)
+        validate_suite(suite).map_err(|_e: CryptoAgilityError| DispatchError::UnsupportedSuite)?;
+        let measured = self
+            .observed_key_parameter()
+            .ok_or(DispatchError::UnsupportedSuite)?;
+        require_issuer_key_binding(suite, measured, true)
+            .map_err(|_| DispatchError::UnsupportedSuite)
     }
 
     /// The caller supplies trusted policy for each operation. No default suite.
