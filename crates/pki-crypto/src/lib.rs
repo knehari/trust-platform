@@ -5,6 +5,8 @@
 pub mod algorithm_catalog;
 pub mod crypto_agility;
 #[cfg(feature = "lab-software")]
+pub mod ecdsa_p256_lab;
+#[cfg(feature = "lab-software")]
 pub mod lab;
 pub mod legacy_algorithm_bridge;
 pub mod provider_capabilities;
