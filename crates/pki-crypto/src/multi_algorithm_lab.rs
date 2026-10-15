@@ -2,7 +2,7 @@
 //! A signature suite and key reference must be explicitly authorized together.
 //! No downgrade or fallback is permitted when a suite is unsupported.
 use crate::crypto_agility::{validate_suite, AlgorithmSuite, SignatureScheme};
-use crate::{KeyRef, crypto_agility::CryptoAgilityError};
+use crate::{crypto_agility::CryptoAgilityError, KeyRef};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
 pub enum LaboratoryKey {
@@ -91,27 +91,18 @@ impl LaboratorySigner {
         match (&self.key, suite.scheme) {
             (LaboratoryKey::Rsa(private), SignatureScheme::RsaPss) => {
                 let public = RsaPublicKey::from(private);
-                crate::rsa_pss_agile_lab::verify_rsa_pss_lab(
-                    suite, &public, message, signature,
-                )
-                .map_err(|_| DispatchError::InvalidSignature)
+                crate::rsa_pss_agile_lab::verify_rsa_pss_lab(suite, &public, message, signature)
+                    .map_err(|_| DispatchError::InvalidSignature)
             }
             (LaboratoryKey::Rsa(private), SignatureScheme::RsaPkcs1V15) => {
                 let public = RsaPublicKey::from(private);
-                crate::rsa_pkcs1_lab::verify_pkcs1_lab(
-                    suite, &public, message, signature,
-                )
-                .map_err(|_| DispatchError::InvalidSignature)
+                crate::rsa_pkcs1_lab::verify_pkcs1_lab(suite, &public, message, signature)
+                    .map_err(|_| DispatchError::InvalidSignature)
             }
             (LaboratoryKey::EcdsaP256(key), SignatureScheme::Ecdsa) => {
                 let public = key.verifying_key().to_encoded_point(false);
-                crate::ecdsa_p256_lab::verify_p256_lab(
-                    suite,
-                    public.as_bytes(),
-                    message,
-                    signature,
-                )
-                .map_err(|_| DispatchError::InvalidSignature)
+                crate::ecdsa_p256_lab::verify_p256_lab(suite, public.as_bytes(), message, signature)
+                    .map_err(|_| DispatchError::InvalidSignature)
             }
             _ => Err(DispatchError::UnsupportedSuite),
         }
