@@ -5,23 +5,19 @@ use crate::SignatureAlgorithm;
 
 /// Legacy identifiers are deliberately limited to the already-existing use cases.
 /// New algorithm suites must NOT be coerced to a "nearest" old enum.
-pub const fn legacy_suite(algorithm: SignatureAlgorithm) -> AlgorithmSuite {
+pub const fn legacy_suite(algorithm: SignatureAlgorithm) -> Result<AlgorithmSuite, LegacyBridgeError> {
     match algorithm {
-        SignatureAlgorithm::RsaPssSha256 => AlgorithmSuite {
-            scheme: SignatureScheme::RsaPss,
-            key: KeyParameter::Rsa3072,
-            digest: Digest::Sha256,
-        },
-        SignatureAlgorithm::EcdsaP256Sha256 => AlgorithmSuite {
+        SignatureAlgorithm::RsaPssSha256 => Err(LegacyBridgeError::AmbiguousRsaKeySize),
+        SignatureAlgorithm::EcdsaP256Sha256 => Ok(AlgorithmSuite {
             scheme: SignatureScheme::Ecdsa,
             key: KeyParameter::P256,
             digest: Digest::Sha256,
-        },
-        SignatureAlgorithm::MlDsa65 => AlgorithmSuite {
+        }),
+        SignatureAlgorithm::MlDsa65 => Ok(AlgorithmSuite {
             scheme: SignatureScheme::MlDsa,
             key: KeyParameter::MlDsa65,
             digest: Digest::Intrinsic,
-        },
+        }),
     }
 }
 
@@ -47,12 +43,12 @@ mod tests {
     use super::*;
     #[test]
     fn legacy_mapping_is_explicit() {
-        assert_eq!(legacy_suite(SignatureAlgorithm::EcdsaP256Sha256).key, KeyParameter::P256);
-        assert_eq!(legacy_suite(SignatureAlgorithm::MlDsa65).scheme, SignatureScheme::MlDsa);
+        assert_eq!(legacy_suite(SignatureAlgorithm::EcdsaP256Sha256).unwrap().key, KeyParameter::P256);
+        assert_eq!(legacy_suite(SignatureAlgorithm::MlDsa65).unwrap().scheme, SignatureScheme::MlDsa);
     }
     #[test]
     fn rsa_size_is_never_inferred_on_round_trip() {
-        assert_eq!(legacy_identifier(legacy_suite(SignatureAlgorithm::RsaPssSha256)),
+        assert_eq!(legacy_suite(SignatureAlgorithm::RsaPssSha256),
                    Err(LegacyBridgeError::AmbiguousRsaKeySize));
         let ecc = AlgorithmSuite { scheme: SignatureScheme::Ecdsa,
             key: KeyParameter::P384, digest: Digest::Sha384 };
