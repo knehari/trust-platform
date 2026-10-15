@@ -4,6 +4,7 @@
 
 pub mod algorithm_catalog;
 pub mod crypto_agility;
+pub mod typed_algorithm_catalog;
 pub mod legacy_algorithm_bridge;
 #[cfg(feature = "lab-software")]
 pub mod lab;
