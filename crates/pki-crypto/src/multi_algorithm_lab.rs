@@ -176,6 +176,14 @@ mod tests {
             signer.sign(&key_ref, RSA_PKCS1, &[RSA_PSS], b"tbs"),
             Err(DispatchError::ForbiddenByPolicy)
         );
+        let forged_size = AlgorithmSuite {
+            key: KeyParameter::Rsa4096,
+            ..RSA_PSS
+        };
+        assert_eq!(
+            signer.sign(&key_ref, forged_size, &[forged_size], b"tbs"),
+            Err(DispatchError::UnsupportedSuite)
+        );
     }
 
     #[test]
