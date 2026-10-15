@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Native CA orchestration contracts.
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
+pub mod agile_x509_identifier;
 pub mod audit_chain;
 pub mod audit_manifest;
 pub mod capacity_policy;
