@@ -145,8 +145,7 @@ pub fn create_root_and_signer_for_digest(
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
     if digest == Digest::Sha256 {
         preflight_pss_certificate_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?;
-    } else if Certificate::from_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)?
-        != certificate
+    } else if Certificate::from_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)? != certificate
     {
         return Err(RsaPssLabIssueError::Encoding);
     }
@@ -332,10 +331,7 @@ mod tests {
                 digest: Digest::Sha256,
                 ..suite
             };
-            assert!(verify_typed_rsa_pss_issuer_signature(
-                &root, &root, wrong_digest
-            )
-            .is_err());
+            assert!(verify_typed_rsa_pss_issuer_signature(&root, &root, wrong_digest).is_err());
         }
     }
 }
