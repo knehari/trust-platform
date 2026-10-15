@@ -65,7 +65,11 @@ pub fn validate_suite(s: AlgorithmSuite) -> Result<(), CryptoAgilityError> {
             | (Ecdsa, P521, Sha512)
             | (SignatureScheme::Ed25519, KeyParameter::Ed25519, Intrinsic)
             | (SignatureScheme::Ed448, KeyParameter::Ed448, Intrinsic)
-            | (SignatureScheme::MlDsa, MlDsa44 | MlDsa65 | MlDsa87, Intrinsic)
+            | (
+                SignatureScheme::MlDsa,
+                MlDsa44 | MlDsa65 | MlDsa87,
+                Intrinsic
+            )
     );
     if valid {
         Ok(())
