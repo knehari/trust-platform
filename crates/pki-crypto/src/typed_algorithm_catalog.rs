@@ -8,7 +8,6 @@ pub enum Maturity {
     Laboratory,
     ProductionQualified,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Full candidate inventory. Most suites are deliberately non-executable.
 /// Each becomes available only after independent evidence-backed qualification.
 pub fn planned_classical_suites() -> Vec<SuiteRecordOwned> {
