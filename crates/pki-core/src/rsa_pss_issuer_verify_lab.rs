@@ -31,7 +31,6 @@ pub fn verify_rsa_pss_issuer_signature(
     verify_rsa_pss_sha256_spki(&spki, &tbs, signature).map_err(|_| VerificationFailure)
 }
 
-
 /// Verifies a typed RSA-PSS issuer signature with exact SHA/MGF1/salt profile.
 /// Issuer trust, path validation, revocation and policy are external obligations.
 pub fn verify_typed_rsa_pss_issuer_signature(
@@ -65,11 +64,12 @@ pub fn verify_typed_rsa_pss_issuer_signature(
         .tbs_certificate
         .to_der()
         .map_err(|_| VerificationFailure)?;
-    let signature = certificate.signature.as_bytes().ok_or(VerificationFailure)?;
-    trust_pki_crypto::rsa_pss_agile_lab::verify_rsa_pss_spki_lab(
-        suite, &spki, &tbs, signature,
-    )
-    .map_err(|_| VerificationFailure)
+    let signature = certificate
+        .signature
+        .as_bytes()
+        .ok_or(VerificationFailure)?;
+    trust_pki_crypto::rsa_pss_agile_lab::verify_rsa_pss_spki_lab(suite, &spki, &tbs, signature)
+        .map_err(|_| VerificationFailure)
 }
 
 #[cfg(test)]
@@ -113,7 +113,10 @@ mod tests {
             key: KeyParameter::Rsa3072,
             digest: Digest::Sha256,
         };
-        assert_eq!(verify_typed_rsa_pss_issuer_signature(&root, &root, suite), Ok(()));
+        assert_eq!(
+            verify_typed_rsa_pss_issuer_signature(&root, &root, suite),
+            Ok(())
+        );
         let different_hash = AlgorithmSuite {
             digest: Digest::Sha384,
             ..suite
