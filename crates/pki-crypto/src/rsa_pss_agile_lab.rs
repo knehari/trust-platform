@@ -95,7 +95,10 @@ mod tests {
                 digest,
             };
             let signature = sign_rsa_pss_lab(suite, &key, b"tbs").unwrap();
-            assert_eq!(verify_rsa_pss_lab(suite, &public, b"tbs", &signature), Ok(()));
+            assert_eq!(
+                verify_rsa_pss_lab(suite, &public, b"tbs", &signature),
+                Ok(())
+            );
             assert_eq!(
                 verify_rsa_pss_lab(suite, &public, b"other", &signature),
                 Err(RsaLabError::InvalidSignature)
