@@ -135,16 +135,19 @@ mod tests {
             policy.authorize(&principal, &request, pss512),
             Err(Denial::AlgorithmNotAllowed)
         ));
-        let (authorization, grant) =
-            policy.authorize(&principal, &request, PSS384).unwrap();
+        let (authorization, grant) = policy.authorize(&principal, &request, PSS384).unwrap();
         assert_eq!(grant.suite(), PSS384);
         assert!(grant.matches(&authorization));
-        assert!(!grant.matches(&legacy.authorize(
-            &principal,
-            &IssuanceRequest {
-                validity_days: 2,
-                ..request
-            }
-        ).unwrap()));
+        assert!(!grant.matches(
+            &legacy
+                .authorize(
+                    &principal,
+                    &IssuanceRequest {
+                        validity_days: 2,
+                        ..request
+                    }
+                )
+                .unwrap()
+        ));
     }
 }
