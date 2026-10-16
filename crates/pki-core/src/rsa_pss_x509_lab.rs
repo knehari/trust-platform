@@ -453,19 +453,34 @@ mod tests {
             allowed_suites: &[pss384, pss512, wrong_key],
             x509_profile_approved: true,
         };
-        let (_, grant384) = typed_policy.authorize(&principal, &request, pss384).unwrap();
-        let (_, grant512) = typed_policy.authorize(&principal, &request, pss512).unwrap();
-        let (_, grant_wrong_key) =
-            typed_policy.authorize(&principal, &request, wrong_key).unwrap();
+        let (_, grant384) = typed_policy
+            .authorize(&principal, &request, pss384)
+            .unwrap();
+        let (_, grant512) = typed_policy
+            .authorize(&principal, &request, pss512)
+            .unwrap();
+        let (_, grant_wrong_key) = typed_policy
+            .authorize(&principal, &request, wrong_key)
+            .unwrap();
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &approved, &cp, &serial, Digest::Sha384, &grant512,
+                &verified,
+                &approved,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &grant512,
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &approved, &cp, &serial, Digest::Sha384, &grant_wrong_key,
+                &verified,
+                &approved,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &grant_wrong_key,
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
@@ -480,10 +495,14 @@ mod tests {
             .unwrap();
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &other, &cp, &serial, Digest::Sha384, &grant384,
+                &verified,
+                &other,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &grant384,
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
     }
-
 }
