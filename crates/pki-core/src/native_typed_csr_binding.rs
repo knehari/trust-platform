@@ -48,6 +48,49 @@ pub fn bind_native_approval_to_verified_csr(
     Ok(())
 }
 
+/// An immutable binding of an authorized issuance to the exact validated CSR.
+/// The digest is a correlation identifier, not a signature or evidence of
+/// trusted policy origin. Revalidate against the same authorized request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundNativeCsr {
+    approved: NativeTypedAuthorization,
+    csr_sha256: [u8; 32],
+}
+
+impl BoundNativeCsr {
+    pub fn authorized_suite(&self) -> trust_pki_crypto::crypto_agility::AlgorithmSuite {
+        self.approved.issuer_suite()
+    }
+
+    pub fn csr_sha256(&self) -> &[u8; 32] {
+        &self.csr_sha256
+    }
+
+    /// Prevent an issuance flow from substituting a second validated CSR
+    /// after its authorization was bound to the original request.
+    pub fn require_same_csr(
+        &self,
+        candidate: &VerifiedCsr,
+    ) -> Result<(), NativeCsrBindingError> {
+        bind_native_approval_to_verified_csr(&self.approved, candidate)?;
+        if candidate.fingerprint_sha256() != &self.csr_sha256 {
+            return Err(NativeCsrBindingError::SubjectMismatch);
+        }
+        Ok(())
+    }
+}
+
+pub fn bind_native_csr(
+    approved: NativeTypedAuthorization,
+    csr: &VerifiedCsr,
+) -> Result<BoundNativeCsr, NativeCsrBindingError> {
+    bind_native_approval_to_verified_csr(&approved, csr)?;
+    Ok(BoundNativeCsr {
+        approved,
+        csr_sha256: *csr.fingerprint_sha256(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +149,11 @@ mod tests {
             Ok(())
         );
 
+        let bound = bind_native_csr(approved.clone(), &csr).unwrap();
+        assert_eq!(bound.csr_sha256(), csr.fingerprint_sha256());
+        assert_eq!(bound.authorized_suite(), suite);
+        assert_eq!(bound.require_same_csr(&csr), Ok(()));
+
         let other = ["other.lab.invalid"];
         let wrong_cn = p
             .authorize(
@@ -122,6 +170,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             bind_native_approval_to_verified_csr(&wrong_cn, &csr),
+            Err(NativeCsrBindingError::SubjectMismatch)
+        );
+        assert_eq!(
+            bind_native_csr(wrong_cn, &csr),
             Err(NativeCsrBindingError::SubjectMismatch)
         );
 
