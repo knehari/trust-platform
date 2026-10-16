@@ -184,8 +184,11 @@ mod tests {
                 Err(Pkcs1LabIssueError::SignatureInvalid)
             );
             let mut forged_spki = root.clone();
-            forged_spki.tbs_certificate.subject_public_key_info.algorithm.oid =
-                ObjectIdentifier::new("1.2.840.10045.2.1").unwrap();
+            forged_spki
+                .tbs_certificate
+                .subject_public_key_info
+                .algorithm
+                .oid = ObjectIdentifier::new("1.2.840.10045.2.1").unwrap();
             assert_eq!(
                 verify_pkcs1_x509_root_lab(&forged_spki, suite),
                 Err(Pkcs1LabIssueError::SignatureInvalid)
