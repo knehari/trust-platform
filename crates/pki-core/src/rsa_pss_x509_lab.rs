@@ -396,4 +396,77 @@ mod tests {
             assert!(verify_typed_rsa_pss_issuer_signature(&root, &root, wrong_digest).is_err());
         }
     }
+    #[test]
+    fn typed_server_chain_rejects_missing_or_wrong_suite_policy() {
+        use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
+        use x509_cert::{der::DecodePem, request::CertReq};
+
+        let csr = CertReq::from_pem(include_str!("../tests/fixtures/ecdsa-p256-request.pem"))
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let verified = crate::csr::verify_pkcs10_p256(&csr, "api.lab.invalid").unwrap();
+        let policy = StaticPolicy {
+            profile_id: "lab-rsa-server".into(),
+            policy_version: "lab-v1".into(),
+            allowed_actors: vec!["lab-requester".into()],
+            allowed_dns_zones: vec!["lab.invalid".into()],
+            allowed_ca_signature_algorithms: vec![SignatureAlgorithm::RsaPssSha256],
+            max_validity_days: 3,
+            max_dns_sans: 3,
+        };
+        let names = ["api.lab.invalid"];
+        let approved = policy
+            .authorize(
+                &AuthenticatedPrincipal {
+                    subject_id: "lab-requester",
+                },
+                &IssuanceRequest {
+                    profile_id: "lab-rsa-server",
+                    subject_common_name: "api.lab.invalid",
+                    dns_sans: &names,
+                    validity_days: 1,
+                    ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
+                },
+            )
+            .unwrap();
+        let cp = ApprovedPolicyBinding::new(
+            "1.3.6.1.4.1.55555.1.1",
+            "lab-cp-v1",
+            [9u8; 32],
+        )
+        .unwrap();
+        let serial = ReservedSerial::from_positive_der_content(&[0x34, 0x56]).unwrap();
+        let pss384 = AlgorithmSuite {
+            scheme: SignatureScheme::RsaPss,
+            key: KeyParameter::Rsa3072,
+            digest: Digest::Sha384,
+        };
+        let pss512 = AlgorithmSuite {
+            digest: Digest::Sha512,
+            ..pss384
+        };
+        assert!(matches!(
+            issue_ephemeral_rsa_pss_server_chain_for_digest(
+                &verified, &approved, &cp, &serial, Digest::Sha384, &[],
+            ),
+            Err(RsaPssLabIssueError::UnauthorizedProfile)
+        ));
+        assert!(matches!(
+            issue_ephemeral_rsa_pss_server_chain_for_digest(
+                &verified, &approved, &cp, &serial, Digest::Sha384, &[pss512],
+            ),
+            Err(RsaPssLabIssueError::UnauthorizedProfile)
+        ));
+        let wrong_key = AlgorithmSuite {
+            key: KeyParameter::Rsa4096,
+            ..pss384
+        };
+        assert!(matches!(
+            issue_ephemeral_rsa_pss_server_chain_for_digest(
+                &verified, &approved, &cp, &serial, Digest::Sha384, &[wrong_key],
+            ),
+            Err(RsaPssLabIssueError::UnauthorizedProfile)
+        ));
+    }
 }
