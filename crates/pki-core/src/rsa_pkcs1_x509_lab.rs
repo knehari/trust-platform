@@ -157,6 +157,14 @@ mod tests {
             };
             let root = issue_rsa_pkcs1_root_lab(suite).unwrap();
             assert_eq!(verify_pkcs1_x509_root_lab(&root, suite), Ok(()));
+            let mut tampered = root.clone();
+            let mut signature = tampered.signature.as_bytes().unwrap().to_vec();
+            signature[0] ^= 0x01;
+            tampered.signature = BitString::from_bytes(&signature).unwrap();
+            assert_eq!(
+                verify_pkcs1_x509_root_lab(&tampered, suite),
+                Err(Pkcs1LabIssueError::SignatureInvalid)
+            );
             let mismatched = AlgorithmSuite {
                 digest: match digest {
                     Digest::Sha256 => Digest::Sha384,
