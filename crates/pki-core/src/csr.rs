@@ -125,7 +125,6 @@ pub fn verify_pkcs10_p256(
     })
 }
 
-
 /// Opt-in laboratory verification for RSA PKCS#1 v1.5 signed PKCS#10 CSRs.
 /// Requires an exact SHA-256/384/512 signature OID with ASN.1 NULL parameters,
 /// an RSA SPKI, a supported observed modulus and verified proof of possession.
@@ -134,7 +133,13 @@ pub fn verify_pkcs10_p256(
 pub fn verify_pkcs10_rsa_pkcs1_lab(
     csr_der: &[u8],
     expected_common_name: &str,
-) -> Result<(VerifiedCsr, trust_pki_crypto::crypto_agility::AlgorithmSuite), CsrValidationError> {
+) -> Result<
+    (
+        VerifiedCsr,
+        trust_pki_crypto::crypto_agility::AlgorithmSuite,
+    ),
+    CsrValidationError,
+> {
     use trust_pki_crypto::{
         crypto_agility::{AlgorithmSuite, Digest as TypedDigest, SignatureScheme},
         rsa_pkcs1_lab::{observed_rsa_key_parameter, verify_pkcs1_spki_lab},
@@ -182,14 +187,17 @@ pub fn verify_pkcs10_rsa_pkcs1_lab(
         return Err(CsrValidationError::SubjectMismatch);
     }
     let spki_der = spki.to_der().map_err(|_| CsrValidationError::InvalidDer)?;
-    let key = observed_rsa_key_parameter(&spki_der)
-        .map_err(|_| CsrValidationError::InvalidPublicKey)?;
+    let key =
+        observed_rsa_key_parameter(&spki_der).map_err(|_| CsrValidationError::InvalidPublicKey)?;
     let suite = AlgorithmSuite {
         scheme: SignatureScheme::RsaPkcs1V15,
         key,
         digest,
     };
-    let message = csr.info.to_der().map_err(|_| CsrValidationError::InvalidDer)?;
+    let message = csr
+        .info
+        .to_der()
+        .map_err(|_| CsrValidationError::InvalidDer)?;
     let signature = csr
         .signature
         .as_bytes()
@@ -284,8 +292,7 @@ mod tests {
         .unwrap()
         .to_der()
         .unwrap();
-        let (verified, suite) =
-            verify_pkcs10_rsa_pkcs1_lab(&original, "api.lab.invalid").unwrap();
+        let (verified, suite) = verify_pkcs10_rsa_pkcs1_lab(&original, "api.lab.invalid").unwrap();
         assert_eq!(
             suite,
             trust_pki_crypto::crypto_agility::AlgorithmSuite {
