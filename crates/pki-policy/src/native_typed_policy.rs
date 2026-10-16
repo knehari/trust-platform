@@ -3,9 +3,7 @@
 //! receipt, authentication provider, or durable approval record.
 use crate::{inside_zone, valid_dns_name, AuthenticatedPrincipal, Denial};
 use trust_pki_crypto::{
-    certificate_algorithm_binding::{
-        authorize_certificate_binding, CertificateAlgorithmBinding,
-    },
+    certificate_algorithm_binding::{authorize_certificate_binding, CertificateAlgorithmBinding},
     crypto_agility::{AlgorithmSuite, KeyParameter},
 };
 
@@ -92,12 +90,18 @@ impl NativeTypedPolicy {
             || self.allowed_subject_keys.is_empty()
             || self.max_validity_days == 0
             || self.max_dns_sans == 0
-            || self.allowed_dns_zones.iter().any(|zone| !valid_dns_name(zone))
+            || self
+                .allowed_dns_zones
+                .iter()
+                .any(|zone| !valid_dns_name(zone))
         {
             return Err(Denial::InvalidConfiguration);
         }
         if principal.subject_id.trim().is_empty()
-            || !self.allowed_actors.iter().any(|a| a == principal.subject_id)
+            || !self
+                .allowed_actors
+                .iter()
+                .any(|a| a == principal.subject_id)
         {
             return Err(Denial::MissingIdentity);
         }
@@ -129,7 +133,10 @@ impl NativeTypedPolicy {
         }
         if !request.dns_sans.contains(&request.subject_common_name)
             || request.dns_sans.iter().any(|name| {
-                !self.allowed_dns_zones.iter().any(|zone| inside_zone(name, zone))
+                !self
+                    .allowed_dns_zones
+                    .iter()
+                    .any(|zone| inside_zone(name, zone))
             })
         {
             return Err(Denial::SubjectNotAuthorized);
@@ -209,14 +216,22 @@ mod tests {
             subject_id: "lab-operator",
         };
         input.issuer_suite.scheme = SignatureScheme::RsaPss;
-        assert_eq!(p.authorize(&actor, &input), Err(Denial::AlgorithmNotAllowed));
+        assert_eq!(
+            p.authorize(&actor, &input),
+            Err(Denial::AlgorithmNotAllowed)
+        );
         input.issuer_suite = RSA;
         input.subject_key = KeyParameter::Rsa3072;
-        assert_eq!(p.authorize(&actor, &input), Err(Denial::AlgorithmNotAllowed));
+        assert_eq!(
+            p.authorize(&actor, &input),
+            Err(Denial::AlgorithmNotAllowed)
+        );
         input.subject_key = KeyParameter::P256;
         assert_eq!(
             p.authorize(
-                &AuthenticatedPrincipal { subject_id: "unknown" },
+                &AuthenticatedPrincipal {
+                    subject_id: "unknown"
+                },
                 &input,
             ),
             Err(Denial::MissingIdentity)
