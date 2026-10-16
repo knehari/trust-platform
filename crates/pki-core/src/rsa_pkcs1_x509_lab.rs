@@ -29,12 +29,11 @@ pub enum Pkcs1LabIssueError {
     SignatureInvalid,
 }
 
-fn extension<T: Encode>(
-    name: &str,
-    value: &T,
-) -> Result<Extension, Pkcs1LabIssueError> {
+fn extension<T: Encode>(name: &str, value: &T) -> Result<Extension, Pkcs1LabIssueError> {
     let oid = ObjectIdentifier::new(name).map_err(|_| Pkcs1LabIssueError::InvalidEncoding)?;
-    let der = value.to_der().map_err(|_| Pkcs1LabIssueError::InvalidEncoding)?;
+    let der = value
+        .to_der()
+        .map_err(|_| Pkcs1LabIssueError::InvalidEncoding)?;
     let octets = OctetString::new(der).map_err(|_| Pkcs1LabIssueError::InvalidEncoding)?;
     Ok(Extension {
         extn_id: oid,
@@ -78,16 +77,13 @@ pub fn verify_pkcs1_x509_root_lab(
 
 /// Ephemeral RSA PKCS#1 v1.5 root for SHA-256, SHA-384 or SHA-512.
 /// Never activate these compatibility signatures without explicit CA policy.
-pub fn issue_rsa_pkcs1_root_lab(
-    suite: AlgorithmSuite,
-) -> Result<Certificate, Pkcs1LabIssueError> {
+pub fn issue_rsa_pkcs1_root_lab(suite: AlgorithmSuite) -> Result<Certificate, Pkcs1LabIssueError> {
     if suite.scheme != SignatureScheme::RsaPkcs1V15 {
         return Err(Pkcs1LabIssueError::UnsupportedSuite);
     }
     let expected = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
         .map_err(|_| Pkcs1LabIssueError::UnsupportedSuite)?;
-    let key = EphemeralPkcs1LabKey::generate(suite)
-        .map_err(|_| Pkcs1LabIssueError::InvalidKey)?;
+    let key = EphemeralPkcs1LabKey::generate(suite).map_err(|_| Pkcs1LabIssueError::InvalidKey)?;
     let spki = SubjectPublicKeyInfoOwned::from_der(
         &key.public_spki_der()
             .map_err(|_| Pkcs1LabIssueError::InvalidKey)?,
