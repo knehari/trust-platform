@@ -126,6 +126,14 @@ pub fn verify_openssl_classical_root_lab(
 pub fn issue_openssl_classical_root_lab(
     suite: AlgorithmSuite,
 ) -> Result<Certificate, ClassicalX509LabError> {
+    create_openssl_classical_root_and_signer_lab(suite).map(|(cert, _key)| cert)
+}
+
+/// Returns a disposable root and its matching signing key for lab server
+/// issuance tests. There is no HSM, persistence or private key export API.
+pub fn create_openssl_classical_root_and_signer_lab(
+    suite: AlgorithmSuite,
+) -> Result<(Certificate, OpenSslClassicalLabKey), ClassicalX509LabError> {
     let key = OpenSslClassicalLabKey::generate(suite)
         .map_err(|_| ClassicalX509LabError::UnsupportedSuite)?;
     let spki = SubjectPublicKeyInfoOwned::from_der(key.public_spki_der())
@@ -182,7 +190,7 @@ pub fn issue_openssl_classical_root_lab(
         return Err(ClassicalX509LabError::InvalidDer);
     }
     verify_openssl_classical_root_lab(&certificate, suite)?;
-    Ok(certificate)
+    Ok((certificate, key))
 }
 
 #[cfg(test)]
