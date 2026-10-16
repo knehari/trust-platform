@@ -3,6 +3,8 @@
 //! The caller MUST obtain AuthenticatedPrincipal from a trusted authentication boundary.
 //! CSR attributes are untrusted input and do not create permissions.
 
+pub mod typed_suite_policy;
+
 use trust_pki_crypto::SignatureAlgorithm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
