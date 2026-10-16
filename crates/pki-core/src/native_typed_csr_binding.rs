@@ -68,10 +68,7 @@ impl BoundNativeCsr {
 
     /// Prevent an issuance flow from substituting a second validated CSR
     /// after its authorization was bound to the original request.
-    pub fn require_same_csr(
-        &self,
-        candidate: &VerifiedCsr,
-    ) -> Result<(), NativeCsrBindingError> {
+    pub fn require_same_csr(&self, candidate: &VerifiedCsr) -> Result<(), NativeCsrBindingError> {
         bind_native_approval_to_verified_csr(&self.approved, candidate)?;
         if candidate.fingerprint_sha256() != &self.csr_sha256 {
             return Err(NativeCsrBindingError::SubjectMismatch);
