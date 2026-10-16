@@ -393,9 +393,10 @@ mod tests {
         }
     }
     #[test]
-    fn typed_server_chain_rejects_missing_or_wrong_suite_policy() {
+    fn typed_server_chain_rejects_wrong_digest_key_and_replayed_grant() {
         use trust_pki_policy::{
-            AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy,
+            typed_suite_policy::TypedSuitePolicy, AuthenticatedPrincipal, IssuanceRequest,
+            PolicyEngine, StaticPolicy,
         };
         use x509_cert::{der::DecodePem, request::CertReq};
 
@@ -413,21 +414,18 @@ mod tests {
             max_validity_days: 3,
             max_dns_sans: 3,
         };
+        let principal = AuthenticatedPrincipal {
+            subject_id: "lab-requester",
+        };
         let names = ["api.lab.invalid"];
-        let approved = policy
-            .authorize(
-                &AuthenticatedPrincipal {
-                    subject_id: "lab-requester",
-                },
-                &IssuanceRequest {
-                    profile_id: "lab-rsa-server",
-                    subject_common_name: "api.lab.invalid",
-                    dns_sans: &names,
-                    validity_days: 1,
-                    ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
-                },
-            )
-            .unwrap();
+        let request = IssuanceRequest {
+            profile_id: "lab-rsa-server",
+            subject_common_name: "api.lab.invalid",
+            dns_sans: &names,
+            validity_days: 1,
+            ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
+        };
+        let approved = policy.authorize(&principal, &request).unwrap();
         let cp =
             ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32]).unwrap();
         let serial = ReservedSerial::from_positive_der_content(&[0x34, 0x56]).unwrap();
@@ -440,42 +438,52 @@ mod tests {
             digest: Digest::Sha512,
             ..pss384
         };
-        assert!(matches!(
-            issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified,
-                &approved,
-                &cp,
-                &serial,
-                Digest::Sha384,
-                &[],
-            ),
-            Err(RsaPssLabIssueError::UnauthorizedProfile)
-        ));
-        assert!(matches!(
-            issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified,
-                &approved,
-                &cp,
-                &serial,
-                Digest::Sha384,
-                &[pss512],
-            ),
-            Err(RsaPssLabIssueError::UnauthorizedProfile)
-        ));
         let wrong_key = AlgorithmSuite {
             key: KeyParameter::Rsa4096,
             ..pss384
         };
+        let no_suite = TypedSuitePolicy {
+            legacy: &policy,
+            allowed_suites: &[],
+            x509_profile_approved: true,
+        };
+        assert!(no_suite.authorize(&principal, &request, pss384).is_err());
+        let typed_policy = TypedSuitePolicy {
+            legacy: &policy,
+            allowed_suites: &[pss384, pss512, wrong_key],
+            x509_profile_approved: true,
+        };
+        let (_, grant384) = typed_policy.authorize(&principal, &request, pss384).unwrap();
+        let (_, grant512) = typed_policy.authorize(&principal, &request, pss512).unwrap();
+        let (_, grant_wrong_key) =
+            typed_policy.authorize(&principal, &request, wrong_key).unwrap();
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified,
-                &approved,
-                &cp,
-                &serial,
-                Digest::Sha384,
-                &[wrong_key],
+                &verified, &approved, &cp, &serial, Digest::Sha384, &grant512,
+            ),
+            Err(RsaPssLabIssueError::UnauthorizedProfile)
+        ));
+        assert!(matches!(
+            issue_ephemeral_rsa_pss_server_chain_for_digest(
+                &verified, &approved, &cp, &serial, Digest::Sha384, &grant_wrong_key,
+            ),
+            Err(RsaPssLabIssueError::UnauthorizedProfile)
+        ));
+        let other = policy
+            .authorize(
+                &principal,
+                &IssuanceRequest {
+                    validity_days: 2,
+                    ..request
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            issue_ephemeral_rsa_pss_server_chain_for_digest(
+                &verified, &other, &cp, &serial, Digest::Sha384, &grant384,
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
     }
+
 }
