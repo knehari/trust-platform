@@ -131,6 +131,16 @@ impl NativeTypedPolicy {
         {
             return Err(Denial::InvalidDnsName);
         }
+        // A deterministic subject identity prevents duplicate SANs and
+        // inconsistent inventory, renewal or policy-evidence records.
+        if request
+            .dns_sans
+            .iter()
+            .enumerate()
+            .any(|(i, name)| request.dns_sans[..i].contains(name))
+        {
+            return Err(Denial::InvalidDnsName);
+        }
         if !request.dns_sans.contains(&request.subject_common_name)
             || request.dns_sans.iter().any(|name| {
                 !self
@@ -235,6 +245,19 @@ mod tests {
                 &input,
             ),
             Err(Denial::MissingIdentity)
+        );
+        let duplicate = ["api.lab.invalid", "api.lab.invalid"];
+        let duplicate_request = NativeTypedIssuanceRequest {
+            profile_id: "server",
+            subject_common_name: "api.lab.invalid",
+            dns_sans: &duplicate,
+            validity_days: 2,
+            issuer_suite: RSA,
+            subject_key: KeyParameter::P256,
+        };
+        assert_eq!(
+            p.authorize(&actor, &duplicate_request),
+            Err(Denial::InvalidDnsName)
         );
         input.validity_days = 4;
         assert_eq!(p.authorize(&actor, &input), Err(Denial::InvalidValidity));
