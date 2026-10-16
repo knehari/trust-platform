@@ -52,6 +52,16 @@ jobs:
             openssl verify -CAfile "$RUNNER_TEMP/pss-$digest-root.pem" -check_ss_sig "$RUNNER_TEMP/pss-$digest-root.pem"
             openssl x509 -in "$RUNNER_TEMP/pss-$digest-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
           done
+      - name: Native RSA PKCS1 SHA256/384/512 roots independently verified by OpenSSL (lab only)
+        run: |
+          for digest in sha256 sha384 sha512; do
+            der="$RUNNER_TEMP/pkcs1-$digest.der"
+            pem="$RUNNER_TEMP/pkcs1-$digest.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pkcs1_root_lab -- "$digest" "$der"
+            openssl x509 -inform DER -in "$der" -out "$pem"
+            openssl verify -CAfile "$pem" -check_ss_sig "$pem"
+            openssl x509 -in "$pem" -noout -text | grep -q "Signature Algorithm: sha.*WithRSAEncryption"
+          done
       - name: Native RSA-PSS server chain verified by OpenSSL (lab only)
         run: |
           mkdir -p "$RUNNER_TEMP/rsa-pss-server"
