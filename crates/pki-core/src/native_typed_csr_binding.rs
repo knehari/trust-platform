@@ -8,10 +8,7 @@ use crate::csr::VerifiedCsr;
 use std::str::FromStr;
 use trust_pki_crypto::crypto_agility::KeyParameter;
 use trust_pki_policy::native_typed_policy::NativeTypedAuthorization;
-use x509_cert::{
-    der::Encode,
-    name::Name,
-};
+use x509_cert::{der::Encode, name::Name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCsrBindingError {
@@ -21,9 +18,7 @@ pub enum NativeCsrBindingError {
 }
 
 const P256_EC_PUBLIC_KEY_OID: &str = "1.2.840.10045.2.1";
-const P256_NAMED_CURVE_DER: [u8; 10] = [
-    0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
-];
+const P256_NAMED_CURVE_DER: [u8; 10] = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
 /// Ensures the authenticated, policy-authorized CN and subject key type
 /// match a CSR already cryptographically verified by the PKCS#10 boundary.
@@ -106,7 +101,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(bind_native_approval_to_verified_csr(&approved, &csr), Ok(()));
+        assert_eq!(
+            bind_native_approval_to_verified_csr(&approved, &csr),
+            Ok(())
+        );
 
         let other = ["other.lab.invalid"];
         let wrong_cn = p
