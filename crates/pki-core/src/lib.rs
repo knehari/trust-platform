@@ -25,6 +25,7 @@ pub mod key_ceremony;
 pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
+pub mod native_typed_csr_binding;
 pub mod orchestrator;
 pub mod platform_readiness;
 pub mod policy_decisions;
