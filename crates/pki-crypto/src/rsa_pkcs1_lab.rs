@@ -121,9 +121,7 @@ impl EphemeralPkcs1LabKey {
 
 /// Return the observed RSA modulus class from a fully parsed SPKI.
 /// Never trust an unverified external key-size claim.
-pub fn observed_rsa_key_parameter(
-    spki_der: &[u8],
-) -> Result<KeyParameter, RsaPkcs1LabError> {
+pub fn observed_rsa_key_parameter(spki_der: &[u8]) -> Result<KeyParameter, RsaPkcs1LabError> {
     let public = RsaPublicKey::from_public_key_der(spki_der)
         .map_err(|_| RsaPkcs1LabError::InvalidPublicKey)?;
     match public.n().bits() {
