@@ -302,7 +302,7 @@ mod tests {
                 Err(OpenSslLabError::InvalidSignature)
             );
             assert_eq!(
-                key.sign(CASES[0].clone(), b"x509-tbs").is_err(),
+                key.sign(CASES[0], b"x509-tbs").is_err(),
                 suite != CASES[0]
             );
             let mut damaged = sig;
