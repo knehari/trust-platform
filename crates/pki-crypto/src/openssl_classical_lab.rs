@@ -4,7 +4,9 @@
 //! Never feed production key material, untrusted filenames or large messages.
 #![cfg(unix)]
 
-use crate::crypto_agility::{validate_suite, AlgorithmSuite, Digest, KeyParameter, SignatureScheme};
+use crate::crypto_agility::{
+    validate_suite, AlgorithmSuite, Digest, KeyParameter, SignatureScheme,
+};
 use std::{
     fs::{self, DirBuilder, OpenOptions},
     io::Write,
@@ -66,7 +68,9 @@ impl Drop for Workspace {
     }
 }
 
-fn suite_kind(suite: AlgorithmSuite) -> Result<(&'static str, Option<&'static str>), OpenSslLabError> {
+fn suite_kind(
+    suite: AlgorithmSuite,
+) -> Result<(&'static str, Option<&'static str>), OpenSslLabError> {
     validate_suite(suite).map_err(|_| OpenSslLabError::UnsupportedSuite)?;
     match (suite.scheme, suite.key, suite.digest) {
         (SignatureScheme::Ecdsa, KeyParameter::P384, Digest::Sha384) => {
@@ -78,9 +82,7 @@ fn suite_kind(suite: AlgorithmSuite) -> Result<(&'static str, Option<&'static st
         (SignatureScheme::Ed25519, KeyParameter::Ed25519, Digest::Intrinsic) => {
             Ok(("ED25519", None))
         }
-        (SignatureScheme::Ed448, KeyParameter::Ed448, Digest::Intrinsic) => {
-            Ok(("ED448", None))
-        }
+        (SignatureScheme::Ed448, KeyParameter::Ed448, Digest::Intrinsic) => Ok(("ED448", None)),
         _ => Err(OpenSslLabError::UnsupportedSuite),
     }
 }
@@ -93,10 +95,7 @@ fn checked_message(message: &[u8]) -> Result<(), OpenSslLabError> {
     }
 }
 
-fn public_der_to_pem(
-    workspace: &Workspace,
-    spki_der: &[u8],
-) -> Result<PathBuf, OpenSslLabError> {
+fn public_der_to_pem(workspace: &Workspace, spki_der: &[u8]) -> Result<PathBuf, OpenSslLabError> {
     let der = workspace.write("subject.spki", spki_der)?;
     let public = workspace.path.join("public.pem");
     let output = Command::new("openssl")
@@ -126,7 +125,11 @@ fn verify_in_workspace(
     let mut cmd = Command::new("openssl");
     match suite.digest {
         Digest::Sha384 | Digest::Sha512 => {
-            let digest = if suite.digest == Digest::Sha384 { "-sha384" } else { "-sha512" };
+            let digest = if suite.digest == Digest::Sha384 {
+                "-sha384"
+            } else {
+                "-sha512"
+            };
             cmd.args(["dgst", digest, "-verify"])
                 .arg(public_pem)
                 .arg("-signature")
@@ -226,7 +229,11 @@ impl OpenSslClassicalLabKey {
         let mut cmd = Command::new("openssl");
         match suite.digest {
             Digest::Sha384 | Digest::Sha512 => {
-                let digest = if suite.digest == Digest::Sha384 { "-sha384" } else { "-sha512" };
+                let digest = if suite.digest == Digest::Sha384 {
+                "-sha384"
+            } else {
+                "-sha512"
+            };
                 cmd.args(["dgst", digest, "-sign"])
                     .arg(&self.private)
                     .arg("-out")
@@ -301,10 +308,7 @@ mod tests {
                 key.verify(suite, b"tampered-tbs", &sig),
                 Err(OpenSslLabError::InvalidSignature)
             );
-            assert_eq!(
-                key.sign(CASES[0], b"x509-tbs").is_err(),
-                suite != CASES[0]
-            );
+            assert_eq!(key.sign(CASES[0], b"x509-tbs").is_err(), suite != CASES[0]);
             let mut damaged = sig;
             damaged[0] ^= 1;
             assert_eq!(
