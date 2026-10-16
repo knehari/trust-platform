@@ -2,8 +2,8 @@
 //! PKCS#1 v1.5 is never an implicit fallback from RSA-PSS.
 use crate::crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme};
 use rsa::{
-    pkcs8::{DecodePublicKey, EncodePublicKey},
     pkcs1v15::{Signature, SigningKey, VerifyingKey},
+    pkcs8::{DecodePublicKey, EncodePublicKey},
     signature::{SignatureEncoding, Signer, Verifier},
     traits::PublicKeyParts,
     RsaPrivateKey, RsaPublicKey,
@@ -82,7 +82,6 @@ pub fn verify_pkcs1_lab(
     };
     result.map_err(|_| RsaPkcs1LabError::InvalidSignature)
 }
-
 
 /// An ephemeral process-local RSA key. Never serializes private material.
 pub struct EphemeralPkcs1LabKey {
