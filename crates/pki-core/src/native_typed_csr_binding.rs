@@ -275,7 +275,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             bind_native_approval_to_verified_csr(&wrong_key, &csr),
-            Err(NativeCsrBindingError::UnsupportedSubjectKey)
+            Err(NativeCsrBindingError::InvalidKeyParameters)
         );
     }
 
