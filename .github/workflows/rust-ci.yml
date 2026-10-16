@@ -52,6 +52,16 @@ jobs:
             openssl verify -CAfile "$RUNNER_TEMP/pss-$digest-root.pem" -check_ss_sig "$RUNNER_TEMP/pss-$digest-root.pem"
             openssl x509 -in "$RUNNER_TEMP/pss-$digest-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
           done
+      - name: ECDSA P384/P521 and Ed25519/Ed448 TLS server chains verified by OpenSSL
+        run: |
+          for scheme in p384 p521 ed25519 ed448; do
+            output="$RUNNER_TEMP/classical-$scheme-server"
+            mkdir -p "$output"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_openssl_classical_server_lab -- "$scheme" "$output"
+            openssl x509 -inform DER -in "$output/root.der" -out "$output/root.pem"
+            openssl x509 -inform DER -in "$output/leaf.der" -out "$output/leaf.pem"
+            openssl verify -CAfile "$output/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$output/leaf.pem"
+          done
       - name: ECDSA P384/P521 and Ed25519/Ed448 lab roots verified by OpenSSL
         run: |
           for scheme in p384 p521 ed25519 ed448; do
