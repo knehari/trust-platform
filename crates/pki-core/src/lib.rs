@@ -43,6 +43,8 @@ pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
 pub mod revocation_policy;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pkcs1_x509_lab;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_issuer_verify_lab;
