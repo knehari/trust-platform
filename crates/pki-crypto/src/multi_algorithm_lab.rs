@@ -231,8 +231,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn openssl_four_classical_suites_are_dispatchable_without_fallback() {
-        use crate::openssl_classical_lab::OpenSslClassicalLabKey;
         use crate::crypto_agility::Digest;
+        use crate::openssl_classical_lab::OpenSslClassicalLabKey;
         for suite in [
             AlgorithmSuite {
                 scheme: SignatureScheme::Ecdsa,
@@ -269,5 +269,4 @@ mod tests {
             );
         }
     }
-
 }
