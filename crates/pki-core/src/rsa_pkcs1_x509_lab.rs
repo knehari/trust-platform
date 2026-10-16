@@ -4,6 +4,7 @@ use std::{str::FromStr, time::Duration};
 use trust_pki_crypto::{
     crypto_agility::{AlgorithmSuite, SignatureScheme},
     rsa_pkcs1_lab::{verify_pkcs1_spki_lab, EphemeralPkcs1LabKey},
+    rsa_pss_lab::generate_lab_serial,
 };
 use x509_cert::{
     der::{
@@ -106,7 +107,7 @@ pub fn issue_rsa_pkcs1_root_lab(suite: AlgorithmSuite) -> Result<Certificate, Pk
     ];
     let tbs = TbsCertificate {
         version: Version::V3,
-        serial_number: SerialNumber::new(&[0x11])
+        serial_number: SerialNumber::new(&generate_lab_serial())
             .map_err(|_| Pkcs1LabIssueError::InvalidEncoding)?,
         signature: expected.clone(),
         issuer: name.clone(),
@@ -146,6 +147,21 @@ pub fn issue_rsa_pkcs1_root_lab(suite: AlgorithmSuite) -> Result<Certificate, Pk
 mod tests {
     use super::*;
     use trust_pki_crypto::crypto_agility::{Digest, KeyParameter};
+
+    #[test]
+    fn independently_generated_root_serials_are_not_fixed() {
+        let suite = AlgorithmSuite {
+            scheme: SignatureScheme::RsaPkcs1V15,
+            key: KeyParameter::Rsa2048,
+            digest: Digest::Sha256,
+        };
+        let first = issue_rsa_pkcs1_root_lab(suite).unwrap();
+        let second = issue_rsa_pkcs1_root_lab(suite).unwrap();
+        assert_ne!(
+            first.tbs_certificate.serial_number,
+            second.tbs_certificate.serial_number
+        );
+    }
 
     #[test]
     fn real_rsa_pkcs1_x509_root_and_no_scheme_downgrade() {
