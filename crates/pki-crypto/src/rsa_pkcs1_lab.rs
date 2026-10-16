@@ -119,6 +119,22 @@ impl EphemeralPkcs1LabKey {
     }
 }
 
+/// Return the observed RSA modulus class from a fully parsed SPKI.
+/// Never trust an unverified external key-size claim.
+pub fn observed_rsa_key_parameter(
+    spki_der: &[u8],
+) -> Result<KeyParameter, RsaPkcs1LabError> {
+    let public = RsaPublicKey::from_public_key_der(spki_der)
+        .map_err(|_| RsaPkcs1LabError::InvalidPublicKey)?;
+    match public.n().bits() {
+        2048 => Ok(KeyParameter::Rsa2048),
+        3072 => Ok(KeyParameter::Rsa3072),
+        4096 => Ok(KeyParameter::Rsa4096),
+        8192 => Ok(KeyParameter::Rsa8192),
+        _ => Err(RsaPkcs1LabError::KeySizeMismatch),
+    }
+}
+
 /// Verify mathematical signature using the actual issuer SubjectPublicKeyInfo.
 pub fn verify_pkcs1_spki_lab(
     suite: AlgorithmSuite,
@@ -147,6 +163,10 @@ mod tests {
             };
             let signature = sign_pkcs1_lab(suite, &private, b"to-be-signed").unwrap();
             let spki = public.to_public_key_der().unwrap();
+            assert_eq!(
+                observed_rsa_key_parameter(spki.as_bytes()),
+                Ok(KeyParameter::Rsa2048)
+            );
             assert_eq!(
                 verify_pkcs1_spki_lab(suite, spki.as_bytes(), b"to-be-signed", &signature),
                 Ok(())
