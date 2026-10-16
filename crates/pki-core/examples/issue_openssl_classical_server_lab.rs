@@ -4,8 +4,7 @@ use std::{env, fs};
 use trust_pki_core::{
     csr::verify_pkcs10_p256,
     openssl_classical_server_lab::issue_openssl_classical_server_chain_lab,
-    serial::SerialNumber as ReservedSerial,
-    x509_extensions::ApprovedPolicyBinding,
+    serial::SerialNumber as ReservedSerial, x509_extensions::ApprovedPolicyBinding,
 };
 use trust_pki_crypto::{
     crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme},
