@@ -70,12 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .authorize(&principal, &request, suite)
     .map_err(|_| "typed suite policy authorization denied")?;
     let (root, leaf) = issue_ephemeral_rsa_pss_server_chain_for_digest(
-        &verified,
-        &approved,
-        &binding,
-        &serial,
-        digest,
-        &grant,
+        &verified, &approved, &binding, &serial, digest, &grant,
     )
     .map_err(|_| "RSA-PSS typed lab chain failed")?;
     trust_pki_core::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature(
