@@ -295,7 +295,6 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     Ok((root, leaf))
 }
 
-
 /// Signs one disposable TLS server certificate with a typed RSA-PSS profile.
 /// The caller must supply the *trusted* profile-specific suite allowlist.
 /// A legacy SHA-256 authorization does NOT by itself authorize SHA-384/512.
@@ -350,10 +349,8 @@ pub fn issue_ephemeral_rsa_pss_server_chain_for_digest(
     preflight_typed_pss_algorithm(&leaf, digest)?;
     verify_certificate_reserved_serial(&der, reserved_serial)
         .map_err(|_| RsaPssLabIssueError::Encoding)?;
-    crate::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature(
-        &root, &leaf, suite,
-    )
-    .map_err(|_| RsaPssLabIssueError::Signature)?;
+    crate::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature(&root, &leaf, suite)
+        .map_err(|_| RsaPssLabIssueError::Signature)?;
     Ok((root, leaf))
 }
 
@@ -398,7 +395,9 @@ mod tests {
     }
     #[test]
     fn typed_server_chain_rejects_missing_or_wrong_suite_policy() {
-        use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
+        use trust_pki_policy::{
+            AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy,
+        };
         use x509_cert::{der::DecodePem, request::CertReq};
 
         let csr = CertReq::from_pem(include_str!("../tests/fixtures/ecdsa-p256-request.pem"))
@@ -430,12 +429,8 @@ mod tests {
                 },
             )
             .unwrap();
-        let cp = ApprovedPolicyBinding::new(
-            "1.3.6.1.4.1.55555.1.1",
-            "lab-cp-v1",
-            [9u8; 32],
-        )
-        .unwrap();
+        let cp =
+            ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32]).unwrap();
         let serial = ReservedSerial::from_positive_der_content(&[0x34, 0x56]).unwrap();
         let pss384 = AlgorithmSuite {
             scheme: SignatureScheme::RsaPss,
@@ -448,13 +443,23 @@ mod tests {
         };
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &approved, &cp, &serial, Digest::Sha384, &[],
+                &verified,
+                &approved,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &[],
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &approved, &cp, &serial, Digest::Sha384, &[pss512],
+                &verified,
+                &approved,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &[pss512],
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
@@ -464,7 +469,12 @@ mod tests {
         };
         assert!(matches!(
             issue_ephemeral_rsa_pss_server_chain_for_digest(
-                &verified, &approved, &cp, &serial, Digest::Sha384, &[wrong_key],
+                &verified,
+                &approved,
+                &cp,
+                &serial,
+                Digest::Sha384,
+                &[wrong_key],
             ),
             Err(RsaPssLabIssueError::UnauthorizedProfile)
         ));
