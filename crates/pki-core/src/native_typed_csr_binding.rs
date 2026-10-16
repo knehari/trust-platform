@@ -107,12 +107,9 @@ impl BoundNativeCsr {
             | KeyParameter::Rsa3072
             | KeyParameter::Rsa4096
             | KeyParameter::Rsa8192 => {
-                crate::csr::verify_pkcs10_rsa_pkcs1_lab(
-                    candidate_der,
-                    self.approved.common_name(),
-                )
-                .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?
-                .0
+                crate::csr::verify_pkcs10_rsa_pkcs1_lab(candidate_der, self.approved.common_name())
+                    .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?
+                    .0
             }
             _ => return Err(NativeCsrBindingError::UnsupportedSubjectKey),
         };
@@ -293,10 +290,7 @@ mod tests {
         .unwrap();
         let (rsa_csr, proof_suite) =
             crate::csr::verify_pkcs10_rsa_pkcs1_lab(&rsa_csr_der, "api.lab.invalid").unwrap();
-        assert_eq!(
-            proof_suite.key,
-            KeyParameter::Rsa2048
-        );
+        assert_eq!(proof_suite.key, KeyParameter::Rsa2048);
         let signer_suite = AlgorithmSuite {
             scheme: SignatureScheme::RsaPss,
             key: KeyParameter::Rsa3072,
@@ -332,12 +326,10 @@ mod tests {
         let bound = bind_native_csr(approved, &rsa_csr).unwrap();
         assert_eq!(bound.require_same_csr_der(&rsa_csr_der), Ok(()));
 
-        let p256_der = CertReq::from_pem(include_str!(
-            "../tests/fixtures/ecdsa-p256-request.pem"
-        ))
-        .unwrap()
-        .to_der()
-        .unwrap();
+        let p256_der = CertReq::from_pem(include_str!("../tests/fixtures/ecdsa-p256-request.pem"))
+            .unwrap()
+            .to_der()
+            .unwrap();
         assert_eq!(
             bound.require_same_csr_der(&p256_der),
             Err(NativeCsrBindingError::InvalidKeyParameters)
@@ -356,5 +348,4 @@ mod tests {
             Err(NativeCsrBindingError::InvalidKeyParameters)
         );
     }
-
 }
