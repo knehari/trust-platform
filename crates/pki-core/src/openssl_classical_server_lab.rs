@@ -13,8 +13,7 @@ use crate::{
 };
 use std::time::Duration;
 use trust_pki_crypto::{
-    crypto_agility::AlgorithmSuite,
-    openssl_classical_lab::verify_openssl_spki_lab,
+    crypto_agility::AlgorithmSuite, openssl_classical_lab::verify_openssl_spki_lab,
 };
 use trust_pki_policy::native_typed_policy::NativeTypedAuthorization;
 use x509_cert::{
@@ -96,7 +95,8 @@ pub fn issue_openssl_classical_server_chain_lab(
 ) -> Result<(Certificate, Certificate), ClassicalServerLabError> {
     bind_native_approval_to_verified_csr(approved, csr)
         .map_err(|_| ClassicalServerLabError::Unauthorized)?;
-    if approved.validity_days() == 0 || approved.validity_days() > 3
+    if approved.validity_days() == 0
+        || approved.validity_days() > 3
         || approved.dns_sans().is_empty()
     {
         return Err(ClassicalServerLabError::Unauthorized);
@@ -117,35 +117,41 @@ pub fn issue_openssl_classical_server_chain_lab(
         .collect::<Result<Vec<_>, _>>()?;
     let subject_key_id = x509_extensions::key_identifier(csr.subject_public_key())
         .map_err(|_| ClassicalServerLabError::Encoding)?;
-    let root_key_id = x509_extensions::key_identifier(&root.tbs_certificate.subject_public_key_info)
-        .map_err(|_| ClassicalServerLabError::Encoding)?;
+    let root_key_id =
+        x509_extensions::key_identifier(&root.tbs_certificate.subject_public_key_info)
+            .map_err(|_| ClassicalServerLabError::Encoding)?;
     let extensions = vec![
         extension(
             "2.5.29.19",
             true,
-            BasicConstraints { ca: false, path_len_constraint: None }
-                .to_der().map_err(|_| ClassicalServerLabError::Encoding)?,
+            BasicConstraints {
+                ca: false,
+                path_len_constraint: None,
+            }
+            .to_der()
+            .map_err(|_| ClassicalServerLabError::Encoding)?,
         )?,
         extension(
             "2.5.29.15",
             true,
             KeyUsage(KeyUsages::DigitalSignature.into())
-                .to_der().map_err(|_| ClassicalServerLabError::Encoding)?,
+                .to_der()
+                .map_err(|_| ClassicalServerLabError::Encoding)?,
         )?,
         extension(
             "2.5.29.37",
             false,
-            ExtendedKeyUsage(vec![
-                ObjectIdentifier::new("1.3.6.1.5.5.7.3.1")
-                    .map_err(|_| ClassicalServerLabError::Encoding)?
-            ])
-            .to_der().map_err(|_| ClassicalServerLabError::Encoding)?,
+            ExtendedKeyUsage(vec![ObjectIdentifier::new("1.3.6.1.5.5.7.3.1")
+                .map_err(|_| ClassicalServerLabError::Encoding)?])
+            .to_der()
+            .map_err(|_| ClassicalServerLabError::Encoding)?,
         )?,
         extension(
             "2.5.29.17",
             false,
             SubjectAltName(sans)
-                .to_der().map_err(|_| ClassicalServerLabError::Encoding)?,
+                .to_der()
+                .map_err(|_| ClassicalServerLabError::Encoding)?,
         )?,
         x509_extensions::subject_key_identifier(&subject_key_id)
             .map_err(|_| ClassicalServerLabError::Encoding)?,
@@ -170,10 +176,14 @@ pub fn issue_openssl_classical_server_chain_lab(
         subject_unique_id: None,
         extensions: Some(extensions),
     };
-    let tbs_bytes = tbs.to_der().map_err(|_| ClassicalServerLabError::Encoding)?;
-    let signature = signer.sign(suite, &tbs_bytes)
+    let tbs_bytes = tbs
+        .to_der()
+        .map_err(|_| ClassicalServerLabError::Encoding)?;
+    let signature = signer
+        .sign(suite, &tbs_bytes)
         .map_err(|_| ClassicalServerLabError::Signing)?;
-    signer.verify(suite, &tbs_bytes, &signature)
+    signer
+        .verify(suite, &tbs_bytes, &signature)
         .map_err(|_| ClassicalServerLabError::InvalidSignature)?;
     let leaf = Certificate {
         tbs_certificate: tbs,
@@ -181,7 +191,9 @@ pub fn issue_openssl_classical_server_chain_lab(
         signature: BitString::from_bytes(&signature)
             .map_err(|_| ClassicalServerLabError::Encoding)?,
     };
-    let der = leaf.to_der().map_err(|_| ClassicalServerLabError::Encoding)?;
+    let der = leaf
+        .to_der()
+        .map_err(|_| ClassicalServerLabError::Encoding)?;
     if Certificate::from_der(&der).map_err(|_| ClassicalServerLabError::Encoding)? != leaf {
         return Err(ClassicalServerLabError::Encoding);
     }
