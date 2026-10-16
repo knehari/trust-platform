@@ -9,6 +9,8 @@ use rsa::{traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
 pub enum LaboratoryKey {
     Rsa(Box<RsaPrivateKey>),
     EcdsaP256(p256::ecdsa::SigningKey),
+    #[cfg(unix)]
+    OpenSslClassical(Box<crate::openssl_classical_lab::OpenSslClassicalLabKey>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +41,18 @@ impl LaboratorySigner {
         }
     }
 
-    /// Observed from the actual in-memory laboratory key, never caller metadata.
+    #[cfg(unix)]
+    pub fn openssl_classical(
+        key_ref: KeyRef,
+        key: crate::openssl_classical_lab::OpenSslClassicalLabKey,
+    ) -> Self {
+        Self {
+            key_ref,
+            key: LaboratoryKey::OpenSslClassical(Box::new(key)),
+        }
+    }
+
+    /// Derived from the actual lab key or internally generated OpenSSL key.
     fn observed_key_parameter(&self) -> Option<KeyParameter> {
         match &self.key {
             LaboratoryKey::Rsa(private) => match RsaPublicKey::from(private.as_ref()).n().bits() {
@@ -50,6 +63,8 @@ impl LaboratorySigner {
                 _ => None,
             },
             LaboratoryKey::EcdsaP256(_) => Some(KeyParameter::P256),
+            #[cfg(unix)]
+            LaboratoryKey::OpenSslClassical(key) => Some(key.suite().key),
         }
     }
 
@@ -95,6 +110,10 @@ impl LaboratorySigner {
                 crate::ecdsa_p256_lab::sign_p256_lab(suite, key, message)
                     .map_err(|_| DispatchError::UnsupportedSuite)
             }
+            #[cfg(unix)]
+            (LaboratoryKey::OpenSslClassical(key), _) => key
+                .sign(suite, message)
+                .map_err(|_| DispatchError::UnsupportedSuite),
             _ => Err(DispatchError::UnsupportedSuite),
         }
     }
@@ -124,6 +143,10 @@ impl LaboratorySigner {
                 crate::ecdsa_p256_lab::verify_p256_lab(suite, public.as_bytes(), message, signature)
                     .map_err(|_| DispatchError::InvalidSignature)
             }
+            #[cfg(unix)]
+            (LaboratoryKey::OpenSslClassical(key), _) => key
+                .verify(suite, message, signature)
+                .map_err(|_| DispatchError::InvalidSignature),
             _ => Err(DispatchError::UnsupportedSuite),
         }
     }
@@ -205,4 +228,46 @@ mod tests {
             Err(DispatchError::UnsupportedSuite)
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn openssl_four_classical_suites_are_dispatchable_without_fallback() {
+        use crate::openssl_classical_lab::OpenSslClassicalLabKey;
+        use crate::crypto_agility::Digest;
+        for suite in [
+            AlgorithmSuite {
+                scheme: SignatureScheme::Ecdsa,
+                key: KeyParameter::P384,
+                digest: Digest::Sha384,
+            },
+            AlgorithmSuite {
+                scheme: SignatureScheme::Ecdsa,
+                key: KeyParameter::P521,
+                digest: Digest::Sha512,
+            },
+            AlgorithmSuite {
+                scheme: SignatureScheme::Ed25519,
+                key: KeyParameter::Ed25519,
+                digest: Digest::Intrinsic,
+            },
+            AlgorithmSuite {
+                scheme: SignatureScheme::Ed448,
+                key: KeyParameter::Ed448,
+                digest: Digest::Intrinsic,
+            },
+        ] {
+            let reference = KeyRef("openssl-lab".into());
+            let key = OpenSslClassicalLabKey::generate(suite).unwrap();
+            let signer = LaboratorySigner::openssl_classical(reference.clone(), key);
+            let signature = signer.sign(&reference, suite, &[suite], b"tbs").unwrap();
+            assert_eq!(
+                signer.verify(&reference, suite, &[suite], b"tbs", &signature),
+                Ok(())
+            );
+            assert_eq!(
+                signer.sign(&reference, RSA_PSS, &[suite, RSA_PSS], b"tbs"),
+                Err(DispatchError::UnsupportedSuite)
+            );
+        }
+    }
+
 }
