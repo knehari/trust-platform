@@ -230,10 +230,10 @@ impl OpenSslClassicalLabKey {
         match suite.digest {
             Digest::Sha384 | Digest::Sha512 => {
                 let digest = if suite.digest == Digest::Sha384 {
-                "-sha384"
-            } else {
-                "-sha512"
-            };
+                    "-sha384"
+                } else {
+                    "-sha512"
+                };
                 cmd.args(["dgst", digest, "-sign"])
                     .arg(&self.private)
                     .arg("-out")
