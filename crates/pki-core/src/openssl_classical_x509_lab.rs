@@ -44,12 +44,16 @@ fn verify_spki_algorithm(
         .ok_or(ClassicalX509LabError::InvalidSpki)?;
     let (expected_oid, expected_params, expected_len): (&str, Option<&[u8]>, usize) =
         match (suite.scheme, suite.key, suite.digest) {
-            (SignatureScheme::Ecdsa, KeyParameter::P384, Digest::Sha384) => {
-                ("1.2.840.10045.2.1", Some(&[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]), 97)
-            }
-            (SignatureScheme::Ecdsa, KeyParameter::P521, Digest::Sha512) => {
-                ("1.2.840.10045.2.1", Some(&[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23]), 133)
-            }
+            (SignatureScheme::Ecdsa, KeyParameter::P384, Digest::Sha384) => (
+                "1.2.840.10045.2.1",
+                Some(&[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]),
+                97,
+            ),
+            (SignatureScheme::Ecdsa, KeyParameter::P521, Digest::Sha512) => (
+                "1.2.840.10045.2.1",
+                Some(&[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23]),
+                133,
+            ),
             (SignatureScheme::Ed25519, KeyParameter::Ed25519, Digest::Intrinsic) => {
                 ("1.3.101.112", None, 32)
             }
@@ -74,12 +78,11 @@ fn verify_spki_algorithm(
     Ok(())
 }
 
-fn critical_extension<T: Encode>(
-    oid: &str,
-    value: &T,
-) -> Result<Extension, ClassicalX509LabError> {
+fn critical_extension<T: Encode>(oid: &str, value: &T) -> Result<Extension, ClassicalX509LabError> {
     let extn_id = ObjectIdentifier::new(oid).map_err(|_| ClassicalX509LabError::InvalidDer)?;
-    let bytes = value.to_der().map_err(|_| ClassicalX509LabError::InvalidDer)?;
+    let bytes = value
+        .to_der()
+        .map_err(|_| ClassicalX509LabError::InvalidDer)?;
     let extn_value = OctetString::new(bytes).map_err(|_| ClassicalX509LabError::InvalidDer)?;
     Ok(Extension {
         extn_id,
@@ -103,7 +106,9 @@ pub fn verify_openssl_classical_root_lab(
         .map_err(|_| ClassicalX509LabError::InvalidDer)?;
     let spki = &certificate.tbs_certificate.subject_public_key_info;
     verify_spki_algorithm(spki, suite)?;
-    let public = spki.to_der().map_err(|_| ClassicalX509LabError::InvalidDer)?;
+    let public = spki
+        .to_der()
+        .map_err(|_| ClassicalX509LabError::InvalidDer)?;
     let message = certificate
         .tbs_certificate
         .to_der()
@@ -145,8 +150,7 @@ pub fn issue_openssl_classical_root_lab(
     ];
     let tbs = TbsCertificate {
         version: Version::V3,
-        serial_number: SerialNumber::new(&[0x21])
-            .map_err(|_| ClassicalX509LabError::InvalidDer)?,
+        serial_number: SerialNumber::new(&[0x21]).map_err(|_| ClassicalX509LabError::InvalidDer)?,
         signature: identifier.clone(),
         issuer: subject.clone(),
         validity: Validity::from_now(Duration::from_secs(86_400))
@@ -157,7 +161,9 @@ pub fn issue_openssl_classical_root_lab(
         subject_unique_id: None,
         extensions: Some(extensions),
     };
-    let message = tbs.to_der().map_err(|_| ClassicalX509LabError::InvalidDer)?;
+    let message = tbs
+        .to_der()
+        .map_err(|_| ClassicalX509LabError::InvalidDer)?;
     let signature = key
         .sign(suite, &message)
         .map_err(|_| ClassicalX509LabError::InvalidSignature)?;
@@ -172,9 +178,7 @@ pub fn issue_openssl_classical_root_lab(
     let der = certificate
         .to_der()
         .map_err(|_| ClassicalX509LabError::InvalidDer)?;
-    if Certificate::from_der(&der).map_err(|_| ClassicalX509LabError::InvalidDer)?
-        != certificate
-    {
+    if Certificate::from_der(&der).map_err(|_| ClassicalX509LabError::InvalidDer)? != certificate {
         return Err(ClassicalX509LabError::InvalidDer);
     }
     verify_openssl_classical_root_lab(&certificate, suite)?;
