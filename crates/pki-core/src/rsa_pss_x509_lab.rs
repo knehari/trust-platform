@@ -10,7 +10,7 @@ use trust_pki_crypto::{
     rsa_pss_lab::{generate_lab_serial, EphemeralRsaPssLabSigner},
     KeyRef, SignatureAlgorithm, SigningProvider,
 };
-use trust_pki_policy::Authorization;
+use trust_pki_policy::{typed_suite_policy::TypedSuiteGrant, Authorization};
 use x509_cert::{
     der::{
         asn1::{BitString, Ia5String, ObjectIdentifier, OctetString},
@@ -296,25 +296,24 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
 }
 
 /// Signs one disposable TLS server certificate with a typed RSA-PSS profile.
-/// The caller must supply the *trusted* profile-specific suite allowlist.
+/// A grant minted by the policy layer must bind the exact suite, actor,
+/// profile, DNS identity and validity to the legacy authorization.
 /// A legacy SHA-256 authorization does NOT by itself authorize SHA-384/512.
-/// All CSR identity/SAN/validity checks are still enforced by the legacy
-/// approval; a separate suite check is mandatory until the native typed
-/// policy engine can issue a durable suite-bound Authorization.
+/// This remains lab-only until durable signed policy provenance is available.
 pub fn issue_ephemeral_rsa_pss_server_chain_for_digest(
     csr: &VerifiedCsr,
     approval: &Authorization,
     policy: &ApprovedPolicyBinding,
     reserved_serial: &ReservedSerial,
     digest: Digest,
-    trusted_allowed_suites: &[AlgorithmSuite],
+    typed_grant: &TypedSuiteGrant,
 ) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
     let suite = AlgorithmSuite {
         scheme: SignatureScheme::RsaPss,
         key: KeyParameter::Rsa3072,
         digest,
     };
-    if !trusted_allowed_suites.contains(&suite) {
+    if typed_grant.suite() != suite || !typed_grant.matches(approval) {
         return Err(RsaPssLabIssueError::UnauthorizedProfile);
     }
     let (root, signer) = create_root_and_signer_for_digest(digest)?;
