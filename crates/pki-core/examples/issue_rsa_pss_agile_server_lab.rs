@@ -9,7 +9,9 @@ use trust_pki_crypto::{
     rsa_pss_lab::generate_lab_serial,
     SignatureAlgorithm,
 };
-use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
+use trust_pki_policy::{
+    typed_suite_policy::TypedSuitePolicy, AuthenticatedPrincipal, IssuanceRequest, StaticPolicy,
+};
 use x509_cert::{
     der::{DecodePem, Encode},
     request::CertReq,
@@ -50,9 +52,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         validity_days: 1,
         ca_signature_algorithm: SignatureAlgorithm::RsaPssSha256,
     };
-    let approved = policy
-        .authorize(&principal, &request)
-        .map_err(|_| "lab authorization denied")?;
     let binding = ApprovedPolicyBinding::new("1.3.6.1.4.1.55555.1.1", "lab-cp-v1", [9u8; 32])
         .map_err(|_| "policy binding failed")?;
     // Local fixture only: production must retrieve this from PostgreSQL.
@@ -63,13 +62,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         key: KeyParameter::Rsa3072,
         digest,
     };
+    let (approved, grant) = TypedSuitePolicy {
+        legacy: &policy,
+        allowed_suites: &[suite],
+        x509_profile_approved: true,
+    }
+    .authorize(&principal, &request, suite)
+    .map_err(|_| "typed suite policy authorization denied")?;
     let (root, leaf) = issue_ephemeral_rsa_pss_server_chain_for_digest(
         &verified,
         &approved,
         &binding,
         &serial,
         digest,
-        &[suite],
+        &grant,
     )
     .map_err(|_| "RSA-PSS typed lab chain failed")?;
     trust_pki_core::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature(
