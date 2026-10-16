@@ -295,6 +295,68 @@ pub fn issue_ephemeral_rsa_pss_server_chain(
     Ok((root, leaf))
 }
 
+
+/// Signs one disposable TLS server certificate with a typed RSA-PSS profile.
+/// The caller must supply the *trusted* profile-specific suite allowlist.
+/// A legacy SHA-256 authorization does NOT by itself authorize SHA-384/512.
+/// All CSR identity/SAN/validity checks are still enforced by the legacy
+/// approval; a separate suite check is mandatory until the native typed
+/// policy engine can issue a durable suite-bound Authorization.
+pub fn issue_ephemeral_rsa_pss_server_chain_for_digest(
+    csr: &VerifiedCsr,
+    approval: &Authorization,
+    policy: &ApprovedPolicyBinding,
+    reserved_serial: &ReservedSerial,
+    digest: Digest,
+    trusted_allowed_suites: &[AlgorithmSuite],
+) -> Result<(Certificate, Certificate), RsaPssLabIssueError> {
+    let suite = AlgorithmSuite {
+        scheme: SignatureScheme::RsaPss,
+        key: KeyParameter::Rsa3072,
+        digest,
+    };
+    if !trusted_allowed_suites.contains(&suite) {
+        return Err(RsaPssLabIssueError::UnauthorizedProfile);
+    }
+    let (root, signer) = create_root_and_signer_for_digest(digest)?;
+    let tbs = prepare_rsa_pss_server_tbs(csr, approval, policy, reserved_serial, &root)?;
+    let expected = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
+        .map_err(|_| RsaPssLabIssueError::UnauthorizedProfile)?;
+    if tbs.signature != expected {
+        return Err(RsaPssLabIssueError::UnauthorizedProfile);
+    }
+    let message = tbs.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
+    let signature = signer
+        .sign_suite(signer.key_ref(), suite, &message)
+        .map_err(|_| RsaPssLabIssueError::Signature)?;
+    signer
+        .verify_suite(suite, &message, &signature)
+        .map_err(|_| RsaPssLabIssueError::Signature)?;
+    let leaf = Certificate {
+        tbs_certificate: tbs,
+        signature_algorithm: expected,
+        signature: BitString::from_bytes(&signature).map_err(|_| RsaPssLabIssueError::Encoding)?,
+    };
+    let der = leaf.to_der().map_err(|_| RsaPssLabIssueError::Encoding)?;
+    if Certificate::from_der(&der).map_err(|_| RsaPssLabIssueError::Encoding)? != leaf {
+        return Err(RsaPssLabIssueError::Encoding);
+    }
+    crate::rsa_pss_identifier::check_pss_identifiers_for_digest(
+        &leaf.tbs_certificate.signature,
+        &leaf.signature_algorithm,
+        digest,
+    )
+    .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    preflight_typed_pss_algorithm(&leaf, digest)?;
+    verify_certificate_reserved_serial(&der, reserved_serial)
+        .map_err(|_| RsaPssLabIssueError::Encoding)?;
+    crate::rsa_pss_issuer_verify_lab::verify_typed_rsa_pss_issuer_signature(
+        &root, &leaf, suite,
+    )
+    .map_err(|_| RsaPssLabIssueError::Signature)?;
+    Ok((root, leaf))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
