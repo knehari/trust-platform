@@ -2,6 +2,7 @@
 //! PKCS#1 v1.5 is never an implicit fallback from RSA-PSS.
 use crate::crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme};
 use rsa::{
+    pkcs8::{DecodePublicKey, EncodePublicKey},
     pkcs1v15::{Signature, SigningKey, VerifyingKey},
     signature::{SignatureEncoding, Signer, Verifier},
     traits::PublicKeyParts,
@@ -13,6 +14,8 @@ use sha2::{Sha256, Sha384, Sha512};
 pub enum RsaPkcs1LabError {
     UnsupportedSuite,
     KeySizeMismatch,
+    InvalidPublicKey,
+    KeyGenerationFailed,
     InvalidSignature,
 }
 
@@ -80,6 +83,55 @@ pub fn verify_pkcs1_lab(
     result.map_err(|_| RsaPkcs1LabError::InvalidSignature)
 }
 
+
+/// An ephemeral process-local RSA key. Never serializes private material.
+pub struct EphemeralPkcs1LabKey {
+    suite: AlgorithmSuite,
+    private: RsaPrivateKey,
+}
+
+impl EphemeralPkcs1LabKey {
+    pub fn generate(suite: AlgorithmSuite) -> Result<Self, RsaPkcs1LabError> {
+        let key_bits = bits(suite.key).ok_or(RsaPkcs1LabError::UnsupportedSuite)?;
+        validate(suite, key_bits)?;
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, key_bits)
+            .map_err(|_| RsaPkcs1LabError::KeyGenerationFailed)?;
+        Ok(Self { suite, private })
+    }
+
+    pub fn public_spki_der(&self) -> Result<Vec<u8>, RsaPkcs1LabError> {
+        RsaPublicKey::from(&self.private)
+            .to_public_key_der()
+            .map(|v| v.as_bytes().to_vec())
+            .map_err(|_| RsaPkcs1LabError::InvalidPublicKey)
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, RsaPkcs1LabError> {
+        sign_pkcs1_lab(self.suite, &self.private, message)
+    }
+
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), RsaPkcs1LabError> {
+        verify_pkcs1_lab(
+            self.suite,
+            &RsaPublicKey::from(&self.private),
+            message,
+            signature,
+        )
+    }
+}
+
+/// Verify mathematical signature using the actual issuer SubjectPublicKeyInfo.
+pub fn verify_pkcs1_spki_lab(
+    suite: AlgorithmSuite,
+    spki_der: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), RsaPkcs1LabError> {
+    let public = RsaPublicKey::from_public_key_der(spki_der)
+        .map_err(|_| RsaPkcs1LabError::InvalidPublicKey)?;
+    verify_pkcs1_lab(suite, &public, message, signature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,6 +147,11 @@ mod tests {
                 digest,
             };
             let signature = sign_pkcs1_lab(suite, &private, b"to-be-signed").unwrap();
+            let spki = public.to_public_key_der().unwrap();
+            assert_eq!(
+                verify_pkcs1_spki_lab(suite, spki.as_bytes(), b"to-be-signed", &signature),
+                Ok(())
+            );
             assert_eq!(
                 verify_pkcs1_lab(suite, &public, b"to-be-signed", &signature),
                 Ok(())
