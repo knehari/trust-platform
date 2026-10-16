@@ -31,21 +31,48 @@ pub fn bind_native_approval_to_verified_csr(
     if csr.subject() != &expected {
         return Err(NativeCsrBindingError::SubjectMismatch);
     }
-    if approved.subject_key() != KeyParameter::P256 {
-        return Err(NativeCsrBindingError::UnsupportedSubjectKey);
-    }
     let spki = csr.subject_public_key();
-    if spki.algorithm.oid.to_string() != P256_EC_PUBLIC_KEY_OID
-        || spki
-            .algorithm
-            .parameters
-            .as_ref()
-            .and_then(|p| p.to_der().ok())
-            != Some(P256_NAMED_CURVE_DER.to_vec())
-    {
-        return Err(NativeCsrBindingError::InvalidKeyParameters);
+    match approved.subject_key() {
+        KeyParameter::P256 => {
+            if spki.algorithm.oid.to_string() != P256_EC_PUBLIC_KEY_OID
+                || spki
+                    .algorithm
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| p.to_der().ok())
+                    != Some(P256_NAMED_CURVE_DER.to_vec())
+            {
+                return Err(NativeCsrBindingError::InvalidKeyParameters);
+            }
+            Ok(())
+        }
+        #[cfg(feature = "lab-software")]
+        expected @ (KeyParameter::Rsa2048
+        | KeyParameter::Rsa3072
+        | KeyParameter::Rsa4096
+        | KeyParameter::Rsa8192) => {
+            if spki.algorithm.oid.to_string() != "1.2.840.113549.1.1.1"
+                || spki
+                    .algorithm
+                    .parameters
+                    .as_ref()
+                    .and_then(|p| p.to_der().ok())
+                    != Some(vec![0x05, 0x00])
+            {
+                return Err(NativeCsrBindingError::InvalidKeyParameters);
+            }
+            let der = spki
+                .to_der()
+                .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?;
+            let observed = trust_pki_crypto::rsa_pkcs1_lab::observed_rsa_key_parameter(&der)
+                .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?;
+            if observed != expected {
+                return Err(NativeCsrBindingError::InvalidKeyParameters);
+            }
+            Ok(())
+        }
+        _ => Err(NativeCsrBindingError::UnsupportedSubjectKey),
     }
-    Ok(())
 }
 
 /// An immutable binding of an authorized issuance to the exact validated CSR.
@@ -70,8 +97,25 @@ impl BoundNativeCsr {
     /// A matching caller-supplied VerifiedCsr alone is insufficient when the
     /// raw CSR could have changed between approval and signing.
     pub fn require_same_csr_der(&self, candidate_der: &[u8]) -> Result<(), NativeCsrBindingError> {
-        let verified = crate::csr::verify_pkcs10_p256(candidate_der, self.approved.common_name())
-            .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?;
+        let verified = match self.approved.subject_key() {
+            KeyParameter::P256 => {
+                crate::csr::verify_pkcs10_p256(candidate_der, self.approved.common_name())
+                    .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?
+            }
+            #[cfg(feature = "lab-software")]
+            KeyParameter::Rsa2048
+            | KeyParameter::Rsa3072
+            | KeyParameter::Rsa4096
+            | KeyParameter::Rsa8192 => {
+                crate::csr::verify_pkcs10_rsa_pkcs1_lab(
+                    candidate_der,
+                    self.approved.common_name(),
+                )
+                .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?
+                .0
+            }
+            _ => return Err(NativeCsrBindingError::UnsupportedSubjectKey),
+        };
         self.require_same_csr(&verified)
     }
 
