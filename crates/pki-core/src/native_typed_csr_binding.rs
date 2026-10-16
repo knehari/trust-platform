@@ -66,6 +66,15 @@ impl BoundNativeCsr {
         &self.csr_sha256
     }
 
+    /// Reparse and reverify the exact untrusted PKCS#10 DER before issuing.
+    /// A matching caller-supplied VerifiedCsr alone is insufficient when the
+    /// raw CSR could have changed between approval and signing.
+    pub fn require_same_csr_der(&self, candidate_der: &[u8]) -> Result<(), NativeCsrBindingError> {
+        let verified = crate::csr::verify_pkcs10_p256(candidate_der, self.approved.common_name())
+            .map_err(|_| NativeCsrBindingError::InvalidKeyParameters)?;
+        self.require_same_csr(&verified)
+    }
+
     /// Prevent an issuance flow from substituting a second validated CSR
     /// after its authorization was bound to the original request.
     pub fn require_same_csr(&self, candidate: &VerifiedCsr) -> Result<(), NativeCsrBindingError> {
@@ -150,6 +159,20 @@ mod tests {
         assert_eq!(bound.csr_sha256(), csr.fingerprint_sha256());
         assert_eq!(bound.authorized_suite(), suite);
         assert_eq!(bound.require_same_csr(&csr), Ok(()));
+        assert_eq!(bound.require_same_csr_der(&csr_der), Ok(()));
+        let mut changed_der = csr_der.clone();
+        let last = changed_der.len() - 1;
+        changed_der[last] ^= 0x01;
+        assert_eq!(
+            bound.require_same_csr_der(&changed_der),
+            Err(NativeCsrBindingError::InvalidKeyParameters)
+        );
+        let mut trailing_der = csr_der.clone();
+        trailing_der.push(0);
+        assert_eq!(
+            bound.require_same_csr_der(&trailing_der),
+            Err(NativeCsrBindingError::InvalidKeyParameters)
+        );
 
         let other = ["other.lab.invalid"];
         let wrong_cn = p
