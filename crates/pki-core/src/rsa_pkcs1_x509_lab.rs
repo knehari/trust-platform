@@ -173,6 +173,23 @@ mod tests {
             };
             let root = issue_rsa_pkcs1_root_lab(suite).unwrap();
             assert_eq!(verify_pkcs1_x509_root_lab(&root, suite), Ok(()));
+            // A matching signature OID is insufficient: the RSA modulus must
+            // match the exact key parameter selected by trusted policy.
+            let forged_key_size = AlgorithmSuite {
+                key: KeyParameter::Rsa3072,
+                ..suite
+            };
+            assert_eq!(
+                verify_pkcs1_x509_root_lab(&root, forged_key_size),
+                Err(Pkcs1LabIssueError::SignatureInvalid)
+            );
+            let mut forged_spki = root.clone();
+            forged_spki.tbs_certificate.subject_public_key_info.algorithm.oid =
+                ObjectIdentifier::new("1.2.840.10045.2.1").unwrap();
+            assert_eq!(
+                verify_pkcs1_x509_root_lab(&forged_spki, suite),
+                Err(Pkcs1LabIssueError::SignatureInvalid)
+            );
             let mut tampered = root.clone();
             let mut signature = tampered.signature.as_bytes().unwrap().to_vec();
             signature[0] ^= 0x01;
