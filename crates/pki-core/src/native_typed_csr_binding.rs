@@ -173,6 +173,28 @@ mod tests {
             bound.require_same_csr_der(&trailing_der),
             Err(NativeCsrBindingError::InvalidKeyParameters)
         );
+        // Both requests have the same CN and independently valid P-256 proof
+        // of possession. The second still MUST NOT replace the approved CSR.
+        let secondary_der = CertReq::from_pem(include_str!(
+            "../tests/fixtures/ecdsa-p256-same-subject-secondary.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let secondary = verify_pkcs10_p256(&secondary_der, "api.lab.invalid").unwrap();
+        assert_ne!(secondary.fingerprint_sha256(), csr.fingerprint_sha256());
+        assert_eq!(
+            bind_native_approval_to_verified_csr(&approved, &secondary),
+            Ok(())
+        );
+        assert_eq!(
+            bound.require_same_csr(&secondary),
+            Err(NativeCsrBindingError::SubjectMismatch)
+        );
+        assert_eq!(
+            bound.require_same_csr_der(&secondary_der),
+            Err(NativeCsrBindingError::SubjectMismatch)
+        );
 
         let other = ["other.lab.invalid"];
         let wrong_cn = p
