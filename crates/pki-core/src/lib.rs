@@ -27,9 +27,9 @@ pub mod lab_ca;
 pub mod lab_x509_verifier;
 pub mod native_typed_csr_binding;
 #[cfg(all(feature = "lab-software", unix))]
-pub mod openssl_classical_x509_lab;
-#[cfg(all(feature = "lab-software", unix))]
 pub mod openssl_classical_server_lab;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_x509_lab;
 pub mod orchestrator;
 pub mod platform_readiness;
 pub mod policy_decisions;
