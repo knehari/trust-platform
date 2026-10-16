@@ -73,13 +73,16 @@ jobs:
           done
       - name: Native RSA PKCS1 SHA256/384/512 roots independently verified by OpenSSL (lab only)
         run: |
-          for digest in sha256 sha384 sha512; do
-            der="$RUNNER_TEMP/pkcs1-$digest.der"
-            pem="$RUNNER_TEMP/pkcs1-$digest.pem"
-            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pkcs1_root_lab -- "$digest" "$der"
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/pkcs1-$digest-$bits.der"
+            pem="$RUNNER_TEMP/pkcs1-$digest-$bits.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pkcs1_root_lab -- "$digest" "$bits" "$der"
             openssl x509 -inform DER -in "$der" -out "$pem"
             openssl verify -CAfile "$pem" -check_ss_sig "$pem"
             openssl x509 -in "$pem" -noout -text | grep -q "Signature Algorithm: sha.*WithRSAEncryption"
+            openssl x509 -in "$pem" -pubkey -noout | openssl pkey -pubin -text -noout | grep -q "($bits bit)"
           done
       - name: Native RSA-PSS server chain verified by OpenSSL (lab only)
         run: |
