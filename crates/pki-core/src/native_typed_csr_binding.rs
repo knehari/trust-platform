@@ -281,4 +281,80 @@ mod tests {
             Err(NativeCsrBindingError::UnsupportedSubjectKey)
         );
     }
+
+    #[cfg(feature = "lab-software")]
+    #[test]
+    fn rsa_subject_csr_requires_matching_native_policy_and_exact_bytes() {
+        let rsa_csr_der = CertReq::from_pem(include_str!(
+            "../tests/fixtures/rsa-unsupported-request.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let (rsa_csr, proof_suite) =
+            crate::csr::verify_pkcs10_rsa_pkcs1_lab(&rsa_csr_der, "api.lab.invalid").unwrap();
+        assert_eq!(
+            proof_suite.key,
+            KeyParameter::Rsa2048
+        );
+        let signer_suite = AlgorithmSuite {
+            scheme: SignatureScheme::RsaPss,
+            key: KeyParameter::Rsa3072,
+            digest: Digest::Sha384,
+        };
+        let p = NativeTypedPolicy {
+            profile_id: "lab-server".into(),
+            policy_version: "v2".into(),
+            allowed_actors: vec!["lab-requester".into()],
+            allowed_dns_zones: vec!["lab.invalid".into()],
+            allowed_issuer_suites: vec![signer_suite],
+            allowed_subject_keys: vec![KeyParameter::Rsa2048, KeyParameter::P256],
+            max_validity_days: 3,
+            max_dns_sans: 3,
+        };
+        let principal = AuthenticatedPrincipal {
+            subject_id: "lab-requester",
+        };
+        let names = ["api.lab.invalid"];
+        let request = NativeTypedIssuanceRequest {
+            profile_id: "lab-server",
+            subject_common_name: "api.lab.invalid",
+            dns_sans: &names,
+            validity_days: 1,
+            issuer_suite: signer_suite,
+            subject_key: KeyParameter::Rsa2048,
+        };
+        let approved = p.authorize(&principal, &request).unwrap();
+        assert_eq!(
+            bind_native_approval_to_verified_csr(&approved, &rsa_csr),
+            Ok(())
+        );
+        let bound = bind_native_csr(approved, &rsa_csr).unwrap();
+        assert_eq!(bound.require_same_csr_der(&rsa_csr_der), Ok(()));
+
+        let p256_der = CertReq::from_pem(include_str!(
+            "../tests/fixtures/ecdsa-p256-request.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        assert_eq!(
+            bound.require_same_csr_der(&p256_der),
+            Err(NativeCsrBindingError::InvalidKeyParameters)
+        );
+        let wrong_key_approval = p
+            .authorize(
+                &principal,
+                &NativeTypedIssuanceRequest {
+                    subject_key: KeyParameter::P256,
+                    ..request
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            bind_native_approval_to_verified_csr(&wrong_key_approval, &rsa_csr),
+            Err(NativeCsrBindingError::InvalidKeyParameters)
+        );
+    }
+
 }
