@@ -61,6 +61,11 @@ fn context() -> (
 #[test]
 fn real_x509_certificate_is_verified_then_persisted_once() {
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
         return;
     };
     let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
@@ -422,6 +427,11 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
     }
 
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
         return;
     };
     let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -598,6 +608,11 @@ fn pinned_ca_and_draft_cps_are_traced_to_real_issued_x509_without_approval() {
     };
 
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
         return;
     };
     let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
