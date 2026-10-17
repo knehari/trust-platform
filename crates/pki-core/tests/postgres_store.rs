@@ -10,11 +10,11 @@ fn persists_request_serial_and_signing_intent_without_resigning() {
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
         // No database is available in ordinary unit-test mode.
         assert_ne!(
-        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
-        Ok("1"),
-        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
-    );
-    return;
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
     };
     let mut db = PgIssuanceStore::connect_lab(&url).expect("CI database connection");
     let ca = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -142,11 +142,11 @@ fn persisted_orchestration_is_fail_closed_after_signer_timeout() {
 
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
         assert_ne!(
-        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
-        Ok("1"),
-        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
-    );
-    return;
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
     };
     let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
     let ca = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -218,11 +218,11 @@ fn review_workflow_requires_two_actors_and_never_resumes_signing() {
 
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
         assert_ne!(
-        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
-        Ok("1"),
-        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
-    );
-    return;
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
     };
     let mut store = PgIssuanceStore::connect_lab(&url).unwrap();
     let ca = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
