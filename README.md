@@ -44,6 +44,7 @@ See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads
 - [Management control-plane decision](docs/adr/ADR-0005-rust-management-control-plane.md)
 - [Read-only management API and OpenAPI contract](docs/architecture/management-api-readonly.md)
 - [React management console laboratory setup](frontend/README.md)
+- [Disposable Docker Compose laboratory stack](docs/development/lab-compose.md)
 - [Security gates](docs/testing/acceptance-gates.md)
 - [Engineering instructions](AGENTS.md)
 
