@@ -103,6 +103,14 @@ jobs:
             openssl req -new -newkey "rsa:$bits" -nodes -keyout "$key" -out "$der" -outform DER "-$digest" -subj "/CN=api.lab.invalid"
             openssl req -in "$der" -inform DER -noout -verify
             cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "$bits"
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "8192"; then
+              echo "Accepted a forged RSA modulus size"
+              exit 1
+            fi
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" sha999 "$bits"; then
+              echo "Accepted an unsupported digest"
+              exit 1
+            fi
           done
       - name: Native RSA-PSS SHA384/512 server chains verified by OpenSSL (lab only)
         run: |
