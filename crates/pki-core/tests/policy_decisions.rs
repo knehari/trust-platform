@@ -220,7 +220,12 @@ fn verified_dual_signature_receipt_roundtrips_and_replay_fails_in_postgres() {
     use trust_pki_policy::StaticPolicy;
     use x509_cert::der::Encode;
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
-        return;
+        assert_ne!(
+        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+        Ok("1"),
+        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+    );
+    return;
     };
     let ca_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut raw = postgres::Client::connect(&url, postgres::NoTls).unwrap();
