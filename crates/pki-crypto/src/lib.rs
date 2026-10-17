@@ -24,6 +24,7 @@ pub mod rsa_pss_agile_lab;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_lab;
 pub mod rsa_pss_profile;
+pub mod suite_registry;
 pub mod typed_algorithm_catalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

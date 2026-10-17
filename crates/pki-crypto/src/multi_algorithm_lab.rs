@@ -68,6 +68,39 @@ impl LaboratorySigner {
         }
     }
 
+    /// Suites derived from this concrete key and the shared implementation route.
+    /// Policy, CSR/profile conformance and production qualification remain separate.
+    pub fn supported_suites(&self) -> Vec<AlgorithmSuite> {
+        crate::typed_algorithm_catalog::planned_classical_suites()
+            .into_iter()
+            .map(|record| record.suite)
+            .filter(|suite| self.supports_suite(*suite))
+            .collect()
+    }
+
+    fn supports_suite(&self, suite: AlgorithmSuite) -> bool {
+        use crate::suite_registry::{compiled_backend, LaboratoryBackend};
+        if self.observed_key_parameter() != Some(suite.key) {
+            return false;
+        }
+        match (&self.key, compiled_backend(suite)) {
+            (LaboratoryKey::Rsa(_), Some(LaboratoryBackend::RustCrypto)) => {
+                matches!(
+                    suite.scheme,
+                    SignatureScheme::RsaPss | SignatureScheme::RsaPkcs1V15
+                )
+            }
+            (LaboratoryKey::EcdsaP256(_), Some(LaboratoryBackend::RustCrypto)) => {
+                suite.scheme == SignatureScheme::Ecdsa
+            }
+            #[cfg(unix)]
+            (LaboratoryKey::OpenSslClassical(key), Some(LaboratoryBackend::OpenSsl3)) => {
+                suite == key.suite()
+            }
+            _ => false,
+        }
+    }
+
     fn authorize(
         &self,
         key_ref: &KeyRef,
@@ -81,6 +114,9 @@ impl LaboratorySigner {
             return Err(DispatchError::ForbiddenByPolicy);
         }
         validate_suite(suite).map_err(|_e: CryptoAgilityError| DispatchError::UnsupportedSuite)?;
+        if !self.supports_suite(suite) {
+            return Err(DispatchError::UnsupportedSuite);
+        }
         let measured = self
             .observed_key_parameter()
             .ok_or(DispatchError::UnsupportedSuite)?;
@@ -178,7 +214,12 @@ mod tests {
         let key_ref = KeyRef("rsa-lab".into());
         let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
         let signer = LaboratorySigner::rsa(key_ref.clone(), private);
-        let allowed = &[RSA_PSS, RSA_PKCS1];
+        let measured = signer.supported_suites();
+        assert_eq!(measured.len(), 6);
+        assert!(measured
+            .iter()
+            .all(|suite| suite.key == KeyParameter::Rsa2048));
+        let allowed = measured.as_slice();
         for suite in allowed {
             let signature = signer.sign(&key_ref, *suite, allowed, b"tbs").unwrap();
             assert_eq!(
@@ -214,6 +255,7 @@ mod tests {
         let key_ref = KeyRef("p256-lab".into());
         let key = p256::ecdsa::SigningKey::from_bytes((&[7_u8; 32]).into()).unwrap();
         let signer = LaboratorySigner::ecdsa_p256(key_ref.clone(), key);
+        assert_eq!(signer.supported_suites(), vec![ECDSA]);
         let signature = signer.sign(&key_ref, ECDSA, &[ECDSA], b"tbs").unwrap();
         assert_eq!(
             signer.verify(&key_ref, ECDSA, &[ECDSA], b"tbs", &signature),
@@ -258,6 +300,7 @@ mod tests {
             let reference = KeyRef("openssl-lab".into());
             let key = OpenSslClassicalLabKey::generate(suite).unwrap();
             let signer = LaboratorySigner::openssl_classical(reference.clone(), key);
+            assert_eq!(signer.supported_suites(), vec![suite]);
             let signature = signer.sign(&reference, suite, &[suite], b"tbs").unwrap();
             assert_eq!(
                 signer.verify(&reference, suite, &[suite], b"tbs", &signature),
