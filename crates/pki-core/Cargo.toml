@@ -16,3 +16,43 @@ trust-pki-crypto = { path = "../pki-crypto" }
 x509-cert = { version = "=0.2.5", features = ["pem"] }
 sha2 = "=0.10.9"
 postgres = { version = "=0.19.12", optional = true }
+
+[[example]]
+name = "crash_recovery_lab"
+required-features = ["lab-software", "postgres-store"]
+
+[[example]]
+name = "issue_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_openssl_classical_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_openssl_classical_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pkcs1_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_agile_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_root_agile_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "verify_rsa_pkcs1_csr_lab"
+required-features = ["lab-software"]
