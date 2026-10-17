@@ -1,4 +1,4 @@
-> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50. A React laboratory console now exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM or policy-controlled HTTP issuance is delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
+> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. A follow-up capacity fix bounds management database requests after a focused security diff scan. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM or policy-controlled HTTP issuance is delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
 
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
@@ -16,7 +16,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is documentation/baseline, not a shipped CA.** Implementation is spread across sequential, stacked draft PRs #1–#24, with explicit no-merge restrictions. The version history below records **development milestones**, not GitHub releases.
+- **`main` is documentation/baseline, not a shipped CA.** Implementation is spread across sequential, stacked draft PRs #1–#41 and recovery Draft PRs, with explicit no-merge restrictions. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
