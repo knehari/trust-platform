@@ -1,0 +1,82 @@
+name: trust-lab
+
+services:
+  db:
+    image: postgres:16.15-bookworm
+    environment:
+      POSTGRES_USER: trust_lab
+      POSTGRES_DB: trust_lab
+      POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
+    volumes:
+      - trust_lab_pg:/var/lib/postgresql/data
+      - ./migrations:/lab/migrations:ro
+      - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_lab -d trust_lab"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [lab]
+
+  issuer:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    command: ["node", "dev/oidc-fixture.mjs"]
+    environment:
+      TRUST_OIDC_LISTEN: 0.0.0.0
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081" # API shares this network namespace for exact loopback OIDC issuer URL.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/.well-known/openid-configuration').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [lab]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    network_mode: service:issuer
+    depends_on:
+      db: {condition: service_healthy}
+      issuer: {condition: service_healthy}
+    environment:
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8080
+      TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_API_BIND: 0.0.0.0:8081
+      TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      TRUST_API_DEV_TARGET: http://issuer:8081
+      VITE_OIDC_ISSUER: http://127.0.0.1:8080
+      VITE_OIDC_CLIENT_ID: trust-console
+    ports:
+      - "127.0.0.1:5173:5173"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [lab]
+
+volumes:
+  trust_lab_pg:
+
+networks:
+  lab:
+

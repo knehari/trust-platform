@@ -1,0 +1,40 @@
+name: laboratory-compose
+
+on:
+  pull_request:
+    paths:
+      - compose.lab.yaml
+      - Dockerfile.api
+      - frontend/**
+      - scripts/lab/**
+      - migrations/**
+      - crates/management-api/**
+      - Cargo.lock
+      - Cargo.toml
+      - .github/workflows/lab-compose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Generate disposable credentials and validate Compose
+        run: |
+          scripts/lab/init-env.sh
+          docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
+      - name: Build and start laboratory services
+        run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 180
+      - name: Exercise code/PKCE and scoped database reads
+        run: node frontend/dev/compose-smoke.mjs
+      - name: Show bounded service logs on failure
+        if: failure()
+        run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
+      - name: Remove disposable stack and volume
+        if: always()
+        run: docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
+

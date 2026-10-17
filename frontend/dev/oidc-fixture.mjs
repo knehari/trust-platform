@@ -85,6 +85,6 @@ createServer(async (request, response) => {
     response.writeHead(302, { location: next, 'cache-control': 'no-store' }); response.end(); return;
   }
   json(response, 404, { error: 'not_found' });
-}).listen(8080, '127.0.0.1', () => {
+}).listen(8080, process.env.TRUST_OIDC_LISTEN ?? '127.0.0.1', () => {
   process.stdout.write(`Disposable OIDC fixture listening on ${origin}\n`);
 });
