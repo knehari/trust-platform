@@ -37,7 +37,13 @@ mod tests {
             max_pending: 5,
         };
         assert_eq!(
-            admit(l, CapacitySnapshot { in_flight: 0, pending: 0 }),
+            admit(
+                l,
+                CapacitySnapshot {
+                    in_flight: 0,
+                    pending: 0
+                }
+            ),
             Ok(())
         );
         assert!(admit(
