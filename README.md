@@ -11,7 +11,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 - Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`, plus a read-only laboratory management API.
 - CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
 - P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
-- PostgreSQL migrations 0001–0012 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, draft governance and read-only API views; disposable CI tests.
+- PostgreSQL migrations 0001–0013 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, draft governance, read-only API views and server-owned reader grants; disposable CI tests.
 - Executable authenticated Rust management API for scoped CA, certificate and audit metadata reads; see its [scope and setup](docs/architecture/management-api-readonly.md).
 - Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
 - CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.

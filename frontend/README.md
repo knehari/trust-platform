@@ -6,9 +6,9 @@ React/TypeScript console for the read-only [management API](../docs/architecture
 
 ## Disposable browser-to-database smoke test
 
-This repository includes `npm run test-issuer`, a **loopback-only OIDC fixture**. It auto-approves a single ephemeral `lab-operator` and signs access tokens with a freshly generated key. It performs no human authentication and must never be used for deployment or real users. It intentionally binds only `127.0.0.1:8080` and grants only the fixed laboratory CA UUID `eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee`.
+This repository includes `npm run test-issuer`, a **loopback-only OIDC fixture**. It auto-approves a single ephemeral `lab-operator` and signs access tokens with a freshly generated key. It performs no human authentication and must never be used for deployment or real users. It intentionally binds only `127.0.0.1:8080` and puts only the fixed laboratory CA UUID `eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee` in the signed scope. The API also requires a separate server-owned database grant for that CA.
 
-In a disposable PostgreSQL 16 database, apply migrations `0001`–`0012`, insert that CA and another CA, create a separate login with `trust_api_reader`, and verify `tests/management_api_readonly.sql`. Then start three processes in this order:
+In a disposable PostgreSQL 16 database, apply migrations `0001`–`0013`, insert that CA and another CA, and as database owner insert `management_reader_grant('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')`. Create a separate login with `trust_api_reader` and verify `tests/management_api_readonly.sql`. The [Compose runbook](../docs/development/lab-compose.md) automates this disposable seed. Then start three processes in this order:
 
 1. `cd frontend && npm ci && npm run test-issuer`
 2. From the repository root, set `TRUST_DATABASE_URL` to the restricted login, `TRUST_OIDC_ISSUER=http://127.0.0.1:8080`, `TRUST_OIDC_AUDIENCE=trust-api`, then run `cargo run -p trust-management-api --locked`.
