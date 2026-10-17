@@ -40,6 +40,7 @@ See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads
 - [R1 integration notes](docs/recovery/R1_CONSOLIDATION_NOTES.md)
 - [Roadmap (historical statuses explicitly noted)](ROADMAP.md)
 - [Crypto-agility requirements](docs/architecture/crypto-agility-by-design.md)
+- [Management control-plane decision](docs/adr/ADR-0005-rust-management-control-plane.md)
 - [Security gates](docs/testing/acceptance-gates.md)
 - [Engineering instructions](AGENTS.md)
 

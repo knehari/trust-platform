@@ -16,7 +16,7 @@ The control plane authenticates clients independently from the CSR. CA Core rece
 
 ## Remaining work
 
-AuthenticatedPrincipal in Sprint 0 is an API contract, not proof that a trusted auth layer exists. The future Go API must instantiate principals **only after** authenticating the request; the CA service must enforce that trust boundary. CSR signature and proof of possession are not implemented.
+AuthenticatedPrincipal in Sprint 0 is an API contract, not proof that a trusted auth layer exists. The management API selected in [ADR-0005](ADR-0005-rust-management-control-plane.md) must instantiate principals **only after** authenticating the request; the CA service must enforce that trust boundary. CSR signature and proof-of-possession support is path-specific and must be demonstrated for each enabled suite/profile, not inferred from this contract.
 
 ## Verification
 
