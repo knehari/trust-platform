@@ -103,7 +103,29 @@ def race(dual, isolation, reverse=False, direct=False, vulnerable=False):
         second.execute('COMMIT' if result == 'accepted' else 'ROLLBACK')
         count = scalar(observer, 'SELECT count(*) FROM signing_intent WHERE ca_id=%s', (ca,))
         assert count == (1 if reverse or vulnerable else 0), count
+        gate_table = 'ca_dual_signature_enforcement' if dual else 'ca_policy_enforcement'
+        gates = scalar(observer, f'SELECT count(*) FROM {gate_table} WHERE ca_id=%s', (ca,))
+        assert gates == (0 if reverse else 1), gates
         print(f'PASS: dual={dual} isolation={isolation} intent_first={reverse} direct={direct} result={result}', flush=True)
+
+
+def independent_issuers_and_rollback():
+    with connect() as observer, connect() as first, connect() as second:
+        ca1, req1 = fixture(observer, False)
+        ca2, req2 = fixture(observer, False)
+        first.execute('BEGIN')
+        activate(first, ca1, False)
+        # Must complete while the unrelated issuer's activation remains open.
+        second.execute("SET statement_timeout='2000ms'")
+        intent(second, ca2, req2)
+        first.execute('ROLLBACK')
+        intent(second, ca1, req1)
+        replay = scalar(second, "SELECT replay FROM create_signing_intent(%s,%s,'app','lab-key',%s,'v1',%s)", (ca1, req1, bytes([4])*32, str(req1)))
+        assert replay is True
+        second.execute("SELECT mark_signing_uncertain(%s,%s,'recovery')", (ca1, req1))
+        state = scalar(second, 'SELECT outcome FROM signing_intent WHERE ca_id=%s AND request_id=%s', (ca1, req1))
+        assert state == 'RECONCILIATION_REQUIRED'
+        print('PASS: independent issuers, rollback, replay and uncertainty quarantine', flush=True)
 
 
 if __name__ == '__main__':
@@ -120,3 +142,5 @@ if __name__ == '__main__':
                 for reverse in (False, True):
                     for direct in (False, True):
                         race(dual, isolation, reverse, direct)
+
+        independent_issuers_and_rollback()
