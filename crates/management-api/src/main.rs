@@ -9,12 +9,16 @@ use axum::{
 };
 use postgres::{Client, NoTls};
 use serde::Serialize;
-use std::env;
+use std::{env, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
+
+const MAX_DATABASE_REQUESTS: usize = 8;
 
 #[derive(Clone)]
 struct AppState {
     verifier: OidcVerifier,
     database_url: String,
+    database_slots: Arc<Semaphore>,
 }
 
 #[derive(Serialize)]
@@ -51,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
     let database_url = env::var("TRUST_DATABASE_URL")?;
     let verifier = OidcVerifier::discover(&issuer, &audience).await?;
-    let safe_db_role = query_db(database_url.clone(), |db| {
+    let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
+    let safe_db_role = query_db(database_url.clone(), database_slots.clone(), |db| {
         db.query_one(
             "SELECT pg_has_role(current_user,'trust_api_reader','member') \
              AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname=current_user \
@@ -71,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = router(AppState {
         verifier,
         database_url,
+        database_slots,
     });
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -121,10 +127,22 @@ fn scoped_ca_id(raw: &str, claims: &Claims) -> Result<String, StatusCode> {
 
 async fn query_db<T: Send + 'static>(
     url: String,
+    slots: Arc<Semaphore>,
     query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
 ) -> Result<T, StatusCode> {
+    // Acquire before scheduling blocking work, and keep the permit until the
+    // PostgreSQL connection (including a slow connect or query) is dropped.
+    let permit = slots
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     tokio::task::spawn_blocking(move || {
-        let mut db = Client::connect(&url, NoTls).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let _permit = permit;
+        let mut config: postgres::Config =
+            url.parse().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        config.connect_timeout(Duration::from_secs(3));
+        let mut db = config
+            .connect(NoTls)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         query(&mut db).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
     })
     .await
@@ -142,7 +160,7 @@ async fn list_cas(
         .filter_map(|id| uuid::Uuid::parse_str(id).ok().map(|u| u.to_string()))
         .take(1024)
         .collect();
-    let rows = query_db(state.database_url, move |db| db.query(
+    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
         "SELECT ca_id,parent_ca_id,display_name,policy_version,created_at FROM management_ca WHERE ca_id=ANY($1::text[]) ORDER BY display_name LIMIT 100", &[&ids]
     )).await?;
     Ok(Json(
@@ -165,7 +183,7 @@ async fn get_ca(
 ) -> Result<Json<Ca>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let row = query_db(state.database_url, move |db| db.query_opt(
+    let row = query_db(state.database_url, state.database_slots, move |db| db.query_opt(
         "SELECT ca_id,parent_ca_id,display_name,policy_version,created_at FROM management_ca WHERE ca_id=$1", &[&ca_id]
     )).await?.ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(Ca {
@@ -184,7 +202,7 @@ async fn list_certificates(
 ) -> Result<Json<Vec<Certificate>>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let rows = query_db(state.database_url, move |db| db.query(
+    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
         "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at DESC LIMIT 100", &[&ca_id]
     )).await?;
     Ok(Json(
@@ -209,7 +227,7 @@ async fn list_audit(
 ) -> Result<Json<Vec<Audit>>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let rows = query_db(state.database_url, move |db| db.query(
+    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
         "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC LIMIT 100", &[&ca_id]
     )).await?;
     Ok(Json(
@@ -258,6 +276,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn database_capacity_rejects_excess_work_before_connecting() {
+        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
+            return; // The CI integration job supplies a disposable PostgreSQL database.
+        };
+        let slots = Arc::new(Semaphore::new(1));
+        let held = slots.clone().acquire_owned().await.unwrap();
+        let busy = query_db(url.clone(), slots.clone(), |db| {
+            db.query_one("SELECT 1", &[])
+                .map(|row| row.get::<_, i32>(0))
+        })
+        .await;
+        assert_eq!(busy, Err(StatusCode::SERVICE_UNAVAILABLE));
+        drop(held);
+        let available = query_db(url, slots, |db| {
+            db.query_one("SELECT 1", &[])
+                .map(|row| row.get::<_, i32>(0))
+        })
+        .await;
+        assert_eq!(available, Ok(1));
+    }
+
+    #[tokio::test]
     async fn http_contract_rejects_missing_role_and_wrong_scope() {
         let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
         let public = private.to_public_key();
@@ -285,6 +325,7 @@ mod tests {
         let app = router(AppState {
             verifier,
             database_url: database_url.clone(),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
         });
         let no_token = app
             .clone()
