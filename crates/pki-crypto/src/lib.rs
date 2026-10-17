@@ -1,0 +1,85 @@
+#![forbid(unsafe_code)]
+//! Signing boundary and algorithm negotiation.
+//! No real signature provider is configured in Sprint 0.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignatureAlgorithm {
+    RsaPssSha256,
+    EcdsaP256Sha256,
+    MlDsa65,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRef(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CryptoError {
+    UnsupportedAlgorithm,
+    KeyUnavailable,
+    SigningFailed,
+}
+
+/// Never passes key material to application callers.
+/// Provider-specific encoding and prehash rules must be defined by the adapter.
+pub trait SigningProvider {
+    fn supports(&self, algorithm: SignatureAlgorithm) -> bool;
+    fn public_key_spki_der(&self, key: &KeyRef) -> Result<Vec<u8>, CryptoError>;
+    fn sign(
+        &self,
+        key: &KeyRef,
+        algorithm: SignatureAlgorithm,
+        message: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+}
+
+/// Fail-closed placeholder. The absence of a provider is NEVER a software-key fallback.
+pub struct UnconfiguredProvider;
+
+impl SigningProvider for UnconfiguredProvider {
+    fn supports(&self, _algorithm: SignatureAlgorithm) -> bool {
+        false
+    }
+
+    fn public_key_spki_der(&self, _key: &KeyRef) -> Result<Vec<u8>, CryptoError> {
+        Err(CryptoError::KeyUnavailable)
+    }
+
+    fn sign(
+        &self,
+        _key: &KeyRef,
+        _algorithm: SignatureAlgorithm,
+        _message: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        Err(CryptoError::SigningFailed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_unconfigured_algorithm_is_rejected() {
+        let provider = UnconfiguredProvider;
+        for algorithm in [
+            SignatureAlgorithm::RsaPssSha256,
+            SignatureAlgorithm::EcdsaP256Sha256,
+            SignatureAlgorithm::MlDsa65,
+        ] {
+            assert!(!provider.supports(algorithm));
+            assert_eq!(
+                provider.sign(&KeyRef("test-key".into()), algorithm, b"tbs"),
+                Err(CryptoError::SigningFailed)
+            );
+        }
+    }
+
+    #[test]
+    fn unconfigured_provider_never_exposes_a_public_key_or_secret() {
+        let provider = UnconfiguredProvider;
+        assert_eq!(
+            provider.public_key_spki_der(&KeyRef("missing".into())),
+            Err(CryptoError::KeyUnavailable)
+        );
+    }
+}
