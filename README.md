@@ -11,7 +11,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 - Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`.
 - CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
 - P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
-- PostgreSQL migrations 0001–0010 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence and draft governance; disposable CI tests.
+- PostgreSQL migrations 0001–0011 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence and draft governance; disposable CI tests.
 - Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
 - CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.
 - Unit tests and a Rust CI workflow with PostgreSQL and OpenSSL interoperability checks.
@@ -30,9 +30,11 @@ cargo test --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-**Warning:** Some database tests skip when `TRUST_CI_DATABASE_URL` is missing; the above test command alone does not prove that PostgreSQL test paths ran. Consult `.github/workflows/rust-ci.yml` for disposable DB migrations and integration checks; never point this lab harness at a real CA database.
+**Database evidence:** Set `TRUST_REQUIRE_DATABASE=1` together with `TRUST_CI_DATABASE_URL` to require PostgreSQL tests. Missing configuration then fails explicitly. Without strict mode, the workspace command alone does not prove DB paths ran. Consult `.github/workflows/rust-ci.yml` for disposable DB migrations and integration checks; never point this lab harness at a real CA database.
 
 ## Recovery and next work
+
+See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads, inspected CI runs, C-01 and remaining acceptance criteria.
 
 - [Technical audit and feature matrix (PR #42)](https://github.com/knehari/trust-platform/pull/42)
 - [R1 integration notes](docs/recovery/R1_CONSOLIDATION_NOTES.md)

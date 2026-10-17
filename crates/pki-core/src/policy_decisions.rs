@@ -3,7 +3,7 @@
 //! Signatures do not prove the operational controls described in a CPS.
 //! This has no signing/publishing or certificate recovery functionality.
 use sha2::{Digest, Sha256};
-use trust_pki_crypto::verify_p256_ecdsa_sha256;
+use trust_pki_crypto::{canonical_p256_public_key_sec1, verify_p256_ecdsa_sha256};
 
 const DOMAIN: &[u8] = b"STP-CP-CPS-DUAL-APPROVAL-V1\0";
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +142,16 @@ pub fn verify_dual_approval(
     {
         return Err(ApprovalError::UntrustedKey);
     }
+    // Compare the actual P-256 curve points, not caller-controlled key IDs or
+    // SEC1 octets: one key can have different compressed/uncompressed encodings.
+    let proposer_point = canonical_p256_public_key_sec1(pinned_proposer.sec1_p256_public)
+        .map_err(|_| ApprovalError::UntrustedKey)?;
+    let approver_point = canonical_p256_public_key_sec1(pinned_approver.sec1_p256_public)
+        .map_err(|_| ApprovalError::UntrustedKey)?;
+    if proposer_point == approver_point {
+        return Err(ApprovalError::IdenticalApprover);
+    }
+
     verify_p256_ecdsa_sha256(
         pinned_proposer.sec1_p256_public,
         &bytes,

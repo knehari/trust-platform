@@ -162,3 +162,79 @@ fn canonicalization_rejects_unbounded_or_control_character_fields() {
         Err(ApprovalError::InvalidClaim)
     );
 }
+
+fn compressed_sec1(uncompressed: &[u8]) -> Vec<u8> {
+    assert_eq!(uncompressed.len(), 65);
+    assert_eq!(uncompressed[0], 0x04);
+    let mut compressed = Vec::with_capacity(33);
+    compressed.push(0x02 | (uncompressed[64] & 0x01));
+    compressed.extend_from_slice(&uncompressed[1..33]);
+    compressed
+}
+
+#[test]
+fn same_p256_key_in_different_sec1_encodings_is_rejected() {
+    let maker = EphemeralP256Signer::generate("maker-key").unwrap();
+    let c = claim();
+    let maker_signature = signature(&maker, &c);
+    let alias_signature = SignerStatement {
+        key_id: "checker-alias".into(),
+        signature_der: maker_signature.signature_der.clone(),
+    };
+    let uncompressed = public(&maker);
+    let compressed = compressed_sec1(&uncompressed);
+    assert_ne!(uncompressed, compressed);
+    let proposer = PinnedPolicyKey {
+        key_id: "maker-key",
+        sec1_p256_public: &uncompressed,
+    };
+    let checker_alias = PinnedPolicyKey {
+        key_id: "checker-alias",
+        sec1_p256_public: &compressed,
+    };
+    let signed = DualApproval {
+        claim: &c,
+        proposer: &maker_signature,
+        approver: &alias_signature,
+    };
+    assert_eq!(
+        verify_dual_approval(&signed, &proposer, &checker_alias, &c),
+        Err(ApprovalError::IdenticalApprover)
+    );
+}
+
+#[test]
+fn distinct_p256_keys_with_compressed_approver_are_accepted() {
+    let maker = EphemeralP256Signer::generate("maker-key").unwrap();
+    let checker = EphemeralP256Signer::generate("checker-key").unwrap();
+    let c = claim();
+    let maker_signature = signature(&maker, &c);
+    let checker_signature = signature(&checker, &c);
+    let maker_pub = public(&maker);
+    let checker_pub = compressed_sec1(&public(&checker));
+    let proposer = PinnedPolicyKey {
+        key_id: "maker-key",
+        sec1_p256_public: &maker_pub,
+    };
+    let approver = PinnedPolicyKey {
+        key_id: "checker-key",
+        sec1_p256_public: &checker_pub,
+    };
+    let signed = DualApproval {
+        claim: &c,
+        proposer: &maker_signature,
+        approver: &checker_signature,
+    };
+    assert!(verify_dual_approval(&signed, &proposer, &approver, &c).is_ok());
+
+    // Malformed but non-empty SEC1 pins must fail closed.
+    let invalid = [0x01u8];
+    let invalid_approver = PinnedPolicyKey {
+        key_id: "checker-key",
+        sec1_p256_public: &invalid,
+    };
+    assert_eq!(
+        verify_dual_approval(&signed, &proposer, &invalid_approver, &c),
+        Err(ApprovalError::UntrustedKey)
+    );
+}

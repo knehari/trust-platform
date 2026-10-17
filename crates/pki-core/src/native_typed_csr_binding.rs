@@ -1,7 +1,7 @@
 //! Bind a native typed issuance authorization to an independently verified
 //! PKCS#10 subject identity and key; never trust requester-declared key metadata.
 //!
-//! Only ECDSA P-256 CSRs are currently verified by the CSR boundary. Other
+//! ECDSA P-256 and feature-gated RSA PKCS#1 CSRs are verified. Other
 //! subject key algorithms fail closed until their proof-of-possession verifier
 //! and SPKI key-parameter measurement are implemented.
 use crate::csr::VerifiedCsr;
@@ -273,9 +273,16 @@ mod tests {
                 },
             )
             .unwrap();
+        // With no software-lab verifier, RSA subjects are unsupported outright.
+        // With it enabled, the P256 CSR fails the measured RSA key parameters.
+        let expected = if cfg!(feature = "lab-software") {
+            NativeCsrBindingError::InvalidKeyParameters
+        } else {
+            NativeCsrBindingError::UnsupportedSubjectKey
+        };
         assert_eq!(
             bind_native_approval_to_verified_csr(&wrong_key, &csr),
-            Err(NativeCsrBindingError::InvalidKeyParameters)
+            Err(expected)
         );
     }
 

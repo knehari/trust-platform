@@ -80,6 +80,17 @@ impl SigningProvider for UnconfiguredProvider {
     }
 }
 
+/// Canonicalize a P-256 SEC1 public key before checking identity or provisioning
+/// independent policy-review keys. Both compressed and uncompressed representations
+/// of one curve point yield the same 33-byte canonical representation.
+pub fn canonical_p256_public_key_sec1(public_key_sec1: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    use p256::ecdsa::VerifyingKey;
+
+    let key = VerifyingKey::from_sec1_bytes(public_key_sec1)
+        .map_err(|_| CryptoError::InvalidPublicKey)?;
+    Ok(key.to_encoded_point(true).as_bytes().to_vec())
+}
+
 /// Verify a PKCS#10 ECDSA-with-SHA256 signature over canonical DER bytes.
 ///
 /// The caller MUST check the CSR SignatureAlgorithm OID and the SPKI curve

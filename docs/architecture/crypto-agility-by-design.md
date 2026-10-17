@@ -1,6 +1,6 @@
 # Crypto-agility by design — classical algorithms foundation
 
-Status: **laboratory policy contract, not production support**. Branch is stacked on V4.0 and must not be merged while G0 employment/IP clearance and independent security review remain unresolved.
+Status: **laboratory policy, real software signers and selected X.509 paths; not production support**. Branch is stacked on V4.0 and must not be merged while G0 employment/IP clearance and independent security review remain unresolved.
 
 ## Core design principles
 - Separate **signature scheme**, **key type/size/curve**, **digest**, **issuer key**, **subject key**, **provider capability**, **certificate profile**, and **policy decision**. An RSA CA must be able to issue an EC-subject certificate (and vice versa) if the certificate profile and interoperability permit it.
@@ -38,4 +38,4 @@ C. Implement/test classical crypto signers, verifiers and X.509 serializers usin
 D. Demonstrate issuance and revocation integration, negative tests and OpenSSL interoperability per suite.
 E. Add policy/version lifecycle, inventory and algorithm migration workflows; PQC follows as separately gated adapters.
 
-This increment adds only a compile-time policy module and negative tests. It does not claim B–E are complete.
+The cumulative laboratory code now contains real Rust P256/RSA and OpenSSL P384/P521/EdDSA signers and selected X.509 paths. The table above remains a target matrix, not verified support for every key size/digest/profile. CSR and durable issuance coverage differ by suite. B–E remain incomplete; see the recovery feature matrix and execution status.
