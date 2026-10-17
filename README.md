@@ -19,7 +19,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 
 ## Important gaps
 
-No deployed management application or React interface, no production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
+No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
 
 ## How to inspect the laboratory workspace
 
@@ -43,6 +43,7 @@ See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads
 - [Crypto-agility requirements](docs/architecture/crypto-agility-by-design.md)
 - [Management control-plane decision](docs/adr/ADR-0005-rust-management-control-plane.md)
 - [Read-only management API and OpenAPI contract](docs/architecture/management-api-readonly.md)
+- [React management console laboratory setup](frontend/README.md)
 - [Security gates](docs/testing/acceptance-gates.md)
 - [Engineering instructions](AGENTS.md)
 
