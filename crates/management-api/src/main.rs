@@ -2,17 +2,29 @@ mod auth;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
+    body::Body,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::get,
     Json, Router,
 };
 use postgres::{Client, NoTls};
 use serde::Serialize;
-use std::{env, sync::Arc, time::Duration};
+use std::{
+    env,
+    io::{self, Write},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::Semaphore;
 
 const MAX_DATABASE_REQUESTS: usize = 8;
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct AppState {
@@ -80,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
+    write_log(serde_json::json!({"event":"management_api_started","bind":bind}));
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -91,7 +104,41 @@ fn router(state: AppState) -> Router {
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route("/v1/cas/{ca_id}/audit", get(list_audit))
+        .layer(middleware::from_fn(log_request))
         .with_state(state)
+}
+
+fn write_log(value: serde_json::Value) {
+    // Never include Authorization, URLs, query strings, response bodies or DB errors.
+    let _ = writeln!(io::stderr().lock(), "{value}");
+}
+
+async fn log_request(request: Request<Body>, next: Next) -> Response {
+    let id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let method = request.method().as_str().to_owned();
+    let started = Instant::now();
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_str(&id).expect("generated request ID is ASCII"),
+    );
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_millis())
+        .unwrap_or(0);
+    write_log(serde_json::json!({
+        "event":"request_complete",
+        "request_id":id,
+        "method":method,
+        "status":response.status().as_u16(),
+        "duration_ms":started.elapsed().as_millis(),
+        "timestamp_ms":timestamp_ms,
+    }));
+    response
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -338,6 +385,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+        let first_request_id = no_token
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(!first_request_id.is_empty());
         let no_role_token = encode(&header, &claims, &signer).unwrap();
         let no_role = app
             .clone()
@@ -351,6 +405,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_role.status(), StatusCode::FORBIDDEN);
+        assert_ne!(
+            no_role
+                .headers()
+                .get("x-request-id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            first_request_id
+        );
         claims["roles"] = json!(["trust-ca-reader"]);
         let token = encode(&header, &claims, &signer).unwrap();
         let other_ca = app
