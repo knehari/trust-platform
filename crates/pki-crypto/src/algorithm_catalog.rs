@@ -22,6 +22,9 @@ pub struct AlgorithmDescriptor {
     pub identifier: &'static str,
 }
 
+/// Legacy source-level discovery catalogue (not compiled availability). RSA-PSS
+/// is implemented in the laboratory; its key size must still be measured and
+/// explicitly supplied through the typed path. See suite_registry for routes.
 /// Conservative built-in discovery catalogue. Extend through reviewed releases;
 /// do not infer support from a string, OID, provider advertisement or policy alone.
 pub const ALGORITHMS: [AlgorithmDescriptor; 3] = [
@@ -34,7 +37,7 @@ pub const ALGORITHMS: [AlgorithmDescriptor; 3] = [
     AlgorithmDescriptor {
         algorithm: SignatureAlgorithm::RsaPssSha256,
         family: CryptoFamily::Classical,
-        implementation: ImplementationStatus::NotImplemented,
+        implementation: ImplementationStatus::LabOnly,
         identifier: "rsa-pss-sha256",
     },
     AlgorithmDescriptor {
@@ -105,15 +108,11 @@ mod tests {
     #[test]
     fn known_but_unimplemented_algorithms_never_become_available() {
         let provider = AdvertisedProvider;
-        for algorithm in [
-            SignatureAlgorithm::RsaPssSha256,
-            SignatureAlgorithm::MlDsa65,
-        ] {
-            assert_eq!(
-                select_lab_algorithm(&provider, algorithm, &[algorithm]),
-                Err(AlgorithmSelectionError::Unimplemented)
-            );
-        }
+        let algorithm = SignatureAlgorithm::MlDsa65;
+        assert_eq!(
+            select_lab_algorithm(&provider, algorithm, &[algorithm]),
+            Err(AlgorithmSelectionError::Unimplemented)
+        );
     }
 
     #[test]
@@ -150,6 +149,36 @@ mod tests {
         assert_eq!(
             descriptor(SignatureAlgorithm::MlDsa65).implementation,
             ImplementationStatus::NotImplemented
+        );
+    }
+}
+
+#[cfg(all(test, feature = "lab-software"))]
+mod laboratory_selection_tests {
+    use super::*;
+    use crate::{rsa_pss_lab::EphemeralRsaPssLabSigner, KeyRef};
+
+    #[test]
+    fn rsa_pss_selection_requires_policy_and_a_real_provider() {
+        let provider = EphemeralRsaPssLabSigner::generate(KeyRef("registry-test".into())).unwrap();
+        let algorithm = SignatureAlgorithm::RsaPssSha256;
+        assert_eq!(
+            select_lab_algorithm(&provider, algorithm, &[]),
+            Err(AlgorithmSelectionError::ForbiddenByPolicy)
+        );
+        assert_eq!(
+            select_lab_algorithm(&crate::UnconfiguredProvider, algorithm, &[algorithm]),
+            Err(AlgorithmSelectionError::UnsupportedByProvider)
+        );
+        assert!(select_lab_algorithm(&provider, algorithm, &[algorithm]).is_ok());
+        let signature = provider
+            .sign(provider.key_ref(), algorithm, b"registry proof")
+            .unwrap();
+        let spki = provider.public_key_spki_der(provider.key_ref()).unwrap();
+        crate::rsa_pss_lab::verify_rsa_pss_sha256_spki(&spki, b"registry proof", &signature)
+            .unwrap();
+        assert!(
+            crate::rsa_pss_lab::verify_rsa_pss_sha256_spki(&spki, b"tampered", &signature).is_err()
         );
     }
 }
