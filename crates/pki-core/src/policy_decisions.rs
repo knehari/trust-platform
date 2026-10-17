@@ -128,6 +128,7 @@ pub fn verify_dual_approval(
     }
     let bytes = signed.claim.canonical_bytes()?;
     if pinned_proposer.key_id == pinned_approver.key_id
+        || pinned_proposer.sec1_p256_public == pinned_approver.sec1_p256_public
         || signed.proposer.key_id == signed.approver.key_id
     {
         return Err(ApprovalError::IdenticalApprover);
