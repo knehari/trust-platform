@@ -32,6 +32,14 @@ mod tests {
         let a = [1; 32];
         let b = [2; 32];
         assert_eq!(manifest_digest(&[a, b]), manifest_digest(&[a, b]));
+        // Fixed SHA-256 vector computed independently from the documented framing.
+        assert_eq!(
+            manifest_digest(&[a, b]).unwrap(),
+            [
+                3, 182, 24, 80, 54, 183, 135, 5, 127, 206, 115, 71, 56, 5, 20, 183,
+                180, 249, 248, 165, 98, 47, 39, 245, 118, 179, 146, 90, 248, 54, 192, 216,
+            ]
+        );
         assert_ne!(
             manifest_digest(&[a, b]).unwrap(),
             manifest_digest(&[b, a]).unwrap()
