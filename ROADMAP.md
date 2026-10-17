@@ -77,6 +77,11 @@
 
 ## Cross-cutting quality gates before any production claim
 
+The unmerged laboratory stack now includes a reproducible Rust/npm lockfile
+SBOM in [Draft #55](https://github.com/knehari/trust-platform/pull/55). This
+addresses source dependency inventory only; container contents, provenance,
+secret scanning, SAST and independent review remain open gates.
+
 1. **G0 legal and IP:** confirm ownership, employment/contractual separation and release authorization before integrating or commercializing work.
 2. **Cryptographic design review:** independent PKI review including keys, algorithms, HSM boundary, certificate profile, CP/CPS authority and secure defaults.
 3. **Security controls:** IAM/mTLS, RBAC, maker-checker, least-privilege PostgreSQL grants, secrets, rate limiting, logging, anti-replay, tenant isolation.

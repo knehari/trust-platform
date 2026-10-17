@@ -67,3 +67,9 @@ Later exact-head CI resolved those pending checks: Draft #52 passed Rust/schema,
 ## Diagnostic request logging increment
 
 The next API branch (TRUST-50) adds generated per-request correlation IDs and JSON completion logs with method, status, duration and timestamp. It returns `X-Request-Id` on every routed response. The logger never writes access tokens, raw URLs/query strings, bodies or database errors. This is process diagnostics, not a replacement for persistent append-only security audit events. The branch requires its own Rust and CI validation before technical acceptance.
+
+Later exact-head validation completed for [Draft #54](https://github.com/knehari/trust-platform/pull/54) at `35908cdcb736ca65ae30a5719b1206fcbe1b7969`: Rust/schema, Compose smoke, policy race and preservation CI all passed. A local fake-token/query sentinel check confirmed the JSON completion log did not contain either sentinel. The structured log remains diagnostic, without durable audit integrity.
+
+## Lockfile supply-chain increment
+
+[Draft #55](https://github.com/knehari/trust-platform/pull/55), TRUST-15, commits an SPDX 2.3 JSON inventory generated from the Rust and npm lockfiles plus a drift-detection GitHub Actions job. At initial head `9eb7706ea69f194e45656ee505f2e6bb5b8b515c`, the inventory had 318 package records; the official SPDX 2.3 JSON schema accepted it, a disposable changed npm lockfile made the check fail, and [SBOM CI 39061313813](https://github.com/knehari/trust-platform/actions/runs/39061313813) passed. Other existing checks were still running at this snapshot; reverify the final PR head before treating them as evidence. The artifact describes locked source dependencies only; it does not prove image contents, license correctness, provenance, SAST/secrets coverage or release readiness.
