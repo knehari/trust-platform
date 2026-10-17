@@ -12,7 +12,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch historical PR objects
-        run: git fetch origin '+refs/pull/*/head:refs/remotes/pull/*'
+        run: git fetch origin '+refs/pull/*/head:refs/recovery/pull/*'
       - name: Check frozen historical inventory
         run: python3 scripts/recovery/inventory.py > recovery-inventory.json
       - name: Retain full declarations and omission report
