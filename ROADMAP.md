@@ -1,4 +1,4 @@
-> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and pinned-toolchain validation in progress. No application API/UI is delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
+> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49. A read-only laboratory Rust API is under review; the frontend, complete OIDC login flow and policy-controlled HTTP issuance are not delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
 
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
@@ -61,7 +61,7 @@
 | v2.8 | Production-grade issuance | End-to-end serial/intent/signature/persistence/recovery tests with least privilege, secure migrations and operational runbooks | v2.5–v2.7 |
 | v2.9 | Revocation & validation | Verified CRL generation/publication, revocation audit, OCSP architecture and comprehensive RFC 5280 path validation test suite | CA profiles, trusted time, publication design |
 | v3.0 | PKI MVP release candidate | Single-tenant controlled pilot, independent security test, backup/restore, HA/SLO measurements, production gating | G0 clearance; v2.8–v2.9 |
-| v3.1 | Go control plane & IAM | Authenticated management API, RBAC, separation of duties, CA lifecycle and tenant authorization model | Stable Rust boundary |
+| v3.1 | Rust control plane & IAM | Authenticated management API, RBAC, separation of duties, CA lifecycle and tenant authorization model | ADR-0005; stable Rust policy boundary |
 | v3.2 | Operator experience | React/TypeScript console, audit views, API clients/CLI, usability and access testing | v3.1 |
 | v3.3 | Automated enrollment protocols | ACME first, followed by scoped EST/SCEP profiles; interoperable renewal/revocation and authz | v3.0–v3.2, protocol threat models |
 | v3.4 | CLM foundation | Inventory, ownership, discovery, renewal jobs, notification, connectors and CMDB labels | v3.3; discovery source validation |

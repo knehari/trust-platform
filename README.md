@@ -8,17 +8,18 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 
 ## Implemented as laboratory code (not production-qualified)
 
-- Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`.
+- Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`, plus a read-only laboratory management API.
 - CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
 - P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
-- PostgreSQL migrations 0001–0011 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence and draft governance; disposable CI tests.
+- PostgreSQL migrations 0001–0012 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, draft governance and read-only API views; disposable CI tests.
+- Executable authenticated Rust management API for scoped CA, certificate and audit metadata reads; see its [scope and setup](docs/architecture/management-api-readonly.md).
 - Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
 - CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.
 - Unit tests and a Rust CI workflow with PostgreSQL and OpenSSL interoperability checks.
 
 ## Important gaps
 
-No network-facing authenticated PKI management API, no React interface, no production IAM adapter, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
+No deployed management application or React interface, no production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
 
 ## How to inspect the laboratory workspace
 
@@ -41,6 +42,7 @@ See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads
 - [Roadmap (historical statuses explicitly noted)](ROADMAP.md)
 - [Crypto-agility requirements](docs/architecture/crypto-agility-by-design.md)
 - [Management control-plane decision](docs/adr/ADR-0005-rust-management-control-plane.md)
+- [Read-only management API and OpenAPI contract](docs/architecture/management-api-readonly.md)
 - [Security gates](docs/testing/acceptance-gates.md)
 - [Engineering instructions](AGENTS.md)
 

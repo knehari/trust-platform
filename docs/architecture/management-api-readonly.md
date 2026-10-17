@@ -1,0 +1,19 @@
+# Read-only management API laboratory increment
+
+This increment is a **running service**, but it is not a deployed application, a CA issuer or a production authentication integration. It implements the first read-only boundary from [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md). The Rust CA Core remains in the workspace and is not invoked by these metadata reads. Issuance remains reachable only through existing laboratory harnesses, not HTTP.
+
+## Contract and trust boundary
+
+The [OpenAPI v1 contract](../../openapi/management-v1.yaml) describes health, CA list/detail, certificate metadata and audit metadata. All data endpoints require a signed RS256 OIDC access token with `typ=at+jwt`, exact issuer/audience, `exp`, `nbf`, `sub`, the `trust-ca-reader` role and explicit canonical UUIDs in `ca_ids`. No wildcard or caller-supplied scope is supported. OIDC discovery and JWKS are fetched at service startup; the issuer must use HTTPS, except localhost HTTP for a laboratory provider. JWKS must share the issuer origin and use distinct RSA signing `kid`s. Unknown/rotated keys fail closed until restart. The service does not accept ID tokens, HMAC JWTs or arbitrary identity headers.
+
+The server filters every query by signed CA scope and uses parameterized SQL with a 100-row response bound. Migration `0012_management_read_views.sql` grants a `NOLOGIN` role SELECT on three limited views, not the underlying tables. Deployment must create a separate login and grant `trust_api_reader` to it. Startup verifies that the login has this role and no direct SELECT/write privilege on the protected CA, certificate or audit tables. The SQL fixture `tests/management_api_readonly.sql` proves the role cannot read raw certificate DER, update CAs or execute the issuance function. It does **not** replace a full database privilege audit, tenant isolation review or signed audit export.
+
+## Run in a disposable lab
+
+Apply migrations `0001`–`0012` in order to a disposable PostgreSQL 16 database. Create a separate login, grant `trust_api_reader`, and set `TRUST_DATABASE_URL` to that login's connection URL. Set `TRUST_OIDC_ISSUER` to an HTTPS issuer (or localhost HTTP for a test issuer), `TRUST_OIDC_AUDIENCE` to the API audience, and optionally `TRUST_API_BIND` (default `127.0.0.1:8081`). Run `cargo run -p trust-management-api --locked`. The API fails startup if discovery, JWKS or role isolation fails. `GET /v1/health` exposes only `{"status":"up"}`; it is liveness, not database readiness.
+
+The configured PostgreSQL driver uses `NoTls`, so this build is for a local/disposable lab only. A future deployment requires authenticated database transport, secret management, bounded connection pooling, JWKS refresh, request limits, structured security-event logging, rate limiting and operational readiness. The role claim mapping is deliberately narrow. No frontend, login flow, Docker Compose, policy-controlled issuance or HSM integration is included in this PR.
+
+## Evidence and remaining gates
+
+Unit/HTTP tests generate ephemeral RSA keys and validate positive signature, audience, expiry, token type, tampering, missing role and out-of-scope CA rejection. With `TRUST_API_TEST_DATABASE_URL` set to the restricted login, the HTTP contract test must return exactly the scoped CA from a populated database. The database CI job applies migration 0012, runs its privilege fixture and reruns that HTTP test. Without this variable, the HTTP test does not claim database coverage. G0 and independent security review remain open.

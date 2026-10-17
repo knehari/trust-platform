@@ -1,0 +1,143 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform management API
+  version: 0.1.0-lab
+  description: Read-only laboratory API. No issuance or production qualification is implied.
+servers:
+  - url: http://127.0.0.1:8081
+security:
+  - oidcAccessToken: []
+paths:
+  /v1/health:
+    get:
+      security: []
+      summary: Liveness without sensitive details
+      responses:
+        '200':
+          description: Process is serving requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: up
+  /v1/cas:
+    get:
+      summary: List CAs in the caller's signed scope, at most 100
+      responses:
+        '200':
+          description: Scoped CA list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CA'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}:
+    get:
+      summary: Read one scoped CA
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: CA detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates:
+    get:
+      summary: Read certificate metadata for one scoped CA, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Metadata only; certificate DER is not exposed
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/audit:
+    get:
+      summary: Read bounded audit event metadata for one scoped CA
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Audit metadata without actor identifiers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids.
+  parameters:
+    CaId:
+      in: path
+      name: ca_id
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    CA:
+      type: object
+      required: [ca_id, parent_ca_id, display_name, policy_version, created_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        parent_ca_id: { type: [string, 'null'], format: uuid }
+        display_name: { type: string }
+        policy_version: { type: string }
+        created_at: { type: string, format: date-time }
+    Certificate:
+      type: object
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        serial_hex: { type: string }
+        fingerprint_sha256: { type: string }
+        request_id: { type: string, format: uuid }
+        state: { type: string }
+        signed_at: { type: string, format: date-time }
+        published_at: { type: [string, 'null'], format: date-time }
+    AuditEvent:
+      type: object
+      required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]
+      properties:
+        event_id: { type: string, format: uuid }
+        ca_id: { type: string, format: uuid }
+        event_type: { type: string }
+        decision: { type: string }
+        policy_version: { type: [string, 'null'] }
+        recorded_at: { type: string, format: date-time }
+  responses:
+    BadRequest: { description: Invalid CA identifier }
+    Unauthorized: { description: Missing or invalid access token }
+    Forbidden: { description: Role or CA scope denied }
+    NotFound: { description: CA not found }
+    Unavailable: { description: Read database unavailable }
