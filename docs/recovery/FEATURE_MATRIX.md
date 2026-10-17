@@ -1,5 +1,20 @@
 > Recovery execution update: see [EXECUTION_STATUS.md](EXECUTION_STATUS.md). The original PR #42 snapshot below is preserved as historical evidence; it is not the current delivery status.
 
+## Current stacked Draft increments (17 October 2026)
+
+This table describes the unmerged laboratory stack through Draft #55. The
+historical PR #42 matrix below remains the reference for what was observed on
+PR #41; these increments have not landed on `main`.
+
+| Capability | Current demonstrated scope | Remaining boundary |
+|---|---|---|
+| C-01 policy gate serialization | #46: deterministic two-transaction regression and migration 0011; exact-head race and Rust/schema CI passed | General populated upgrades and independent review remain |
+| Crypto capability registry | #48: explicit laboratory capability routing and RSA-PSS discovery correction; exact-head CI passed | No HSM or PQC implementation/qualification |
+| Read-only management API | #50–#52: OIDC token validation, CA-scoped PostgreSQL views, bounded query concurrency; exact-head CI passed | Test IdP, `NoTls` laboratory DB, no issuance or Core invocation |
+| React console and Compose lab | #51–#53: real read-only API/DB views, PKCE test login and container smoke; exact-head CI passed | No human IAM, certificate issuance or deployment assurance |
+| Request diagnostics | #54: request correlation ID and secret-safe JSON completion log; exact-head CI passed | Not a durable signed security audit |
+| Locked source dependency inventory | #55: 318 Cargo/npm package records in SPDX 2.3 JSON; local official-schema validation, negative drift test and exact-head SBOM CI passed | Lockfile inventory only; image SBOM, license review, provenance and other CI checks remain |
+
 # Matrice des fonctionnalités
 
 > Audit du 17 octobre 2026. `main`: `20e977a695481c54c1775a97ae0f1fc427159e43`. État de développement de référence: PR #41, `6634b0f20869a4ffc4ce38dba6ea48bbfe2baabd`. Aucun changement fonctionnel ni fusion.
