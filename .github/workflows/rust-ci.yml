@@ -92,6 +92,18 @@ jobs:
           openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/leaf.der" -out "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
           openssl verify -CAfile "$RUNNER_TEMP/rsa-pss-server/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
           openssl x509 -in "$RUNNER_TEMP/rsa-pss-server/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: OpenSSL RSA PKCS10 SHA256/384/512 proof-of-possession interoperability (lab only)
+        run: |
+          set -euo pipefail
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/csr-$digest-$bits.der"
+            key="$RUNNER_TEMP/csr-$digest-$bits.key"
+            openssl req -new -newkey "rsa:$bits" -nodes -keyout "$key" -out "$der" -outform DER "-$digest" -subj "/CN=api.lab.invalid"
+            openssl req -in "$der" -inform DER -noout -verify
+            cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "$bits"
+          done
       - name: Native RSA-PSS SHA384/512 server chains verified by OpenSSL (lab only)
         run: |
           for digest in sha384 sha512; do
