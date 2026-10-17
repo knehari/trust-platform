@@ -82,6 +82,11 @@ SBOM in [Draft #55](https://github.com/knehari/trust-platform/pull/55). This
 addresses source dependency inventory only; container contents, provenance,
 secret scanning, SAST and independent review remain open gates.
 
+The next management increment requires a server-owned issuer/subject/CA read
+grant in addition to the signed OIDC role and CA scope. It narrows read access
+for the laboratory console; authenticated issuance still needs its own policy
+and actor authorization design before any HTTP route is added.
+
 1. **G0 legal and IP:** confirm ownership, employment/contractual separation and release authorization before integrating or commercializing work.
 2. **Cryptographic design review:** independent PKI review including keys, algorithms, HSM boundary, certificate profile, CP/CPS authority and secure defaults.
 3. **Security controls:** IAM/mTLS, RBAC, maker-checker, least-privilege PostgreSQL grants, secrets, rate limiting, logging, anti-replay, tenant isolation.

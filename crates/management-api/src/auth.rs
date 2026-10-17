@@ -18,6 +18,7 @@ struct Discovery {
 
 #[derive(Debug, Deserialize)]
 pub struct Claims {
+    pub iss: String,
     pub sub: String,
     pub roles: Vec<String>,
     pub ca_ids: Vec<String>,
@@ -116,7 +117,12 @@ impl OidcVerifier {
         let claims = decode::<Claims>(token, key, &self.validation)
             .map_err(|_| ())?
             .claims;
-        if claims.sub.is_empty() || claims.ca_ids.len() > 1024 || claims.roles.len() > 32 {
+        if claims.iss.len() > 1024
+            || claims.sub.is_empty()
+            || claims.sub.len() > 512
+            || claims.ca_ids.len() > 1024
+            || claims.roles.len() > 32
+        {
             return Err(());
         }
         Ok(claims)
