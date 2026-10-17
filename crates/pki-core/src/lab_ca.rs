@@ -11,7 +11,11 @@ use crate::serial::{
 use crate::x509_extensions::{self, ApprovedPolicyBinding};
 use std::str::FromStr;
 use std::time::Duration;
-use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
+use trust_pki_crypto::{
+    crypto_agility::{AlgorithmSuite, Digest, KeyParameter, SignatureScheme},
+    lab::EphemeralP256Signer,
+    SignatureAlgorithm, SigningProvider,
+};
 use trust_pki_policy::Authorization;
 use x509_cert::{
     der::{
@@ -93,6 +97,15 @@ fn signed_certificate(
     if parsed != cert {
         return Err(LabCaError::InvalidCertificate);
     }
+    let suite = AlgorithmSuite {
+        scheme: SignatureScheme::Ecdsa,
+        key: KeyParameter::P256,
+        digest: Digest::Sha256,
+    };
+    let identifier = crate::agile_x509_identifier::signature_algorithm_identifier(suite)
+        .map_err(|_| LabCaError::InvalidCertificate)?;
+    crate::agile_x509_identifier::preflight_certificate_algorithm(&parsed, &identifier)
+        .map_err(|_| LabCaError::InvalidCertificate)?;
     Ok(cert)
 }
 

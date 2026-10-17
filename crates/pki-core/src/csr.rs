@@ -125,6 +125,95 @@ pub fn verify_pkcs10_p256(
     })
 }
 
+/// Opt-in laboratory verification for RSA PKCS#1 v1.5 signed PKCS#10 CSRs.
+/// Requires an exact SHA-256/384/512 signature OID with ASN.1 NULL parameters,
+/// an RSA SPKI, a supported observed modulus and verified proof of possession.
+/// The caller must independently authorize names and requested extensions.
+#[cfg(feature = "lab-software")]
+pub fn verify_pkcs10_rsa_pkcs1_lab(
+    csr_der: &[u8],
+    expected_common_name: &str,
+) -> Result<
+    (
+        VerifiedCsr,
+        trust_pki_crypto::crypto_agility::AlgorithmSuite,
+    ),
+    CsrValidationError,
+> {
+    use trust_pki_crypto::{
+        crypto_agility::{AlgorithmSuite, Digest as TypedDigest, SignatureScheme},
+        rsa_pkcs1_lab::{observed_rsa_key_parameter, verify_pkcs1_spki_lab},
+    };
+    if csr_der.is_empty() || csr_der.len() > MAX_CSR_DER_BYTES {
+        return Err(CsrValidationError::EmptyOrOversize);
+    }
+    let csr = CertReq::from_der(csr_der).map_err(|_| CsrValidationError::InvalidDer)?;
+    if csr.to_der().map_err(|_| CsrValidationError::InvalidDer)? != csr_der {
+        return Err(CsrValidationError::InvalidDer);
+    }
+    if csr.info.version != Version::V1 {
+        return Err(CsrValidationError::WrongVersion);
+    }
+    let digest = match csr.algorithm.oid.to_string().as_str() {
+        "1.2.840.113549.1.1.11" => TypedDigest::Sha256,
+        "1.2.840.113549.1.1.12" => TypedDigest::Sha384,
+        "1.2.840.113549.1.1.13" => TypedDigest::Sha512,
+        _ => return Err(CsrValidationError::UnsupportedSignatureAlgorithm),
+    };
+    // RFC 4055: sha{256,384,512}WithRSAEncryption parameters MUST be NULL.
+    if csr
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|params| params.to_der().ok())
+        != Some(vec![0x05, 0x00])
+    {
+        return Err(CsrValidationError::UnsupportedSignatureAlgorithm);
+    }
+    let spki = &csr.info.public_key;
+    if spki.algorithm.oid.to_string() != "1.2.840.113549.1.1.1"
+        || spki
+            .algorithm
+            .parameters
+            .as_ref()
+            .and_then(|params| params.to_der().ok())
+            != Some(vec![0x05, 0x00])
+    {
+        return Err(CsrValidationError::UnsupportedSubjectKeyAlgorithm);
+    }
+    let expected_subject = Name::from_str(&format!("CN={expected_common_name}"))
+        .map_err(|_| CsrValidationError::SubjectMismatch)?;
+    if csr.info.subject != expected_subject {
+        return Err(CsrValidationError::SubjectMismatch);
+    }
+    let spki_der = spki.to_der().map_err(|_| CsrValidationError::InvalidDer)?;
+    let key =
+        observed_rsa_key_parameter(&spki_der).map_err(|_| CsrValidationError::InvalidPublicKey)?;
+    let suite = AlgorithmSuite {
+        scheme: SignatureScheme::RsaPkcs1V15,
+        key,
+        digest,
+    };
+    let message = csr
+        .info
+        .to_der()
+        .map_err(|_| CsrValidationError::InvalidDer)?;
+    let signature = csr
+        .signature
+        .as_bytes()
+        .ok_or(CsrValidationError::InvalidSignature)?;
+    verify_pkcs1_spki_lab(suite, &spki_der, &message, signature)
+        .map_err(|_| CsrValidationError::InvalidSignature)?;
+    Ok((
+        VerifiedCsr {
+            subject_public_key: csr.info.public_key,
+            subject: csr.info.subject,
+            fingerprint_sha256: Sha256::digest(csr_der).into(),
+        },
+        suite,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +280,44 @@ mod tests {
         assert_eq!(
             verify_pkcs10_p256(&csr, "api.lab.invalid"),
             Err(CsrValidationError::UnsupportedSignatureAlgorithm)
+        );
+    }
+
+    #[cfg(feature = "lab-software")]
+    #[test]
+    fn real_rsa_pkcs1_csr_proof_of_possession_is_verified() {
+        let original = CertReq::from_pem(include_str!(
+            "../tests/fixtures/rsa-unsupported-request.pem"
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let (verified, suite) = verify_pkcs10_rsa_pkcs1_lab(&original, "api.lab.invalid").unwrap();
+        assert_eq!(
+            suite,
+            trust_pki_crypto::crypto_agility::AlgorithmSuite {
+                scheme: trust_pki_crypto::crypto_agility::SignatureScheme::RsaPkcs1V15,
+                key: trust_pki_crypto::crypto_agility::KeyParameter::Rsa2048,
+                digest: trust_pki_crypto::crypto_agility::Digest::Sha256,
+            }
+        );
+        assert_ne!(verified.fingerprint_sha256(), &[0u8; 32]);
+        let mut tampered = original.clone();
+        let end = tampered.len() - 1;
+        tampered[end] ^= 0x01;
+        assert_eq!(
+            verify_pkcs10_rsa_pkcs1_lab(&tampered, "api.lab.invalid"),
+            Err(CsrValidationError::InvalidSignature)
+        );
+        assert_eq!(
+            verify_pkcs10_rsa_pkcs1_lab(&original, "other.lab.invalid"),
+            Err(CsrValidationError::SubjectMismatch)
+        );
+        let mut trailing = original;
+        trailing.push(0);
+        assert_eq!(
+            verify_pkcs10_rsa_pkcs1_lab(&trailing, "api.lab.invalid"),
+            Err(CsrValidationError::InvalidDer)
         );
     }
 

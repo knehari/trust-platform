@@ -44,6 +44,46 @@ jobs:
           openssl x509 -inform DER -in "$RUNNER_TEMP/native-rsa-root.der" -out "$RUNNER_TEMP/native-rsa-root.pem"
           openssl verify -CAfile "$RUNNER_TEMP/native-rsa-root.pem" -check_ss_sig "$RUNNER_TEMP/native-rsa-root.pem"
           openssl x509 -in "$RUNNER_TEMP/native-rsa-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: Typed RSA-PSS SHA-384/512 native roots verified by OpenSSL (lab only)
+        run: |
+          for digest in sha384 sha512; do
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_root_agile_lab -- "$digest" "$RUNNER_TEMP/pss-$digest-root.der"
+            openssl x509 -inform DER -in "$RUNNER_TEMP/pss-$digest-root.der" -out "$RUNNER_TEMP/pss-$digest-root.pem"
+            openssl verify -CAfile "$RUNNER_TEMP/pss-$digest-root.pem" -check_ss_sig "$RUNNER_TEMP/pss-$digest-root.pem"
+            openssl x509 -in "$RUNNER_TEMP/pss-$digest-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+          done
+      - name: ECDSA P384/P521 and Ed25519/Ed448 TLS server chains verified by OpenSSL
+        run: |
+          for scheme in p384 p521 ed25519 ed448; do
+            output="$RUNNER_TEMP/classical-$scheme-server"
+            mkdir -p "$output"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_openssl_classical_server_lab -- "$scheme" "$output"
+            openssl x509 -inform DER -in "$output/root.der" -out "$output/root.pem"
+            openssl x509 -inform DER -in "$output/leaf.der" -out "$output/leaf.pem"
+            openssl verify -CAfile "$output/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$output/leaf.pem"
+          done
+      - name: ECDSA P384/P521 and Ed25519/Ed448 lab roots verified by OpenSSL
+        run: |
+          for scheme in p384 p521 ed25519 ed448; do
+            der="$RUNNER_TEMP/classical-$scheme.der"
+            pem="$RUNNER_TEMP/classical-$scheme.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_openssl_classical_root_lab -- "$scheme" "$der"
+            openssl x509 -inform DER -in "$der" -out "$pem"
+            openssl verify -CAfile "$pem" -check_ss_sig "$pem"
+          done
+      - name: Native RSA PKCS1 SHA256/384/512 roots independently verified by OpenSSL (lab only)
+        run: |
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/pkcs1-$digest-$bits.der"
+            pem="$RUNNER_TEMP/pkcs1-$digest-$bits.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pkcs1_root_lab -- "$digest" "$bits" "$der"
+            openssl x509 -inform DER -in "$der" -out "$pem"
+            openssl verify -CAfile "$pem" -check_ss_sig "$pem"
+            openssl x509 -in "$pem" -noout -text | grep -q "Signature Algorithm: sha.*WithRSAEncryption"
+            openssl x509 -in "$pem" -pubkey -noout | openssl pkey -pubin -text -noout | grep -q "($bits bit)"
+          done
       - name: Native RSA-PSS server chain verified by OpenSSL (lab only)
         run: |
           mkdir -p "$RUNNER_TEMP/rsa-pss-server"
@@ -52,6 +92,38 @@ jobs:
           openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/leaf.der" -out "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
           openssl verify -CAfile "$RUNNER_TEMP/rsa-pss-server/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
           openssl x509 -in "$RUNNER_TEMP/rsa-pss-server/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: OpenSSL RSA PKCS10 SHA256/384/512 proof-of-possession interoperability (lab only)
+        run: |
+          set -euo pipefail
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/csr-$digest-$bits.der"
+            key="$RUNNER_TEMP/csr-$digest-$bits.key"
+            openssl req -new -newkey "rsa:$bits" -nodes -keyout "$key" -out "$der" -outform DER "-$digest" -subj "/CN=api.lab.invalid"
+            openssl req -in "$der" -inform DER -noout -verify
+            cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "$bits"
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "8192"; then
+              echo "Accepted a forged RSA modulus size"
+              exit 1
+            fi
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" sha999 "$bits"; then
+              echo "Accepted an unsupported digest"
+              exit 1
+            fi
+          done
+      - name: Native RSA-PSS SHA384/512 server chains verified by OpenSSL (lab only)
+        run: |
+          for digest in sha384 sha512; do
+            output="$RUNNER_TEMP/rsa-pss-$digest-server"
+            mkdir -p "$output"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_agile_server_lab -- "$digest" "$output"
+            openssl x509 -inform DER -in "$output/root.der" -out "$output/root.pem"
+            openssl x509 -inform DER -in "$output/leaf.der" -out "$output/leaf.pem"
+            openssl verify -CAfile "$output/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$output/leaf.pem"
+            openssl x509 -in "$output/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+            openssl x509 -in "$output/leaf.pem" -noout -text | grep "Hash Algorithm: $digest"
+          done
       - name: Native CA to OpenSSL interop (lab only)
         run: |
           cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"

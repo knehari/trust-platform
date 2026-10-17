@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Native CA orchestration contracts.
 //! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
+pub mod agile_x509_identifier;
 pub mod audit_chain;
 pub mod audit_manifest;
 pub mod capacity_policy;
@@ -24,6 +25,11 @@ pub mod key_ceremony;
 pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
+pub mod native_typed_csr_binding;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_server_lab;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_x509_lab;
 pub mod orchestrator;
 pub mod platform_readiness;
 pub mod policy_decisions;
@@ -42,6 +48,8 @@ pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
 pub mod revocation_policy;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pkcs1_x509_lab;
 pub mod rsa_pss_identifier;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pss_issuer_verify_lab;

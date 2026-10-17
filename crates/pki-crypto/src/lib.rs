@@ -3,13 +3,28 @@
 //! No signing provider is enabled in production builds.
 
 pub mod algorithm_catalog;
+pub mod certificate_algorithm_binding;
+pub mod crypto_agility;
+#[cfg(feature = "lab-software")]
+pub mod ecdsa_p256_lab;
+pub mod issuer_key_binding;
 #[cfg(feature = "lab-software")]
 pub mod lab;
+pub mod legacy_algorithm_bridge;
+#[cfg(feature = "lab-software")]
+pub mod multi_algorithm_lab;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_lab;
 pub mod provider_capabilities;
 pub mod provider_deployment;
 #[cfg(feature = "lab-software")]
+pub mod rsa_pkcs1_lab;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_agile_lab;
+#[cfg(feature = "lab-software")]
 pub mod rsa_pss_lab;
 pub mod rsa_pss_profile;
+pub mod typed_algorithm_catalog;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {

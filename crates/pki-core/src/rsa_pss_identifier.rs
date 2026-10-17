@@ -19,6 +19,25 @@ pub(crate) const PSS_SHA256_MGF1_SHA256_SALT32_DER: &[u8] = &[
     0x00, 0xa2, 0x03, 0x02, 0x01, 0x20,
 ];
 
+// Exact DER is intentionally pinned: RSASSA-PSS-params, RFC 4055 / RFC 8017.
+// Both hashAlgorithm and MGF1 hashAlgorithm must match; salt = digest length.
+// trailerField = 1 is DEFAULT and must not appear in canonical DER.
+const fn pss_params_variant(hash_oid_suffix: u8, salt_bytes: u8) -> [u8; 54] {
+    let mut der = [0u8; 54];
+    let mut i = 0;
+    while i < 54 {
+        der[i] = PSS_SHA256_MGF1_SHA256_SALT32_DER[i];
+        i += 1;
+    }
+    der[16] = hash_oid_suffix;
+    der[46] = hash_oid_suffix;
+    der[53] = salt_bytes;
+    der
+}
+
+pub(crate) const PSS_SHA384_MGF1_SHA384_SALT48_DER: [u8; 54] = pss_params_variant(0x02, 48);
+pub(crate) const PSS_SHA512_MGF1_SHA512_SALT64_DER: [u8; 54] = pss_params_variant(0x03, 64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PssIdentifierError {
     WrongAlgorithm,
@@ -53,9 +72,37 @@ pub fn preflight_pss_certificate_identifier(cert: &Certificate) -> Result<(), Ps
     check_pss_identifiers(&cert.tbs_certificate.signature, &cert.signature_algorithm)
 }
 
+/// Preserve the legacy SHA-256-only preflight relied upon by its dedicated
+/// RSA-PSS SHA-256 verifier. Do not silently broaden that verification path.
 pub fn check_pss_identifiers(
     tbs: &AlgorithmIdentifierOwned,
     outer: &AlgorithmIdentifierOwned,
+) -> Result<(), PssIdentifierError> {
+    check_pss_identifiers_with_profile(tbs, outer, PSS_SHA256_MGF1_SHA256_SALT32_DER)
+}
+
+/// Strict typed parameter preflight for SHA-256, SHA-384 and SHA-512.
+/// This function checks AlgorithmIdentifiers only; it does NOT verify
+/// the signature, key strength or certificate trust chain.
+pub fn check_pss_identifiers_for_digest(
+    tbs: &AlgorithmIdentifierOwned,
+    outer: &AlgorithmIdentifierOwned,
+    digest: trust_pki_crypto::crypto_agility::Digest,
+) -> Result<(), PssIdentifierError> {
+    use trust_pki_crypto::crypto_agility::Digest;
+    let expected: &[u8] = match digest {
+        Digest::Sha256 => PSS_SHA256_MGF1_SHA256_SALT32_DER,
+        Digest::Sha384 => &PSS_SHA384_MGF1_SHA384_SALT48_DER,
+        Digest::Sha512 => &PSS_SHA512_MGF1_SHA512_SALT64_DER,
+        Digest::Intrinsic => return Err(PssIdentifierError::UnsupportedParameterProfile),
+    };
+    check_pss_identifiers_with_profile(tbs, outer, expected)
+}
+
+fn check_pss_identifiers_with_profile(
+    tbs: &AlgorithmIdentifierOwned,
+    outer: &AlgorithmIdentifierOwned,
+    expected: &[u8],
 ) -> Result<(), PssIdentifierError> {
     if tbs.oid.to_string() != RSASSA_PSS_OID || outer.oid.to_string() != RSASSA_PSS_OID {
         return Err(PssIdentifierError::WrongAlgorithm);
@@ -74,15 +121,13 @@ pub fn check_pss_identifiers(
     let outer_der = outer_params
         .to_der()
         .map_err(|_| PssIdentifierError::InvalidDer)?;
-    // A bare empty sequence encodes the insecure SHA-1 default profile.
-    // This is only a preliminary envelope check, not full RSA-PSS decoding.
     if tbs_der != outer_der {
         return Err(PssIdentifierError::InconsistentParameters);
     }
     if tbs_der.len() <= 2 || tbs_der[0] != 0x30 {
         return Err(PssIdentifierError::InvalidParameterEnvelope);
     }
-    if tbs_der != PSS_SHA256_MGF1_SHA256_SALT32_DER {
+    if tbs_der.as_slice() != expected {
         return Err(PssIdentifierError::UnsupportedParameterProfile);
     }
     Ok(())
@@ -163,5 +208,50 @@ mod tests {
             check_pss_identifiers(&pss, &pss),
             Err(PssIdentifierError::InvalidParameterEnvelope)
         );
+    }
+    #[test]
+    fn supports_strict_sha384_and_sha512_without_weakening_sha256_verifier() {
+        use trust_pki_crypto::crypto_agility::Digest;
+        for (digest, params, salt) in [
+            (
+                Digest::Sha384,
+                PSS_SHA384_MGF1_SHA384_SALT48_DER.as_slice(),
+                48u8,
+            ),
+            (
+                Digest::Sha512,
+                PSS_SHA512_MGF1_SHA512_SALT64_DER.as_slice(),
+                64u8,
+            ),
+        ] {
+            let good = identifier(RSASSA_PSS_OID, Some(params));
+            assert_eq!(
+                check_pss_identifiers_for_digest(&good, &good, digest),
+                Ok(())
+            );
+            assert_eq!(
+                check_pss_identifiers(&good, &good),
+                Err(PssIdentifierError::UnsupportedParameterProfile)
+            );
+            let mut altered_salt = params.to_vec();
+            *altered_salt.last_mut().unwrap() = salt - 1;
+            let malformed = identifier(RSASSA_PSS_OID, Some(&altered_salt));
+            assert_eq!(
+                check_pss_identifiers_for_digest(&malformed, &malformed, digest),
+                Err(PssIdentifierError::UnsupportedParameterProfile)
+            );
+            let mut mgf_mismatch = params.to_vec();
+            mgf_mismatch[46] = 0x01;
+            let malformed = identifier(RSASSA_PSS_OID, Some(&mgf_mismatch));
+            assert_eq!(
+                check_pss_identifiers_for_digest(&malformed, &malformed, digest),
+                Err(PssIdentifierError::UnsupportedParameterProfile)
+            );
+            let sha256 = identifier(RSASSA_PSS_OID, Some(PSS_SHA256_MGF1_SHA256_SALT32_DER));
+            assert_eq!(
+                check_pss_identifiers_for_digest(&sha256, &good, digest),
+                Err(PssIdentifierError::InconsistentParameters)
+            );
+        }
     }
 }

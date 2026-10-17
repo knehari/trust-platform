@@ -3,6 +3,9 @@
 //! The caller MUST obtain AuthenticatedPrincipal from a trusted authentication boundary.
 //! CSR attributes are untrusted input and do not create permissions.
 
+pub mod native_typed_policy;
+pub mod typed_suite_policy;
+
 use trust_pki_crypto::SignatureAlgorithm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +164,17 @@ impl PolicyEngine for StaticPolicy {
             return Err(Denial::InvalidDnsName);
         }
 
+        // Keep legacy authorization aligned with native typed policy: reject
+        // duplicate SANs rather than issuing ambiguous identity evidence.
+        if request
+            .dns_sans
+            .iter()
+            .enumerate()
+            .any(|(i, name)| request.dns_sans[..i].contains(name))
+        {
+            return Err(Denial::InvalidDnsName);
+        }
+
         // The CN is not a TLS hostname authorization substitute: demand matching SAN.
         if !request.dns_sans.contains(&request.subject_common_name) {
             return Err(Denial::SubjectNotAuthorized);
@@ -273,6 +287,18 @@ mod tests {
         assert_eq!(decision.policy_version(), "v1");
         assert_eq!(decision.profile_id(), "lab-server");
         assert_eq!(decision.dns_sans(), &["api.lab.invalid".to_owned()]);
+    }
+
+    #[test]
+    fn legacy_policy_rejects_duplicate_sans() {
+        let sans = ["api.lab.invalid", "api.lab.invalid"];
+        let actor = AuthenticatedPrincipal {
+            subject_id: "build-agent",
+        };
+        assert_eq!(
+            policy().authorize(&actor, &request(&sans)),
+            Err(Denial::InvalidDnsName)
+        );
     }
 
     #[test]
