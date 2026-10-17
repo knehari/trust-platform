@@ -10,11 +10,13 @@ The server filters every query by signed CA scope and uses parameterized SQL wit
 
 At most eight database requests may run concurrently in this laboratory service. Requests above the bound fail promptly with HTTP 503 before scheduling blocking work; the permit is held through connection and query completion. PostgreSQL connection establishment has a three-second timeout. This reserves a finite application-side budget but is not a deployment capacity plan, rate limit or substitute for a dedicated production connection pool.
 
+The service writes one JSON line per completed HTTP request with a generated `X-Request-Id`, method, status, elapsed milliseconds and timestamp. The same ID is returned in the response header. It deliberately omits Authorization headers, raw URLs/query strings, request/response bodies and database errors. These process logs are diagnostic only: they are neither durable PKI audit events nor independently signed evidence. Central log handling, retention and security-event design remain open.
+
 ## Run in a disposable lab
 
 Apply migrations `0001`–`0012` in order to a disposable PostgreSQL 16 database. Create a separate login, grant `trust_api_reader`, and set `TRUST_DATABASE_URL` to that login's connection URL. Set `TRUST_OIDC_ISSUER` to an HTTPS issuer (or localhost HTTP for a test issuer), `TRUST_OIDC_AUDIENCE` to the API audience, and optionally `TRUST_API_BIND` (default `127.0.0.1:8081`). Run `cargo run -p trust-management-api --locked`. The API fails startup if discovery, JWKS or role isolation fails. `GET /v1/health` exposes only `{"status":"up"}`; it is liveness, not database readiness.
 
-The configured PostgreSQL driver uses `NoTls`, so this build is for a local/disposable lab only. A future deployment requires authenticated database transport, secret management, a production connection pool and capacity limits, JWKS refresh, structured security-event logging, rate limiting and operational readiness. The role claim mapping is deliberately narrow. The dependent [React console](../../frontend/README.md) adds a laboratory frontend and a loopback-only auto-approved OIDC fixture; that fixture is not real human authentication. Docker Compose, policy-controlled issuance and HSM integration remain open.
+The configured PostgreSQL driver uses `NoTls`, so this build is for a local/disposable lab only. A future deployment requires authenticated database transport, secret management, a production connection pool and capacity limits, JWKS refresh, durable security-event logging, rate limiting and operational readiness. The role claim mapping is deliberately narrow. The dependent [React console](../../frontend/README.md) adds a laboratory frontend and a loopback-only auto-approved OIDC fixture; that fixture is not real human authentication. Policy-controlled issuance and HSM integration remain open.
 
 ## Evidence and remaining gates
 

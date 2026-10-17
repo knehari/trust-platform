@@ -28,5 +28,4 @@ docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 
 PostgreSQL's entrypoint runs migrations `0001`–`0012` and seed data only when its volume is first created; startup fails on a migration error. This is a disposable bootstrap, not an online migration/rollback system. `NoTls` PostgreSQL transport is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
 
-The `laboratory-compose` GitHub Actions job builds the images and runs the same scoped smoke on a disposable runner. Local Docker execution must be recorded separately from CI; a successful `docker compose config` or local PostgreSQL script alone does not establish that the containers start.
-
+The `laboratory-compose` GitHub Actions job builds the images and runs the same scoped smoke on a disposable runner. [Run 39059362985](https://github.com/knehari/trust-platform/actions/runs/39059362985) passed on Draft #53's exact head. Local Docker execution must be recorded separately from CI; a successful `docker compose config` or local PostgreSQL script alone does not establish that the containers start.
