@@ -16,7 +16,7 @@ The logs show synthetic merge checkouts `c544a4c57efbee0f1ed2603a8a292b7b1ed04ac
 
 ## New work
 
-- [#46](https://github.com/knehari/trust-platform/pull/46), TRUST-89: reproduced C-01 on historical schema, added migration 0011 and synchronized regression tests. See [C01_GATE_SERIALIZATION](C01_GATE_SERIALIZATION.md). Final-head CI and independent human review remain acceptance gates.
+- [#46](https://github.com/knehari/trust-platform/pull/46), TRUST-89: reproduced C-01 on historical schema, added migration 0011 and synchronized regression tests. See [C01_GATE_SERIALIZATION](C01_GATE_SERIALIZATION.md). Final head `1de8f0a73505b1a8327c77a5d8373a0051aba017` passes [Rust/schema 39031246943](https://github.com/knehari/trust-platform/actions/runs/39031246943) and [race matrix 39031246961](https://github.com/knehari/trust-platform/actions/runs/39031246961), including independent issuers, rollback, replay and quarantine. Independent human review remains outstanding.
 - Consolidated laboratory branch carries exactly the three-file S-01 diff from #44 on top of strict #45 and C-01. The original branches are not rewritten or merged. Dependencies: #43 → #45 → #46, plus #44's patch; the next Draft PR targets #46.
 - `HISTORICAL_HEADS.json` freezes all 41 commit/tree identities. `scripts/recovery/inventory.py` indexes every historical file hash, Rust public declaration and test name. Initial run: no missing path, public name or test name across the 41 heads. This is a lexical omission check, **not** proof of behavioral or signature compatibility.
 - The four audit reports are preserved with a pointer to this record. README, architecture and roadmap distinguish existing laboratory crypto/DB behavior from missing application services.
@@ -30,6 +30,6 @@ The architecture still contains three Rust crates and PostgreSQL laboratory adap
 
 ## Environment and decisions
 
-Cargo and psql are absent locally; Docker Desktop startup did not produce a responsive daemon. Executable PostgreSQL and Rust validation uses disposable GitHub Actions services, with local Git/Python checks only. A requested agent patch-review attempt failed on usage limits, so it supplies no independent-review evidence. Human G0/security approvals, HSM hardware, independent audit and qualification are not substituted by CI.
+Rust 1.99.0 was installed under `/private/tmp/trust-tooling` without changing the global PATH. Local default-feature workspace tests now pass (71 core, 30 crypto, 13 policy, 3 integration assertions); Rustfmt passes. The new default matrix exposed missing Cargo example feature declarations and a feature-dependent negative-test expectation; both were corrected without enabling lab features by default. PostgreSQL remains CI-only: psql is absent locally and Docker is unresponsive. Full-feature/DB/OpenSSL evidence comes from disposable GitHub Actions jobs. A requested agent patch-review attempt failed on usage limits, so it supplies no independent-review evidence. Human G0/security approvals, HSM hardware, independent audit and qualification are not substituted by CI.
 
 Next dependency order: finish exact-head validation and semantic consolidation; reliable migrations/roles and crypto capability truth; document Go-versus-Rust ADR; authenticated read-only vertical slice; only then policy-controlled issuance and further operational services.
