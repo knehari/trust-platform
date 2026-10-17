@@ -37,7 +37,12 @@ fn configured_policy() -> StaticPolicy {
 #[test]
 fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
-        return;
+        assert_ne!(
+        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+        Ok("1"),
+        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+    );
+    return;
     };
     let ca_id = "88888888-8888-4888-8888-888888888888";
     let mut raw_db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
