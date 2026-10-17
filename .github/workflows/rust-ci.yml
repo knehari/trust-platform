@@ -137,6 +137,9 @@ jobs:
   schema:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Database integration tests must fail, not silently skip, if DB settings disappear.
+      TRUST_REQUIRE_DATABASE: "1"
     services:
       postgres:
         image: postgres:16
