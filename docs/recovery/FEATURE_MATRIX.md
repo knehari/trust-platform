@@ -14,6 +14,7 @@ PR #41; these increments have not landed on `main`.
 | React console and Compose lab | #51–#53: real read-only API/DB views, PKCE test login and container smoke; exact-head CI passed | No human IAM, certificate issuance or deployment assurance |
 | Request diagnostics | #54: request correlation ID and secret-safe JSON completion log; exact-head CI passed | Not a durable signed security audit |
 | Locked source dependency inventory | #55: 318 Cargo/npm package records in SPDX 2.3 JSON; local official-schema validation, negative drift test and exact-head SBOM CI passed | Lockfile inventory only; image SBOM, license review, provenance and other CI checks remain |
+| Server-owned CA reader grants | #56 branch: migration 0013 intersects signed token scope with issuer/subject/CA grants; old-behavior regression failed and fixed local API/SQL tests passed | Draft CI and independent review pending; no issuance authorization, human IAM or tenant-wide ABAC |
 
 # Matrice des fonctionnalités
 

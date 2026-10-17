@@ -5,6 +5,12 @@ DO $test$ BEGIN
     PERFORM count(*) FROM management_ca;
     PERFORM count(*) FROM management_certificate;
     PERFORM count(*) FROM management_audit;
+    PERFORM count(*) FROM management_reader_scope;
+    BEGIN
+        PERFORM count(*) FROM management_reader_grant;
+        RAISE EXCEPTION 'API role unexpectedly reads raw reader grants';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
     BEGIN
         PERFORM count(*) FROM certificate;
         RAISE EXCEPTION 'API role unexpectedly reads raw certificate DER';

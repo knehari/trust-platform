@@ -85,6 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !safe_db_role {
         return Err("management database login lacks read-only role isolation".into());
     }
+    query_db(database_url.clone(), database_slots.clone(), |db| {
+        db.query("SELECT 1 FROM management_reader_scope LIMIT 1", &[])
+            .map(|_| ())
+    })
+    .await
+    .map_err(|_| "management reader grants unavailable")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -207,9 +213,18 @@ async fn list_cas(
         .filter_map(|id| uuid::Uuid::parse_str(id).ok().map(|u| u.to_string()))
         .take(1024)
         .collect();
-    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
-        "SELECT ca_id,parent_ca_id,display_name,policy_version,created_at FROM management_ca WHERE ca_id=ANY($1::text[]) ORDER BY display_name LIMIT 100", &[&ids]
-    )).await?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let rows = query_db(state.database_url, state.database_slots, move |db| {
+        db.query(
+            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+         FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
+         WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
+         ORDER BY c.display_name LIMIT 100",
+            &[&ids, &issuer, &subject],
+        )
+    })
+    .await?;
     Ok(Json(
         rows.into_iter()
             .map(|r| Ca {
@@ -230,9 +245,18 @@ async fn get_ca(
 ) -> Result<Json<Ca>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let row = query_db(state.database_url, state.database_slots, move |db| db.query_opt(
-        "SELECT ca_id,parent_ca_id,display_name,policy_version,created_at FROM management_ca WHERE ca_id=$1", &[&ca_id]
-    )).await?.ok_or(StatusCode::NOT_FOUND)?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        db.query_opt(
+            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+         FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
+         WHERE c.ca_id=$1 AND g.issuer=$2 AND g.subject=$3",
+            &[&ca_id, &issuer, &subject],
+        )
+    })
+    .await?
+    .ok_or(StatusCode::FORBIDDEN)?;
     Ok(Json(Ca {
         ca_id: row.get(0),
         parent_ca_id: row.get(1),
@@ -249,9 +273,21 @@ async fn list_certificates(
 ) -> Result<Json<Vec<Certificate>>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
-        "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at DESC LIMIT 100", &[&ca_id]
-    )).await?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let rows = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer,&subject,&ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query(
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at \
+             FROM management_certificate WHERE ca_id=$1 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
+             ORDER BY signed_at DESC LIMIT 100", &[&ca_id,&issuer,&subject]
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?;
     Ok(Json(
         rows.into_iter()
             .map(|r| Certificate {
@@ -274,9 +310,21 @@ async fn list_audit(
 ) -> Result<Json<Vec<Audit>>, StatusCode> {
     let claims = authorize(&headers, &state.verifier)?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
-    let rows = query_db(state.database_url, state.database_slots, move |db| db.query(
-        "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC LIMIT 100", &[&ca_id]
-    )).await?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let rows = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer,&subject,&ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query(
+            "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
+             FROM management_audit WHERE ca_id=$1 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
+             ORDER BY recorded_at DESC LIMIT 100", &[&ca_id,&issuer,&subject]
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?;
     Ok(Json(
         rows.into_iter()
             .map(|r| Audit {
@@ -308,6 +356,7 @@ mod tests {
     #[test]
     fn scope_rejects_other_and_invalid_ca() {
         let claims = Claims {
+            iss: "https://issuer.example.test".into(),
             sub: "operator".into(),
             roles: vec!["trust-ca-reader".into()],
             ca_ids: vec!["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into()],
@@ -429,6 +478,84 @@ mod tests {
             .unwrap();
         assert_eq!(other_ca.status(), StatusCode::FORBIDDEN);
         if !database_url.is_empty() {
+            let mut unprovisioned = claims.clone();
+            unprovisioned["sub"] = json!("unprovisioned-operator");
+            unprovisioned["ca_ids"] = json!(["ffffffff-ffff-4fff-8fff-ffffffffffff"]);
+            let unprovisioned_token = encode(&header, &unprovisioned, &signer).unwrap();
+            let unprovisioned_list = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/cas")
+                        .header("authorization", format!("Bearer {unprovisioned_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unprovisioned_list.status(), StatusCode::OK);
+            let denied_body = unprovisioned_list
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&denied_body).unwrap(),
+                json!([])
+            );
+            let unprovisioned_detail = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff")
+                        .header("authorization", format!("Bearer {unprovisioned_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(unprovisioned_detail.status(), StatusCode::FORBIDDEN);
+            for suffix in ["certificates", "audit"] {
+                let denied = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!(
+                                "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/{suffix}"
+                            ))
+                            .header("authorization", format!("Bearer {unprovisioned_token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+            }
+            let mut ungranted_ca = claims.clone();
+            ungranted_ca["ca_ids"] = json!(["ffffffff-ffff-4fff-8fff-ffffffffffff"]);
+            let ungranted_token = encode(&header, &ungranted_ca, &signer).unwrap();
+            let ungranted_list = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/cas")
+                        .header("authorization", format!("Bearer {ungranted_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let ungranted_body = ungranted_list
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&ungranted_body).unwrap(),
+                json!([])
+            );
             let scoped = app
                 .oneshot(
                     Request::builder()

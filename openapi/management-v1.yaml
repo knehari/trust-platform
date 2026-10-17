@@ -25,7 +25,7 @@ paths:
                     const: up
   /v1/cas:
     get:
-      summary: List CAs in the caller's signed scope, at most 100
+      summary: List CAs in both the signed scope and server-managed reader grants, at most 100
       responses:
         '200':
           description: Scoped CA list
@@ -53,7 +53,6 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates:
     get:
@@ -97,7 +96,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids.
+      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids; issuer/subject/CA must also have a server-managed grant.
   parameters:
     CaId:
       in: path
@@ -138,6 +137,5 @@ components:
   responses:
     BadRequest: { description: Invalid CA identifier }
     Unauthorized: { description: Missing or invalid access token }
-    Forbidden: { description: Role or CA scope denied }
-    NotFound: { description: CA not found }
+    Forbidden: { description: Role, signed CA scope or server-managed grant denied }
     Unavailable: { description: Read database unavailable }

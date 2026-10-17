@@ -15,4 +15,7 @@ GRANT trust_api_reader TO trust_api_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');
+INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
+  ('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://other-issuer.example.test','lab-operator','ffffffff-ffff-4fff-8fff-ffffffffffff');
 SQL
