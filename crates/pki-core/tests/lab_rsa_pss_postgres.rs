@@ -24,7 +24,12 @@ use x509_cert::{
 #[test]
 fn rsa_pss_intent_signature_and_certificate_are_durable_and_nonreplayable() {
     let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
-        return;
+        assert_ne!(
+        env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+        Ok("1"),
+        "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+    );
+    return;
     };
     let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let actor = "rsa-pss-integration";
