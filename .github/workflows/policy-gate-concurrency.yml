@@ -33,3 +33,10 @@ jobs:
             psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
           done
           /tmp/c01-venv/bin/python tests/policy_gate_concurrency.py --expect-vulnerable
+      - name: Upgrade populated database and enforce race invariant
+        run: |
+          set -euo pipefail
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0011_policy_gate_serialization.sql
+          /tmp/c01-venv/bin/python tests/policy_gate_concurrency.py
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/policy_approval_presign_gate.sql
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/signed_policy_receipts.sql
