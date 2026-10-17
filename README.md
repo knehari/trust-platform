@@ -1,52 +1,48 @@
 # Sovereign Trust Platform
 
-**Private founder project: architecture and engineering prototype, not an operating CA.**
+> **Status (2026-10-17): private laboratory PKI implementation; not a deployed CA or production release.** The default branch `main` contains the documentation baseline only. Development is held in a stack of **41 draft pull requests** (#1–#41). This recovery branch is based on [PR #41](https://github.com/knehari/trust-platform/pull/41); the independent [recovery audit is PR #42](https://github.com/knehari/trust-platform/pull/42). Do not infer product maturity from `v3.x` or `v4.0` feature branch names.
 
-Sovereign PKI / certificate lifecycle management / post-quantum crypto-agility platform designed for on-premises and offline operation. The product is planned to have its **own Rust CA engine** built using proven cryptographic primitives, without embedding another CA product.
+## Goal
 
-## Sprint 0 implementation
+Develop a sovereign, crypto-agile private PKI and future CLM platform with a native Rust CA core using reviewed cryptographic libraries, PostgreSQL durable state, separate authentication/management APIs, operator UI and HSM signing adapters. The production architecture must support on-premises/offline operations, fail-closed security and independently verifiable audit evidence.
 
-- Rust workspace with three crates: trust-pki-core, trust-pki-policy and trust-pki-crypto.
-- Default-deny authorization separating trusted actors from untrusted certificate request fields.
-- Strict lab DNS allowlist, validity and issuer-signature algorithm policy.
-- RFC 5280 positive serial constraints and duplicate detection in an in-memory **test double**.
-- Restricted issuance-state transition mapping and fail-closed unconfigured signing provider.
-- PostgreSQL schema proposal with disposable-database constraint tests.
-- CI running Rustfmt, unit and negative tests, Clippy and SQL checks.
+## Implemented as laboratory code (not production-qualified)
 
-**Not implemented:** parsing or verification of PKCS#10 CSRs, X.509 certificate issuance and signing, CRLs, HSM, production authentication API or persistent runtime CA storage.
+- Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`.
+- CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
+- P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
+- PostgreSQL migrations 0001–0010 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence and draft governance; disposable CI tests.
+- Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
+- CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.
+- Unit tests and a Rust CI workflow with PostgreSQL and OpenSSL interoperability checks.
 
-## Quick start
+## Important gaps
 
-Install the toolchain configured in rust-toolchain.toml, then run:
+No network-facing authenticated PKI management API, no React interface, no production IAM adapter, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
 
-    cargo fmt --all -- --check
-    cargo test --workspace --all-targets --locked
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    cargo run -p trust-pki-core --example authorize_lab
+## How to inspect the laboratory workspace
 
-The example demonstrates a permitted policy decision and a denied unauthorized SAN. It does not generate a certificate.
+See [`rust-toolchain.toml`](rust-toolchain.toml) for the pinned toolchain. Prerequisites include Rust/Cargo, OpenSSL CLI and PostgreSQL for DB integration tests.
 
-## Repository map
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --all-targets --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+```
 
-- crates/pki-core: CA orchestration contracts and serial constraints.
-- crates/pki-policy: authorization with default deny.
-- crates/pki-crypto: software/HSM signing provider interface.
-- docs/architecture: state machine and conceptual data model.
-- docs/adr: engineering decisions.
-- docs/security: threat model and security requirements.
-- docs/specifications: X.509 and PKCS#10 requirements.
-- migrations: uninstalled PostgreSQL schema, tested in CI.
-- tests: SQL invariants and future integration checks.
-- .github/workflows: GitHub Actions quality gates.
+**Warning:** Some database tests skip when `TRUST_CI_DATABASE_URL` is missing; the above test command alone does not prove that PostgreSQL test paths ran. Consult `.github/workflows/rust-ci.yml` for disposable DB migrations and integration checks; never point this lab harness at a real CA database.
 
-## Delivery
+## Recovery and next work
 
-- Jira: https://knehari.atlassian.net/jira/software/projects/TRUST
-- Notion: https://app.notion.com/p/3f6e759bb68e8106b499e58596a4d797
-- Sprint 0 scope: docs/architecture/sprint-0-foundation.md
-- Security limitations: docs/security/sprint-0-assurance.md
+- [Technical audit and feature matrix (PR #42)](https://github.com/knehari/trust-platform/pull/42)
+- [R1 integration notes](docs/recovery/R1_CONSOLIDATION_NOTES.md)
+- [Roadmap (historical statuses explicitly noted)](ROADMAP.md)
+- [Crypto-agility requirements](docs/architecture/crypto-agility-by-design.md)
+- [Security gates](docs/testing/acceptance-gates.md)
+- [Engineering instructions](AGENTS.md)
 
-## Non-negotiable constraints
+Preserve existing security tests, migrations and public interfaces. Resolve the audit findings, consolidate source in reviewed steps, establish reproducible CI and a trusted identity boundary before adding operational APIs and UI.
 
-Private PKI MVP only; not a public WebPKI CA or a qualified trust service. No unreviewed cryptographic primitives, no employer proprietary code and no secrets in source. Legal/IP review and independent security assessment are mandatory before real-world use.
+## Non-negotiable gates
+
+**G0: legal/employment/IP separation** and independent security review are outstanding gates before integration/commercial use. Never bulk-merge the stacked draft PRs or claim eIDAS/ETSI/ANSSI qualification without an actual assessment. Never put CA private keys or employer proprietary information in source code.
