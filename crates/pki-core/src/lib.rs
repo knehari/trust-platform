@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
-//! Native CA orchestration contracts.
-//! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
+//! Native CA core: strict PKCS#10 verification, issuance orchestration with
+//! durable signing intents, X.509 assembly/verification, CP/CPS governance and
+//! laboratory issuance paths (`lab-software` feature).
+//!
+//! Several modules are standalone predicates that nothing calls yet (for
+//! example `key_ceremony`, `pqc_rollout`, `request_rate`, `production_gates`).
+//! They are not capabilities; see docs/architecture/unintegrated-contracts.md.
 pub mod agile_x509_identifier;
 pub mod audit_chain;
 pub mod audit_manifest;

@@ -1,6 +1,6 @@
 # Sovereign Trust Platform
 
-> **Status (2026-10-17): private laboratory PKI implementation; not a deployed CA or production release.** The default branch `main` contains the documentation baseline only. Development is held in a stack of **41 draft pull requests** (#1–#41). This recovery branch is based on [PR #41](https://github.com/knehari/trust-platform/pull/41); the independent [recovery audit is PR #42](https://github.com/knehari/trust-platform/pull/42). Do not infer product maturity from `v3.x` or `v4.0` feature branch names.
+> **Status (2026-10-17): private laboratory PKI implementation; not a deployed CA or production release.** The default branch `main` contains the documentation baseline only. Development is held in a stack of **70 draft pull requests** (#1–#70, none merged). This integration branch starts from [PR #70](https://github.com/knehari/trust-platform/pull/70), the top of that stack; the independent [recovery audit is PR #42](https://github.com/knehari/trust-platform/pull/42). Do not infer product maturity from `v3.x` or `v4.0` feature branch names.
 
 ## Goal
 
@@ -19,7 +19,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 
 ## Important gaps
 
-No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
+No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Sixteen standalone Rust domain contracts (from the `v2.5`–`v4.0` branches) are not called by anything; see [unintegrated contracts](docs/architecture/unintegrated-contracts.md) before citing any of them.
 
 ## How to inspect the laboratory workspace
 
@@ -30,6 +30,8 @@ cargo fmt --all -- --check
 cargo test --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
+
+**Supply chain and fuzzing:** `cargo deny check` (policy in [`deny.toml`](deny.toml)) and a gitleaks history scan run in [`supply-chain.yml`](.github/workflows/supply-chain.yml); CSR and CA-certificate DER parsers are fuzzed by [`fuzz/`](fuzz/README.md).
 
 **Database evidence:** Set `TRUST_REQUIRE_DATABASE=1` together with `TRUST_CI_DATABASE_URL` to require PostgreSQL tests. Missing configuration then fails explicitly. Without strict mode, the workspace command alone does not prove DB paths ran. Consult `.github/workflows/rust-ci.yml` for disposable DB migrations and integration checks; never point this lab harness at a real CA database.
 
