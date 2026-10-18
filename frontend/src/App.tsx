@@ -40,6 +40,22 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const clearSession = () => {
+      setUser(null);
+      setCas([]);
+      setSelectedCaId(null);
+      setCertificates([]);
+      setAuditEvents([]);
+    };
+    const removeExpired = userManager?.events.addAccessTokenExpired(() => {
+      if (!cancelled) {
+        clearSession();
+        setSessionError('Your session has expired. Sign in again.');
+      }
+    });
+    const removeUnloaded = userManager?.events.addUserUnloaded(() => {
+      if (!cancelled) clearSession();
+    });
     async function restoreSession() {
       if (!userManager) { setSessionLoading(false); return; }
       try {
@@ -57,7 +73,11 @@ export function App() {
       }
     }
     void restoreSession();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      removeExpired?.();
+      removeUnloaded?.();
+    };
   }, []);
 
   useEffect(() => {
