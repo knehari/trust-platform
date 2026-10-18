@@ -28,6 +28,8 @@ export function App() {
   const caKey = useRef('');
   const caMoreController = useRef<AbortController | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [certificateError, setCertificateError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -123,10 +125,13 @@ export function App() {
     detailKey.current = `${selectedCaId ?? ''}/${reload}`;
     moreController.current?.abort();
     setMoreLoading(false);
+    setDetailLoading(false);
     setCertificateCursor(null);
     setAuditCursor(null);
     setCertificates([]);
     setAuditEvents([]);
+    setCertificateError(null);
+    setAuditError(null);
     if (!user || user.expired || !selectedCaId) {
       return;
     }
@@ -134,16 +139,23 @@ export function App() {
     setDetailLoading(true);
     setDataError(null);
     const base = `/v1/cas/${encodeURIComponent(selectedCaId)}`;
-    Promise.all([
+    Promise.allSettled([
       apiGetPage<Certificate>(`${base}/certificates`, user.access_token, controller.signal),
       apiGetPage<AuditEvent>(`${base}/audit`, user.access_token, controller.signal),
     ]).then(([certs, events]) => {
-      setCertificates(certs.items);
-      setAuditEvents(events.items);
-      setCertificateCursor(certs.nextCursor);
-      setAuditCursor(events.nextCursor);
-    }).catch(error => {
-      if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load CA details.');
+      if (controller.signal.aborted) return;
+      if (certs.status === 'fulfilled') {
+        setCertificates(certs.value.items);
+        setCertificateCursor(certs.value.nextCursor);
+      } else {
+        setCertificateError(certs.reason instanceof Error ? certs.reason.message : 'Could not load certificates.');
+      }
+      if (events.status === 'fulfilled') {
+        setAuditEvents(events.value.items);
+        setAuditCursor(events.value.nextCursor);
+      } else {
+        setAuditError(events.reason instanceof Error ? events.reason.message : 'Could not load audit events.');
+      }
     }).finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => { controller.abort(); moreController.current?.abort(); };
   }, [user, selectedCaId, reload]);
@@ -221,7 +233,7 @@ export function App() {
         {!casLoading && cas.length === 0 && !dataError && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
         {cas.length > 0 && <>
           {section === 'overview' && <>
-            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={detailLoading ? '…' : String(certificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={detailLoading ? '…' : String(auditEvents.length)} detail="Records loaded" icon="◷" /></div>
+            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={detailLoading ? '…' : certificateError ? '—' : String(certificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={detailLoading ? '…' : auditError ? '—' : String(auditEvents.length)} detail="Records loaded" icon="◷" /></div>
             <div className="section-head"><div><h2>Your authorities</h2><p>Choose an authority to inspect its records.</p></div><button className="link-button" onClick={() => setSection('authorities')}>View all authorities →</button></div>
             <AuthorityList cas={cas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />
             {caCursor && <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>}
@@ -229,8 +241,8 @@ export function App() {
           {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><AuthorityList cas={cas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />{caCursor && <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>}</div><div className="detail-panel">
             {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
               {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
-              {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificates.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : certificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{certificates.map(cert => <tr key={cert.request_id}><td className="mono">{shortId(cert.serial_hex)}</td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>{certificateCursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>}</>}</div>}
-              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditEvents.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : auditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><div className="timeline">{auditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><strong>{event.event_type}</strong><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>{auditCursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>}</>}</div>}
+              {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificates.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setReload(value => value + 1)} /> : certificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{certificates.map(cert => <tr key={cert.request_id}><td className="mono">{shortId(cert.serial_hex)}</td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>{certificateCursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>}</>}</div>}
+              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditEvents.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setReload(value => value + 1)} /> : auditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><div className="timeline">{auditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><strong>{event.event_type}</strong><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>{auditCursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>}</>}</div>}
             </>}
           </div></div>}
         </>}
@@ -252,4 +264,7 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 
 function LoadingRows() { return <div className="loading-detail"><span className="spinner" /> Loading records…</div>; }
+function LoadFailure({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="notice error" role="alert">{message} <button onClick={onRetry}>Retry</button></div>;
+}
 function EmptyDetail({ title, detail }: { title: string; detail: string }) { return <div className="empty-detail"><div>□</div><strong>{title}</strong><p>{detail}</p></div>; }
