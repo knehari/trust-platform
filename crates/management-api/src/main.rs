@@ -242,6 +242,9 @@ async fn log_request(request: Request<Body>, next: Next) -> Response {
         "x-request-id",
         HeaderValue::from_str(&id).expect("generated request ID is ASCII"),
     );
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("no-store"));
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_millis())
@@ -573,6 +576,13 @@ mod tests {
             .await
             .unwrap();
         let status = response.status();
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
         let cursor = response
             .headers()
             .get("x-next-cursor")
@@ -889,6 +899,10 @@ mod tests {
                 .unwrap();
             assert_eq!(overloaded.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert!(overloaded.headers().contains_key("x-request-id"));
+            assert_eq!(
+                overloaded.headers().get("cache-control").unwrap(),
+                "no-store"
+            );
         }
         let live_while_busy = app
             .clone()
@@ -901,6 +915,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(live_while_busy.status(), StatusCode::OK);
+        assert_eq!(
+            live_while_busy.headers().get("cache-control").unwrap(),
+            "no-store"
+        );
         assert_eq!(
             state.database_slots.available_permits(),
             MAX_DATABASE_REQUESTS
@@ -1010,6 +1028,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            no_token
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
         let first_request_id = no_token
             .headers()
             .get("x-request-id")
