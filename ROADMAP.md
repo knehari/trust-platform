@@ -6,6 +6,8 @@
 
 > **Read-only application checkpoint:** Draft #69 adds bounded cursor pagination to certificate and audit history in the Rust API and React console. A local restricted PostgreSQL fixture proves two pages with equal timestamps and CA-scope denial. Its CI status is recorded on the PR; it does not add issuance, human IAM or a production history snapshot.
 
+> **CA inventory checkpoint:** Draft #70 removes the silent 100-CA ceiling from the read-only API and console. A separate 102-CA fixture checks stable pages and exclusion of a CA named in the token but lacking a server-managed grant. Review and production data benchmarks remain open.
+
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
 # Trust Platform — Product & Engineering Roadmap

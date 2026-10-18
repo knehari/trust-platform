@@ -79,6 +79,11 @@ struct PaginationQuery {
     before: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct CaPaginationQuery {
+    after: Option<String>,
+}
+
 fn parse_history_cursor(raw: Option<String>) -> Result<Option<(String, String)>, StatusCode> {
     let Some(raw) = raw else { return Ok(None) };
     let (timestamp, id) = raw.split_once('|').ok_or(StatusCode::BAD_REQUEST)?;
@@ -335,8 +340,19 @@ async fn query_db<T: Send + 'static>(
 async fn list_cas(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<Ca>>, StatusCode> {
+    Query(page): Query<CaPaginationQuery>,
+) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
+    let after = page
+        .after
+        .map(|value| {
+            uuid::Uuid::parse_str(&value)
+                .ok()
+                .filter(|id| id.to_string() == value)
+                .map(|_| value)
+                .ok_or(StatusCode::BAD_REQUEST)
+        })
+        .transpose()?;
     let ids: Vec<String> = claims
         .ca_ids
         .iter()
@@ -350,22 +366,36 @@ async fn list_cas(
             "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
-         ORDER BY c.display_name LIMIT 100",
-            &[&ids, &issuer, &subject],
+         AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ( \
+           SELECT anchor.display_name,anchor.ca_id FROM management_ca anchor \
+           JOIN management_reader_scope anchor_grant ON anchor_grant.ca_id=anchor.ca_id \
+           WHERE anchor.ca_id=$4 AND anchor.ca_id=ANY($1::text[]) \
+           AND anchor_grant.issuer=$2 AND anchor_grant.subject=$3)) \
+         ORDER BY c.display_name,c.ca_id LIMIT 101",
+            &[&ids, &issuer, &subject, &after],
         )
     })
     .await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| Ca {
-                ca_id: r.get(0),
-                parent_ca_id: r.get(1),
-                display_name: r.get(2),
-                policy_version: r.get(3),
-                created_at: r.get(4),
-            })
-            .collect(),
-    ))
+    let has_more = rows.len() > HISTORY_PAGE_SIZE;
+    let items: Vec<Ca> = rows
+        .into_iter()
+        .take(HISTORY_PAGE_SIZE)
+        .map(|r| Ca {
+            ca_id: r.get(0),
+            parent_ca_id: r.get(1),
+            display_name: r.get(2),
+            policy_version: r.get(3),
+            created_at: r.get(4),
+        })
+        .collect();
+    let next = has_more.then(|| {
+        items
+            .last()
+            .expect("nonempty page has a final item")
+            .ca_id
+            .clone()
+    });
+    Ok((history_headers(next), Json(items)))
 }
 
 async fn get_ca(
@@ -618,6 +648,78 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn ca_pagination_reads_all_scoped_rows() {
+        let database_url = match env::var("TRUST_API_CA_PAGINATION_DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("SKIP: CA pagination fixture not configured; CI runs this test with a dedicated seeded database");
+                return;
+            }
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-page-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-page-test".into());
+        let now = jsonwebtoken::get_current_timestamp();
+        let mut ca_ids: Vec<String> = (1..=102)
+            .map(|n| format!("55555555-5555-4555-8555-{n:012x}"))
+            .collect();
+        ca_ids.push("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into());
+        let token = encode(
+            &header,
+            &json!({
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator",
+                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "ca_ids":ca_ids
+            }),
+            &signer,
+        )
+        .unwrap();
+        let app = router(AppState {
+            verifier,
+            database_url,
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let (status, cursor, first) = history_page(&app, &token, "/v1/cas").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first.len(), 100);
+        let cursor = cursor.expect("102 CAs require another page");
+        let (status, next, second) =
+            history_page(&app, &token, &format!("/v1/cas?after={cursor}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second.len(), 2);
+        assert!(next.is_none());
+        let ids: HashSet<&str> = first
+            .iter()
+            .chain(&second)
+            .map(|item| item["ca_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 102);
+        assert_eq!(first[99]["ca_id"].as_str(), Some(cursor.as_str()));
+        assert!(!ids.contains("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"));
+        let (status, _, _) =
+            history_page(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = history_page(&app, &token, "/v1/cas?after=invalid").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
     #[test]
     fn scope_rejects_other_and_invalid_ca() {

@@ -230,6 +230,10 @@ jobs:
           TRUST_REQUIRE_DATABASE=1 \
           TRUST_API_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
             cargo test -p trust-management-api --bin trust-management-api history_pagination_reads_all_scoped_rows --locked -- --nocapture
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_ca_pagination_seed.sql >/dev/null
+          TRUST_REQUIRE_DATABASE=1 \
+          TRUST_API_CA_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
+            cargo test -p trust-management-api --bin trust-management-api ca_pagination_reads_all_scoped_rows --locked -- --nocapture
       - name: Upgrade populated management database
         run: |
           set -euo pipefail
