@@ -23,7 +23,7 @@ PR #41; these increments have not landed on `main`.
 | Management logical restore | Drafts #62–#65: disposable `pg_dump`/`pg_restore` preserves fixture rows and reader restrictions, refuses a missing reader role in a fresh cluster, rolls back a failed restore, and verifies a real restricted login; exact-head CI passed | Cluster-global roles are provisioned separately; no CA keys, PITR, RTO/RPO or production backup |
 | Interrupted management migration | Draft #66: injected 0013 DDL failure rolls back that migration while 0012 and populated data survive; manual retry passes in exact-head CI | Direct SQL rehearsal only; no automatic deployed-data recovery |
 | Ledgered management migration | Draft #67: 0012–0013 runner serializes operators, records source checksums transactionally, skips repeat runs and refuses drift or untracked schema; six exact-head CI checks passed | Laboratory `NoTls` operator only; no production migration service or automatic adoption |
-| Ledgered restore continuity | Draft #68: a disposable restore compares full ledger rows and the runner skips both migrations afterward; local PostgreSQL 16.15 checks passed | Exact-head CI and independent review pending; no tamper-evident audit, protected backup or production recovery |
+| Ledgered restore continuity | Draft #68: a disposable restore compares full ledger rows and the runner skips both migrations afterward; local PostgreSQL 16.15 and [code-commit CI](https://github.com/knehari/trust-platform/actions/runs/39137372438) passed | Independent review remains; no tamper-evident audit, protected backup or production recovery |
 
 # Matrice des fonctionnalités
 
