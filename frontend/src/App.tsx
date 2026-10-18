@@ -287,32 +287,30 @@ export function App() {
   </div>;
 }
 
-function CertificateDialog({ certificate, onClose }: { certificate: Certificate; onClose: () => void }) {
+function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { titleId: string; title: string; eyebrow: string; fields: { label: string; value: string }[]; note: string; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
     return () => element?.close();
   }, []);
-  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby="certificate-dialog-title" onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">CERTIFICATE METADATA</div><h2 id="certificate-dialog-title">Certificate detail</h2></div><button className="dialog-close" aria-label="Close certificate detail" onClick={() => dialog.current?.close()}>×</button></div>
-    <div className="detail-grid"><Info label="SERIAL" value={certificate.serial_hex} /><Info label="FINGERPRINT SHA-256" value={certificate.fingerprint_sha256} /><Info label="REQUEST ID" value={certificate.request_id} /><Info label="STATE" value={certificate.state} /><Info label="SIGNED" value={displayDate(certificate.signed_at)} /><Info label="PUBLISHED" value={displayDate(certificate.published_at)} /></div>
-    <p className="dialog-note">Database metadata only. Certificate contents and cryptographic validity are not shown or verified here.</p>
+  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
+    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}>×</button></div>
+    <div className="detail-grid">{fields.map(field => <Info key={field.label} label={field.label} value={field.value} />)}</div>
+    <p className="dialog-note">{note}</p>
   </dialog>;
 }
 
+function CertificateDialog({ certificate, onClose }: { certificate: Certificate; onClose: () => void }) {
+  return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
+    fields={[{ label: 'SERIAL', value: certificate.serial_hex }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256 }, { label: 'REQUEST ID', value: certificate.request_id }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
+    note="Database metadata only. Certificate contents and cryptographic validity are not shown or verified here." />;
+}
+
 function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
-  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby="audit-dialog-title" onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">AUDIT METADATA</div><h2 id="audit-dialog-title">Audit event detail</h2></div><button className="dialog-close" aria-label="Close audit event detail" onClick={() => dialog.current?.close()}>×</button></div>
-    <div className="detail-grid"><Info label="EVENT ID" value={event.event_id} /><Info label="EVENT TYPE" value={event.event_type} /><Info label="DECISION" value={event.decision} /><Info label="POLICY VERSION" value={event.policy_version ?? 'Not recorded'} /><Info label="RECORDED" value={displayDate(event.recorded_at)} /></div>
-    <p className="dialog-note">Database metadata only. This view does not include actor identity or independent audit integrity proof.</p>
-  </dialog>;
+  return <MetadataDialog titleId="audit-dialog-title" title="Audit event detail" eyebrow="AUDIT METADATA" onClose={onClose}
+    fields={[{ label: 'EVENT ID', value: event.event_id }, { label: 'EVENT TYPE', value: event.event_type }, { label: 'DECISION', value: event.decision }, { label: 'POLICY VERSION', value: event.policy_version ?? 'Not recorded' }, { label: 'RECORDED', value: displayDate(event.recorded_at) }]}
+    note="Database metadata only. This view does not include actor identity or independent audit integrity proof." />;
 }
 
 function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: string }) {
