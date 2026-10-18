@@ -19,9 +19,10 @@ Success means, in CI and locally:
    released, the next CRL no longer lists it and verification succeeds.
 3. CRL numbers are strictly increasing per CA and never reused, including after
    an ambiguous signing attempt or a crash.
-4. Every state change needed two distinct authorized actors and left an audit
-   trail; a definitive revocation cannot be undone by any function or direct
-   `UPDATE`/`DELETE` on the current-state table.
+4. Every state change made through the provided functions needed two
+   distinct authorized actors and left an audit trail; a definitive revocation
+   cannot be undone by any function or direct `UPDATE`/`DELETE` on the
+   current-state table (see section 6 for direct writes).
 
 Out of scope for this slice: OCSP, delta CRLs, HTTP distribution and the CRL
 Distribution Points extension, CRL reads through the management API, non-P-256
@@ -119,7 +120,9 @@ CA at the time they act. Two accounts held by one person are an IdP concern.
 - `certificate_status_change` (append-only history):
   `change_id UUID PK`, `ca_id`, `serial_der_content` (FK → certificate),
   `action` in `SUSPEND | RELEASE | REVOKE`, `reason_code SMALLINT` (NULL only
-  for RELEASE), `invalidity_at TIMESTAMPTZ NULL`, `maker_issuer`,
+  for RELEASE), `invalidity_at TIMESTAMPTZ NULL` (1970-01-01 .. 9999-12-31,
+  not after `proposed_at` / `decided_at`; the functions refuse other dates
+  with 22023, so every CRL can encode it), `maker_issuer`,
   `maker_subject`, `checker_issuer NULL`, `checker_subject NULL`,
   `status` in `PROPOSED | APPROVED | REJECTED | WITHDRAWN`, `proposed_at`,
   `decided_at NULL`. Partial unique index: one `PROPOSED` row per
@@ -152,7 +155,9 @@ CA at the time they act. Two accounts held by one person are an IdP concern.
 ### Rust
 
 Module `pki-core::revocation`: `RevocationReason` enum (no free integers;
-`certificateHold` only constructible for a suspension), `StatusAction`,
+`certificateHold` can be constructed like any other reason, but
+`decide_status_change` accepts it only for a suspension and rejects it for a
+revocation, and the database re-checks the same rule), `StatusAction`,
 `OfficerIdentity { issuer, subject }`, and a PostgreSQL adapter behind the
 `postgres-store` feature calling the functions above.
 
@@ -190,8 +195,14 @@ and `CrlVerifier` traits.
    or -1)`).
 2. **Build** — Rust builds the `TBSCertList` deterministically from the
    reservation (entries sorted by serial).
-3. **Intent** — `record_crl_intent(ca, crl_number, operation_ref, tbs_sha256)`;
-   a replay or a mismatched number fails and the signer is not called.
+3. **Intent** — `record_crl_intent(ca, crl_number, operation_ref, tbs_sha256,
+   entries_sha256, this_update, next_update, expired_certs_on_crl_since)`; the
+   CA core computes `entries_sha256` in Rust from the reservation it signs
+   (`crl::entries_sha256`, same layout as `crl_entry_encoding`) and the
+   database refuses (23514) a replay, a mismatched number, or any difference
+   between these values and the reservation, so the signer is not called.
+   `CrlReservation` is sealed (private fields, validated constructor), so a
+   reservation cannot be edited between reserve and sign.
 4. **Sign** once.
 5. **Verify independently before persistence** — signature with the CA
    certificate's public key; issuer equals the CA subject byte for byte; AKI
@@ -256,6 +267,11 @@ handles intents left by a crash. No automatic re-sign.
 - No publication: a stored CRL is not proof that relying parties can fetch it.
 - Database owners can bypass triggers; external append-only audit remains an
   open item (D-04).
+- The SQL functions are `SECURITY INVOKER`, so any role able to call them needs
+  DML on `revocation` and `certificate_status_change` and could bypass
+  maker-checker with direct writes (the guard triggers and CHECKs still hold,
+  the two-actor rule does not); the least-privilege write model is deferred to
+  the API slice.
 - An ETSI conformance target is a configuration guard, not evidence of
   conformity; only an assessment by a conformity assessment body can establish
   that.
