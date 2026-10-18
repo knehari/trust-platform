@@ -34,6 +34,12 @@ if [[ -z "$source_fingerprint" ]]; then
   echo 'Source lacks the populated management fixture' >&2
   exit 1
 fi
+source_ledger_exists=$("$psql_bin" "$TRUST_RESTORE_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT to_regclass('public.management_migration_ledger') IS NOT NULL")
+if [[ "$source_ledger_exists" == t ]]; then
+  source_ledger_rows=$("$psql_bin" "$TRUST_RESTORE_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c "SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.version)::text, '[]') FROM management_migration_ledger l")
+fi
 
 umask 077
 backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/trust-management-restore.XXXXXX")
@@ -50,6 +56,20 @@ restored_fingerprint=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_
 if [[ "$source_fingerprint" != "$restored_fingerprint" ]]; then
   echo 'Restored management rows differ from the source snapshot' >&2
   exit 1
+fi
+target_ledger_exists=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT to_regclass('public.management_migration_ledger') IS NOT NULL")
+if [[ "$source_ledger_exists" != "$target_ledger_exists" ]]; then
+  echo 'Restored migration ledger presence differs from the source snapshot' >&2
+  exit 1
+fi
+if [[ "$source_ledger_exists" == t ]]; then
+  restored_ledger_rows=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c "SELECT COALESCE(jsonb_agg(to_jsonb(l) ORDER BY l.version)::text, '[]') FROM management_migration_ledger l")
+  if [[ "$source_ledger_rows" != "$restored_ledger_rows" ]]; then
+    echo 'Restored migration ledger rows differ from the source snapshot' >&2
+    exit 1
+  fi
 fi
 "$psql_bin" "$TRUST_RESTORE_TARGET_URL" -X -v ON_ERROR_STOP=1 \
   -f tests/management_api_readonly.sql >/dev/null
