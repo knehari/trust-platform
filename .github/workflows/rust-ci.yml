@@ -202,7 +202,17 @@ jobs:
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://other-issuer.example.test','operator','ffffffff-ffff-4fff-8fff-ffffffffffff')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_api_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_api_reader TO trust_api_ci"
-          TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-management-api --locked
+          # Strict mode: every API database test must run. The pagination and TLS
+          # tests need their own seeded/TLS databases and run in later steps.
+          TRUST_REQUIRE_DATABASE=1 \
+          TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo test -p trust-management-api --locked -- \
+            --skip pagination_reads_all_scoped_rows --skip verify_full_connects_only_to_a_trusted_matching_server
+          if env -u TRUST_API_TEST_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-management-api --locked database_capacity_rejects_excess_work_before_connecting; then
+            echo "FAIL: management API database test passed without its mandatory DB URL" >&2
+            exit 1
+          fi
+          echo "PASS: management API database tests reject a missing DB URL in strict CI"
           # Negative test: strict mode must fail if a DB-dependent test has no URL.
           if env -u TRUST_CI_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked; then
             echo "FAIL: DB-dependent test passed without its mandatory DB URL" >&2

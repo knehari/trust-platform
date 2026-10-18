@@ -540,6 +540,24 @@ mod tests {
     use std::collections::HashSet;
     use tower::ServiceExt;
 
+    /// Returns the database URL in `var`, or `None` to skip a database test.
+    /// Under `TRUST_REQUIRE_DATABASE=1` a missing URL fails instead, so a CI
+    /// job cannot pass by silently skipping its PostgreSQL coverage.
+    fn test_database_url(var: &str) -> Option<String> {
+        match env::var(var) {
+            Ok(url) if !url.is_empty() => Some(url),
+            _ => {
+                assert_ne!(
+                    env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+                    Ok("1"),
+                    "{var} is required when TRUST_REQUIRE_DATABASE=1"
+                );
+                eprintln!("SKIP: {var} not configured");
+                None
+            }
+        }
+    }
+
     async fn history_page(
         app: &Router,
         token: &str,
@@ -572,12 +590,9 @@ mod tests {
 
     #[tokio::test]
     async fn history_pagination_reads_all_scoped_rows() {
-        let database_url = match env::var("TRUST_API_PAGINATION_DATABASE_URL") {
-            Ok(url) => url,
-            Err(_) => {
-                eprintln!("SKIP: pagination PostgreSQL fixture not configured; CI runs this test with a dedicated seeded database");
-                return;
-            }
+        // CI runs this test with a dedicated seeded database.
+        let Some(database_url) = test_database_url("TRUST_API_PAGINATION_DATABASE_URL") else {
+            return;
         };
         let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
         let public = private.to_public_key();
@@ -655,12 +670,9 @@ mod tests {
 
     #[tokio::test]
     async fn ca_pagination_reads_all_scoped_rows() {
-        let database_url = match env::var("TRUST_API_CA_PAGINATION_DATABASE_URL") {
-            Ok(url) => url,
-            Err(_) => {
-                eprintln!("SKIP: CA pagination fixture not configured; CI runs this test with a dedicated seeded database");
-                return;
-            }
+        // CI runs this test with a dedicated seeded database.
+        let Some(database_url) = test_database_url("TRUST_API_CA_PAGINATION_DATABASE_URL") else {
+            return;
         };
         let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
         let public = private.to_public_key();
@@ -744,8 +756,8 @@ mod tests {
 
     #[tokio::test]
     async fn database_capacity_rejects_excess_work_before_connecting() {
-        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
-            return; // The CI integration job supplies a disposable PostgreSQL database.
+        let Some(url) = test_database_url("TRUST_API_TEST_DATABASE_URL") else {
+            return;
         };
         let slots = Arc::new(Semaphore::new(1));
         let held = slots.clone().acquire_owned().await.unwrap();
@@ -766,8 +778,8 @@ mod tests {
 
     #[tokio::test]
     async fn database_query_timeout_releases_capacity() {
-        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
-            return; // The CI integration job supplies a disposable PostgreSQL database.
+        let Some(url) = test_database_url("TRUST_API_TEST_DATABASE_URL") else {
+            return;
         };
         let slots = Arc::new(Semaphore::new(1));
         let slow = query_db(Database::lab_plaintext(url.clone()), slots.clone(), |db| {
@@ -807,7 +819,9 @@ mod tests {
             "nbf":now-1, "exp":now+60, "roles":[],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
-        let database_url = env::var("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
+        // The JWT/HTTP checks run without a database; the database reads below
+        // run only when the URL is configured (required in strict CI).
+        let database_url = test_database_url("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
         let state = AppState {
             verifier,
             database: Database::lab_plaintext(database_url.clone()),
