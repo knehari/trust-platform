@@ -224,3 +224,19 @@ jobs:
           docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade
           TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
             bash tests/management_populated_upgrade.sh
+      - name: Restore populated management snapshot
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_restored
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_restored" \
+            bash tests/management_dump_restore.sh
+          if TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+             TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_restored" \
+             bash tests/management_dump_restore.sh; then
+            echo 'FAIL: restore accepted a populated target' >&2
+            exit 1
+          fi
+          echo 'PASS: restore refuses a populated target'
