@@ -85,3 +85,9 @@ Later [Draft #56](https://github.com/knehari/trust-platform/pull/56) passed all 
 ## OIDC signing-key rotation increment
 
 The next dependent branch refreshes JWKS on an unknown key ID with one network attempt per five seconds, and requires refresh after 60 seconds before accepting a cached key. A successful refresh replaces the full signing-key map; invalid or unavailable JWKS fails closed once the cache is stale. A local loopback issuer test rotates between two ephemeral RSA keys, checks rejection of the removed key and bounds repeated unknown-key fetches. This is a read-only laboratory identity improvement; CI and independent review remain acceptance gates.
+
+Later [Draft #57](https://github.com/knehari/trust-platform/pull/57) passed all seven exact-head checks at `69a0e0d8f8f7c6accebd731afc82b69e3ac7d7fb`, including [Rust/schema](https://github.com/knehari/trust-platform/actions/runs/39083719450) and [Compose smoke](https://github.com/knehari/trust-platform/actions/runs/39083719464). Codex Security diff scan `dcc210d2-96ea-4399-8003-10095bcfaa9e` completed with zero reportable findings on its two changed source files. Independent human review and production IAM remain open.
+
+## Management SQL deadline increment
+
+The next TRUST-50 laboratory branch adds a three-second PostgreSQL statement timeout to every API database session in addition to the existing connection timeout and eight-request permit budget. A disposable PostgreSQL regression first failed against the #57 behavior: `SELECT pg_sleep(5)` completed normally; after the change the same read is canceled and the permit is released for a subsequent query. This closes the unbounded connected-query wait in this service, not general production capacity, pooling or database transport assurance. Exact-head CI remains the acceptance gate.

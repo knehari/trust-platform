@@ -24,6 +24,7 @@ use std::{
 use tokio::sync::Semaphore;
 
 const MAX_DATABASE_REQUESTS: usize = 8;
+const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -194,6 +195,11 @@ async fn query_db<T: Send + 'static>(
         let mut config: postgres::Config =
             url.parse().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         config.connect_timeout(Duration::from_secs(3));
+        // Apply the limit at session startup so every management read, including
+        // startup checks, is bounded even after the connection succeeds.
+        config.options(&format!(
+            "-c statement_timeout={DATABASE_STATEMENT_TIMEOUT_MS}"
+        ));
         let mut db = config
             .connect(NoTls)
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
@@ -392,6 +398,25 @@ mod tests {
         })
         .await;
         assert_eq!(available, Ok(1));
+    }
+
+    #[tokio::test]
+    async fn database_query_timeout_releases_capacity() {
+        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
+            return; // The CI integration job supplies a disposable PostgreSQL database.
+        };
+        let slots = Arc::new(Semaphore::new(1));
+        let slow = query_db(url.clone(), slots.clone(), |db| {
+            db.query_one("SELECT pg_sleep(5)", &[]).map(|_| ())
+        })
+        .await;
+        assert_eq!(slow, Err(StatusCode::SERVICE_UNAVAILABLE));
+        let recovered = query_db(url, slots, |db| {
+            db.query_one("SELECT 1", &[])
+                .map(|row| row.get::<_, i32>(0))
+        })
+        .await;
+        assert_eq!(recovered, Ok(1));
     }
 
     #[tokio::test]
