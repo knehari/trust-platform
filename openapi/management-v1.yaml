@@ -102,6 +102,28 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates/{request_id}:
+    get:
+      summary: Read one certificate metadata record in a scoped CA
+      description: Returns metadata only after checking the signed CA scope and current server-owned reader grant. Certificate DER is not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Certificate metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No certificate metadata for that request in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/audit:
     get:
       summary: Read one ordered page of audit event metadata for a scoped CA, at most 100
@@ -182,7 +204,7 @@ components:
         policy_version: { type: [string, 'null'] }
         recorded_at: { type: string, format: date-time }
   responses:
-    BadRequest: { description: Invalid CA identifier }
+    BadRequest: { description: Invalid identifier or cursor }
     Unauthorized: { description: Missing or invalid access token }
     Forbidden: { description: Role, signed CA scope or server-managed grant denied }
     Unavailable: { description: Management data request capacity exhausted or read database unavailable }
