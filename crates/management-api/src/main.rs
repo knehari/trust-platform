@@ -1,3 +1,6 @@
+#![forbid(unsafe_code)]
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 mod auth;
 mod database;
 

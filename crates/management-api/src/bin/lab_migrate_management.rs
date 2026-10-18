@@ -1,3 +1,6 @@
+#![forbid(unsafe_code)]
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! Transactional laboratory runner for management migrations 0012 and 0013.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 

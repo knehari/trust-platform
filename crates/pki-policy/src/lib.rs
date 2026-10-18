@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! Fail-closed authorization for a private PKI.
 //! The caller MUST obtain AuthenticatedPrincipal from a trusted authentication boundary.
 //! CSR attributes are untrusted input and do not create permissions.

@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
 //! Native CA core: strict PKCS#10 verification, issuance orchestration with
 //! durable signing intents, X.509 assembly/verification, CP/CPS governance and
 //! laboratory issuance paths (`lab-software` feature).
