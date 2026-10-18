@@ -1,0 +1,16 @@
+# Enable "Require review from Code Owners" in branch protection for main so
+# security-sensitive changes cannot merge without an explicit human review.
+*                         @knehari
+
+/crates/pki-crypto/       @knehari
+/crates/pki-core/         @knehari
+/crates/pki-policy/       @knehari
+/crates/management-api/   @knehari
+/migrations/              @knehari
+/docs/adr/                @knehari
+/docs/security/           @knehari
+/.github/                 @knehari
+/deny.toml                @knehari
+/.gitleaks.toml           @knehari
+/Cargo.lock               @knehari
+/frontend/package-lock.json @knehari
