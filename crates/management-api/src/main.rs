@@ -24,6 +24,7 @@ use std::{
 use tokio::sync::{Mutex, Semaphore};
 
 const MAX_DATABASE_REQUESTS: usize = 8;
+const MAX_HTTP_DATA_REQUESTS: usize = 16;
 const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -33,6 +34,7 @@ struct AppState {
     verifier: OidcVerifier,
     database_url: String,
     database_slots: Arc<Semaphore>,
+    http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
     readiness_cache: Arc<Mutex<ReadinessCache>>,
 }
@@ -98,6 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         verifier,
         database_url,
         database_slots,
+        http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
     });
@@ -109,15 +112,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/v1/health", get(health))
-        .route("/v1/ready", get(ready))
+    let data_routes = Router::new()
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route("/v1/cas/{ca_id}/audit", get(list_audit))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            limit_data_requests,
+        ));
+    Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/ready", get(ready))
+        .merge(data_routes)
         .layer(middleware::from_fn(log_request))
         .with_state(state)
+}
+
+async fn limit_data_requests(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Acquire before token parsing or a JWKS refresh, and reject instead of
+    // queuing requests. The owned permit also covers the database read.
+    let _permit = state
+        .http_data_slots
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok(next.run(request).await)
 }
 
 fn write_log(value: serde_json::Value) {
@@ -506,10 +529,47 @@ mod tests {
             verifier,
             database_url: database_url.clone(),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
         };
         let app = router(state.clone());
+        let held_http = state
+            .http_data_slots
+            .clone()
+            .acquire_many_owned(MAX_HTTP_DATA_REQUESTS as u32)
+            .await
+            .unwrap();
+        for uri in [
+            "/v1/cas",
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates",
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit",
+        ] {
+            let overloaded = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(overloaded.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert!(overloaded.headers().contains_key("x-request-id"));
+        }
+        let live_while_busy = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(live_while_busy.status(), StatusCode::OK);
+        assert_eq!(
+            state.database_slots.available_permits(),
+            MAX_DATABASE_REQUESTS
+        );
+        drop(held_http);
         let readiness = app
             .clone()
             .oneshot(

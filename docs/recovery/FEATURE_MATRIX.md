@@ -1,9 +1,9 @@
 > Recovery execution update: see [EXECUTION_STATUS.md](EXECUTION_STATUS.md). The original PR #42 snapshot below is preserved as historical evidence; it is not the current delivery status.
 
-## Current stacked Draft increments (17 October 2026)
+## Current stacked Draft increments (18 October 2026)
 
-This table describes the unmerged laboratory stack through Draft #56 and the
-next OIDC rotation branch. The
+This table describes the unmerged laboratory stack through Draft #59 and the
+dependent HTTP capacity increment. The
 historical PR #42 matrix below remains the reference for what was observed on
 PR #41; these increments have not landed on `main`.
 
@@ -18,7 +18,8 @@ PR #41; these increments have not landed on `main`.
 | Server-owned CA reader grants | Draft #56: migration 0013 intersects signed token scope with issuer/subject/CA grants; old-behavior regression failed and exact-head API/SQL/Compose CI passed | Codex Security diff scan found no reportable issue; independent human review, issuance authorization, human IAM and tenant-wide ABAC remain open |
 | OIDC signing-key rotation | Draft #57: unknown key ID triggers rate-limited JWKS refresh; stale cache must refresh before accepting a token; removed keys are replaced; seven exact-head CI checks passed | Laboratory test issuer only; no production IAM or deployment assurance |
 | Management SQL deadline | Draft #58: PostgreSQL cancels a read running longer than three seconds and releases its bounded request permit; six exact-head CI checks passed | Local/disposable database only; no production connection pool or capacity qualification |
-| Management readiness | Next Draft: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it | Lab health signal only; no human IAM, production deployment or CA signing readiness |
+| Management readiness | Draft #59: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it; six exact-head CI checks passed | Lab health signal only; no human IAM, production deployment or CA signing readiness |
+| Management HTTP data capacity | Dependent branch: 16 in-flight data requests maximum, acquired before token validation and held through DB completion; local API tests pass | Process-local concurrency only; no per-client rate limit, production capacity benchmark or pool |
 
 # Matrice des fonctionnalités
 
