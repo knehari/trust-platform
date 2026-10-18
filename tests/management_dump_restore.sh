@@ -21,6 +21,12 @@ if [[ "$target_relations" != 0 ]]; then
   echo 'Restore target must have no public relations' >&2
   exit 1
 fi
+target_reader_role=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_roles WHERE rolname = 'trust_api_reader' AND NOT rolcanlogin")
+if [[ "$target_reader_role" != 1 ]]; then
+  echo 'Restore target requires NOLOGIN trust_api_reader role' >&2
+  exit 1
+fi
 
 source_fingerprint=$("$psql_bin" "$TRUST_RESTORE_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 \
   -f tests/management_restore_fingerprint.sql)

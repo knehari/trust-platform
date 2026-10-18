@@ -240,3 +240,34 @@ jobs:
             exit 1
           fi
           echo 'PASS: restore refuses a populated target'
+      - name: Restore management snapshot into fresh cluster
+        run: |
+          set -euo pipefail
+          FRESH="trust-fresh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --rm --name "$FRESH" \
+            -e POSTGRES_USER=trust_restore_ci \
+            -e POSTGRES_PASSWORD=test-only-not-secret \
+            -e POSTGRES_DB=trust_fresh \
+            -p 127.0.0.1:55433:5432 postgres:16 >/dev/null
+          trap 'docker rm -f "$FRESH" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh
+          SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade"
+          TARGET_URL="postgresql://trust_restore_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh"
+          if output=$(TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" \
+             TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
+             bash tests/management_dump_restore.sh 2>&1); then
+            echo 'FAIL: restore accepted a fresh cluster without the reader role' >&2
+            exit 1
+          fi
+          test "$output" = 'Restore target requires NOLOGIN trust_api_reader role'
+          echo 'PASS: restore refuses a fresh cluster without the reader role'
+          docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \
+            -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN'
+          TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
+            bash tests/management_dump_restore.sh
