@@ -1,7 +1,8 @@
 # Revocation, suspension and CRL — design (laboratory slice)
 
-Status: design approved in conversation on 2026-10-18; pending written-spec
-review. Laboratory only: no production, qualification or G0 claim.
+Status: design approved in conversation on 2026-10-18; revised the same day
+after an ETSI EN 319 411-1 review (section 2.1); pending written-spec review.
+Laboratory only: no production, qualification or G0 claim.
 
 ## 1. Goal and success criteria
 
@@ -24,7 +25,8 @@ Success means, in CI and locally:
 
 Out of scope for this slice: OCSP, delta CRLs, HTTP distribution and the CRL
 Distribution Points extension, CRL reads through the management API, non-P-256
-issuers, pruning expired entries, durable CA keys (HSM slice).
+issuers, durable CA keys (HSM slice), and a scheduler that produces CRLs
+automatically (section 2.1 provides the due/overdue queries it would use).
 
 ## 2. Standards decisions
 
@@ -33,9 +35,61 @@ issuers, pruning expired entries, durable CA keys (HSM slice).
 | Suspension | Supported as revocation with reason `certificateHold` (6), the only reversible reason. Disabled per CA by default (`suspension_allowed = false`). Must be declared in the CA's CP/CPS before enabling. Must stay disabled for any CA issuing publicly trusted TLS. | RFC 5280 §5.3.1; CA/Browser Forum Baseline Requirements §4.9.13 forbid suspension for public TLS; ETSI EN 319 411-1 permits it when documented. |
 | Release of a hold | The entry is simply absent from the next full CRL. `removeFromCRL` (8) is rejected because there are no delta CRLs. | RFC 5280 §5.3.1. |
 | Hold → definitive revocation | Allowed. The reason changes (e.g. to `keyCompromise`); the original revocation date is kept. | RFC 5280 §5.3.1; OpenSSL `ca` behaviour. |
-| Undoing a definitive revocation | Not supported and blocked in the database. Errors are corrected before approval (reject or withdraw), by suspending first when in doubt, or by reissuing a new certificate. | RFC 5280 defines no reversal for reasons other than hold; ETSI EN 319 411-1 forbids reinstating a definitively revoked certificate (clause number to confirm during review). |
+| Undoing a definitive revocation | Not supported and blocked in the database, whatever the conformance target. Errors are corrected before approval (reject or withdraw), by suspending first when in doubt, or by reissuing a new certificate. | RFC 5280 defines no reversal for reasons other than hold; ETSI EN 319 411-1 REV-6.3.9-04: "Once a certificate is definitively revoked (i.e. not suspended) it shall not be reinstated." |
 | Accepted reasons | 0 unspecified, 1 keyCompromise, 2 cACompromise, 3 affiliationChanged, 4 superseded, 5 cessationOfOperation, 6 certificateHold (only for SUSPEND, only if allowed), 9 privilegeWithdrawn, 10 aACompromise. 7 does not exist; 8 is rejected. | RFC 5280 §5.3.1. |
-| CRL profile | v2; issuer = CA subject (exact DER); signature algorithm = CA's; `thisUpdate`/`nextUpdate` (UTCTime before 2050); CRL extensions Authority Key Identifier (= CA SKI) and CRL Number; per entry `reasonCode` (omitted for unspecified) and `invalidityDate` when set; no Issuing Distribution Point (full CRL for all certificates); `revokedCertificates` omitted when empty. | RFC 5280 §5.1–5.3. |
+| CRL profile | v2; issuer = CA subject (exact DER); signature algorithm = CA's; `thisUpdate`/`nextUpdate` (UTCTime through 2049, GeneralizedTime from 2050, as RFC 5280 §5.1.2.4 requires); CRL extensions Authority Key Identifier (= CA SKI) and CRL Number; per entry `reasonCode` (omitted for unspecified) and `invalidityDate` when set; no Issuing Distribution Point (full CRL for all certificates); `revokedCertificates` omitted when empty. | RFC 5280 §5.1–5.3. |
+
+### 2.1 Conformance targets (flexible ETSI alignment)
+
+Organisations choose per CA whether to align with ETSI. The core always
+enforces RFC 5280 and the irreversibility of definitive revocation; an ETSI
+target adds database-enforced limits on top. Requirement IDs below come from
+EN 319 411-1 V1.1.1–V1.5.1 (2025-04) and EN 319 411-2 V2.6.1 as reported by
+public copies; they were not re-read from the official PDF in this
+environment (etsi.org unreachable) and must be checked against the edition an
+assessment uses, since numbering changes between editions.
+
+`ca_revocation_policy.conformance_target` takes one of:
+
+| Target | Meaning | Enforced settings |
+| --- | --- | --- |
+| `RFC5280` (default) | Private PKI with no ETSI claim. | Any values within the generic bounds below. |
+| `ETSI_EN_319_411_1` | Intends EN 319 411-1 alignment (not a certification). | `crl_issue_interval <= 24 hours` (CSS-6.3.9-05, CRLs covering end-user certificates published at least every 24 h); `status_publication_deadline <= 24 hours` (REV-6.2.4-03A, at most 24 h from receipt of a revocation or suspension request to the status change being available to relying parties). Suspension may be enabled only together with a CP/CPS reference recorded in `suspension_cps_ref`. |
+| `ETSI_EN_319_411_2` | As above, for qualified certificates. | As 411-1, plus status kept beyond expiry: `keep_expired_on_crl = true` and the CRL carries the X.509 `ExpiredCertsOnCRL` extension (EN 319 411-2 CSS-6.3.10-06). |
+
+Settings (`ca_revocation_policy`, one row per CA, defaults when absent):
+
+| Column | Default | Generic bounds | Meaning |
+| --- | --- | --- | --- |
+| `suspension_allowed` | false | — | Enables SUSPEND/RELEASE. |
+| `suspension_cps_ref` | NULL | 1–256 chars | CP/CPS section declaring suspension; required when an ETSI target enables suspension. |
+| `crl_validity` | 7 days | 1 hour – 90 days | `nextUpdate − thisUpdate`. Must be ≥ `crl_issue_interval`. |
+| `crl_issue_interval` | 24 hours | 1 hour – 7 days | Maximum time between two stored CRLs. |
+| `status_publication_deadline` | 24 hours | 1 hour – 7 days | Maximum time from proposal (request receipt) to a stored CRL reflecting the approved change. |
+| `keep_expired_on_crl` | true | — | Keep entries after the certificate expires (RFC 5280 allows removal after one CRL past expiry). |
+
+Requirements already met by the design for every target: status covers
+certificates at least until expiry (CSS-6.3.10-04, entries are kept); status
+information is signed (integrity and authenticity, CSS-6.3.10-03); every CRL
+states `nextUpdate`; revocation requests are authenticated and authorised
+(REV-6.2.4) through officer grants and maker-checker.
+
+Deadline evidence without a scheduler (lab): `crl_due(ca)` returns whether a
+CRL must be produced now (no stored CRL, last stored CRL older than
+`crl_issue_interval`, or an approved change not yet covered by a stored CRL),
+and `overdue_status_changes(ca)` lists proposals and approved changes whose
+request time plus `status_publication_deadline` has passed without a covering
+stored CRL. Maker-checker adds latency, so organisations with an ETSI target
+must staff checkers to meet 24 h and describe the exception procedure for
+requests that cannot be confirmed in time in their CPS (REV-6.2.4).
+
+Not covered here and still required for an ETSI claim: publication to relying
+parties (a stored CRL is not a published one), 24/7 availability of revocation
+and status services, the subscriber's own revocation channel, the final CRL
+with `nextUpdate = 99991231235959Z` on CA termination, OCSP, and for qualified
+certificates the eIDAS rules on registering revocation within 24 hours and on
+indicating suspension periods (Regulation (EU) No 910/2014 as amended,
+Articles 24 and 28).
 
 ## 3. Certificate status lifecycle (maker-checker)
 
@@ -54,10 +108,12 @@ CA at the time they act. Two accounts held by one person are an IdP concern.
 
 ### Data model — migration `0014_revocation_lifecycle.sql`
 
-- `ca_revocation_policy (ca_id PK → ca, suspension_allowed BOOLEAN NOT NULL
-  DEFAULT false, crl_validity INTERVAL NOT NULL DEFAULT '7 days'
-  CHECK (crl_validity BETWEEN '1 hour' AND '90 days'))`. A CA without a row
-  uses the defaults.
+- `ca_revocation_policy (ca_id PK → ca, conformance_target, suspension_allowed,
+  suspension_cps_ref, crl_validity, crl_issue_interval,
+  status_publication_deadline, keep_expired_on_crl)` with the defaults and
+  bounds of section 2.1; table CHECKs enforce the generic bounds and the
+  stricter limits of the chosen `conformance_target`. A CA without a row uses
+  the defaults with target `RFC5280`.
 - `revocation_officer_grant (issuer, subject, ca_id → ca, PK all three)`;
   server-managed like `management_reader_grant`, no API write path.
 - `certificate_status_change` (append-only history):
@@ -98,9 +154,19 @@ CA at the time they act. Two accounts held by one person are an IdP concern.
 Module `pki-core::revocation`: `RevocationReason` enum (no free integers;
 `certificateHold` only constructible for a suspension), `StatusAction`,
 `OfficerIdentity { issuer, subject }`, and a PostgreSQL adapter behind the
-`postgres-store` feature calling the functions above. The unused
-`revocation_policy` contract module is superseded and removed, and
-`docs/architecture/unintegrated-contracts.md` updated.
+`postgres-store` feature calling the functions above.
+
+The existing `revocation_policy` module is **reused, not deleted**: it becomes
+the pure decision layer, `decide_status_change(current_state, action, reason,
+ca_policy) -> Result<Transition, StatusChangeError>`, which the adapter calls
+before any SQL (defence in depth; SQL re-checks everything). Its current
+contents are replaced because they conflict with this design: it accepts
+`removeFromCRL` (8) and `certificateHold` (6) without a suspension context,
+treats a caller-supplied `authorized: bool` as authorisation, and checks
+serial format more weakly than the database (it accepts non-minimal and
+all-zero encodings); serial validation moves to the existing
+`serial::ReservedSerial` type. `docs/architecture/unintegrated-contracts.md` is
+updated to mark the module integrated.
 
 ## 4. CRL pipeline (`crl_once`)
 
@@ -116,7 +182,9 @@ and `CrlVerifier` traits.
    (serialising CRLs per CA), assigns `crl_number = last reserved + 1`, sets
    `this_update = clock_timestamp()` truncated to seconds and
    `next_update = this_update + crl_validity`, copies the current `revocation`
-   rows into `crl_entry_snapshot` and returns number, times, entries and the
+   rows into `crl_entry_snapshot` (dropping expired entries only when
+   `keep_expired_on_crl` is false and one CRL already listed them after
+   expiry) and returns number, times, entries and the
    SHA-256 of the canonical entry list.
 2. **Build** — Rust builds the `TBSCertList` deterministically from the
    reservation (entries sorted by serial).
@@ -126,7 +194,9 @@ and `CrlVerifier` traits.
 5. **Verify independently before persistence** — signature with the CA
    certificate's public key; issuer equals the CA subject byte for byte; AKI
    equals the CA SKI; version 2; number and times equal the reservation;
-   entries exactly equal the snapshot (serial, date, reason, invalidity date).
+   entries exactly equal the snapshot (serial, date, reason, invalidity date);
+   `ExpiredCertsOnCRL` present exactly when the target is
+   `ETSI_EN_319_411_2`.
 6. **Store** — `store_verified_crl(ca, crl_number, operation_ref, tbs_sha256,
    crl_sha256, crl_der)` checks the intent and moves the row to `STORED`.
 
@@ -149,10 +219,16 @@ handles intents left by a crash. No automatic re-sign.
   a second open proposal, direct `UPDATE`/`DELETE` on history and on a
   definitive `revocation` row; CRL numbers strictly increasing and never
   reused after `RECONCILIATION_REQUIRED`; `EXECUTE` not granted to `PUBLIC`.
+- **Conformance targets** (SQL): an ETSI target rejects `crl_issue_interval`
+  or `status_publication_deadline` above 24 h and suspension without
+  `suspension_cps_ref`; `RFC5280` accepts them within generic bounds;
+  `crl_due` and `overdue_status_changes` report the right rows before and
+  after a covering CRL is stored.
 - **Concurrency** (`tests/crl_concurrency.sh`): 12 concurrent `reserve_crl`
   callers on one CA get 12 distinct consecutive numbers.
 - **Rust unit tests**: reason enum rejects 6/8 outside their contexts and
-  unknown values; `crl_once` never signs without an intent; every failure
+  unknown values; `revocation_policy::decide_status_change` covers every
+  state × action × reason × suspension setting combination; `crl_once` never signs without an intent; every failure
   after the intent records uncertainty (injected signer/assembler/verifier
   failures); the verifier rejects another key's signature, a different issuer
   or AKI, a different number or time, an added/removed/altered entry, and v1.
@@ -178,3 +254,6 @@ handles intents left by a crash. No automatic re-sign.
 - No publication: a stored CRL is not proof that relying parties can fetch it.
 - Database owners can bypass triggers; external append-only audit remains an
   open item (D-04).
+- An ETSI conformance target is a configuration guard, not evidence of
+  conformity; only an assessment by a conformity assessment body can establish
+  that.
