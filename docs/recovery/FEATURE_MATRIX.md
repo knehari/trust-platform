@@ -2,8 +2,8 @@
 
 ## Current stacked Draft increments (18 October 2026)
 
-This table describes the unmerged laboratory stack through Draft #59 and the
-dependent HTTP capacity increment. The
+This table describes the unmerged laboratory stack through Draft #60 and the
+dependent populated migration increment. The
 historical PR #42 matrix below remains the reference for what was observed on
 PR #41; these increments have not landed on `main`.
 
@@ -19,7 +19,8 @@ PR #41; these increments have not landed on `main`.
 | OIDC signing-key rotation | Draft #57: unknown key ID triggers rate-limited JWKS refresh; stale cache must refresh before accepting a token; removed keys are replaced; seven exact-head CI checks passed | Laboratory test issuer only; no production IAM or deployment assurance |
 | Management SQL deadline | Draft #58: PostgreSQL cancels a read running longer than three seconds and releases its bounded request permit; six exact-head CI checks passed | Local/disposable database only; no production connection pool or capacity qualification |
 | Management readiness | Draft #59: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it; six exact-head CI checks passed | Lab health signal only; no human IAM, production deployment or CA signing readiness |
-| Management HTTP data capacity | Dependent branch: 16 in-flight data requests maximum, acquired before token validation and held through DB completion; local API tests pass | Process-local concurrency only; no per-client rate limit, production capacity benchmark or pool |
+| Management HTTP data capacity | Draft #60: 16 in-flight data requests maximum, acquired before token validation and held through DB completion; six exact-head CI checks passed | Process-local concurrency only; no per-client rate limit, production capacity benchmark or pool |
+| Populated management migration | Dependent branch: 0012–0013 applied after seeded 0011 database; CA, request, certificate metadata and audit rows preserved; restricted-view checks pass locally | Disposable fixture only; no online migration/rollback, production backup or replay ledger |
 
 # Matrice des fonctionnalités
 
