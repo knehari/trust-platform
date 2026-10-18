@@ -224,6 +224,14 @@ jobs:
           docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade
           TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
             bash tests/management_populated_upgrade.sh
+      - name: Retry interrupted management migration
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade_retry
+          TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade_retry" \
+            bash tests/management_migration_retry.sh
       - name: Restore populated management snapshot
         run: |
           set -euo pipefail
