@@ -23,6 +23,24 @@ paths:
                 properties:
                   status:
                     const: up
+  /v1/ready:
+    get:
+      security: []
+      summary: Readiness of the restricted PostgreSQL management read path
+      description: Checks the restricted reader role and required views without returning metadata or database errors. Uses one separate probe slot and a one-second result cache; a busy authenticated-read budget or concurrent probe returns 503.
+      responses:
+        '200':
+          description: Management reads can be served
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: ready
+        '503':
+          description: Management reads are unavailable
   /v1/cas:
     get:
       summary: List CAs in both the signed scope and server-managed reader grants, at most 100
