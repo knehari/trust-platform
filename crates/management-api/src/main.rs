@@ -202,6 +202,7 @@ fn router(state: AppState) -> Router {
             get(get_certificate),
         )
         .route("/v1/cas/{ca_id}/audit", get(list_audit))
+        .route("/v1/cas/{ca_id}/audit/{event_id}", get(get_audit_event))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             limit_data_requests,
@@ -564,20 +565,53 @@ async fn list_audit(
     let items: Vec<Audit> = rows
         .into_iter()
         .take(HISTORY_PAGE_SIZE)
-        .map(|r| Audit {
-            event_id: r.get(0),
-            ca_id: r.get(1),
-            event_type: r.get(2),
-            decision: r.get(3),
-            policy_version: r.get(4),
-            recorded_at: r.get(5),
-        })
+        .map(audit_from_row)
         .collect();
     let next = has_more.then(|| {
         let last = items.last().expect("nonempty page has a final item");
         format!("{}|{}", last.recorded_at, last.event_id)
     });
     Ok((history_headers(next), Json(items)))
+}
+
+fn audit_from_row(row: Row) -> Audit {
+    Audit {
+        event_id: row.get(0),
+        ca_id: row.get(1),
+        event_type: row.get(2),
+        decision: row.get(3),
+        policy_version: row.get(4),
+        recorded_at: row.get(5),
+    }
+}
+
+async fn get_audit_event(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((ca_id, event_id)): Path<(String, String)>,
+) -> Result<Json<Audit>, StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let event_id = uuid::Uuid::parse_str(&event_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .to_string();
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer, &subject, &ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query_opt(
+            "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
+             FROM management_audit WHERE ca_id=$1 AND event_id=$2 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
+            &[&ca_id, &event_id, &issuer, &subject],
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?
+      .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(audit_from_row(row)))
 }
 
 #[cfg(test)]
@@ -772,6 +806,25 @@ mod tests {
         )
         .unwrap();
         let (status, _) = detail_response(&app, &unprovisioned, allowed).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let allowed_event = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit/33333333-3333-4333-8333-000000000001";
+        let (status, event) = detail_response(&app, &token, allowed_event).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(event["event_id"], "33333333-3333-4333-8333-000000000001");
+        assert_eq!(event["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        assert!(event.get("actor_id").is_none());
+        let (status, _) = detail_response(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit/33333333-3333-4333-8333-000000000999").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = detail_response(&app, &token, "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/audit/44444444-4444-4444-8444-444444444444").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = detail_response(
+            &app,
+            &token,
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit/invalid",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = detail_response(&app, &unprovisioned, allowed_event).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
