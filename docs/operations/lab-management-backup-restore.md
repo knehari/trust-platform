@@ -38,6 +38,14 @@ negative `trust_api_reader` privilege fixture against the target. A second
 run against the restored target must fail before `pg_restore` starts. Never
 point the target URL at a database containing data to preserve.
 
+In the fresh-cluster CI fixture, an independently provisioned test login is
+also checked over a real PostgreSQL connection. It cannot read management
+views before membership in `trust_api_reader`; with that membership it sees
+the expected view rows but cannot read raw certificate or reader-grant tables
+or update a CA. Revoking membership removes view access again. The test login
+and its password exist only in the disposable CI cluster; the dump does not
+restore application credentials.
+
 ## Scope and next gates
 
 The digest is a regression comparison for this exact fixture, not an audit
