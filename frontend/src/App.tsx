@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
-import { apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
+import { ApiError, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
@@ -40,15 +40,30 @@ export function App() {
   const moreController = useRef<AbortController | null>(null);
   const [reload, setReload] = useState(0);
 
+  const clearSession = () => {
+    setUser(null);
+    setCas([]);
+    setSelectedCaId(null);
+    setCertificates([]);
+    setAuditEvents([]);
+  };
+
+  const rejectSession = () => {
+    clearSession();
+    setSessionError('Your session is no longer valid. Sign in again.');
+    void userManager?.removeUser().catch(() => {});
+  };
+
+  const handleReadError = (error: unknown, fallback: string, show: (message: string) => void) => {
+    if (error instanceof ApiError && error.status === 401) {
+      rejectSession();
+      return;
+    }
+    show(error instanceof Error ? error.message : fallback);
+  };
+
   useEffect(() => {
     let cancelled = false;
-    const clearSession = () => {
-      setUser(null);
-      setCas([]);
-      setSelectedCaId(null);
-      setCertificates([]);
-      setAuditEvents([]);
-    };
     const removeExpired = userManager?.events.addAccessTokenExpired(() => {
       if (!cancelled) {
         clearSession();
@@ -97,7 +112,7 @@ export function App() {
         setCaCursor(page.nextCursor);
         setSelectedCaId(current => page.items.some(ca => ca.ca_id === current) ? current : page.items[0]?.ca_id ?? null);
       })
-      .catch(error => { if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load authorities.'); })
+      .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load authorities.', setDataError); })
       .finally(() => { if (!controller.signal.aborted) setCasLoading(false); });
     return () => { controller.abort(); caMoreController.current?.abort(); };
   }, [user, reload]);
@@ -115,7 +130,7 @@ export function App() {
         setCaCursor(page.nextCursor);
       }
     } catch (error) {
-      if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load more authorities.');
+      if (!controller.signal.aborted) handleReadError(error, 'Could not load more authorities.', setDataError);
     } finally {
       if (caKey.current === key) setCaMoreLoading(false);
     }
@@ -144,6 +159,10 @@ export function App() {
       apiGetPage<AuditEvent>(`${base}/audit`, user.access_token, controller.signal),
     ]).then(([certs, events]) => {
       if (controller.signal.aborted) return;
+      if ([certs, events].some(result => result.status === 'rejected' && result.reason instanceof ApiError && result.reason.status === 401)) {
+        rejectSession();
+        return;
+      }
       if (certs.status === 'fulfilled') {
         setCertificates(certs.value.items);
         setCertificateCursor(certs.value.nextCursor);
@@ -183,7 +202,7 @@ export function App() {
         }
       }
     } catch (error) {
-      if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load older records.');
+      if (!controller.signal.aborted) handleReadError(error, 'Could not load older records.', setDataError);
     } finally {
       if (detailKey.current === key) setMoreLoading(false);
     }
