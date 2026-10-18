@@ -30,7 +30,9 @@ jobs:
       - name: Build and start laboratory services
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 180
       - name: Exercise code/PKCE and scoped database reads
-        run: node frontend/dev/compose-smoke.mjs
+        run: |
+          node frontend/dev/check-api-compat.mjs
+          node frontend/dev/compose-smoke.mjs
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
