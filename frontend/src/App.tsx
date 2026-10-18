@@ -105,9 +105,9 @@ export function App() {
     setMoreLoading(false);
     setCertificateCursor(null);
     setAuditCursor(null);
+    setCertificates([]);
+    setAuditEvents([]);
     if (!user || user.expired || !selectedCaId) {
-      setCertificates([]);
-      setAuditEvents([]);
       return;
     }
     const controller = new AbortController();
