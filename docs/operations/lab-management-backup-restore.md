@@ -28,8 +28,11 @@ The script rejects identical database names, targets containing public
 relations, and targets without the NOLOGIN reader role before writing. Use a
 different target database name even when the clusters differ. It creates a
 custom-format archive in a temporary directory with owner-only permissions,
-restores without changing object ownership, and
-removes the archive at exit. It compares a digest of **all rows in the six
+restores SQL objects and rows in one transaction without changing object
+ownership, and removes the archive at exit. CI injects a DDL failure after
+earlier objects have been created; the failed transaction leaves the target
+without restored relations, and a retry succeeds after removing the fault.
+The successful path compares a digest of **all rows in the six
 populated fixture tables** before and after restoration, then reruns the
 negative `trust_api_reader` privilege fixture against the target. A second
 run against the restored target must fail before `pg_restore` starts. Never
@@ -42,8 +45,8 @@ integrity proof or a generic backup verifier. `pg_dump` does not include
 cluster-global role definitions; the fresh-cluster exercise provisions the
 NOLOGIN reader role separately. It does not test recovery of arbitrary global
 roles or login credentials, backup encryption or off-site retention,
-point-in-time recovery, online consistency with active issuance, rollback,
-CA private keys/HSM state, or
+point-in-time recovery, online consistency with active issuance, rollback of
+already-committed application changes, CA private keys/HSM state, or
 signing-intent reconciliation. RTO and RPO are neither specified nor measured.
 Those require a separately designed operational recovery exercise and human
 review before any production claim.
