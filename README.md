@@ -19,7 +19,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 
 ## Important gaps
 
-No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Sixteen standalone Rust domain contracts (from the `v2.5`–`v4.0` branches) are not called by anything; see [unintegrated contracts](docs/architecture/unintegrated-contracts.md) before citing any of them.
+No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no OCSP and no CRL publication or HTTP distribution (a lab-only, maker-checker certificate status lifecycle and signed-CRL pipeline exist, see [revocation and CRL design](docs/superpowers/specs/2026-10-18-revocation-crl-design.md): ephemeral lab CA key, no delta CRLs, `keep_expired_on_crl` fixed to true), no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Fifteen standalone Rust domain contracts (from the `v2.5`–`v4.0` branches) are not called by anything; see [unintegrated contracts](docs/architecture/unintegrated-contracts.md) before citing any of them.
 
 ## How to inspect the laboratory workspace
 

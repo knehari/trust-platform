@@ -3,7 +3,8 @@
 Status: inventory, 18 October 2026. Branches `feature/v2-5-*` to `feature/v4-0-*`
 (Draft PRs #25–#40) added the modules below. Each is a pure predicate of 27–56
 lines with unit tests. **No other module, binary, migration or test calls any of
-them.** Their names describe a future capability, not one that exists.
+them.** (`revocation_policy` was integrated by the lab revocation/CRL slice, migrations
+0014–0015, and is no longer listed; 15 contracts remain.) Their names describe a future capability, not one that exists.
 
 | Module | What it actually checks | What its name might suggest but does not exist |
 | --- | --- | --- |
@@ -21,7 +22,6 @@ them.** Their names describe a future capability, not one that exists.
 | `release_gate` | composed booleans | a release or legal/security approval |
 | `request_rate` | `used < limit` for given numbers | rate limiting (no counter, no storage) |
 | `resilience_policy` | a decision table | resilience or HA mechanisms |
-| `revocation_policy` | an `authorized` flag, RFC 5280 reason code and serial format | revocation, CRL or OCSP |
 | `tenant_isolation` | equality of caller-supplied tenant IDs | tenant isolation in storage or APIs |
 
 ## Rules until each is integrated

@@ -35,3 +35,10 @@ path = "fuzz_targets/ca_certificate.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "crl_verify"
+path = "fuzz_targets/crl_verify.rs"
+test = false
+doc = false
+bench = false

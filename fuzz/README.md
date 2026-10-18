@@ -8,6 +8,7 @@ return an error, never panic, hang or abort.
 | `csr_p256` | `trust_pki_core::csr::verify_pkcs10_p256` |
 | `csr_rsa_pkcs1_lab` | `trust_pki_core::csr::verify_pkcs10_rsa_pkcs1_lab` (lab feature) |
 | `ca_certificate` | `trust_pki_core::ca_observation::observe_pinned_lab_ca` (pin = SHA-256 of the input, so parsing behind the pin is reached) |
+| `crl_verify` | `trust_pki_core::crl::LabCrlVerifier::verify` against an ephemeral lab CA and a fixed empty reservation (lab feature); foreign CRLs must be rejected, never panic |
 
 Run locally (nightly toolchain and `cargo install cargo-fuzz --version 0.13.2 --locked`):
 

@@ -1,6 +1,6 @@
 name: Fuzz
 
-# SEC-07: untrusted DER (PKCS#10 CSRs, CA certificates) must be rejected, never
+# SEC-07: untrusted DER (PKCS#10 CSRs, CA certificates, CRLs) must be rejected, never
 # panic. Short smoke on every PR; longer weekly campaign.
 on:
   pull_request:
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [csr_p256, csr_rsa_pkcs1_lab, ca_certificate]
+        target: [csr_p256, csr_rsa_pkcs1_lab, ca_certificate, crl_verify]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned nightly and cargo-fuzz
