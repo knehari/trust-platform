@@ -50,7 +50,7 @@ services:
       TRUST_API_BIND: 0.0.0.0:8081
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
       interval: 3s
       timeout: 3s
       retries: 30

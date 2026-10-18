@@ -17,7 +17,8 @@ PR #41; these increments have not landed on `main`.
 | Locked source dependency inventory | #55: 318 Cargo/npm package records in SPDX 2.3 JSON; local official-schema validation, negative drift test and exact-head SBOM CI passed | Lockfile inventory only; image SBOM, license review, provenance and other CI checks remain |
 | Server-owned CA reader grants | Draft #56: migration 0013 intersects signed token scope with issuer/subject/CA grants; old-behavior regression failed and exact-head API/SQL/Compose CI passed | Codex Security diff scan found no reportable issue; independent human review, issuance authorization, human IAM and tenant-wide ABAC remain open |
 | OIDC signing-key rotation | Draft #57: unknown key ID triggers rate-limited JWKS refresh; stale cache must refresh before accepting a token; removed keys are replaced; seven exact-head CI checks passed | Laboratory test issuer only; no production IAM or deployment assurance |
-| Management SQL deadline | Next Draft: PostgreSQL cancels a read running longer than three seconds and releases its bounded request permit | Local/disposable database only; no production connection pool or capacity qualification |
+| Management SQL deadline | Draft #58: PostgreSQL cancels a read running longer than three seconds and releases its bounded request permit; six exact-head CI checks passed | Local/disposable database only; no production connection pool or capacity qualification |
+| Management readiness | Next Draft: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it | Lab health signal only; no human IAM, production deployment or CA signing readiness |
 
 # Matrice des fonctionnalités
 

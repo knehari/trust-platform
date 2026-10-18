@@ -21,10 +21,11 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 const MAX_DATABASE_REQUESTS: usize = 8;
 const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
+const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -32,6 +33,14 @@ struct AppState {
     verifier: OidcVerifier,
     database_url: String,
     database_slots: Arc<Semaphore>,
+    readiness_slots: Arc<Semaphore>,
+    readiness_cache: Arc<Mutex<ReadinessCache>>,
+}
+
+#[derive(Default)]
+struct ReadinessCache {
+    checked_at: Option<Instant>,
+    available: bool,
 }
 
 #[derive(Serialize)]
@@ -69,18 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = env::var("TRUST_DATABASE_URL")?;
     let verifier = OidcVerifier::discover(&issuer, &audience).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
-    let safe_db_role = query_db(database_url.clone(), database_slots.clone(), |db| {
-        db.query_one(
-            "SELECT pg_has_role(current_user,'trust_api_reader','member') \
-             AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname=current_user \
-                 AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
-             AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
-                 WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f') \
-                 AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))",
-            &[],
-        )
-        .map(|row| row.get::<_, bool>(0))
-    })
+    let safe_db_role = query_db(
+        database_url.clone(),
+        database_slots.clone(),
+        restricted_reader_role,
+    )
     .await
     .map_err(|_| "management database unavailable")?;
     if !safe_db_role {
@@ -96,6 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         verifier,
         database_url,
         database_slots,
+        readiness_slots: Arc::new(Semaphore::new(1)),
+        readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
     });
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -107,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/ready", get(ready))
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
@@ -150,6 +155,59 @@ async fn log_request(request: Request<Body>, next: Next) -> Response {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status":"up"}))
+}
+
+async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>, StatusCode> {
+    // A public health probe cannot consume the eight slots reserved for
+    // authenticated reads or cause unbounded parallel database connections.
+    if state.database_slots.available_permits() == 0 {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let mut cache = state
+        .readiness_cache
+        .try_lock()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let available = if cache
+        .checked_at
+        .is_some_and(|checked_at| checked_at.elapsed() < READINESS_CACHE_AGE)
+    {
+        cache.available
+    } else {
+        let checked = query_db(state.database_url, state.readiness_slots, |db| {
+            if !restricted_reader_role(db)? {
+                return Ok(false);
+            }
+            // Parse and authorize every view used by the read routes without
+            // scanning or returning any CA, certificate, audit or grant rows.
+            db.query(
+                "SELECT 1 FROM management_ca, management_certificate, \
+                 management_audit, management_reader_scope LIMIT 0",
+                &[],
+            )?;
+            Ok(true)
+        })
+        .await;
+        cache.available = matches!(checked, Ok(true));
+        cache.checked_at = Some(Instant::now());
+        cache.available
+    };
+    if !available || state.database_slots.available_permits() == 0 {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    Ok(Json(serde_json::json!({"status":"ready"})))
+}
+
+fn restricted_reader_role(db: &mut Client) -> Result<bool, postgres::Error> {
+    db.query_one(
+        "SELECT pg_has_role(current_user,'trust_api_reader','member') \
+         AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname=current_user \
+             AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
+         AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
+             WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f') \
+             AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))",
+        &[],
+    )
+    .map(|row| row.get::<_, bool>(0))
 }
 
 async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
@@ -444,11 +502,107 @@ mod tests {
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
         let database_url = env::var("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
-        let app = router(AppState {
+        let state = AppState {
             verifier,
             database_url: database_url.clone(),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        };
+        let app = router(state.clone());
+        let readiness = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if !database_url.is_empty() {
+            assert_eq!(readiness.status(), StatusCode::OK);
+            let body = readiness.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                json!({"status":"ready"})
+            );
+        }
+        assert_eq!(
+            state.database_slots.available_permits(),
+            MAX_DATABASE_REQUESTS
+        );
+        let refresh_in_progress = state.readiness_cache.try_lock().unwrap();
+        let concurrent_probe = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(concurrent_probe.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(refresh_in_progress);
+        let unavailable_app = router(AppState {
+            database_url:
+                "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing".into(),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            ..state.clone()
         });
+        let liveness = unavailable_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(liveness.status(), StatusCode::OK);
+        let unavailable = unavailable_app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let held = state
+            .database_slots
+            .clone()
+            .acquire_many_owned(MAX_DATABASE_REQUESTS as u32)
+            .await
+            .unwrap();
+        let saturated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saturated.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(held);
+        if !database_url.is_empty() {
+            let recovered = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/ready")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(recovered.status(), StatusCode::OK);
+        }
         let no_token = app
             .clone()
             .oneshot(
