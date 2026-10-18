@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use postgres::{Client, NoTls};
+use postgres::{Client, NoTls, Row};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -197,6 +197,10 @@ fn router(state: AppState) -> Router {
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
+        .route(
+            "/v1/cas/{ca_id}/certificates/{request_id}",
+            get(get_certificate),
+        )
         .route("/v1/cas/{ca_id}/audit", get(list_audit))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -479,21 +483,54 @@ async fn list_certificates(
     let items: Vec<Certificate> = rows
         .into_iter()
         .take(HISTORY_PAGE_SIZE)
-        .map(|r| Certificate {
-            ca_id: r.get(0),
-            serial_hex: r.get(1),
-            fingerprint_sha256: r.get(2),
-            request_id: r.get(3),
-            state: r.get(4),
-            signed_at: r.get(5),
-            published_at: r.get(6),
-        })
+        .map(certificate_from_row)
         .collect();
     let next = has_more.then(|| {
         let last = items.last().expect("nonempty page has a final item");
         format!("{}|{}", last.signed_at, last.request_id)
     });
     Ok((history_headers(next), Json(items)))
+}
+
+fn certificate_from_row(row: Row) -> Certificate {
+    Certificate {
+        ca_id: row.get(0),
+        serial_hex: row.get(1),
+        fingerprint_sha256: row.get(2),
+        request_id: row.get(3),
+        state: row.get(4),
+        signed_at: row.get(5),
+        published_at: row.get(6),
+    }
+}
+
+async fn get_certificate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((ca_id, request_id)): Path<(String, String)>,
+) -> Result<Json<Certificate>, StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let request_id = uuid::Uuid::parse_str(&request_id)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .to_string();
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer, &subject, &ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query_opt(
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at \
+             FROM management_certificate WHERE ca_id=$1 AND request_id=$2 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
+            &[&ca_id, &request_id, &issuer, &subject],
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?
+      .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(certificate_from_row(row)))
 }
 
 async fn list_audit(
@@ -596,6 +633,33 @@ mod tests {
         (status, cursor, items)
     }
 
+    async fn detail_response(
+        app: &Router,
+        token: &str,
+        path: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value = if status == StatusCode::OK {
+            serde_json::from_slice(&body).unwrap()
+        } else {
+            serde_json::Value::Null
+        };
+        (status, value)
+    }
+
     #[tokio::test]
     async fn history_pagination_reads_all_scoped_rows() {
         let database_url = match env::var("TRUST_API_PAGINATION_DATABASE_URL") {
@@ -676,6 +740,38 @@ mod tests {
             ),
         )
         .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let allowed = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/11111111-1111-4111-8111-000000000001";
+        let (status, certificate) = detail_response(&app, &token, allowed).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            certificate["request_id"],
+            "11111111-1111-4111-8111-000000000001"
+        );
+        assert_eq!(certificate["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        assert!(certificate.get("certificate_der").is_none());
+        let (status, _) = detail_response(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/11111111-1111-4111-8111-000000000999").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = detail_response(&app, &token, "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates/11111111-1111-4111-8111-000000000001").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = detail_response(
+            &app,
+            &token,
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/invalid",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let unprovisioned = encode(
+            &header,
+            &json!({
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned",
+                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+            }),
+            &signer,
+        )
+        .unwrap();
+        let (status, _) = detail_response(&app, &unprovisioned, allowed).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
