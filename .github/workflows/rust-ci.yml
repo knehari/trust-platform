@@ -137,6 +137,8 @@ jobs:
           openssl x509 -in "$RUNNER_TEMP/trust-lab/root.pem" -noout -text | grep 'X509v3 Subject Key Identifier'
           openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'X509v3 Authority Key Identifier'
           openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep -A3 'X509v3 Certificate Policies' | grep '1.3.6.1.4.1.55555.1.1'
+      - name: CRL issuance verified by OpenSSL (lab only)
+        run: bash tests/crl_openssl_lab.sh
 
 
   schema:
