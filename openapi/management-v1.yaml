@@ -147,6 +147,28 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/audit/{event_id}:
+    get:
+      summary: Read one audit event metadata record in a scoped CA
+      description: Returns the limited audit projection after checking signed CA scope and current server-owned reader grant. Actor identifiers are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Audit event metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No audit event metadata for that identifier in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     oidcAccessToken:
