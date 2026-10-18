@@ -254,6 +254,11 @@ BEGIN
     PERFORM pg_temp.expect_err($q$DELETE FROM certificate_status_change WHERE status='APPROVED'$q$, '23514');
     PERFORM pg_temp.expect_err($q$DELETE FROM certificate_status_change$q$, '23514');
     PERFORM pg_temp.expect_err($q$TRUNCATE certificate_status_change CASCADE$q$, '23514');
+    -- removeFromCRL (8) and the unassigned 7 can never be stored directly
+    PERFORM pg_temp.expect_err($q$INSERT INTO revocation(ca_id,serial_der_content,reason_code,revoked_at,actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000001','\x03',8,now(),'direct')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO revocation(ca_id,serial_der_content,reason_code,revoked_at,actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000001','\x03',7,now(),'direct')$q$, '23514');
     -- table CHECKs (history coherence) hold even for the owner
     PERFORM pg_temp.expect_err($q$INSERT INTO certificate_status_change(change_id,ca_id,serial_der_content,action,reason_code,maker_issuer,maker_subject,status)
         VALUES (gen_random_uuid(),'c0c0c0c0-0000-4000-8000-000000000001','\x01','RELEASE',1,'i','m','PROPOSED')$q$, '23514');

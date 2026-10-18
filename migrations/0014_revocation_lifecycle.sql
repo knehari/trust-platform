@@ -126,6 +126,11 @@ CREATE TRIGGER certificate_status_change_no_truncate
 -- certificate. Empty in every environment before this migration.
 ALTER TABLE revocation
     ADD COLUMN change_id UUID REFERENCES certificate_status_change(change_id);
+-- 0001 still allows 7 and 8 on a direct INSERT; 7 is unassigned and 8
+-- (removeFromCRL) is never a stored state.
+ALTER TABLE revocation
+    ADD CONSTRAINT revocation_reason_code_accepted
+    CHECK (reason_code IN (0,1,2,3,4,5,6,9,10));
 
 CREATE FUNCTION guard_revocation() RETURNS TRIGGER
 LANGUAGE plpgsql AS $fn$
@@ -203,9 +208,11 @@ BEGIN
     THEN
         RAISE EXCEPTION 'invalid status change proposal input' USING ERRCODE='22023';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM revocation_officer_grant g
-                   WHERE g.issuer = p_maker_issuer AND g.subject = p_maker_subject
-                     AND g.ca_id = p_ca) THEN
+    -- FOR SHARE: a concurrent grant deletion waits for this decision.
+    PERFORM 1 FROM revocation_officer_grant g
+    WHERE g.issuer = p_maker_issuer AND g.subject = p_maker_subject
+      AND g.ca_id = p_ca FOR SHARE;
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'actor holds no revocation officer grant for this CA'
           USING ERRCODE='42501';
     END IF;
@@ -226,7 +233,7 @@ BEGIN
     END IF;
     IF p_action = 'SUSPEND' THEN
         SELECT suspension_allowed INTO v_suspension FROM ca_revocation_policy
-        WHERE ca_id = p_ca;
+        WHERE ca_id = p_ca FOR SHARE;
         IF NOT COALESCE(v_suspension, false) THEN
             RAISE EXCEPTION 'suspension is not enabled for this CA'
               USING ERRCODE='23514';
@@ -265,7 +272,7 @@ DECLARE
     v_request UUID;
     v_status TEXT;
     v_suspension BOOLEAN;
-    v_now TIMESTAMPTZ := clock_timestamp();
+    v_now TIMESTAMPTZ;
 BEGIN
     IF p_change IS NULL
        OR p_checker_issuer IS NULL OR length(p_checker_issuer) NOT BETWEEN 1 AND 1024
@@ -279,15 +286,23 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'unknown status change' USING ERRCODE='22023';
     END IF;
-    -- Lock order: certificate, then change (same as propose).
+    -- Lock order: certificate, then change (same as propose), then the CA row
+    -- FOR SHARE. reserve_crl (0015) takes the CA row FOR UPDATE, so a CRL
+    -- snapshot never interleaves with this decision: an approval either
+    -- committed before the snapshot or is stamped after this_update.
     SELECT c.request_id INTO v_request FROM certificate c
     WHERE c.ca_id = v_ca AND c.serial_der_content = v_serial FOR UPDATE;
     SELECT * INTO v_chg FROM certificate_status_change s
     WHERE s.change_id = p_change FOR UPDATE;
+    PERFORM 1 FROM ca WHERE ca_id = v_ca FOR SHARE;
+    v_now := clock_timestamp();
 
-    IF NOT EXISTS (SELECT 1 FROM revocation_officer_grant g
-                   WHERE g.issuer = p_checker_issuer AND g.subject = p_checker_subject
-                     AND g.ca_id = v_ca) THEN
+    -- FOR SHARE: a concurrent grant deletion or policy change waits for this
+    -- decision (and this decision waits for one already in flight).
+    PERFORM 1 FROM revocation_officer_grant g
+    WHERE g.issuer = p_checker_issuer AND g.subject = p_checker_subject
+      AND g.ca_id = v_ca FOR SHARE;
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'actor holds no revocation officer grant for this CA'
           USING ERRCODE='42501';
     END IF;
@@ -311,7 +326,7 @@ BEGIN
     END IF;
     IF v_chg.action = 'SUSPEND' THEN
         SELECT suspension_allowed INTO v_suspension FROM ca_revocation_policy
-        WHERE ca_id = v_ca;
+        WHERE ca_id = v_ca FOR SHARE;
         IF NOT COALESCE(v_suspension, false) THEN
             RAISE EXCEPTION 'suspension is not enabled for this CA'
               USING ERRCODE='23514';
