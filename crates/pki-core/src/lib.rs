@@ -54,6 +54,7 @@ pub mod release_gate;
 pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
+pub mod revocation;
 pub mod revocation_policy;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pkcs1_x509_lab;
