@@ -11,7 +11,7 @@ docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 node frontend/dev/compose-smoke.mjs
 ```
 
-Open `http://127.0.0.1:5173/` to inspect the UI. The test issuer automatically approves a fixed laboratory operator and one of the two seeded CAs. The second CA must remain absent from the list and return 403 by direct API request. All published ports bind host loopback. The API shares the issuer's container network namespace so both browser and API can use the exact OIDC issuer `http://127.0.0.1:8080`; the frontend development proxy targets the shared namespace at `issuer:8081`.
+Open `http://127.0.0.1:5173/` to inspect the UI. The test issuer automatically approves a fixed laboratory operator and one of the two seeded CAs. Each CA has one synthetic certificate metadata record and one synthetic audit event; only the allowed CA's records may appear. The certificate DER seed is a schema sentinel, not a valid signed X.509 certificate. The second CA must remain absent from the list and return 403 by direct API request. The smoke checks list and detail routes, 400/403/404 responses, absence of certificate DER and actor IDs, and `no-store` on detail responses. All published ports bind host loopback. The API shares the issuer's container network namespace so both browser and API can use the exact OIDC issuer `http://127.0.0.1:8080`; the frontend development proxy targets the shared namespace at `issuer:8081`.
 
 Stop while retaining the disposable database:
 

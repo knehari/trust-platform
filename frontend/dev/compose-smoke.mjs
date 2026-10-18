@@ -6,6 +6,10 @@ const api = 'http://127.0.0.1:8081';
 const consoleOrigin = 'http://127.0.0.1:5173';
 const allowedCa = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const hiddenCa = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const allowedRequest = '11111111-1111-4111-8111-000000000001';
+const hiddenRequest = '11111111-1111-4111-8111-000000000002';
+const allowedEvent = '33333333-3333-4333-8333-000000000001';
+const hiddenEvent = '33333333-3333-4333-8333-000000000002';
 
 const page = await fetch(consoleOrigin);
 assert.equal(page.status, 200, 'console must serve over the published loopback port');
@@ -51,4 +55,24 @@ const cas = await scoped.json();
 assert.deepEqual(cas.map((ca) => ca.ca_id), [allowedCa]);
 assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}`, { headers })).status, 403);
 assert.equal((await fetch(`${api}/v1/cas/${allowedCa}`, { headers })).status, 200);
-console.log('Laboratory smoke passed: console, code+PKCE, scoped PostgreSQL reads, and denials.');
+for (const [kind, knownId, hiddenId, idField, sensitiveField] of [
+  ['certificates', allowedRequest, hiddenRequest, 'request_id', 'certificate_der'],
+  ['audit', allowedEvent, hiddenEvent, 'event_id', 'actor_id'],
+]) {
+  const base = `${api}/v1/cas/${allowedCa}/${kind}`;
+  const list = await fetch(base, { headers });
+  assert.equal(list.status, 200);
+  const records = await list.json();
+  assert.deepEqual(records.map((record) => record[idField]), [knownId]);
+  assert.ok(records.every((record) => !(sensitiveField in record)));
+  const detail = await fetch(`${base}/${knownId}`, { headers });
+  assert.equal(detail.status, 200);
+  assert.match(detail.headers.get('cache-control') ?? '', /no-store/);
+  const record = await detail.json();
+  assert.equal(record[idField], knownId);
+  assert.ok(!(sensitiveField in record));
+  assert.equal((await fetch(`${base}/${hiddenId}`, { headers })).status, 404);
+  assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}/${kind}/${hiddenId}`, { headers })).status, 403);
+  assert.equal((await fetch(`${base}/not-a-uuid`, { headers })).status, 400);
+}
+console.log('Laboratory smoke passed: console, code+PKCE, scoped list/detail reads, and denials.');
