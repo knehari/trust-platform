@@ -117,11 +117,19 @@ export function App() {
     setCaMoreLoading(false);
     setCaMoreError(null);
     setCaCursor(null);
+    setCas([]);
+    setSelectedCaId(null);
+    setCertificates([]);
+    setAuditEvents([]);
+    setSelectedCertificate(null);
+    setSelectedAuditEvent(null);
+    setCaFilter('');
     const controller = new AbortController();
     setCasLoading(true);
     setDataError(null);
     apiGetPage<CertificateAuthority>('/v1/cas', user.access_token, controller.signal)
       .then(page => {
+        if (controller.signal.aborted) return;
         setCas(page.items);
         setCaCursor(page.nextCursor);
         setSelectedCaId(current => page.items.some(ca => ca.ca_id === current) ? current : page.items[0]?.ca_id ?? null);
