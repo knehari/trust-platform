@@ -30,5 +30,6 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: node --version && npm --version
       - run: npm ci
+      - run: node --test dev/check-api-compat.test.mjs
       - run: npm run build
       - run: npm audit --audit-level=high

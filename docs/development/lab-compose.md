@@ -8,6 +8,7 @@ From the repository root, with Docker Compose, OpenSSL and a free local 8080/808
 scripts/lab/init-env.sh
 docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
+node frontend/dev/check-api-compat.mjs
 node frontend/dev/compose-smoke.mjs
 ```
 
