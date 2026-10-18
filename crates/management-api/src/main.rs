@@ -3,7 +3,7 @@ mod auth;
 use auth::{Claims, OidcVerifier};
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::Response,
@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
 };
 use postgres::{Client, NoTls};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     env,
     io::{self, Write},
@@ -27,6 +27,7 @@ const MAX_DATABASE_REQUESTS: usize = 8;
 const MAX_HTTP_DATA_REQUESTS: usize = 16;
 const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
+const HISTORY_PAGE_SIZE: usize = 100;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -71,6 +72,47 @@ struct Audit {
     decision: String,
     policy_version: Option<String>,
     recorded_at: String,
+}
+
+#[derive(Deserialize)]
+struct PaginationQuery {
+    before: Option<String>,
+}
+
+fn parse_history_cursor(raw: Option<String>) -> Result<Option<(String, String)>, StatusCode> {
+    let Some(raw) = raw else { return Ok(None) };
+    let (timestamp, id) = raw.split_once('|').ok_or(StatusCode::BAD_REQUEST)?;
+    let bytes = timestamp.as_bytes();
+    let valid_timestamp = bytes.len() == 24
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'.'
+        && bytes[23] == b'Z'
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16 | 19 | 23) || byte.is_ascii_digit()
+        });
+    if !valid_timestamp
+        || uuid::Uuid::parse_str(id)
+            .map(|uuid| uuid.to_string() != id)
+            .unwrap_or(true)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some((timestamp.to_owned(), id.to_owned())))
+}
+
+fn history_headers(next_cursor: Option<String>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(cursor) = next_cursor {
+        headers.insert(
+            "x-next-cursor",
+            HeaderValue::from_str(&cursor).expect("canonical cursor is ASCII"),
+        );
+    }
+    headers
 }
 
 #[tokio::main]
@@ -358,9 +400,12 @@ async fn list_certificates(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(ca_id): Path<String>,
-) -> Result<Json<Vec<Certificate>>, StatusCode> {
+    Query(page): Query<PaginationQuery>,
+) -> Result<(HeaderMap, Json<Vec<Certificate>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let cursor = parse_history_cursor(page.before)?;
+    let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
     let rows = query_db(state.database_url, state.database_slots, move |db| {
@@ -373,31 +418,42 @@ async fn list_certificates(
             "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             ORDER BY signed_at DESC LIMIT 100", &[&ca_id,&issuer,&subject]
+             AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
+             ORDER BY signed_at DESC, request_id DESC LIMIT 101",
+            &[&ca_id, &issuer, &subject, &before_time, &before_id]
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| Certificate {
-                ca_id: r.get(0),
-                serial_hex: r.get(1),
-                fingerprint_sha256: r.get(2),
-                request_id: r.get(3),
-                state: r.get(4),
-                signed_at: r.get(5),
-                published_at: r.get(6),
-            })
-            .collect(),
-    ))
+    let has_more = rows.len() > HISTORY_PAGE_SIZE;
+    let items: Vec<Certificate> = rows
+        .into_iter()
+        .take(HISTORY_PAGE_SIZE)
+        .map(|r| Certificate {
+            ca_id: r.get(0),
+            serial_hex: r.get(1),
+            fingerprint_sha256: r.get(2),
+            request_id: r.get(3),
+            state: r.get(4),
+            signed_at: r.get(5),
+            published_at: r.get(6),
+        })
+        .collect();
+    let next = has_more.then(|| {
+        let last = items.last().expect("nonempty page has a final item");
+        format!("{}|{}", last.signed_at, last.request_id)
+    });
+    Ok((history_headers(next), Json(items)))
 }
 
 async fn list_audit(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(ca_id): Path<String>,
-) -> Result<Json<Vec<Audit>>, StatusCode> {
+    Query(page): Query<PaginationQuery>,
+) -> Result<(HeaderMap, Json<Vec<Audit>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let cursor = parse_history_cursor(page.before)?;
+    let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
     let rows = query_db(state.database_url, state.database_slots, move |db| {
@@ -410,21 +466,29 @@ async fn list_audit(
             "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
              FROM management_audit WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             ORDER BY recorded_at DESC LIMIT 100", &[&ca_id,&issuer,&subject]
+             AND ($4::text IS NULL OR (recorded_at, event_id) < ($4, $5)) \
+             ORDER BY recorded_at DESC, event_id DESC LIMIT 101",
+            &[&ca_id, &issuer, &subject, &before_time, &before_id]
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| Audit {
-                event_id: r.get(0),
-                ca_id: r.get(1),
-                event_type: r.get(2),
-                decision: r.get(3),
-                policy_version: r.get(4),
-                recorded_at: r.get(5),
-            })
-            .collect(),
-    ))
+    let has_more = rows.len() > HISTORY_PAGE_SIZE;
+    let items: Vec<Audit> = rows
+        .into_iter()
+        .take(HISTORY_PAGE_SIZE)
+        .map(|r| Audit {
+            event_id: r.get(0),
+            ca_id: r.get(1),
+            event_type: r.get(2),
+            decision: r.get(3),
+            policy_version: r.get(4),
+            recorded_at: r.get(5),
+        })
+        .collect();
+    let next = has_more.then(|| {
+        let last = items.last().expect("nonempty page has a final item");
+        format!("{}|{}", last.recorded_at, last.event_id)
+    });
+    Ok((history_headers(next), Json(items)))
 }
 
 #[cfg(test)]
@@ -440,7 +504,121 @@ mod tests {
         RsaPrivateKey,
     };
     use serde_json::json;
+    use std::collections::HashSet;
     use tower::ServiceExt;
+
+    async fn history_page(
+        app: &Router,
+        token: &str,
+        path: &str,
+    ) -> (StatusCode, Option<String>, Vec<serde_json::Value>) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let cursor = response
+            .headers()
+            .get("x-next-cursor")
+            .map(|value| value.to_str().unwrap().to_owned());
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let items = if status == StatusCode::OK {
+            serde_json::from_slice(&body).unwrap()
+        } else {
+            Vec::new()
+        };
+        (status, cursor, items)
+    }
+
+    #[tokio::test]
+    async fn history_pagination_reads_all_scoped_rows() {
+        let database_url = match env::var("TRUST_API_PAGINATION_DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("SKIP: pagination PostgreSQL fixture not configured; CI runs this test with a dedicated seeded database");
+                return;
+            }
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"pagination-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("pagination-test".into());
+        let now = jsonwebtoken::get_current_timestamp();
+        let token = encode(
+            &header,
+            &json!({
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+            }),
+            &signer,
+        )
+        .unwrap();
+        let app = router(AppState {
+            verifier,
+            database_url,
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let mut valid_cursor = None;
+        for (suffix, id_field) in [("certificates", "request_id"), ("audit", "event_id")] {
+            let base = format!("/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/{suffix}");
+            let (status, cursor, first) = history_page(&app, &token, &base).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(first.len(), 100);
+            let cursor = cursor.expect("102 rows require another page");
+            valid_cursor = Some(cursor.clone());
+            let (status, next, second) = history_page(
+                &app,
+                &token,
+                &format!("{base}?before={}", cursor.replace('|', "%7C")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(second.len(), 2);
+            assert!(next.is_none());
+            let ids: HashSet<&str> = first
+                .iter()
+                .chain(&second)
+                .map(|item| item[id_field].as_str().unwrap())
+                .collect();
+            assert_eq!(ids.len(), 102);
+            let (status, _, _) =
+                history_page(&app, &token, &format!("{base}?before=invalid")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            &format!(
+                "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/audit?before={}",
+                valid_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
     #[test]
     fn scope_rejects_other_and_invalid_ca() {
         let claims = Claims {

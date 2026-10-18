@@ -2,7 +2,7 @@
 
 ## Current stacked Draft increments (18 October 2026)
 
-This table describes the unmerged laboratory stack through Draft #68. The
+This table describes the unmerged laboratory stack through Draft #69. The
 historical PR #42 matrix below remains the reference for what was observed on
 PR #41; these increments have not landed on `main`.
 
@@ -24,6 +24,7 @@ PR #41; these increments have not landed on `main`.
 | Interrupted management migration | Draft #66: injected 0013 DDL failure rolls back that migration while 0012 and populated data survive; manual retry passes in exact-head CI | Direct SQL rehearsal only; no automatic deployed-data recovery |
 | Ledgered management migration | Draft #67: 0012–0013 runner serializes operators, records source checksums transactionally, skips repeat runs and refuses drift or untracked schema; six exact-head CI checks passed | Laboratory `NoTls` operator only; no production migration service or automatic adoption |
 | Ledgered restore continuity | Draft #68: a disposable restore compares full ledger rows and the runner skips both migrations afterward; local PostgreSQL 16.15 and [code-commit CI](https://github.com/knehari/trust-platform/actions/runs/39137372438) passed | Independent review remains; no tamper-evident audit, protected backup or production recovery |
+| Management history paging | Draft #69: the read-only API and console page CA-scoped certificate and audit metadata past 100 rows; a restricted PostgreSQL 16.15 login returned 100+2 rows for each route without duplicates | CI tracked on the Draft PR; no snapshot across concurrent writes, production query benchmark or issuance path |
 
 # Matrice des fonctionnalités
 
