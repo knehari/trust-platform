@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
-import { apiGet, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
+import { apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
@@ -23,6 +23,10 @@ export function App() {
   const [selectedCaId, setSelectedCaId] = useState<string | null>(null);
   const [section, setSection] = useState<Section>('overview');
   const [casLoading, setCasLoading] = useState(false);
+  const [caCursor, setCaCursor] = useState<string | null>(null);
+  const [caMoreLoading, setCaMoreLoading] = useState(false);
+  const caKey = useRef('');
+  const caMoreController = useRef<AbortController | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
@@ -58,18 +62,42 @@ export function App() {
 
   useEffect(() => {
     if (!user || user.expired) return;
+    caKey.current = `${user.access_token}/${reload}`;
+    caMoreController.current?.abort();
+    setCaMoreLoading(false);
+    setCaCursor(null);
     const controller = new AbortController();
     setCasLoading(true);
     setDataError(null);
-    apiGet<CertificateAuthority[]>('/v1/cas', user.access_token, controller.signal)
-      .then(items => {
-        setCas(items);
-        setSelectedCaId(current => items.some(ca => ca.ca_id === current) ? current : items[0]?.ca_id ?? null);
+    apiGetPage<CertificateAuthority>('/v1/cas', user.access_token, controller.signal)
+      .then(page => {
+        setCas(page.items);
+        setCaCursor(page.nextCursor);
+        setSelectedCaId(current => page.items.some(ca => ca.ca_id === current) ? current : page.items[0]?.ca_id ?? null);
       })
       .catch(error => { if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load authorities.'); })
       .finally(() => { if (!controller.signal.aborted) setCasLoading(false); });
-    return () => controller.abort();
+    return () => { controller.abort(); caMoreController.current?.abort(); };
   }, [user, reload]);
+
+  async function loadMoreCas() {
+    if (!user || user.expired || !caCursor || casLoading || caMoreLoading) return;
+    const key = caKey.current;
+    const controller = new AbortController();
+    caMoreController.current = controller;
+    setCaMoreLoading(true);
+    try {
+      const page = await apiGetPage<CertificateAuthority>(`/v1/cas?after=${encodeURIComponent(caCursor)}`, user.access_token, controller.signal);
+      if (caKey.current === key) {
+        setCas(current => [...current, ...page.items]);
+        setCaCursor(page.nextCursor);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setDataError(error instanceof Error ? error.message : 'Could not load more authorities.');
+    } finally {
+      if (caKey.current === key) setCaMoreLoading(false);
+    }
+  }
 
   useEffect(() => {
     detailKey.current = `${selectedCaId ?? ''}/${reload}`;
@@ -158,7 +186,7 @@ export function App() {
       <nav aria-label="Main navigation" className="nav">
         <div className="nav-label">WORKSPACE</div>
         <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><span>▦</span> Overview</button>
-        <button className={section === 'authorities' ? 'active' : ''} onClick={() => setSection('authorities')}><span>◇</span> Authorities <small>{cas.length}</small></button>
+        <button className={section === 'authorities' ? 'active' : ''} onClick={() => setSection('authorities')}><span>◇</span> Authorities <small>{cas.length}{caCursor ? '+' : ''}</small></button>
         <button className={section === 'certificates' ? 'active' : ''} onClick={() => setSection('certificates')}><span>▤</span> Certificates</button>
         <button className={section === 'audit' ? 'active' : ''} onClick={() => setSection('audit')}><span>◷</span> Audit trail</button>
       </nav>
@@ -173,11 +201,12 @@ export function App() {
         {!casLoading && cas.length === 0 && !dataError && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
         {cas.length > 0 && <>
           {section === 'overview' && <>
-            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={String(cas.length)} detail="Available to your session" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={detailLoading ? '…' : String(certificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={detailLoading ? '…' : String(auditEvents.length)} detail="Records loaded" icon="◷" /></div>
+            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={detailLoading ? '…' : String(certificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={detailLoading ? '…' : String(auditEvents.length)} detail="Records loaded" icon="◷" /></div>
             <div className="section-head"><div><h2>Your authorities</h2><p>Choose an authority to inspect its records.</p></div><button className="link-button" onClick={() => setSection('authorities')}>View all authorities →</button></div>
             <AuthorityList cas={cas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />
+            {caCursor && <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>}
           </>}
-          {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES</span><span>{cas.length}</span></div><AuthorityList cas={cas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact /></div><div className="detail-panel">
+          {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><AuthorityList cas={cas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />{caCursor && <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>}</div><div className="detail-panel">
             {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
               {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
               {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificates.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : certificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{certificates.map(cert => <tr key={cert.request_id}><td className="mono">{shortId(cert.serial_hex)}</td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>{certificateCursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>}</>}</div>}

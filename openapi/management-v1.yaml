@@ -43,16 +43,23 @@ paths:
           description: Management reads are unavailable
   /v1/cas:
     get:
-      summary: List CAs in both the signed scope and server-managed reader grants, at most 100
+      summary: List one ordered page of CAs in both the signed scope and server-managed reader grants, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaCursor'
       responses:
         '200':
-          description: Scoped CA list
+          description: Scoped CA list. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string, format: uuid }
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -137,6 +144,12 @@ components:
       required: false
       description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
       schema: { type: string, maxLength: 61 }
+    CaCursor:
+      in: query
+      name: after
+      required: false
+      description: Pass the previous CA page's X-Next-Cursor unchanged. Malformed values return 400.
+      schema: { type: string, format: uuid }
   schemas:
     CA:
       type: object

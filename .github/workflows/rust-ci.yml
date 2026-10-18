@@ -230,6 +230,10 @@ jobs:
           TRUST_REQUIRE_DATABASE=1 \
           TRUST_API_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
             cargo test -p trust-management-api --bin trust-management-api history_pagination_reads_all_scoped_rows --locked -- --nocapture
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_ca_pagination_seed.sql >/dev/null
+          TRUST_REQUIRE_DATABASE=1 \
+          TRUST_API_CA_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
+            cargo test -p trust-management-api --bin trust-management-api ca_pagination_reads_all_scoped_rows --locked -- --nocapture
       - name: Upgrade populated management database
         run: |
           set -euo pipefail
@@ -293,22 +297,27 @@ jobs:
             -e POSTGRES_DB=trust_fresh \
             -p 127.0.0.1:55433:5432 postgres:16 >/dev/null
           trap 'docker rm -f "$FRESH" >/dev/null 2>&1 || true' EXIT
+          TARGET_URL="postgresql://trust_restore_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh"
           for attempt in $(seq 1 30); do
-            if docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh >/dev/null 2>&1; then
+            if docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh >/dev/null 2>&1 \
+               && psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
               break
             fi
             sleep 1
           done
           docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh
+          test "$(psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1')" = 1
           SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade"
-          TARGET_URL="postgresql://trust_restore_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh"
           if output=$(TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" \
              TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
              bash tests/management_dump_restore.sh 2>&1); then
             echo 'FAIL: restore accepted a fresh cluster without the reader role' >&2
             exit 1
           fi
-          test "$output" = 'Restore target requires NOLOGIN trust_api_reader role'
+          if [[ "$output" != 'Restore target requires NOLOGIN trust_api_reader role' ]]; then
+            printf 'FAIL: unexpected missing-role refusal: %s\n' "$output" >&2
+            exit 1
+          fi
           echo 'PASS: restore refuses a fresh cluster without the reader role'
           docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \
             -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN'
