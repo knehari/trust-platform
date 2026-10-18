@@ -33,6 +33,7 @@ The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a s
 The next schema CI step [restores that populated fixture](../operations/lab-management-backup-restore.md) into another empty disposable database and checks row equality and restricted reader privileges. It does not back up this Compose volume or any CA key material.
 
 CI also starts a second disposable PostgreSQL 16 cluster to verify that a missing global reader role stops restoration before any write, then provisions that role and repeats the same data and privilege checks across clusters.
+It separately provisions a temporary API login in that cluster and verifies view-only access through the login before grant, during grant and after revocation.
 
 The schema job also injects a mid-restore DDL error in a third disposable database. The restore transaction must roll back all created relations, after which an unmodified retry must pass. This tests SQL restore failure handling, not recovery of the Compose volume or signer state.
 
