@@ -318,6 +318,7 @@ BEGIN
         'store_verified_crl(uuid,bigint,text,bytea,bytea,bytea)',
         'quarantine_stale_crl_intents(uuid,interval)',
         'crl_due(uuid)',
+        'crl_change_covered(uuid,boolean)',
         'crl_entry_encoding(bytea,timestamptz,smallint,timestamptz)',
         'overdue_status_changes(uuid)',
         'guard_crl_publication()',
@@ -333,5 +334,107 @@ BEGIN
     END LOOP;
 END $t$;
 
+-- ----------------------------------------- coverage must be proven by the CRL
+-- A STORED CRL covers an approved change only if its snapshot reflects it.
+-- Fixture rows are inserted directly (owner), including STORED publications.
+INSERT INTO ca(ca_id, display_name, policy_version)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000004', 'CRL Coverage Lab CA', 'lab-1');
+INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                                requester_id, policy_version, state)
+SELECT ('d2d2d2d2-0000-4000-8000-00000000000' || n)::uuid,
+       'c0c0c0c0-0000-4000-8000-000000000004', 'idem-' || n,
+       sha256(('csr' || n)::bytea), 'requester', 'lab-1', 'PUBLISHED'
+FROM generate_series(1, 2) n;
+INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000004', decode('0' || n, 'hex'),
+       ('d2d2d2d2-0000-4000-8000-00000000000' || n)::uuid
+FROM generate_series(1, 2) n;
+INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                        certificate_der, signed_at)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000004', decode('0' || n, 'hex'),
+       ('d2d2d2d2-0000-4000-8000-00000000000' || n)::uuid,
+       sha256(('der' || n)::bytea), '\x3003020101', now()
+FROM generate_series(1, 2) n;
+INSERT INTO ca_revocation_policy(ca_id, status_publication_deadline)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000004', INTERVAL '1 hour');
+-- serial 1: REVOKE (reason 1) approved 90 min ago; serial 2: RELEASE approved 45 min ago
+INSERT INTO certificate_status_change(change_id, ca_id, serial_der_content, action, reason_code,
+    maker_issuer, maker_subject, checker_issuer, checker_subject, status, proposed_at, decided_at)
+VALUES
+ ('e1e1e1e1-0000-4000-8000-000000000001', 'c0c0c0c0-0000-4000-8000-000000000004', '\x01', 'REVOKE', 1,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '90 minutes'),
+ ('e1e1e1e1-0000-4000-8000-000000000002', 'c0c0c0c0-0000-4000-8000-000000000004', '\x02', 'RELEASE', NULL,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '45 minutes');
+
+CREATE FUNCTION pg_temp.fixture_stored_crl(p_number BIGINT, p_age INTERVAL) RETURNS VOID
+LANGUAGE sql AS $f$
+    INSERT INTO crl_publication(ca_id, crl_number, this_update, next_update, status,
+        operation_ref, actor_id, entries_sha256, tbs_sha256, crl_der, crl_sha256)
+    VALUES ('c0c0c0c0-0000-4000-8000-000000000004', p_number,
+        date_trunc('second', clock_timestamp()) - p_age,
+        date_trunc('second', clock_timestamp()) - p_age + INTERVAL '7 days', 'STORED',
+        'fixture-' || p_number, 'fixture', sha256('e'::bytea), sha256('t'::bytea),
+        '\x3003020101', sha256('\x3003020101'::bytea));
+$f$;
+
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000004';
+BEGIN
+    -- CRL 1 (60 min old, after both decisions) is STORED but its snapshot is empty
+    PERFORM pg_temp.fixture_stored_crl(1, INTERVAL '60 minutes');
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 2, 'empty snapshot covers nothing');
+    PERFORM pg_temp.must(crl_due(ca), 'due: latest STORED CRL does not reflect the REVOKE');
+
+    -- CRL 2 lists serial 1 with the WRONG reason and serial 2 (the released one)
+    PERFORM pg_temp.fixture_stored_crl(2, INTERVAL '30 minutes');
+    INSERT INTO crl_entry_snapshot(ca_id, crl_number, serial_der_content, revoked_at, reason_code)
+    VALUES (ca, 2, '\x01', now(), 2), (ca, 2, '\x02', now(), 6);
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 2, 'wrong reason / still-listed serial is not covered');
+    PERFORM pg_temp.must(crl_due(ca), 'still due with wrong reason');
+
+    -- CRL 3 lists serial 1 with the approved reason and omits serial 2
+    PERFORM pg_temp.fixture_stored_crl(3, INTERVAL '10 minutes');
+    INSERT INTO crl_entry_snapshot(ca_id, crl_number, serial_der_content, revoked_at, reason_code)
+    VALUES (ca, 3, '\x01', now(), 1);
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 0, 'reflected changes are covered');
+    PERFORM pg_temp.must(NOT crl_due(ca), 'not due once the latest CRL reflects every change');
+END $t$;
+
 SELECT 'crl_pipeline: all assertions passed' AS result;
 ROLLBACK;
+
+-- ------------------------------------- isolation: reserve_crl fails closed
+-- Outside READ COMMITTED the transaction snapshot predates the CA row lock and
+-- could miss an approval that committed meanwhile. Separate transactions
+-- because the isolation level must be set at BEGIN.
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+INSERT INTO ca(ca_id, display_name, policy_version)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000005', 'Isolation Lab CA', 'lab-1');
+DO $t$
+DECLARE ok BOOLEAN := false;
+BEGIN
+    BEGIN
+        PERFORM reserve_crl('c0c0c0c0-0000-4000-8000-000000000005', 'a', 'rr-op');
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLSTATE = '23514' AND SQLERRM LIKE '%read committed%' THEN ok := true; ELSE RAISE; END IF;
+    END;
+    IF NOT ok THEN RAISE EXCEPTION 'reserve_crl accepted REPEATABLE READ'; END IF;
+END $t$;
+ROLLBACK;
+
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+INSERT INTO ca(ca_id, display_name, policy_version)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000005', 'Isolation Lab CA', 'lab-1');
+DO $t$
+DECLARE ok BOOLEAN := false;
+BEGIN
+    BEGIN
+        PERFORM reserve_crl('c0c0c0c0-0000-4000-8000-000000000005', 'a', 'ser-op');
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLSTATE = '23514' AND SQLERRM LIKE '%read committed%' THEN ok := true; ELSE RAISE; END IF;
+    END;
+    IF NOT ok THEN RAISE EXCEPTION 'reserve_crl accepted SERIALIZABLE'; END IF;
+END $t$;
+ROLLBACK;
+SELECT 'crl_pipeline: isolation checks passed' AS result;

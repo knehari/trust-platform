@@ -145,6 +145,14 @@ DECLARE
     v_this TIMESTAMPTZ;
     v_expired TIMESTAMPTZ;
 BEGIN
+    -- Fail closed: under REPEATABLE READ / SERIALIZABLE the transaction
+    -- snapshot predates the CA row lock, so an approval that commits while
+    -- this call waits would be missing from the snapshot although its
+    -- decided_at precedes this_update.
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'reserve_crl requires transaction isolation read committed (got %)',
+            current_setting('transaction_isolation') USING ERRCODE='23514';
+    END IF;
     IF p_ca IS NULL
        OR p_actor IS NULL OR length(p_actor) NOT BETWEEN 1 AND 1024
        OR p_operation_ref IS NULL OR length(p_operation_ref) NOT BETWEEN 1 AND 256
@@ -361,8 +369,42 @@ BEGIN
     RETURN v_count;
 END $fn$;
 
+-- Does a STORED CRL actually reflect this approved change? The CRL must have
+-- this_update >= decided_at and its snapshot must show the outcome: SUSPEND /
+-- REVOKE -> the serial is listed with the approved reason; RELEASE -> the
+-- serial is not listed. A change superseded by a later approved change for the
+-- same certificate is not tracked (the later one is). p_latest_only restricts
+-- the test to the newest STORED CRL of the CA.
+CREATE FUNCTION crl_change_covered(p_change UUID, p_latest_only BOOLEAN)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE AS $fn$
+    SELECT EXISTS (
+        SELECT 1
+        FROM certificate_status_change s
+        JOIN crl_publication cp
+          ON cp.ca_id = s.ca_id AND cp.status = 'STORED'
+         AND cp.this_update >= s.decided_at
+        WHERE s.change_id = p_change AND s.status = 'APPROVED'
+          AND (NOT p_latest_only OR cp.crl_number = (
+                SELECT max(x.crl_number) FROM crl_publication x
+                WHERE x.ca_id = s.ca_id AND x.status = 'STORED'))
+          AND CASE WHEN s.action = 'RELEASE'
+                   THEN NOT EXISTS (
+                        SELECT 1 FROM crl_entry_snapshot e
+                        WHERE e.ca_id = cp.ca_id AND e.crl_number = cp.crl_number
+                          AND e.serial_der_content = s.serial_der_content)
+                   ELSE EXISTS (
+                        SELECT 1 FROM crl_entry_snapshot e
+                        WHERE e.ca_id = cp.ca_id AND e.crl_number = cp.crl_number
+                          AND e.serial_der_content = s.serial_der_content
+                          AND e.reason_code = s.reason_code)
+              END
+    )
+$fn$;
+
 -- True when a new CRL should be issued: none stored yet, the latest stored one
--- is older than crl_issue_interval, or a status change was approved after it.
+-- is older than crl_issue_interval, or the latest approved change of some
+-- certificate is not reflected by the latest stored CRL.
 CREATE FUNCTION crl_due(p_ca UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql AS $fn$
@@ -384,12 +426,18 @@ BEGIN
     END IF;
     RETURN EXISTS (
         SELECT 1 FROM certificate_status_change s
-        WHERE s.ca_id = p_ca AND s.status = 'APPROVED' AND s.decided_at > v_last
+        WHERE s.ca_id = p_ca AND s.status = 'APPROVED'
+          AND NOT EXISTS (
+              SELECT 1 FROM certificate_status_change l
+              WHERE l.ca_id = s.ca_id AND l.serial_der_content = s.serial_der_content
+                AND l.status = 'APPROVED' AND l.decided_at > s.decided_at)
+          AND NOT crl_change_covered(s.change_id, true)
     );
 END $fn$;
 
 -- Status changes past status_publication_deadline (counted from the proposal)
--- that are still PROPOSED, or APPROVED but not on any STORED CRL.
+-- that are still PROPOSED, or APPROVED (and not superseded) but not reflected
+-- by any STORED CRL.
 CREATE FUNCTION overdue_status_changes(p_ca UUID)
 RETURNS TABLE(change_id UUID, status TEXT, proposed_at TIMESTAMPTZ)
 LANGUAGE plpgsql AS $fn$
@@ -410,10 +458,12 @@ BEGIN
         WHERE s.ca_id = p_ca
           AND s.proposed_at + v_deadline < clock_timestamp()
           AND (s.status = 'PROPOSED'
-               OR (s.status = 'APPROVED' AND NOT EXISTS (
-                      SELECT 1 FROM crl_publication cp
-                      WHERE cp.ca_id = s.ca_id AND cp.status = 'STORED'
-                        AND cp.this_update >= s.decided_at)))
+               OR (s.status = 'APPROVED'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM certificate_status_change l
+                       WHERE l.ca_id = s.ca_id AND l.serial_der_content = s.serial_der_content
+                         AND l.status = 'APPROVED' AND l.decided_at > s.decided_at)
+                   AND NOT crl_change_covered(s.change_id, false)))
         ORDER BY s.proposed_at, s.change_id;
 END $fn$;
 
@@ -426,6 +476,7 @@ REVOKE ALL ON FUNCTION record_crl_intent(uuid,bigint,text,bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION mark_crl_uncertain(uuid,bigint,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION store_verified_crl(uuid,bigint,text,bytea,bytea,bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION quarantine_stale_crl_intents(uuid,interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION crl_change_covered(uuid,boolean) FROM PUBLIC;
 REVOKE ALL ON FUNCTION crl_due(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION overdue_status_changes(uuid) FROM PUBLIC;
 
