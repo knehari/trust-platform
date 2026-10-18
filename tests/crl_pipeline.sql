@@ -401,6 +401,81 @@ BEGIN
     PERFORM pg_temp.must(NOT crl_due(ca), 'not due once the latest CRL reflects every change');
 END $t$;
 
+-- ------------------------------------------ superseded changes stay visible
+-- A change replaced by a later approval is judged "covered" once any STORED CRL
+-- is at least as new as its decision; until then its deadline breach is still
+-- reported. The newest change is judged by the snapshot rule.
+INSERT INTO ca(ca_id, display_name, policy_version)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000006', 'CRL Supersession Lab CA', 'lab-1');
+INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                                requester_id, policy_version, state)
+SELECT ('d3d3d3d3-0000-4000-8000-00000000000' || n)::uuid,
+       'c0c0c0c0-0000-4000-8000-000000000006', 'idem-' || n,
+       sha256(('csr' || n)::bytea), 'requester', 'lab-1', 'PUBLISHED'
+FROM generate_series(1, 2) n;
+INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000006', decode('0' || n, 'hex'),
+       ('d3d3d3d3-0000-4000-8000-00000000000' || n)::uuid
+FROM generate_series(1, 2) n;
+INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                        certificate_der, signed_at)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000006', decode('0' || n, 'hex'),
+       ('d3d3d3d3-0000-4000-8000-00000000000' || n)::uuid,
+       sha256(('der' || n)::bytea), '\x3003020101', now()
+FROM generate_series(1, 2) n;
+INSERT INTO ca_revocation_policy(ca_id, suspension_allowed, status_publication_deadline)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000006', true, INTERVAL '1 hour');
+-- serial 1: SUSPEND (decided 90 min ago) then REVOKE (decided 10 min ago)
+-- serial 2: SUSPEND (decided 90 min ago) then RELEASE (decided 10 min ago)
+-- every proposal is 2 hours old, so every change is past the 1 hour deadline
+INSERT INTO certificate_status_change(change_id, ca_id, serial_der_content, action, reason_code,
+    maker_issuer, maker_subject, checker_issuer, checker_subject, status, proposed_at, decided_at)
+VALUES
+ ('e2e2e2e2-0000-4000-8000-000000000001', 'c0c0c0c0-0000-4000-8000-000000000006', '\x01', 'SUSPEND', 6,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '90 minutes'),
+ ('e2e2e2e2-0000-4000-8000-000000000002', 'c0c0c0c0-0000-4000-8000-000000000006', '\x01', 'REVOKE', 1,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '10 minutes'),
+ ('e2e2e2e2-0000-4000-8000-000000000003', 'c0c0c0c0-0000-4000-8000-000000000006', '\x02', 'SUSPEND', 6,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '90 minutes'),
+ ('e2e2e2e2-0000-4000-8000-000000000004', 'c0c0c0c0-0000-4000-8000-000000000006', '\x02', 'RELEASE', NULL,
+  'i', 'm', 'i', 'c', 'APPROVED', clock_timestamp() - INTERVAL '2 hours', clock_timestamp() - INTERVAL '10 minutes');
+
+CREATE FUNCTION pg_temp.fixture_stored_crl6(p_number BIGINT, p_age INTERVAL) RETURNS VOID
+LANGUAGE sql AS $f$
+    INSERT INTO crl_publication(ca_id, crl_number, this_update, next_update, status,
+        operation_ref, actor_id, entries_sha256, tbs_sha256, crl_der, crl_sha256)
+    VALUES ('c0c0c0c0-0000-4000-8000-000000000006', p_number,
+        date_trunc('second', clock_timestamp()) - p_age,
+        date_trunc('second', clock_timestamp()) - p_age + INTERVAL '7 days', 'STORED',
+        'fixture-' || p_number, 'fixture', sha256('e'::bytea), sha256('t'::bytea),
+        '\x3003020101', sha256('\x3003020101'::bytea));
+$f$;
+
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000006';
+BEGIN
+    -- no CRL at all: all four are reported, including the superseded SUSPENDs
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 4, 'no CRL: superseded changes still overdue');
+    PERFORM pg_temp.must(EXISTS (SELECT 1 FROM overdue_status_changes(ca)
+        WHERE change_id = 'e2e2e2e2-0000-4000-8000-000000000001'), 'overdue SUSPEND before REVOKE reported');
+    PERFORM pg_temp.must(EXISTS (SELECT 1 FROM overdue_status_changes(ca)
+        WHERE change_id = 'e2e2e2e2-0000-4000-8000-000000000003'), 'overdue SUSPEND before RELEASE reported');
+
+    -- a CRL newer than the SUSPENDs but older than the newest decisions
+    PERFORM pg_temp.fixture_stored_crl6(1, INTERVAL '30 minutes');
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 2, 'superseded changes covered by a newer CRL');
+    PERFORM pg_temp.must((SELECT bool_and(change_id IN ('e2e2e2e2-0000-4000-8000-000000000002',
+                                                        'e2e2e2e2-0000-4000-8000-000000000004'))
+                          FROM overdue_status_changes(ca)), 'only the newest changes remain overdue');
+
+    -- a CRL after the newest decisions that reflects them
+    PERFORM pg_temp.fixture_stored_crl6(2, INTERVAL '5 minutes');
+    INSERT INTO crl_entry_snapshot(ca_id, crl_number, serial_der_content, revoked_at, reason_code)
+    VALUES (ca, 2, '\x01', now(), 1);
+    PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 0, 'newest changes reflected by CRL 2');
+END $t$;
+
 SELECT 'crl_pipeline: all assertions passed' AS result;
 ROLLBACK;
 

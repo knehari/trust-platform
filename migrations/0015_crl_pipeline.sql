@@ -436,8 +436,10 @@ BEGIN
 END $fn$;
 
 -- Status changes past status_publication_deadline (counted from the proposal)
--- that are still PROPOSED, or APPROVED (and not superseded) but not reflected
--- by any STORED CRL.
+-- that are still PROPOSED, or APPROVED but not yet published: the newest
+-- approved change of a certificate must be reflected by a STORED CRL; an older
+-- (superseded) one counts as published once any STORED CRL postdates its
+-- decision.
 CREATE FUNCTION overdue_status_changes(p_ca UUID)
 RETURNS TABLE(change_id UUID, status TEXT, proposed_at TIMESTAMPTZ)
 LANGUAGE plpgsql AS $fn$
@@ -458,12 +460,22 @@ BEGIN
         WHERE s.ca_id = p_ca
           AND s.proposed_at + v_deadline < clock_timestamp()
           AND (s.status = 'PROPOSED'
-               OR (s.status = 'APPROVED'
-                   AND NOT EXISTS (
-                       SELECT 1 FROM certificate_status_change l
-                       WHERE l.ca_id = s.ca_id AND l.serial_der_content = s.serial_der_content
-                         AND l.status = 'APPROVED' AND l.decided_at > s.decided_at)
-                   AND NOT crl_change_covered(s.change_id, false)))
+               OR (s.status = 'APPROVED' AND NOT (
+                   CASE WHEN EXISTS (
+                            SELECT 1 FROM certificate_status_change l
+                            WHERE l.ca_id = s.ca_id
+                              AND l.serial_der_content = s.serial_der_content
+                              AND l.status = 'APPROVED' AND l.decided_at > s.decided_at)
+                        -- superseded: covered once any STORED CRL is at least
+                        -- as new as its decision (a CRL reflecting the
+                        -- superseding change is necessarily newer)
+                        THEN EXISTS (
+                            SELECT 1 FROM crl_publication cp
+                            WHERE cp.ca_id = s.ca_id AND cp.status = 'STORED'
+                              AND cp.this_update >= s.decided_at)
+                        -- newest change: the snapshot must reflect it
+                        ELSE crl_change_covered(s.change_id, false)
+                   END)))
         ORDER BY s.proposed_at, s.change_id;
 END $fn$;
 
