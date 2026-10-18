@@ -306,9 +306,12 @@ BEGIN
         RAISE EXCEPTION 'actor holds no revocation officer grant for this CA'
           USING ERRCODE='42501';
     END IF;
+    IF (v_chg.maker_issuer, v_chg.maker_subject)
+       = (p_checker_issuer, p_checker_subject)
+    THEN
+        RAISE EXCEPTION 'checker must differ from maker' USING ERRCODE='23514';
+    END IF;
     IF v_chg.status <> 'PROPOSED'
-       OR (v_chg.maker_issuer, v_chg.maker_subject)
-          = (p_checker_issuer, p_checker_subject)
        OR v_chg.action <> p_expected_action
        OR v_chg.reason_code IS DISTINCT FROM p_expected_reason
     THEN

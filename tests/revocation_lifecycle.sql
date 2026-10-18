@@ -3,6 +3,23 @@
 \set ON_ERROR_STOP 1
 BEGIN;
 
+-- Same, and the error message must also match (distinguishes a function guard
+-- from a table CHECK that shares the SQLSTATE).
+CREATE FUNCTION pg_temp.expect_err_msg(p_sql TEXT, p_state TEXT, p_msg TEXT) RETURNS VOID
+LANGUAGE plpgsql AS $f$
+BEGIN
+    BEGIN
+        EXECUTE p_sql;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLSTATE <> p_state OR SQLERRM <> p_msg THEN
+            RAISE EXCEPTION 'expected % "%" but got % "%" for: %',
+                p_state, p_msg, SQLSTATE, SQLERRM, p_sql;
+        END IF;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'expected % "%" but statement succeeded: %', p_state, p_msg, p_sql;
+END $f$;
+
 -- Run a statement and require that it fails with exactly the given SQLSTATE.
 CREATE FUNCTION pg_temp.expect_err(p_sql TEXT, p_state TEXT) RETURNS VOID
 LANGUAGE plpgsql AS $f$
@@ -127,7 +144,7 @@ DECLARE
 BEGIN
     -- approval by the maker identity
     c := propose_certificate_status_change(ca, '\x03', 'REVOKE', 4::smallint, NULL, 'https://idp.lab.invalid', 'maker');
-    PERFORM pg_temp.expect_err(format($q$SELECT approve_certificate_status_change(%L,'https://idp.lab.invalid','maker','REVOKE',4::smallint)$q$, c), '23514');
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT approve_certificate_status_change(%L,'https://idp.lab.invalid','maker','REVOKE',4::smallint)$q$, c), '23514', 'checker must differ from maker');
     -- same subject at a different issuer is a different identity but has no grant
     PERFORM pg_temp.expect_err(format($q$SELECT approve_certificate_status_change(%L,'https://other.lab.invalid','maker','REVOKE',4::smallint)$q$, c), '42501');
     -- confirmed action/reason must match the proposal
