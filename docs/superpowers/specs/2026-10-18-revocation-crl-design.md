@@ -164,8 +164,12 @@ revocation, and the database re-checks the same rule), `StatusAction`,
 The existing `revocation_policy` module is **reused, not deleted**: it becomes
 the pure decision layer, `decide_status_change(current_state, action, reason,
 ca_policy) -> Result<Transition, StatusChangeError>`, which the adapter calls
-before any SQL (defence in depth; SQL re-checks everything). Its current
-contents are replaced because they conflict with this design: it accepts
+before any SQL (defence in depth; SQL re-checks everything). Its historical
+contents (`authorize_revocation`, `RevocationError` and their test) stay in the
+file verbatim, marked `#[deprecated]` and called by nothing, because the
+recovery inventory (`docs/recovery/RECOVERY_PLAN.md`, CI job `preservation`)
+preserves every historical public name and test. New code must not use them,
+because they conflict with this design: `authorize_revocation` accepts
 `removeFromCRL` (8) and `certificateHold` (6) without a suspension context,
 treats a caller-supplied `authorized: bool` as authorisation, and checks
 serial format more weakly than the database (it accepts non-minimal and

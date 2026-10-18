@@ -4,7 +4,7 @@ Status: inventory, 18 October 2026. Branches `feature/v2-5-*` to `feature/v4-0-*
 (Draft PRs #25–#40) added the modules below. Each is a pure predicate of 27–56
 lines with unit tests. **No other module, binary, migration or test calls any of
 them.** (`revocation_policy` was integrated by the lab revocation/CRL slice, migrations
-0014–0015, and is no longer listed; 15 contracts remain.) Their names describe a future capability, not one that exists.
+0014–0015, and is no longer listed; its historical `authorize_revocation` stays, deprecated and unused, for the recovery inventory. 15 contracts remain.) Their names describe a future capability, not one that exists.
 
 | Module | What it actually checks | What its name might suggest but does not exist |
 | --- | --- | --- |
