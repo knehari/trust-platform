@@ -271,3 +271,12 @@ jobs:
             -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN'
           TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
             bash tests/management_dump_restore.sh
+      - name: Roll back interrupted management restore
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_atomic
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_atomic" \
+            bash tests/management_restore_atomicity.sh

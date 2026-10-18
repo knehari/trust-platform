@@ -42,7 +42,8 @@ archive="$backup_dir/management.dump"
 "$dump_bin" --format=custom --file="$archive" "$TRUST_RESTORE_SOURCE_URL"
 test -s "$archive"
 chmod 600 "$archive"
-"$restore_bin" --exit-on-error --no-owner --dbname="$TRUST_RESTORE_TARGET_URL" "$archive" >/dev/null
+"$restore_bin" --single-transaction --exit-on-error --no-owner \
+  --dbname="$TRUST_RESTORE_TARGET_URL" "$archive" >/dev/null
 
 restored_fingerprint=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
   -f tests/management_restore_fingerprint.sql)
