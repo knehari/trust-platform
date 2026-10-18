@@ -26,6 +26,41 @@ BEGIN
     END IF;
 END $f$;
 
+-- Same as expect_err, and the error message must also match.
+CREATE FUNCTION pg_temp.expect_err_msg(p_sql TEXT, p_state TEXT, p_msg TEXT) RETURNS VOID
+LANGUAGE plpgsql AS $f$
+BEGIN
+    BEGIN
+        EXECUTE p_sql;
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLSTATE <> p_state OR SQLERRM <> p_msg THEN
+            RAISE EXCEPTION 'expected % "%" but got % "%" for: %',
+                p_state, p_msg, SQLSTATE, SQLERRM, p_sql;
+        END IF;
+        RETURN;
+    END;
+    RAISE EXCEPTION 'expected % "%" but statement succeeded: %', p_state, p_msg, p_sql;
+END $f$;
+
+-- What an honest CA core passes to record_crl_intent: the digest of the
+-- entries it signs (here: the snapshot) and the reservation's number and times.
+CREATE FUNCTION pg_temp.snapshot_digest(p_ca UUID, p_n BIGINT) RETURNS BYTEA
+LANGUAGE sql AS $f$
+    SELECT sha256(COALESCE(string_agg(
+               crl_entry_encoding(e.serial_der_content, e.revoked_at, e.reason_code, e.invalidity_at),
+               '\x'::bytea ORDER BY e.serial_der_content), '\x'::bytea))
+    FROM crl_snapshot_entries(p_ca, p_n) e
+$f$;
+
+CREATE FUNCTION pg_temp.intent(p_ca UUID, p_n BIGINT, p_op TEXT, p_tbs BYTEA) RETURNS TEXT
+LANGUAGE sql AS $f$
+    SELECT record_crl_intent(p_ca, p_n, p_op, p_tbs, pg_temp.snapshot_digest(p_ca, p_n),
+               floor(extract(epoch FROM cp.this_update))::bigint,
+               floor(extract(epoch FROM cp.next_update))::bigint,
+               floor(extract(epoch FROM cp.expired_certs_on_crl_since))::bigint)
+    FROM crl_publication cp WHERE cp.ca_id = p_ca AND cp.crl_number = p_n
+$f$;
+
 -- Fixtures (inserted as table owner): one CA, two issued certificates.
 INSERT INTO ca(ca_id, display_name, policy_version, created_at)
 VALUES ('c0c0c0c0-0000-4000-8000-000000000002', 'CRL Pipeline Lab CA', 'lab-1',
@@ -108,21 +143,41 @@ DECLARE
     ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000002';
     tbs CONSTANT BYTEA := sha256('tbs-2'::bytea);
     der CONSTANT BYTEA := '\x3003020101';
+    mismatch CONSTANT TEXT := 'CRL intent refused: entries, number or times differ from the reservation';
+    dig BYTEA;
+    tu BIGINT;
+    nu BIGINT;
     r RECORD;
 BEGIN
+    dig := pg_temp.snapshot_digest(ca, 2);
+    SELECT floor(extract(epoch FROM this_update))::bigint, floor(extract(epoch FROM next_update))::bigint
+      INTO tu, nu FROM crl_publication WHERE ca_id = ca AND crl_number = 2;
     -- store before an intent fails
     PERFORM pg_temp.expect_err(format($q$SELECT store_verified_crl(%L,2,'op-2',%L,%L,%L)$q$, ca, tbs, sha256(der), der), '23514');
     -- intent for a non-existent number fails
-    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,99,'op-2',%L)$q$, ca, tbs), '23514');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,99,'op-2',%L,%L,%s,%s,NULL)$q$, ca, tbs, dig, tu, nu), '23514');
     -- wrong operation fails
-    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-other',%L)$q$, ca, tbs), '23514');
-    -- bad hash length fails
-    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2','\x00')$q$, ca), '22023');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-other',%L,%L,%s,%s,NULL)$q$, ca, tbs, dig, tu, nu), '23514');
+    -- bad hash lengths and missing values fail
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2','\x00',%L,%s,%s,NULL)$q$, ca, dig, tu, nu), '22023');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,'\x00',%s,%s,NULL)$q$, ca, tbs, tu, nu), '22023');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,NULL,%s,%s,NULL)$q$, ca, tbs, tu, nu), '22023');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,NULL,%s,NULL)$q$, ca, tbs, dig, nu), '22023');
+    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,%s,NULL,NULL)$q$, ca, tbs, dig, tu), '22023');
+    -- I1: the signed entries, number and times must be the reservation's.
+    -- Number 2 has one entry; a CA core that signs an empty list (or other
+    -- times) is refused before it can sign.
+    PERFORM pg_temp.must(dig <> sha256('\x'::bytea), 'snapshot 2 is not empty');
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,%s,%s,NULL)$q$, ca, tbs, sha256('\x'::bytea), tu, nu), '23514', mismatch);
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,%s,%s,NULL)$q$, ca, tbs, dig, tu + 1, nu), '23514', mismatch);
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,%s,%s,NULL)$q$, ca, tbs, dig, tu, nu - 1), '23514', mismatch);
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT record_crl_intent(%L,2,'op-2',%L,%L,%s,%s,%s)$q$, ca, tbs, dig, tu, nu, tu - 86400), '23514', mismatch);
+    PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 2) = 'RESERVED', 'mismatched intents leave the row RESERVED');
 
-    PERFORM pg_temp.must(record_crl_intent(ca, 2, 'op-2', tbs) = 'INTENT_RECORDED', 'intent recorded');
+    PERFORM pg_temp.must(pg_temp.intent(ca, 2, 'op-2', tbs) = 'INTENT_RECORDED', 'intent recorded');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 2) = 'INTENT_RECORDED', 'status INTENT_RECORDED');
     -- a second identical intent fails (not RESERVED any more)
-    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,2,'op-2',%L)$q$, ca, tbs), '23514');
+    PERFORM pg_temp.expect_err(format($q$SELECT pg_temp.intent(%L,2,'op-2',%L)$q$, ca, tbs), '23514');
     PERFORM pg_temp.must((SELECT tbs_sha256 FROM crl_publication WHERE ca_id = ca AND crl_number = 2) = tbs, 'tbs hash stored');
 
     -- mismatched TBS hash, wrong operation, wrong CRL hash, bad lengths
@@ -142,13 +197,13 @@ BEGIN
     -- number 3: uncertain after intent; never storable; numbering moves on
     SELECT * INTO r FROM reserve_crl(ca, 'crl-worker', 'op-3');
     PERFORM pg_temp.must(r.crl_number = 3, 'third number is 3');
-    PERFORM record_crl_intent(ca, 3, 'op-3', sha256('tbs-3'::bytea));
+    PERFORM pg_temp.intent(ca, 3, 'op-3', sha256('tbs-3'::bytea));
     PERFORM pg_temp.expect_err(format($q$SELECT mark_crl_uncertain(%L,3,'op-other')$q$, ca), '23514');
     PERFORM pg_temp.must(mark_crl_uncertain(ca, 3, 'op-3') = 'RECONCILIATION_REQUIRED', 'uncertain');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 3) = 'RECONCILIATION_REQUIRED', 'status RECONCILIATION_REQUIRED');
     PERFORM pg_temp.expect_err(format($q$SELECT store_verified_crl(%L,3,'op-3',%L,%L,%L)$q$, ca, sha256('tbs-3'::bytea), sha256(der), der), '23514');
     PERFORM pg_temp.expect_err(format($q$SELECT mark_crl_uncertain(%L,3,'op-3')$q$, ca), '23514');
-    PERFORM pg_temp.expect_err(format($q$SELECT record_crl_intent(%L,3,'op-3',%L)$q$, ca, sha256('tbs-3'::bytea)), '23514');
+    PERFORM pg_temp.expect_err(format($q$SELECT pg_temp.intent(%L,3,'op-3',%L)$q$, ca, sha256('tbs-3'::bytea)), '23514');
     SELECT * INTO r FROM reserve_crl(ca, 'crl-worker', 'op-4');
     PERFORM pg_temp.must(r.crl_number = 4, 'next after quarantined is 4 (never reused)');
     -- a RESERVED row can be marked uncertain directly (crash before intent)
@@ -157,7 +212,7 @@ BEGIN
     -- stale intents are quarantined; RESERVED rows are not "intents"
     SELECT * INTO r FROM reserve_crl(ca, 'crl-worker', 'op-5');
     PERFORM pg_temp.must(quarantine_stale_crl_intents(ca, INTERVAL '0 seconds') = 0, 'nothing stale yet');
-    PERFORM record_crl_intent(ca, 5, 'op-5', sha256('tbs-5'::bytea));
+    PERFORM pg_temp.intent(ca, 5, 'op-5', sha256('tbs-5'::bytea));
     PERFORM pg_temp.must(quarantine_stale_crl_intents(ca, INTERVAL '1 day') = 0, 'young intent kept');
     PERFORM pg_temp.must(quarantine_stale_crl_intents(ca, INTERVAL '0 seconds') = 1, 'stale intent quarantined');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 5) = 'RECONCILIATION_REQUIRED', 'quarantined status');
@@ -191,7 +246,7 @@ BEGIN
     PERFORM pg_temp.must((SELECT count(*) FROM crl_snapshot_entries(ca, r.crl_number)) = 2, 'both revocations in snapshot');
     PERFORM pg_temp.must((SELECT array_agg(serial_der_content ORDER BY serial_der_content) FROM crl_snapshot_entries(ca, r.crl_number))
         = ARRAY['\x01'::bytea, '\x02'::bytea], 'snapshot ordered by serial');
-    PERFORM record_crl_intent(ca, r.crl_number, 'op-6', tbs);
+    PERFORM pg_temp.intent(ca, r.crl_number, 'op-6', tbs);
     PERFORM store_verified_crl(ca, r.crl_number, 'op-6', tbs, sha256(der), der);
     PERFORM pg_temp.must(NOT crl_due(ca), 'not due right after storing');
 
@@ -253,7 +308,7 @@ BEGIN
     -- a STORED CRL no older than the decision covers it
     PERFORM pg_sleep(1.1);
     PERFORM reserve_crl(ca, 'crl-worker', 'op-7');
-    PERFORM record_crl_intent(ca, 7, 'op-7', sha256('tbs-7'::bytea));
+    PERFORM pg_temp.intent(ca, 7, 'op-7', sha256('tbs-7'::bytea));
     PERFORM store_verified_crl(ca, 7, 'op-7', sha256('tbs-7'::bytea), sha256('\x3003020101'::bytea), '\x3003020101');
     PERFORM pg_temp.must((SELECT count(*) FROM overdue_status_changes(ca)) = 0, 'covered by a later STORED CRL');
 END $t$;
@@ -313,7 +368,7 @@ BEGIN
     FOREACH f IN ARRAY ARRAY[
         'reserve_crl(uuid,text,text)',
         'crl_snapshot_entries(uuid,bigint)',
-        'record_crl_intent(uuid,bigint,text,bytea)',
+        'record_crl_intent(uuid,bigint,text,bytea,bytea,bigint,bigint,bigint)',
         'mark_crl_uncertain(uuid,bigint,text)',
         'store_verified_crl(uuid,bigint,text,bytea,bytea,bytea)',
         'quarantine_stale_crl_intents(uuid,interval)',

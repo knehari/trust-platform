@@ -3,6 +3,7 @@
 //! These are lab rules, re-checked by the database (migration 0014); this
 //! module performs no I/O and is not an authorization decision.
 
+use crate::crl::{MAX_CRL_TIME_UNIX, MIN_CRL_TIME_UNIX};
 use crate::revocation::{CertificateStatus, RevocationReason, StatusAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +13,24 @@ pub enum StatusChangeError {
     SuspensionDisabled,
     InvalidTransition,
     TerminalState,
+    /// Outside 1970-01-01 .. 9999-12-31 or later than now.
+    InvalidityDateOutOfRange,
+}
+
+/// An invalidity date is a known or suspected past date (RFC 5280 5.3.2) and
+/// must stay encodable in every later CRL (an approved revocation never
+/// changes): 1970-01-01T00:00:00Z ..= min(now, 9999-12-31T23:59:59Z).
+/// Migration 0014 re-checks the same bounds with the database clock.
+pub fn check_invalidity_date(
+    invalidity_at_unix: Option<i64>,
+    now_unix: i64,
+) -> Result<(), StatusChangeError> {
+    match invalidity_at_unix {
+        Some(t) if !(MIN_CRL_TIME_UNIX..=MAX_CRL_TIME_UNIX).contains(&t) || t > now_unix => {
+            Err(StatusChangeError::InvalidityDateOutOfRange)
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +186,28 @@ mod tests {
                 true
             ),
             Err(StatusChangeError::ReasonNotAllowedForAction)
+        );
+    }
+
+    #[test]
+    fn invalidity_date_bounds() {
+        let now = 1_800_000_000;
+        let reject = Err(StatusChangeError::InvalidityDateOutOfRange);
+        assert_eq!(check_invalidity_date(None, now), Ok(()));
+        assert_eq!(check_invalidity_date(Some(0), now), Ok(()));
+        assert_eq!(check_invalidity_date(Some(now), now), Ok(()));
+        assert_eq!(check_invalidity_date(Some(now + 1), now), reject);
+        assert_eq!(check_invalidity_date(Some(-1), now), reject);
+        assert_eq!(check_invalidity_date(Some(-2_208_988_800), now), reject);
+        assert_eq!(check_invalidity_date(Some(i64::MIN), now), reject);
+        // beyond 9999-12-31 even with a clock that claims a later "now"
+        assert_eq!(
+            check_invalidity_date(Some(253_402_300_800), i64::MAX),
+            reject
+        );
+        assert_eq!(
+            check_invalidity_date(Some(253_402_300_799), i64::MAX),
+            Ok(())
         );
     }
 }

@@ -235,6 +235,60 @@ BEGIN
     PERFORM pg_temp.must((SELECT invalidity_at IS NOT NULL FROM revocation WHERE serial_der_content = '\x04'), 'invalidity stored');
 END $t$;
 
+-- ------------------------------------------------- invalidity date bounds
+-- An approved revocation is permanent and every later CRL must encode its
+-- invalidityDate as GeneralizedTime: only 1970-01-01 .. 9999-12-31, never in
+-- the future (RFC 5280 5.3.2: the date is known or suspected), is accepted.
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000001';
+    iss CONSTANT TEXT := 'https://idp.lab.invalid';
+    pre CONSTANT TEXT := $q$SELECT propose_certificate_status_change('c0c0c0c0-0000-4000-8000-000000000001','\x03','REVOKE',1::smallint,$q$;
+    msg CONSTANT TEXT := 'invalidity date must be between 1970-01-01 and 9999-12-31 and not in the future';
+    bad TEXT;
+    c UUID;
+    n BIGINT;
+BEGIN
+    n := (SELECT count(*) FROM certificate_status_change WHERE ca_id = ca);
+    FOREACH bad IN ARRAY ARRAY[
+        '1900-01-01 00:00:00+00', '1969-12-31 00:00:00+00', '1969-12-31 23:59:59+00',
+        '10000-01-01 00:00:00+00', '20000-01-01 00:00:00+00']
+    LOOP
+        PERFORM pg_temp.expect_err_msg(pre || format('%L::timestamptz', bad) || $q$,'https://idp.lab.invalid','maker')$q$, '22023', msg);
+    END LOOP;
+    PERFORM pg_temp.expect_err_msg(pre || $q$clock_timestamp() + interval '1 hour','https://idp.lab.invalid','maker')$q$, '22023', msg);
+    PERFORM pg_temp.must((SELECT count(*) FROM certificate_status_change WHERE ca_id = ca) = n, 'no row for a refused invalidity date');
+    -- the epoch itself and a past date are accepted
+    c := propose_certificate_status_change(ca, '\x03', 'REVOKE', 1::smallint, '1970-01-01 00:00:00+00', iss, 'maker');
+    PERFORM withdraw_certificate_status_change(c, iss, 'maker');
+
+    -- table CHECKs hold for direct writes by the owner
+    PERFORM pg_temp.expect_err($q$INSERT INTO certificate_status_change(change_id,ca_id,serial_der_content,action,reason_code,invalidity_at,maker_issuer,maker_subject,status)
+        VALUES (gen_random_uuid(),'c0c0c0c0-0000-4000-8000-000000000001','\x03','REVOKE',1,'1900-01-01 00:00:00+00','i','m','PROPOSED')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO certificate_status_change(change_id,ca_id,serial_der_content,action,reason_code,invalidity_at,maker_issuer,maker_subject,status)
+        VALUES (gen_random_uuid(),'c0c0c0c0-0000-4000-8000-000000000001','\x03','REVOKE',1,'10000-01-01 00:00:00+00','i','m','PROPOSED')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO certificate_status_change(change_id,ca_id,serial_der_content,action,reason_code,invalidity_at,maker_issuer,maker_subject,status,proposed_at)
+        VALUES (gen_random_uuid(),'c0c0c0c0-0000-4000-8000-000000000001','\x03','REVOKE',1,'2026-01-02 00:00:00+00','i','m','PROPOSED','2026-01-01 00:00:00+00')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO certificate_status_change(change_id,ca_id,serial_der_content,action,reason_code,invalidity_at,maker_issuer,maker_subject,checker_issuer,checker_subject,status,proposed_at,decided_at)
+        VALUES (gen_random_uuid(),'c0c0c0c0-0000-4000-8000-000000000001','\x03','REVOKE',1,'2026-01-02 00:00:00+00','i','m','i','c','REJECTED','2026-01-03 00:00:00+00','2026-01-01 00:00:00+00')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO revocation(ca_id,serial_der_content,reason_code,revoked_at,invalidity_at,actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000001','\x03',1,now(),'1900-01-01 00:00:00+00','direct')$q$, '23514');
+    PERFORM pg_temp.expect_err($q$INSERT INTO revocation(ca_id,serial_der_content,reason_code,revoked_at,invalidity_at,actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000001','\x03',1,now(),'10000-01-01 00:00:00+00','direct')$q$, '23514');
+
+    -- approval guard: a (directly inserted) proposal whose invalidity date is
+    -- later than the approval time is refused by the function
+    c := gen_random_uuid();
+    INSERT INTO certificate_status_change(change_id, ca_id, serial_der_content, action,
+        reason_code, invalidity_at, maker_issuer, maker_subject, status, proposed_at)
+    VALUES (c, ca, '\x03', 'REVOKE', 1, clock_timestamp() + interval '1 day', iss, 'maker',
+            'PROPOSED', clock_timestamp() + interval '1 day');
+    PERFORM pg_temp.expect_err_msg(format($q$SELECT approve_certificate_status_change(%L,'https://idp.lab.invalid','checker','REVOKE',1::smallint)$q$, c), '22023', msg);
+    PERFORM pg_temp.must(certificate_status(ca, '\x03') = 'VALID', 's3 still VALID');
+    -- nor can it be closed earlier than its invalidity date (table CHECK)
+    PERFORM pg_temp.expect_err(format($q$SELECT withdraw_certificate_status_change(%L,'https://idp.lab.invalid','maker')$q$, c), '23514');
+END $t$;
+
 -- ------------------------------------------------------- policy constraints
 INSERT INTO ca_revocation_policy(ca_id) VALUES ('c0c0c0c0-0000-4000-8000-000000000001');
 DO $t$

@@ -9,6 +9,7 @@
 use crate::revocation::RevocationReason;
 use crate::serial::SerialNumber;
 use crate::x509_extensions;
+use sha2::{Digest, Sha256};
 use x509_cert::{
     crl::{RevokedCert, TbsCertList},
     der::{
@@ -34,6 +35,11 @@ const CRL_NUMBER_OID: &str = "2.5.29.20";
 const REASON_CODE_OID: &str = "2.5.29.21";
 /// CRL numbers stay below 2^63 so they fit a signed 64-bit database column.
 const MAX_CRL_NUMBER: u64 = 1 << 63;
+/// Earliest instant the builder encodes (1970-01-01T00:00:00Z).
+pub const MIN_CRL_TIME_UNIX: i64 = 0;
+/// Latest instant the builder encodes (9999-12-31T23:59:59Z, the last
+/// four-digit GeneralizedTime year).
+pub const MAX_CRL_TIME_UNIX: i64 = 253_402_300_799;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrlError {
@@ -54,14 +60,114 @@ pub struct CrlEntry {
     pub invalidity_at_unix: Option<i64>,
 }
 
+/// A reserved CRL: number, times and the frozen entry set. Sealed: the fields
+/// are private and only [`CrlReservation::new`] (used by the store from the
+/// database snapshot, and by lab examples and tests) builds one, so a
+/// reservation cannot be edited between reserve and sign. Entries are kept
+/// sorted by serial content bytes, the order the builder signs and
+/// `crl_entry_encoding` (migration 0015) hashes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrlReservation {
-    pub ca_id: String,
-    pub crl_number: u64,
-    pub this_update_unix: i64,
-    pub next_update_unix: i64,
-    pub entries: Vec<CrlEntry>,
-    pub expired_certs_on_crl_since_unix: Option<i64>,
+    ca_id: String,
+    crl_number: u64,
+    this_update_unix: i64,
+    next_update_unix: i64,
+    entries: Vec<CrlEntry>,
+    expired_certs_on_crl_since_unix: Option<i64>,
+}
+
+fn encodable(unix_seconds: i64) -> bool {
+    (MIN_CRL_TIME_UNIX..=MAX_CRL_TIME_UNIX).contains(&unix_seconds)
+}
+
+impl CrlReservation {
+    /// Fails closed with `CrlError::Encoding` on an empty CA id, a CRL number
+    /// outside 1..2^63, `next_update <= this_update`, any time outside
+    /// 1970-01-01 .. 9999-12-31 or duplicate serials.
+    pub fn new(
+        ca_id: impl Into<String>,
+        crl_number: u64,
+        this_update_unix: i64,
+        next_update_unix: i64,
+        mut entries: Vec<CrlEntry>,
+        expired_certs_on_crl_since_unix: Option<i64>,
+    ) -> Result<Self, CrlError> {
+        let ca_id = ca_id.into();
+        if ca_id.is_empty()
+            || crl_number == 0
+            || crl_number >= MAX_CRL_NUMBER
+            || next_update_unix <= this_update_unix
+            || !encodable(this_update_unix)
+            || !encodable(next_update_unix)
+            || !expired_certs_on_crl_since_unix.is_none_or(encodable)
+            || entries.iter().any(|e| {
+                !encodable(e.revoked_at_unix) || !e.invalidity_at_unix.is_none_or(encodable)
+            })
+        {
+            return Err(CrlError::Encoding);
+        }
+        entries.sort_by(|a, b| a.serial.cmp(&b.serial));
+        if entries
+            .windows(2)
+            .any(|pair| pair[0].serial == pair[1].serial)
+        {
+            return Err(CrlError::Encoding);
+        }
+        Ok(Self {
+            ca_id,
+            crl_number,
+            this_update_unix,
+            next_update_unix,
+            entries,
+            expired_certs_on_crl_since_unix,
+        })
+    }
+
+    pub fn ca_id(&self) -> &str {
+        &self.ca_id
+    }
+
+    pub fn crl_number(&self) -> u64 {
+        self.crl_number
+    }
+
+    pub fn this_update_unix(&self) -> i64 {
+        self.this_update_unix
+    }
+
+    pub fn next_update_unix(&self) -> i64 {
+        self.next_update_unix
+    }
+
+    /// Sorted by serial content bytes.
+    pub fn entries(&self) -> &[CrlEntry] {
+        &self.entries
+    }
+
+    pub fn expired_certs_on_crl_since_unix(&self) -> Option<i64> {
+        self.expired_certs_on_crl_since_unix
+    }
+
+    /// SHA-256 over the entries in serial order, each encoded exactly like
+    /// `crl_entry_encoding` in migration 0015 (PostgreSQL send functions,
+    /// big-endian): `int4(len(serial)) || serial || int8(revoked_at) ||
+    /// int2(reason) || int8(invalidity_at or -1)`, times in whole epoch
+    /// seconds. Passed to `record_crl_intent`, which refuses the intent unless
+    /// it equals the digest of the reserved snapshot.
+    pub fn entries_sha256(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        for entry in &self.entries {
+            let serial = entry.serial.as_der_content();
+            // Serials are at most 20 octets, so the length always fits.
+            let len = i32::try_from(serial.len()).unwrap_or(i32::MAX);
+            hasher.update(len.to_be_bytes());
+            hasher.update(serial);
+            hasher.update(entry.revoked_at_unix.to_be_bytes());
+            hasher.update(entry.reason.code().to_be_bytes());
+            hasher.update(entry.invalidity_at_unix.unwrap_or(-1).to_be_bytes());
+        }
+        hasher.finalize().into()
+    }
 }
 
 /// Wraps exactly the journaled TBS bytes with the signature.
@@ -315,14 +421,25 @@ mod tests {
     }
 
     fn reservation(entries: Vec<CrlEntry>) -> CrlReservation {
-        CrlReservation {
-            ca_id: "lab-root".to_owned(),
-            crl_number: 1,
-            this_update_unix: THIS_UPDATE,
-            next_update_unix: NEXT_UPDATE,
-            entries,
-            expired_certs_on_crl_since_unix: None,
-        }
+        CrlReservation::new("lab-root", 1, THIS_UPDATE, NEXT_UPDATE, entries, None).unwrap()
+    }
+
+    fn with(
+        r: &CrlReservation,
+        crl_number: u64,
+        this_update: i64,
+        next_update: i64,
+        expired: Option<i64>,
+    ) -> CrlReservation {
+        CrlReservation::new(
+            r.ca_id(),
+            crl_number,
+            this_update,
+            next_update,
+            r.entries().to_vec(),
+            expired,
+        )
+        .unwrap()
     }
 
     fn entry(s: &[u8], reason: RevocationReason, invalidity: Option<i64>) -> CrlEntry {
@@ -474,9 +591,13 @@ mod tests {
         assert_eq!(number.0.as_bytes(), &[0x01]);
         assert!(exts.iter().all(|e| !e.critical));
 
-        let mut r = reservation(vec![]);
-        r.crl_number = 300;
-        r.expired_certs_on_crl_since_unix = Some(THIS_UPDATE - 86_400);
+        let r = with(
+            &reservation(vec![]),
+            300,
+            THIS_UPDATE,
+            NEXT_UPDATE,
+            Some(THIS_UPDATE - 86_400),
+        );
         let der = issue(&mut ca, &r);
         LabCrlVerifier::new(ca.root_certificate().clone())
             .verify(&r, &der)
@@ -494,22 +615,132 @@ mod tests {
     }
 
     #[test]
+    fn reservation_constructor_rejects_invalid_input() {
+        let new = |number: u64, this: i64, next: i64, entries: Vec<CrlEntry>, expired| {
+            CrlReservation::new("lab-root", number, this, next, entries, expired)
+        };
+        let reject = Err(CrlError::Encoding);
+        assert_eq!(
+            CrlReservation::new("", 1, THIS_UPDATE, NEXT_UPDATE, vec![], None),
+            reject
+        );
+        assert_eq!(new(0, THIS_UPDATE, NEXT_UPDATE, vec![], None), reject);
+        assert_eq!(new(1 << 63, THIS_UPDATE, NEXT_UPDATE, vec![], None), reject);
+        assert!(new((1 << 63) - 1, THIS_UPDATE, NEXT_UPDATE, vec![], None).is_ok());
+        assert_eq!(new(1, THIS_UPDATE, THIS_UPDATE, vec![], None), reject);
+        assert_eq!(new(1, -1, NEXT_UPDATE, vec![], None), reject);
+        assert_eq!(
+            new(1, THIS_UPDATE, MAX_CRL_TIME_UNIX + 1, vec![], None),
+            reject
+        );
+        assert!(new(1, MIN_CRL_TIME_UNIX, MAX_CRL_TIME_UNIX, vec![], None).is_ok());
+        assert_eq!(new(1, THIS_UPDATE, NEXT_UPDATE, vec![], Some(-1)), reject);
+        let duplicate = vec![
+            entry(&[0x01], RevocationReason::Unspecified, None),
+            entry(&[0x01], RevocationReason::KeyCompromise, None),
+        ];
+        assert_eq!(new(1, THIS_UPDATE, NEXT_UPDATE, duplicate, None), reject);
+        // invalidity dates the builder could never encode (finding I2)
+        for bad in [-1, -86_400, MAX_CRL_TIME_UNIX + 1] {
+            let entries = vec![entry(&[0x01], RevocationReason::KeyCompromise, Some(bad))];
+            assert_eq!(new(1, THIS_UPDATE, NEXT_UPDATE, entries, None), reject);
+        }
+        let mut revoked = entry(&[0x01], RevocationReason::KeyCompromise, None);
+        revoked.revoked_at_unix = -1;
+        assert_eq!(
+            new(1, THIS_UPDATE, NEXT_UPDATE, vec![revoked], None),
+            reject
+        );
+    }
+
+    /// The builder keeps its own checks for a reservation that bypassed the
+    /// constructor (only possible inside this module).
+    #[test]
     fn builder_rejects_invalid_reservations() {
         let ca = ca();
         let issuer = ca.root_certificate();
-        let mut r = reservation(vec![]);
-        r.crl_number = 0;
-        assert_eq!(build_tbs_cert_list(issuer, &r), Err(CrlError::Encoding));
-        r.crl_number = 1 << 63;
-        assert_eq!(build_tbs_cert_list(issuer, &r), Err(CrlError::Encoding));
-        let mut r = reservation(vec![]);
-        r.next_update_unix = r.this_update_unix;
-        assert_eq!(build_tbs_cert_list(issuer, &r), Err(CrlError::Encoding));
-        let r = reservation(vec![
+        let raw = |crl_number: u64, next_update_unix: i64, entries: Vec<CrlEntry>| CrlReservation {
+            ca_id: "lab-root".to_owned(),
+            crl_number,
+            this_update_unix: THIS_UPDATE,
+            next_update_unix,
+            entries,
+            expired_certs_on_crl_since_unix: None,
+        };
+        let reject = Err(CrlError::Encoding);
+        assert_eq!(
+            build_tbs_cert_list(issuer, &raw(0, NEXT_UPDATE, vec![])),
+            reject
+        );
+        assert_eq!(
+            build_tbs_cert_list(issuer, &raw(1 << 63, NEXT_UPDATE, vec![])),
+            reject
+        );
+        assert_eq!(
+            build_tbs_cert_list(issuer, &raw(1, THIS_UPDATE, vec![])),
+            reject
+        );
+        let duplicate = vec![
             entry(&[0x01], RevocationReason::Unspecified, None),
             entry(&[0x01], RevocationReason::KeyCompromise, None),
+        ];
+        assert_eq!(
+            build_tbs_cert_list(issuer, &raw(1, NEXT_UPDATE, duplicate)),
+            reject
+        );
+        let bad_invalidity = vec![entry(&[0x01], RevocationReason::KeyCompromise, Some(-1))];
+        assert_eq!(
+            build_tbs_cert_list(issuer, &raw(1, NEXT_UPDATE, bad_invalidity)),
+            reject
+        );
+    }
+
+    #[test]
+    fn constructor_sorts_entries_by_serial_bytes() {
+        let r = reservation(vec![
+            entry(&[0x03], RevocationReason::Unspecified, None),
+            entry(&[0x01, 0x00], RevocationReason::CertificateHold, None),
+            entry(&[0x01], RevocationReason::KeyCompromise, None),
         ]);
-        assert_eq!(build_tbs_cert_list(issuer, &r), Err(CrlError::Encoding));
+        let order: Vec<&[u8]> = r
+            .entries()
+            .iter()
+            .map(|e| e.serial.as_der_content())
+            .collect();
+        assert_eq!(order, vec![&[0x01][..], &[0x01, 0x00][..], &[0x03][..]]);
+    }
+
+    /// Vectors computed by PostgreSQL 16 with `crl_entry_encoding` (0015):
+    ///   SELECT encode(sha256(string_agg(crl_entry_encoding(s, to_timestamp(r),
+    ///     c::smallint, to_timestamp(i)), '\x'::bytea ORDER BY s)), 'hex')
+    ///   FROM (VALUES ('\x03'::bytea, 1799999900::bigint, 0, NULL::bigint),
+    ///                ('\x0100'::bytea, 1799999900, 6, NULL),
+    ///                ('\x01'::bytea, 1799999900, 1, 1799995000)) v(s,r,c,i);
+    #[test]
+    fn entries_sha256_matches_postgres_crl_entry_encoding() {
+        fn hex(bytes: &[u8]) -> String {
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        }
+        assert_eq!(
+            hex(&reservation(vec![]).entries_sha256()),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let r = reservation(vec![
+            entry(&[0x03], RevocationReason::Unspecified, None),
+            entry(&[0x01, 0x00], RevocationReason::CertificateHold, None),
+            entry(
+                &[0x01],
+                RevocationReason::KeyCompromise,
+                Some(1_799_995_000),
+            ),
+        ]);
+        assert_eq!(
+            hex(&r.entries_sha256()),
+            "089e0132bf631aaf500e8cd97e70fdacee1067316196347e430d786b16e17fce"
+        );
+        // any change to the entry set changes the digest
+        let fewer = reservation(r.entries()[..2].to_vec());
+        assert_ne!(fewer.entries_sha256(), r.entries_sha256());
     }
 
     #[test]
@@ -538,18 +769,16 @@ mod tests {
         assert_eq!(verifier.verify(&r, &trailing), reject);
 
         // reservation mismatches against an otherwise valid CRL
-        let mut other_number = r.clone();
-        other_number.crl_number = 2;
+        let other_number = with(&r, 2, THIS_UPDATE, NEXT_UPDATE, None);
         assert_eq!(verifier.verify(&other_number, &good), reject);
-        let mut other_this = r.clone();
-        other_this.this_update_unix += 1;
+        let other_this = with(&r, 1, THIS_UPDATE + 1, NEXT_UPDATE, None);
         assert_eq!(verifier.verify(&other_this, &good), reject);
-        let mut other_next = r.clone();
-        other_next.next_update_unix += 1;
+        let other_next = with(&r, 1, THIS_UPDATE, NEXT_UPDATE + 1, None);
         assert_eq!(verifier.verify(&other_next, &good), reject);
-        let mut expired = r.clone();
-        expired.expired_certs_on_crl_since_unix = Some(THIS_UPDATE);
+        let expired = with(&r, 1, THIS_UPDATE, NEXT_UPDATE, Some(THIS_UPDATE));
         assert_eq!(verifier.verify(&expired, &good), reject);
+        let fewer_entries = reservation(r.entries()[..1].to_vec());
+        assert_eq!(verifier.verify(&fewer_entries, &good), reject);
 
         // validly signed but wrong content
         let bad_issuer = resigned(&mut ca, &good, |t| {

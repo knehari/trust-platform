@@ -74,6 +74,19 @@ CREATE TABLE certificate_status_change (
         OR (action = 'SUSPEND' AND reason_code = 6)
         OR (action = 'REVOKE' AND reason_code IS NOT NULL AND reason_code <> 6)
     ),
+    -- invalidityDate is a known or suspected past date (RFC 5280 5.3.2) and
+    -- must stay encodable as GeneralizedTime by the CRL builder for ever: an
+    -- approved revocation can never be changed, so a date outside
+    -- 1970-01-01 .. 9999-12-31 would make every later CRL of the CA
+    -- unbuildable. Whole epoch seconds are then >= 0, so they never collide
+    -- with -1 ("no invalidity date") in crl_entry_encoding (0015).
+    CONSTRAINT status_change_invalidity_range CHECK (
+        invalidity_at IS NULL
+        OR (invalidity_at >= TIMESTAMPTZ '1970-01-01 00:00:00+00'
+            AND invalidity_at < TIMESTAMPTZ '10000-01-01 00:00:00+00'
+            AND invalidity_at <= proposed_at
+            AND (decided_at IS NULL OR invalidity_at <= decided_at))
+    ),
     CONSTRAINT status_change_decision_fields CHECK (
         (status = 'PROPOSED'
             AND checker_issuer IS NULL AND checker_subject IS NULL
@@ -131,6 +144,13 @@ ALTER TABLE revocation
 ALTER TABLE revocation
     ADD CONSTRAINT revocation_reason_code_accepted
     CHECK (reason_code IN (0,1,2,3,4,5,6,9,10));
+-- Same encodable range as certificate_status_change.invalidity_at.
+ALTER TABLE revocation
+    ADD CONSTRAINT revocation_invalidity_range CHECK (
+        invalidity_at IS NULL
+        OR (invalidity_at >= TIMESTAMPTZ '1970-01-01 00:00:00+00'
+            AND invalidity_at < TIMESTAMPTZ '10000-01-01 00:00:00+00')
+    );
 
 CREATE FUNCTION guard_revocation() RETURNS TRIGGER
 LANGUAGE plpgsql AS $fn$
@@ -207,6 +227,14 @@ BEGIN
             OR p_reason NOT IN (0,1,2,3,4,5,6,9,10)))
     THEN
         RAISE EXCEPTION 'invalid status change proposal input' USING ERRCODE='22023';
+    END IF;
+    IF p_invalidity IS NOT NULL
+       AND (p_invalidity < TIMESTAMPTZ '1970-01-01 00:00:00+00'
+            OR p_invalidity >= TIMESTAMPTZ '10000-01-01 00:00:00+00'
+            OR p_invalidity > clock_timestamp())
+    THEN
+        RAISE EXCEPTION 'invalidity date must be between 1970-01-01 and 9999-12-31 and not in the future'
+          USING ERRCODE='22023';
     END IF;
     -- FOR SHARE: a concurrent grant deletion waits for this decision.
     PERFORM 1 FROM revocation_officer_grant g
@@ -317,6 +345,14 @@ BEGIN
     THEN
         RAISE EXCEPTION 'approval refused: closed change, maker-checker separation or mismatch'
           USING ERRCODE='23514';
+    END IF;
+    IF v_chg.invalidity_at IS NOT NULL
+       AND (v_chg.invalidity_at < TIMESTAMPTZ '1970-01-01 00:00:00+00'
+            OR v_chg.invalidity_at >= TIMESTAMPTZ '10000-01-01 00:00:00+00'
+            OR v_chg.invalidity_at > v_now)
+    THEN
+        RAISE EXCEPTION 'invalidity date must be between 1970-01-01 and 9999-12-31 and not in the future'
+          USING ERRCODE='22023';
     END IF;
 
     v_status := certificate_status(v_ca, v_serial);

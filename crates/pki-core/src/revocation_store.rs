@@ -9,7 +9,7 @@
 use crate::crl::{CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan};
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
-use crate::revocation_policy::{decide_status_change, StatusChangeError};
+use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
 use postgres::{error::SqlState, Client, Error as PgError, NoTls};
 
@@ -52,9 +52,10 @@ impl PgRevocationStore {
         CertificateStatus::from_sql(&value).ok_or(RevocationStoreError::InconsistentResult)
     }
 
-    /// Reads the status and the CA's suspension policy, applies the pure
-    /// transition rules, and only then calls the database function (which
-    /// re-checks everything). Returns the change id.
+    /// Checks the invalidity date bounds, reads the status and the CA's
+    /// suspension policy, applies the pure transition rules, and only then
+    /// calls the database function (which re-checks everything). Returns the
+    /// change id.
     pub fn propose(
         &mut self,
         ca_id: &str,
@@ -64,6 +65,13 @@ impl PgRevocationStore {
         invalidity_at_unix: Option<i64>,
         maker: &OfficerIdentity<'_>,
     ) -> Result<String, RevocationStoreError> {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .ok_or(RevocationStoreError::InconsistentResult)?;
+        check_invalidity_date(invalidity_at_unix, now_unix)
+            .map_err(RevocationStoreError::Denied)?;
         let current = self.status(ca_id, serial)?;
         let allowed: bool = self
             .client
@@ -181,15 +189,17 @@ impl PgRevocationStore {
                 invalidity_at_unix: r.get(3),
             });
         }
-        Ok(CrlReservation {
-            ca_id: ca_id.to_owned(),
-            crl_number: u64::try_from(number)
-                .map_err(|_| RevocationStoreError::InconsistentResult)?,
+        // The sealed reservation is the only thing the CA core can sign; its
+        // entries digest must equal the snapshot's or record_crl_intent refuses.
+        CrlReservation::new(
+            ca_id,
+            u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?,
             this_update_unix,
             next_update_unix,
             entries,
             expired_certs_on_crl_since_unix,
-        })
+        )
+        .map_err(|_| RevocationStoreError::InconsistentResult)
     }
 
     pub fn quarantine_stale_crl_intents(
@@ -207,20 +217,32 @@ impl PgRevocationStore {
 }
 
 impl CrlJournal for PgRevocationStore {
+    /// Binds the intent to what will be signed: the entries digest is computed
+    /// here from the reservation (not taken from the database), and the
+    /// database refuses it unless entries, number and times match the
+    /// reserved snapshot.
     fn record_intent(&mut self, plan: &CrlPlan<'_>, tbs_sha256: &[u8; 32]) -> Result<(), CrlError> {
+        let reservation = plan.reservation;
         let number =
-            i64::try_from(plan.reservation.crl_number).map_err(|_| CrlError::JournalFailure)?;
+            i64::try_from(reservation.crl_number()).map_err(|_| CrlError::JournalFailure)?;
+        let entries_sha256 = reservation.entries_sha256();
         match self.client.query_one(
-            "SELECT record_crl_intent($1::text::uuid, $2::bigint, $3, $4)",
+            "SELECT record_crl_intent($1::text::uuid, $2::bigint, $3, $4, $5,
+                                      $6::bigint, $7::bigint, $8::bigint)",
             &[
-                &plan.reservation.ca_id,
+                &reservation.ca_id(),
                 &number,
                 &plan.operation_ref,
                 &&tbs_sha256[..],
+                &&entries_sha256[..],
+                &reservation.this_update_unix(),
+                &reservation.next_update_unix(),
+                &reservation.expired_certs_on_crl_since_unix(),
             ],
         ) {
             Ok(_) => Ok(()),
-            // The row is no longer RESERVED (or the operation differs): a replay.
+            // Not RESERVED any more, another operation, or entries / number /
+            // times that differ from the reservation: replayed or ambiguous.
             Err(e) if e.code() == Some(&SqlState::CHECK_VIOLATION) => {
                 Err(CrlError::ReplayedOrAmbiguousIntent)
             }
@@ -230,11 +252,11 @@ impl CrlJournal for PgRevocationStore {
 
     fn mark_uncertain(&mut self, plan: &CrlPlan<'_>) -> Result<(), CrlError> {
         let number =
-            i64::try_from(plan.reservation.crl_number).map_err(|_| CrlError::JournalFailure)?;
+            i64::try_from(plan.reservation.crl_number()).map_err(|_| CrlError::JournalFailure)?;
         self.client
             .query_one(
                 "SELECT mark_crl_uncertain($1::text::uuid, $2::bigint, $3)",
-                &[&plan.reservation.ca_id, &number, &plan.operation_ref],
+                &[&plan.reservation.ca_id(), &number, &plan.operation_ref],
             )
             .map(|_| ())
             .map_err(|_| CrlError::JournalFailure)
@@ -247,13 +269,13 @@ impl CrlJournal for PgRevocationStore {
         crl_sha256: &[u8; 32],
         crl_der: &[u8],
     ) -> Result<(), CrlError> {
-        let number =
-            i64::try_from(plan.reservation.crl_number).map_err(|_| CrlError::PersistenceFailure)?;
+        let number = i64::try_from(plan.reservation.crl_number())
+            .map_err(|_| CrlError::PersistenceFailure)?;
         self.client
             .query_one(
                 "SELECT store_verified_crl($1::text::uuid, $2::bigint, $3, $4, $5, $6)",
                 &[
-                    &plan.reservation.ca_id,
+                    &plan.reservation.ca_id(),
                     &number,
                     &plan.operation_ref,
                     &&tbs_sha256[..],

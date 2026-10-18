@@ -4,7 +4,7 @@
 
 use std::env;
 use trust_pki_core::{
-    crl::{build_tbs_cert_list, CrlError, LabCrlAssembler, LabCrlVerifier},
+    crl::{build_tbs_cert_list, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
     crl_orchestrator::{crl_once, CrlPlan},
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
@@ -246,10 +246,10 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     let r1 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-1")
         .unwrap();
-    assert_eq!(r1.crl_number, 1);
-    assert_eq!(r1.entries.len(), 2);
-    let reason_of = |r: &trust_pki_core::crl::CrlReservation, s: &SerialNumber| {
-        r.entries
+    assert_eq!(r1.crl_number(), 1);
+    assert_eq!(r1.entries().len(), 2);
+    let reason_of = |r: &CrlReservation, s: &SerialNumber| {
+        r.entries()
             .iter()
             .find(|e| &e.serial == s)
             .map(|e| e.reason.code())
@@ -284,8 +284,8 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     let r2 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-2")
         .unwrap();
-    assert_eq!(r2.crl_number, 2);
-    assert_eq!(r2.entries.len(), 1);
+    assert_eq!(r2.crl_number(), 2);
+    assert_eq!(r2.entries().len(), 1);
     assert_eq!(reason_of(&r2, &s1), Some(1));
     let tbs2 = build_tbs_cert_list(&root, &r2).unwrap();
     let plan2 = CrlPlan {
@@ -310,7 +310,7 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     let r3 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-3")
         .unwrap();
-    assert_eq!(r3.crl_number, 3);
+    assert_eq!(r3.crl_number(), 3);
     let tbs3 = build_tbs_cert_list(&root, &r3).unwrap();
     let plan3 = CrlPlan {
         reservation: &r3,
@@ -339,7 +339,7 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     let r4 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-4")
         .unwrap();
-    assert_eq!(r4.crl_number, 4);
+    assert_eq!(r4.crl_number(), 4);
 
     // Terminal state is refused before any SQL write.
     let count = |c: &mut postgres::Client| -> i64 {
@@ -396,4 +396,249 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
 
     // No INTENT_RECORDED row is left behind, so nothing is quarantined.
     assert_eq!(store.quarantine_stale_crl_intents(&ca_id, 3600).unwrap(), 0);
+}
+
+/// Fresh CA with suspension enabled and maker/checker grants.
+fn fresh_ca(url: &str) -> String {
+    let mut owner = postgres::Client::connect(url, postgres::NoTls).unwrap();
+    let ca_id: String = owner
+        .query_one(
+            "INSERT INTO ca(ca_id,display_name,policy_version)
+             VALUES (gen_random_uuid(),'Revocation CRL Regression CA','v1') RETURNING ca_id::text",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    owner
+        .execute(
+            "INSERT INTO ca_revocation_policy(ca_id,suspension_allowed)
+             VALUES ($1::text::uuid,true)",
+            &[&ca_id],
+        )
+        .unwrap();
+    for subject in ["maker", "checker"] {
+        owner
+            .execute(
+                "INSERT INTO revocation_officer_grant(issuer,subject,ca_id)
+                 VALUES ($1,$2,$3::text::uuid)",
+                &[&ISSUER, &subject, &ca_id],
+            )
+            .unwrap();
+    }
+    ca_id
+}
+
+/// I1 regression: a reservation whose entries were altered between reserve
+/// and sign must be refused by the journal before the signer is called, and
+/// the revocation must stay uncovered (crl_due, overdue tracking).
+#[test]
+fn tampered_reservation_is_refused_before_signing() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let s1 = issue_leaf(&mut issuance, &mut ca, &ca_id, 101);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &s1,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+
+    let r = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-tamper-1")
+        .unwrap();
+    assert_eq!(r.entries().len(), 1);
+    // The reservation is sealed (no `r.entries.clear()` any more); a caller can
+    // still build a look-alike with the same number and times but no entries.
+    // The database must refuse its intent before anything is signed.
+    let forged = CrlReservation::new(
+        r.ca_id(),
+        r.crl_number(),
+        r.this_update_unix(),
+        r.next_update_unix(),
+        Vec::new(),
+        r.expired_certs_on_crl_since_unix(),
+    )
+    .unwrap();
+    let tbs = build_tbs_cert_list(&root, &forged).unwrap();
+    let plan = CrlPlan {
+        reservation: &forged,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-tamper-1",
+        tbs_der: &tbs,
+    };
+    let verifier = LabCrlVerifier::new(root.clone());
+    let mut signer = CountingSigner {
+        ca: &mut ca,
+        calls: 0,
+    };
+    let result = crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan);
+    assert_eq!(result, Err(CrlError::ReplayedOrAmbiguousIntent));
+    assert_eq!(signer.calls, 0, "signer must not be called");
+
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let status: String = reader
+        .query_one(
+            "SELECT status FROM crl_publication WHERE ca_id=$1::text::uuid AND crl_number=1",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "RESERVED");
+    let due: bool = reader
+        .query_one("SELECT crl_due($1::text::uuid)", &[&ca_id])
+        .unwrap()
+        .get(0);
+    assert!(due, "the revocation is not covered by any stored CRL");
+
+    // Same number and entries, other times: refused as well.
+    let shifted = CrlReservation::new(
+        r.ca_id(),
+        r.crl_number(),
+        r.this_update_unix() + 1,
+        r.next_update_unix(),
+        r.entries().to_vec(),
+        r.expired_certs_on_crl_since_unix(),
+    )
+    .unwrap();
+    let tbs = build_tbs_cert_list(&root, &shifted).unwrap();
+    let plan = CrlPlan {
+        reservation: &shifted,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-tamper-1",
+        tbs_der: &tbs,
+    };
+    assert_eq!(
+        crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan),
+        Err(CrlError::ReplayedOrAmbiguousIntent)
+    );
+    assert_eq!(signer.calls, 0, "signer must not be called");
+
+    // The genuine reservation is still signable and then covers the change.
+    let tbs = build_tbs_cert_list(&root, &r).unwrap();
+    let plan = CrlPlan {
+        reservation: &r,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-tamper-1",
+        tbs_der: &tbs,
+    };
+    crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan).unwrap();
+    assert_eq!(signer.calls, 1);
+    let status: String = reader
+        .query_one(
+            "SELECT status FROM crl_publication WHERE ca_id=$1::text::uuid AND crl_number=1",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "STORED");
+}
+
+/// I2 regression: invalidity dates outside 1970-01-01 .. 9999-12-31 or in the
+/// future must be refused at proposal (they would make every later CRL
+/// unbuildable once approved).
+#[test]
+fn out_of_range_invalidity_dates_are_refused() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let s1 = issue_leaf(&mut issuance, &mut ca, &ca_id, 201);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let count = |c: &mut postgres::Client| -> i64 {
+        c.query_one(
+            "SELECT count(*) FROM certificate_status_change WHERE ca_id=$1::text::uuid",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0)
+    };
+    let maker = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "maker",
+    };
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    for bad in [
+        -86_400i64,      // 1969-12-31
+        -1,              // 1969-12-31T23:59:59Z, collides with "no date" (-1)
+        -2_208_988_800,  // 1900-01-01
+        253_402_300_800, // 10000-01-01
+        568_971_820_800, // 20000-01-01
+        now + 3_600,     // future
+    ] {
+        let result = store.propose(
+            &ca_id,
+            &s1,
+            StatusAction::Revoke,
+            Some(RevocationReason::KeyCompromise),
+            Some(bad),
+            &maker,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(RevocationStoreError::Denied(
+                    StatusChangeError::InvalidityDateOutOfRange
+                ))
+            ),
+            "invalidity {bad}: {result:?}"
+        );
+        assert_eq!(count(&mut reader), 0, "invalidity {bad} left a row");
+    }
+    // In range and in the past: accepted.
+    store
+        .propose(
+            &ca_id,
+            &s1,
+            StatusAction::Revoke,
+            Some(RevocationReason::KeyCompromise),
+            Some(now - 3_600),
+            &maker,
+        )
+        .unwrap();
+    assert_eq!(count(&mut reader), 1);
+
+    // The database refuses the same dates on its own (22023), for a caller
+    // that skips the Rust check.
+    let mut direct = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    for bad in ["1900-01-01 00:00:00+00", "20000-01-01 00:00:00+00"] {
+        let err = direct
+            .query_one(
+                "SELECT propose_certificate_status_change($1::text::uuid, $2, 'REVOKE',
+                     1::smallint, $3::text::timestamptz, $4, 'checker')",
+                &[&ca_id, &s1.as_der_content(), &bad, &ISSUER],
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.code().map(|c| c.code().to_owned()).as_deref(),
+            Some("22023"),
+            "{bad}: {err:?}"
+        );
+    }
 }

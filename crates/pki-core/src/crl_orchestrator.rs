@@ -176,14 +176,7 @@ mod tests {
     }
 
     fn reservation() -> CrlReservation {
-        CrlReservation {
-            ca_id: "lab-ca".into(),
-            crl_number: 1,
-            this_update_unix: 1_700_000_000,
-            next_update_unix: 1_700_086_400,
-            entries: vec![],
-            expired_certs_on_crl_since_unix: None,
-        }
+        CrlReservation::new("lab-ca", 1, 1_700_000_000, 1_700_086_400, vec![], None).unwrap()
     }
 
     fn plan<'a>(r: &'a CrlReservation, tbs: &'a [u8], op: &'a str) -> CrlPlan<'a> {

@@ -19,13 +19,16 @@ fn verifier() -> &'static LabCrlVerifier {
 
 fn reservation() -> &'static CrlReservation {
     static RESERVATION: OnceLock<CrlReservation> = OnceLock::new();
-    RESERVATION.get_or_init(|| CrlReservation {
-        ca_id: "lab-root".to_owned(),
-        crl_number: 1,
-        this_update_unix: 1_800_000_000,
-        next_update_unix: 1_800_000_000 + 7 * 24 * 3600,
-        entries: Vec::new(),
-        expired_certs_on_crl_since_unix: None,
+    RESERVATION.get_or_init(|| {
+        CrlReservation::new(
+            "lab-root",
+            1,
+            1_800_000_000,
+            1_800_000_000 + 7 * 24 * 3600,
+            Vec::new(),
+            None,
+        )
+        .expect("valid fixed reservation for fuzz harness")
     })
 }
 

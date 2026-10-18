@@ -131,26 +131,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             invalidity_at_unix: None,
         })
     };
+    let reservation = |number: u64, entries: Vec<CrlEntry>| {
+        CrlReservation::new(
+            "lab-root",
+            number,
+            now,
+            now + CRL_VALIDITY_SECONDS,
+            entries,
+            None,
+        )
+        .map_err(|e| format!("invalid CRL reservation: {e:?}"))
+    };
     let reservations = [
-        CrlReservation {
-            ca_id: "lab-root".to_owned(),
-            crl_number: 1,
-            this_update_unix: now,
-            next_update_unix: now + CRL_VALIDITY_SECONDS,
-            entries: vec![
+        reservation(
+            1,
+            vec![
                 entry(1, RevocationReason::KeyCompromise)?,
                 entry(2, RevocationReason::CertificateHold)?,
             ],
-            expired_certs_on_crl_since_unix: None,
-        },
-        CrlReservation {
-            ca_id: "lab-root".to_owned(),
-            crl_number: 2,
-            this_update_unix: now,
-            next_update_unix: now + CRL_VALIDITY_SECONDS,
-            entries: vec![entry(1, RevocationReason::KeyCompromise)?],
-            expired_certs_on_crl_since_unix: None,
-        },
+        )?,
+        reservation(2, vec![entry(1, RevocationReason::KeyCompromise)?])?,
     ];
 
     let verifier = LabCrlVerifier::new(ca.root_certificate().clone());
@@ -160,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for reservation in &reservations {
         let tbs = build_tbs_cert_list(ca.root_certificate(), reservation)
             .map_err(|e| format!("cannot build CRL TBS: {e:?}"))?;
-        let operation_ref = format!("lab-crl-{}", reservation.crl_number);
+        let operation_ref = format!("lab-crl-{}", reservation.crl_number());
         let plan = CrlPlan {
             reservation,
             signer_key_ref: &signer_key_ref,

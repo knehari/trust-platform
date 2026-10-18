@@ -113,8 +113,10 @@ CREATE TRIGGER crl_entry_snapshot_no_truncate
 
 -- Canonical encoding of one snapshot entry for entries_sha256. Times are
 -- whole epoch seconds (fractions truncated, as in the DER encoding); a missing
--- invalidity date is -1. The Rust CA core must hash the entries it signs with
--- exactly this encoding in serial order.
+-- invalidity date is -1 (0014 keeps invalidity dates >= 1970-01-01, so a real
+-- date is never -1). The Rust CA core hashes the entries it signs with exactly
+-- this encoding in serial order (trust_pki_core::crl::entries_sha256) and
+-- passes the digest to record_crl_intent, which refuses any mismatch.
 CREATE FUNCTION crl_entry_encoding(
     p_serial BYTEA, p_revoked_at TIMESTAMPTZ, p_reason SMALLINT,
     p_invalidity_at TIMESTAMPTZ
@@ -227,9 +229,19 @@ BEGIN
         ORDER BY s.serial_der_content;
 END $fn$;
 
--- The signing intent is durable before any signature is produced.
+-- The signing intent is durable before any signature is produced. The caller
+-- states what it is about to sign: the digest of the entries (computed in Rust
+-- from the reservation, crl_entry_encoding layout, serial order), and the
+-- thisUpdate / nextUpdate / ExpiredCertsOnCRL times in whole epoch seconds.
+-- Any difference from the reservation is refused before signing, so a STORED
+-- row (which crl_change_covered trusts) always signed exactly its snapshot.
+-- The TBS bytes themselves are bound to these values by the Rust CA core's
+-- independent verifier, which rebuilds the expected TBS from the same
+-- reservation; SQL cannot parse the DER.
 CREATE FUNCTION record_crl_intent(
-    p_ca UUID, p_crl_number BIGINT, p_operation_ref TEXT, p_tbs_sha256 BYTEA
+    p_ca UUID, p_crl_number BIGINT, p_operation_ref TEXT, p_tbs_sha256 BYTEA,
+    p_entries_sha256 BYTEA, p_this_update_unix BIGINT, p_next_update_unix BIGINT,
+    p_expired_certs_on_crl_since_unix BIGINT
 )
 RETURNS TEXT
 LANGUAGE plpgsql AS $fn$
@@ -239,6 +251,8 @@ BEGIN
     IF p_ca IS NULL OR p_crl_number IS NULL
        OR p_operation_ref IS NULL OR length(p_operation_ref) NOT BETWEEN 1 AND 256
        OR p_tbs_sha256 IS NULL OR octet_length(p_tbs_sha256) <> 32
+       OR p_entries_sha256 IS NULL OR octet_length(p_entries_sha256) <> 32
+       OR p_this_update_unix IS NULL OR p_next_update_unix IS NULL
     THEN
         RAISE EXCEPTION 'invalid CRL intent input' USING ERRCODE='22023';
     END IF;
@@ -248,6 +262,15 @@ BEGIN
        OR v_pub.operation_ref <> p_operation_ref
     THEN
         RAISE EXCEPTION 'CRL intent refused: unknown number, wrong operation or not RESERVED'
+          USING ERRCODE='23514';
+    END IF;
+    IF p_entries_sha256 <> v_pub.entries_sha256
+       OR p_this_update_unix <> floor(extract(epoch FROM v_pub.this_update))::bigint
+       OR p_next_update_unix <> floor(extract(epoch FROM v_pub.next_update))::bigint
+       OR p_expired_certs_on_crl_since_unix IS DISTINCT FROM
+          floor(extract(epoch FROM v_pub.expired_certs_on_crl_since))::bigint
+    THEN
+        RAISE EXCEPTION 'CRL intent refused: entries, number or times differ from the reservation'
           USING ERRCODE='23514';
     END IF;
     UPDATE crl_publication
@@ -291,8 +314,9 @@ BEGIN
 END $fn$;
 
 -- Persist a CRL only after the caller verified the signature independently.
--- The database re-derives what it can: state, operation, TBS hash, entries
--- digest from the frozen snapshot and the DER hash.
+-- The database re-derives what it can: state, operation, TBS hash (bound at
+-- the intent, together with the caller's entries digest, number and times),
+-- entries digest from the frozen snapshot and the DER hash.
 CREATE FUNCTION store_verified_crl(
     p_ca UUID, p_crl_number BIGINT, p_operation_ref TEXT, p_tbs_sha256 BYTEA,
     p_crl_sha256 BYTEA, p_crl_der BYTEA
@@ -484,7 +508,7 @@ REVOKE ALL ON FUNCTION guard_crl_entry_snapshot() FROM PUBLIC;
 REVOKE ALL ON FUNCTION crl_entry_encoding(bytea,timestamptz,smallint,timestamptz) FROM PUBLIC;
 REVOKE ALL ON FUNCTION reserve_crl(uuid,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION crl_snapshot_entries(uuid,bigint) FROM PUBLIC;
-REVOKE ALL ON FUNCTION record_crl_intent(uuid,bigint,text,bytea) FROM PUBLIC;
+REVOKE ALL ON FUNCTION record_crl_intent(uuid,bigint,text,bytea,bytea,bigint,bigint,bigint) FROM PUBLIC;
 REVOKE ALL ON FUNCTION mark_crl_uncertain(uuid,bigint,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION store_verified_crl(uuid,bigint,text,bytea,bytea,bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION quarantine_stale_crl_intents(uuid,interval) FROM PUBLIC;
