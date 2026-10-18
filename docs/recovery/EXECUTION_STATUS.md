@@ -115,3 +115,5 @@ Later [Draft #61](https://github.com/knehari/trust-platform/pull/61) passed all 
 ## Laboratory management restore increment
 
 The next TRUST-49 branch adds a [logical backup/restore rehearsal](../operations/lab-management-backup-restore.md) of that populated fixture. A local PostgreSQL 16.15 run restored into a second empty database, matched full rows across six fixture tables and reran the restricted reader privilege checks. Separate negative runs rejected a source/target name collision and an already populated target. CI also exercises the populated-target refusal. This does not recover cluster-global roles, CA keys/HSM state, an active issuance service or a production database, and does not measure RTO/RPO. Exact-head CI remains required.
+
+Later [Draft #62](https://github.com/knehari/trust-platform/pull/62) passed all five exact-head checks at `5edd19d0ed5a17e6d2146911cf6a9f0d89b3b48f`. [Schema job 117656024721](https://github.com/knehari/trust-platform/actions/runs/39120865628/job/117656024721) explicitly passed the restore step, including row and reader-privilege equality and rejection of a populated target. This is laboratory evidence only.

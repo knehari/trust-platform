@@ -21,7 +21,7 @@ PR #41; these increments have not landed on `main`.
 | Management readiness | Draft #59: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it; six exact-head CI checks passed | Lab health signal only; no human IAM, production deployment or CA signing readiness |
 | Management HTTP data capacity | Draft #60: 16 in-flight data requests maximum, acquired before token validation and held through DB completion; six exact-head CI checks passed | Process-local concurrency only; no per-client rate limit, production capacity benchmark or pool |
 | Populated management migration | Draft #61: 0012–0013 applied after seeded 0011 database; CA, request, certificate metadata and audit rows preserved; local and exact-head schema CI passed | Disposable fixture only; no online migration/rollback or replay ledger |
-| Management logical restore | Dependent branch: disposable `pg_dump`/`pg_restore` round trip preserves six fixture tables and reader restrictions locally | Same-cluster fixture only; no global role recovery, CA keys, PITR, RTO/RPO or production backup |
+| Management logical restore | Draft #62: disposable `pg_dump`/`pg_restore` round trip preserves six fixture tables and reader restrictions locally and in exact-head schema CI | Same-cluster fixture only; no global role recovery, CA keys, PITR, RTO/RPO or production backup |
 
 # Matrice des fonctionnalités
 
