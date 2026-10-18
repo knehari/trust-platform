@@ -4,6 +4,11 @@
 //! to an operator-supplied CA bundle and match the configured host name. System
 //! trust roots are deliberately not used for a private PKI database. Plaintext
 //! is available only through an explicit, logged laboratory opt-out.
+//!
+//! Connections are reused through a small idle cache. Concurrency stays bounded
+//! by the caller's semaphores; the cache only avoids a TCP + TLS + SCRAM
+//! handshake per request. The management API issues read-only SELECTs without
+//! session state, so reusing a session cannot leak state between requests.
 
 use postgres::{config::SslMode, Client, NoTls};
 use rustls::{
@@ -11,13 +16,20 @@ use rustls::{
     pki_types::{pem::PemObject, CertificateDer},
     ClientConfig, RootCertStore,
 };
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 pub const TLS_MODE_ENV: &str = "TRUST_DATABASE_TLS";
 pub const CA_FILE_ENV: &str = "TRUST_DATABASE_CA_FILE";
 const VERIFY_FULL: &str = "verify-full";
 const DISABLE_LAB: &str = "disable-lab";
+/// Idle sessions older than this are closed instead of reused, which bounds how
+/// long a credential rotation or server-side change can take to apply.
+const MAX_IDLE_AGE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub enum DatabaseTls {
@@ -27,22 +39,109 @@ pub enum DatabaseTls {
     DisabledForLab,
 }
 
+struct IdleClient {
+    client: Client,
+    since: Instant,
+}
+
+#[derive(Default)]
+struct IdleCache(Vec<IdleClient>);
+
+impl Drop for IdleCache {
+    fn drop(&mut self) {
+        let sessions = std::mem::take(&mut self.0);
+        // Dropping a postgres::Client blocks on its internal runtime, which
+        // panics on an async worker thread (e.g. when the last AppState clone
+        // goes away). Close cached sessions on a plain thread in that case.
+        if !sessions.is_empty() && tokio::runtime::Handle::try_current().is_ok() {
+            let _ = std::thread::Builder::new()
+                .name("trust-db-idle-close".into())
+                .spawn(move || drop(sessions));
+        }
+    }
+}
+
+/// Clones share one idle cache.
 #[derive(Clone)]
 pub struct Database {
     pub url: String,
     pub tls: DatabaseTls,
+    max_idle: usize,
+    idle: Arc<Mutex<IdleCache>>,
 }
 
 impl Database {
-    #[cfg(test)]
-    pub fn lab_plaintext(url: impl Into<String>) -> Self {
+    pub fn new(url: impl Into<String>, tls: DatabaseTls, max_idle: usize) -> Self {
         Self {
             url: url.into(),
-            tls: DatabaseTls::DisabledForLab,
+            tls,
+            max_idle,
+            idle: Arc::default(),
         }
     }
 
-    pub fn connect(&self, statement_timeout_ms: u64) -> Result<Client, ()> {
+    #[cfg(test)]
+    pub fn lab_plaintext(url: impl Into<String>) -> Self {
+        Self::new(url, DatabaseTls::DisabledForLab, 2)
+    }
+
+    /// Runs `query` on a reused idle session or a new one. A session is put
+    /// back only after success; any error discards it. A reused session found
+    /// closed by the server (restart, idle timeout) is retried once on a new
+    /// connection; that is safe because callers only run read-only queries.
+    pub fn run<T>(
+        &self,
+        statement_timeout_ms: u64,
+        mut query: impl FnMut(&mut Client) -> Result<T, postgres::Error>,
+    ) -> Result<T, ()> {
+        if let Some(mut client) = self.take_idle() {
+            match query(&mut client) {
+                Ok(value) => {
+                    self.put_idle(client);
+                    return Ok(value);
+                }
+                Err(_) if client.is_closed() => {}
+                Err(_) => return Err(()),
+            }
+        }
+        let mut client = self.connect(statement_timeout_ms)?;
+        let value = query(&mut client).map_err(|_| ())?;
+        self.put_idle(client);
+        Ok(value)
+    }
+
+    fn take_idle(&self) -> Option<Client> {
+        let mut idle = self
+            .idle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while let Some(entry) = idle.0.pop() {
+            if entry.since.elapsed() < MAX_IDLE_AGE && !entry.client.is_closed() {
+                return Some(entry.client);
+            }
+        }
+        None
+    }
+
+    fn put_idle(&self, client: Client) {
+        let mut idle = self
+            .idle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if idle.0.len() < self.max_idle && !client.is_closed() {
+            idle.0.push(IdleClient {
+                client,
+                since: Instant::now(),
+            });
+        }
+    }
+
+    #[cfg(test)]
+    fn idle_count(&self) -> usize {
+        self.idle.lock().unwrap().0.len()
+    }
+
+    fn connect(&self, statement_timeout_ms: u64) -> Result<Client, ()> {
         let mut config: postgres::Config = self.url.parse().map_err(|_| ())?;
         config.connect_timeout(Duration::from_secs(3));
         // Apply the limit at session startup so every management read, including
@@ -149,6 +248,62 @@ mod tests {
         let _ = fs::remove_file(garbage);
     }
 
+    fn backend_pid(db: &Database) -> Result<i32, ()> {
+        db.run(3_000, |client| {
+            client
+                .query_one("SELECT pg_backend_pid()", &[])
+                .map(|row| row.get::<_, i32>(0))
+        })
+    }
+
+    /// Uses the restricted CI login (TRUST_API_TEST_DATABASE_URL).
+    #[test]
+    fn idle_sessions_are_reused_discarded_on_error_and_bounded() {
+        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
+            assert_ne!(
+                env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+                Ok("1"),
+                "TRUST_API_TEST_DATABASE_URL is required when TRUST_REQUIRE_DATABASE=1"
+            );
+            return;
+        };
+        let db = Database::lab_plaintext(url.clone());
+
+        // Success returns the session to the cache and the next call reuses it.
+        let first = backend_pid(&db).unwrap();
+        assert_eq!(db.idle_count(), 1);
+        assert_eq!(backend_pid(&db).unwrap(), first);
+
+        // A failed query discards the session instead of caching it.
+        assert!(db
+            .run(3_000, |client| client
+                .query_one("SELECT 1/0", &[])
+                .map(|_| ()))
+            .is_err());
+        assert_eq!(db.idle_count(), 0);
+        let second = backend_pid(&db).unwrap();
+        assert_ne!(second, first);
+
+        // A cached session closed by the server is retried once on a new one.
+        let mut admin = Database::lab_plaintext(url).connect(3_000).unwrap();
+        admin
+            .execute("SELECT pg_terminate_backend($1)", &[&second])
+            .unwrap();
+        let third = backend_pid(&db).unwrap();
+        assert_ne!(third, second);
+
+        // Concurrent callers each get a session, but at most max_idle stay cached.
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    db.run(3_000, |client| client.execute("SELECT pg_sleep(0.2)", &[]))
+                        .unwrap();
+                });
+            }
+        });
+        assert_eq!(db.idle_count(), 2);
+    }
+
     /// Requires a TLS-enabled PostgreSQL whose certificate names `localhost`
     /// only. CI supplies the variables; locally the test is skipped without them.
     #[test]
@@ -167,32 +322,28 @@ mod tests {
         };
         let tls = tls_from_settings(None, Some(&ca_file)).unwrap();
         // sslmode=disable in the URL must not downgrade verify-full.
-        let trusted = Database {
-            url: format!("{url}?sslmode=disable"),
-            tls: tls.clone(),
-        };
-        let mut client = trusted.connect(3_000).expect("verified TLS connection");
-        let encrypted: bool = client
-            .query_one(
-                "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
-                &[],
-            )
-            .unwrap()
-            .get(0);
+        let trusted = Database::new(format!("{url}?sslmode=disable"), tls.clone(), 1);
+        let encrypted = trusted
+            .run(3_000, |db| {
+                db.query_one(
+                    "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+                    &[],
+                )
+                .map(|row| row.get::<_, bool>(0))
+            })
+            .expect("verified TLS connection");
         assert!(encrypted);
 
         // A root unrelated to the server certificate must be rejected.
-        let untrusted = Database {
-            url: url.clone(),
-            tls: tls_from_settings(None, Some(&untrusted_ca)).unwrap(),
-        };
+        let untrusted = Database::new(
+            url.clone(),
+            tls_from_settings(None, Some(&untrusted_ca)).unwrap(),
+            1,
+        );
         assert!(untrusted.connect(3_000).is_err());
 
         // The trusted chain presented for another host name must be rejected.
-        let wrong_host = Database {
-            url: url.replacen("@localhost:", "@127.0.0.1:", 1),
-            tls,
-        };
+        let wrong_host = Database::new(url.replacen("@localhost:", "@127.0.0.1:", 1), tls, 1);
         assert_ne!(wrong_host.url, url, "test URL must use host localhost");
         assert!(wrong_host.connect(3_000).is_err());
     }

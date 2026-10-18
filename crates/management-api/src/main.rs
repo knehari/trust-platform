@@ -126,13 +126,15 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
-    let database = Database {
-        url: env::var("TRUST_DATABASE_URL")?,
-        tls: database::tls_from_settings(
+    let database = Database::new(
+        env::var("TRUST_DATABASE_URL")?,
+        database::tls_from_settings(
             env::var(database::TLS_MODE_ENV).ok().as_deref(),
             env::var(database::CA_FILE_ENV).ok().as_deref(),
         )?,
-    };
+        // One idle session per database slot plus the readiness probe's slot.
+        MAX_DATABASE_REQUESTS + 1,
+    );
     if matches!(database.tls, database::DatabaseTls::DisabledForLab) {
         write_log(serde_json::json!({"event":"management_database_tls_disabled_lab"}));
     }
@@ -322,7 +324,7 @@ fn scoped_ca_id(raw: &str, claims: &Claims) -> Result<String, StatusCode> {
 async fn query_db<T: Send + 'static>(
     database: Database,
     slots: Arc<Semaphore>,
-    query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
+    query: impl FnMut(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
 ) -> Result<T, StatusCode> {
     // Acquire before scheduling blocking work, and keep the permit until the
     // PostgreSQL connection (including a slow connect or query) is dropped.
@@ -331,10 +333,9 @@ async fn query_db<T: Send + 'static>(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut db = database
-            .connect(DATABASE_STATEMENT_TIMEOUT_MS)
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        query(&mut db).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+        database
+            .run(DATABASE_STATEMENT_TIMEOUT_MS, query)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
     })
     .await
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
