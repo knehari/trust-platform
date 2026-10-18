@@ -232,6 +232,18 @@ jobs:
           docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade_retry
           TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade_retry" \
             bash tests/management_migration_retry.sh
+      - name: Apply ledgered management migrations
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_main
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_fault
+          cargo build -p trust-management-api --bin lab_migrate_management --locked
+          TRUST_LEDGER_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_main" \
+          TRUST_LEDGER_FAULT_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_fault" \
+          TRUST_LEDGER_UNTRACKED_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+            bash tests/management_migration_ledger.sh
       - name: Restore populated management snapshot
         run: |
           set -euo pipefail
