@@ -2,8 +2,7 @@
 
 ## Current stacked Draft increments (18 October 2026)
 
-This table describes the unmerged laboratory stack through Draft #61 and the
-dependent management restore increment. The
+This table describes the unmerged laboratory stack through Draft #68. The
 historical PR #42 matrix below remains the reference for what was observed on
 PR #41; these increments have not landed on `main`.
 
@@ -20,8 +19,11 @@ PR #41; these increments have not landed on `main`.
 | Management SQL deadline | Draft #58: PostgreSQL cancels a read running longer than three seconds and releases its bounded request permit; six exact-head CI checks passed | Local/disposable database only; no production connection pool or capacity qualification |
 | Management readiness | Draft #59: anonymous status-only endpoint checks restricted PostgreSQL role, four read views and request slot; Compose waits for it; six exact-head CI checks passed | Lab health signal only; no human IAM, production deployment or CA signing readiness |
 | Management HTTP data capacity | Draft #60: 16 in-flight data requests maximum, acquired before token validation and held through DB completion; six exact-head CI checks passed | Process-local concurrency only; no per-client rate limit, production capacity benchmark or pool |
-| Populated management migration | Draft #61: 0012–0013 applied after seeded 0011 database; CA, request, certificate metadata and audit rows preserved; local and exact-head schema CI passed | Disposable fixture only; no online migration/rollback or replay ledger |
-| Management logical restore | Draft #62: disposable `pg_dump`/`pg_restore` round trip preserves six fixture tables and reader restrictions locally and in exact-head schema CI | Same-cluster fixture only; no global role recovery, CA keys, PITR, RTO/RPO or production backup |
+| Populated management migration | Draft #61: 0012–0013 applied after seeded 0011 database; CA, request, certificate metadata and audit rows preserved; local and exact-head schema CI passed | Disposable fixture only; no online migration/rollback |
+| Management logical restore | Drafts #62–#65: disposable `pg_dump`/`pg_restore` preserves fixture rows and reader restrictions, refuses a missing reader role in a fresh cluster, rolls back a failed restore, and verifies a real restricted login; exact-head CI passed | Cluster-global roles are provisioned separately; no CA keys, PITR, RTO/RPO or production backup |
+| Interrupted management migration | Draft #66: injected 0013 DDL failure rolls back that migration while 0012 and populated data survive; manual retry passes in exact-head CI | Direct SQL rehearsal only; no automatic deployed-data recovery |
+| Ledgered management migration | Draft #67: 0012–0013 runner serializes operators, records source checksums transactionally, skips repeat runs and refuses drift or untracked schema; six exact-head CI checks passed | Laboratory `NoTls` operator only; no production migration service or automatic adoption |
+| Ledgered restore continuity | Draft #68: a disposable restore compares full ledger rows and the runner skips both migrations afterward; local PostgreSQL 16.15 and [code-commit CI](https://github.com/knehari/trust-platform/actions/runs/39137372438) passed | Independent review remains; no tamper-evident audit, protected backup or production recovery |
 
 # Matrice des fonctionnalités
 

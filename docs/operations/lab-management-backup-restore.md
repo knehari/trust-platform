@@ -38,6 +38,15 @@ negative `trust_api_reader` privilege fixture against the target. A second
 run against the restored target must fail before `pg_restore` starts. Never
 point the target URL at a database containing data to preserve.
 
+When the source has a `management_migration_ledger`, the same restore test
+also compares the complete ledger rows (including checksums and timestamps)
+with the target. A separate CI fixture restores a database on which the
+ledgered 0012–0013 runner has completed, then reruns that binary against the
+restored target: both migrations must be skipped with matching checksums.
+This confirms continuity of the laboratory migration record through this
+logical restore. It does not validate an externally modified schema or make
+the ledger tamper-evident.
+
 In the fresh-cluster CI fixture, an independently provisioned test login is
 also checked over a real PostgreSQL connection. It cannot read management
 views before membership in `trust_api_reader`; with that membership it sees

@@ -244,6 +244,15 @@ jobs:
           TRUST_LEDGER_FAULT_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_fault" \
           TRUST_LEDGER_UNTRACKED_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
             bash tests/management_migration_ledger.sh
+      - name: Restore ledgered management database
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_restored
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_fault" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_restored" \
+            bash tests/management_ledger_restore.sh
       - name: Restore populated management snapshot
         run: |
           set -euo pipefail
