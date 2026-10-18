@@ -156,4 +156,4 @@ components:
     BadRequest: { description: Invalid CA identifier }
     Unauthorized: { description: Missing or invalid access token }
     Forbidden: { description: Role, signed CA scope or server-managed grant denied }
-    Unavailable: { description: Read database unavailable }
+    Unavailable: { description: Management data request capacity exhausted or read database unavailable }
