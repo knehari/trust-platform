@@ -31,7 +31,12 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiGet<T>(path: string, token: string, signal?: AbortSignal): Promise<T> {
+export interface ApiPage<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
+async function apiResponse(path: string, token: string, signal?: AbortSignal): Promise<Response> {
   const response = await fetch(path, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
@@ -46,5 +51,17 @@ export async function apiGet<T>(path: string, token: string, signal?: AbortSigna
       : `The request failed (${response.status}).`;
     throw new ApiError(response.status, message);
   }
-  return response.json() as Promise<T>;
+  return response;
+}
+
+export async function apiGet<T>(path: string, token: string, signal?: AbortSignal): Promise<T> {
+  return (await apiResponse(path, token, signal)).json() as Promise<T>;
+}
+
+export async function apiGetPage<T>(path: string, token: string, signal?: AbortSignal): Promise<ApiPage<T>> {
+  const response = await apiResponse(path, token, signal);
+  return {
+    items: await response.json() as T[],
+    nextCursor: response.headers.get('x-next-cursor'),
+  };
 }

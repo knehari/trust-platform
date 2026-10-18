@@ -74,12 +74,17 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates:
     get:
-      summary: Read certificate metadata for one scoped CA, at most 100
+      summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
       parameters:
         - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
       responses:
         '200':
-          description: Metadata only; certificate DER is not exposed
+          description: Metadata only; certificate DER is not exposed. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -92,12 +97,17 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/audit:
     get:
-      summary: Read bounded audit event metadata for one scoped CA
+      summary: Read one ordered page of audit event metadata for a scoped CA, at most 100
       parameters:
         - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
       responses:
         '200':
-          description: Audit metadata without actor identifiers
+          description: Audit metadata without actor identifiers. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -121,6 +131,12 @@ components:
       name: ca_id
       required: true
       schema: { type: string, format: uuid }
+    HistoryCursor:
+      in: query
+      name: before
+      required: false
+      description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
+      schema: { type: string, maxLength: 61 }
   schemas:
     CA:
       type: object

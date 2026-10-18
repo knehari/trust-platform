@@ -4,6 +4,8 @@
 
 > **Management database checkpoint — 18 October 2026:** Drafts [#61–#68](https://github.com/knehari/trust-platform/pulls) exercise populated management migration, logical restore within and across disposable PostgreSQL clusters, rollback after injected restore/migration failures, a restricted reader login, a transactional 0012–0013 migration ledger, and ledger continuity after restore. #67 and #68 passed CI on their code commits. These tests do not establish production backup, online upgrade, CA key recovery, RTO/RPO, or permission to merge the Draft stack.
 
+> **Read-only application checkpoint:** Draft #69 adds bounded cursor pagination to certificate and audit history in the Rust API and React console. A local restricted PostgreSQL fixture proves two pages with equal timestamps and CA-scope denial. Its CI status is recorded on the PR; it does not add issuance, human IAM or a production history snapshot.
+
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
 # Trust Platform — Product & Engineering Roadmap
