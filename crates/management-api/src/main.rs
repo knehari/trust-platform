@@ -10,6 +10,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use postgres::{Client, NoTls};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -82,6 +83,39 @@ struct PaginationQuery {
 #[derive(Deserialize)]
 struct CaPaginationQuery {
     after: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CaCursor {
+    display_name: String,
+    ca_id: String,
+}
+
+fn parse_ca_cursor(raw: Option<String>) -> Result<Option<CaCursor>, StatusCode> {
+    let Some(raw) = raw else { return Ok(None) };
+    if raw.len() > 4096 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(raw)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let cursor: CaCursor = serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !(1..=255).contains(&cursor.display_name.chars().count())
+        || uuid::Uuid::parse_str(&cursor.ca_id)
+            .map(|id| id.to_string() != cursor.ca_id)
+            .unwrap_or(true)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(cursor))
+}
+
+fn encode_ca_cursor(ca: &Ca) -> String {
+    let cursor = CaCursor {
+        display_name: ca.display_name.clone(),
+        ca_id: ca.ca_id.clone(),
+    };
+    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).expect("CA cursor is serializable"))
 }
 
 fn parse_history_cursor(raw: Option<String>) -> Result<Option<(String, String)>, StatusCode> {
@@ -343,16 +377,10 @@ async fn list_cas(
     Query(page): Query<CaPaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
-    let after = page
-        .after
-        .map(|value| {
-            uuid::Uuid::parse_str(&value)
-                .ok()
-                .filter(|id| id.to_string() == value)
-                .map(|_| value)
-                .ok_or(StatusCode::BAD_REQUEST)
-        })
-        .transpose()?;
+    let after = parse_ca_cursor(page.after)?;
+    let (after_name, after_id) = after.map_or((None, None), |cursor| {
+        (Some(cursor.display_name), Some(cursor.ca_id))
+    });
     let ids: Vec<String> = claims
         .ca_ids
         .iter()
@@ -366,13 +394,9 @@ async fn list_cas(
             "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
-         AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ( \
-           SELECT anchor.display_name,anchor.ca_id FROM management_ca anchor \
-           JOIN management_reader_scope anchor_grant ON anchor_grant.ca_id=anchor.ca_id \
-           WHERE anchor.ca_id=$4 AND anchor.ca_id=ANY($1::text[]) \
-           AND anchor_grant.issuer=$2 AND anchor_grant.subject=$3)) \
+         AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ($4,$5)) \
          ORDER BY c.display_name,c.ca_id LIMIT 101",
-            &[&ids, &issuer, &subject, &after],
+            &[&ids, &issuer, &subject, &after_name, &after_id],
         )
     })
     .await?;
@@ -388,13 +412,8 @@ async fn list_cas(
             created_at: r.get(4),
         })
         .collect();
-    let next = has_more.then(|| {
-        items
-            .last()
-            .expect("nonempty page has a final item")
-            .ca_id
-            .clone()
-    });
+    let next =
+        has_more.then(|| encode_ca_cursor(items.last().expect("nonempty page has a final item")));
     Ok((history_headers(next), Json(items)))
 }
 
@@ -702,6 +721,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(first.len(), 100);
         let cursor = cursor.expect("102 CAs require another page");
+        let anchor = parse_ca_cursor(Some(cursor.clone())).unwrap().unwrap();
         let (status, next, second) =
             history_page(&app, &token, &format!("/v1/cas?after={cursor}")).await;
         assert_eq!(status, StatusCode::OK);
@@ -713,13 +733,49 @@ mod tests {
             .map(|item| item["ca_id"].as_str().unwrap())
             .collect();
         assert_eq!(ids.len(), 102);
-        assert_eq!(first[99]["ca_id"].as_str(), Some(cursor.as_str()));
+        assert_eq!(first[99]["ca_id"].as_str(), Some(anchor.ca_id.as_str()));
+        assert_eq!(
+            first[99]["display_name"].as_str(),
+            Some(anchor.display_name.as_str())
+        );
         assert!(!ids.contains("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"));
         let (status, _, _) =
             history_page(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, _) = history_page(&app, &token, "/v1/cas?after=invalid").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        let admin_url = env::var("TRUST_API_CA_PAGINATION_ADMIN_URL")
+            .expect("CA pagination fixture requires an owner login for revocation regression");
+        let anchor_id = anchor.ca_id;
+        let deleted = query_db(admin_url, Arc::new(Semaphore::new(1)), move |admin| {
+            admin.execute(
+                "DELETE FROM management_reader_grant WHERE issuer=$1 AND subject=$2 AND ca_id::text=$3",
+                &[&"https://issuer.example.test", &"ca-page-operator", &anchor_id],
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(deleted, 1);
+        let (status, next, after_revocation) =
+            history_page(&app, &token, &format!("/v1/cas?after={cursor}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(after_revocation, second);
+        assert!(next.is_none());
+    }
+    #[test]
+    fn ca_cursor_round_trips_long_escaped_name() {
+        let ca = Ca {
+            ca_id: "55555555-5555-4555-8555-000000000064".into(),
+            parent_ca_id: None,
+            display_name: "\n".repeat(255),
+            policy_version: "v1".into(),
+            created_at: "2026-10-01T12:00:00.000Z".into(),
+        };
+        let cursor = encode_ca_cursor(&ca);
+        assert!(cursor.len() <= 4096);
+        let parsed = parse_ca_cursor(Some(cursor)).unwrap().unwrap();
+        assert_eq!(parsed.display_name, ca.display_name);
+        assert_eq!(parsed.ca_id, ca.ca_id);
     }
     #[test]
     fn scope_rejects_other_and_invalid_ca() {

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 axum = { version = "=0.8.9", features = ["json"] }
+base64 = "=0.22.1"
 jsonwebtoken = { version = "=10.3.0", features = ["rust_crypto"] }
 postgres = "=0.19.12"
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
@@ -17,7 +18,6 @@ tokio = { version = "=1.53.2", features = ["macros", "rt-multi-thread", "net", "
 uuid = "=1.18.1"
 
 [dev-dependencies]
-base64 = "=0.22.1"
 rand = "=0.8.5"
 rsa = { version = "=0.9.8", features = ["pem"] }
 tower = "=0.5.3"

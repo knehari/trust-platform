@@ -52,7 +52,7 @@ paths:
           headers:
             X-Next-Cursor:
               description: Cursor for the next page; absent on the final page.
-              schema: { type: string, format: uuid }
+              schema: { type: string, maxLength: 4096 }
           content:
             application/json:
               schema:
@@ -148,8 +148,8 @@ components:
       in: query
       name: after
       required: false
-      description: Pass the previous CA page's X-Next-Cursor unchanged. Malformed values return 400.
-      schema: { type: string, format: uuid }
+      description: Pass the previous CA page's opaque X-Next-Cursor unchanged. It carries the last displayed name and CA identifier, so paging can continue if that CA's grant is revoked. Malformed values return 400; concurrent renames or inserts do not form a snapshot.
+      schema: { type: string, maxLength: 4096 }
   schemas:
     CA:
       type: object
