@@ -282,15 +282,15 @@ export function App() {
       <div className="workspace-tag"><span className="status-dot" /> LAB WORKSPACE</div>
       <nav aria-label="Main navigation" className="nav">
         <div className="nav-label">WORKSPACE</div>
-        <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><span>▦</span> Overview</button>
-        <button className={section === 'authorities' ? 'active' : ''} onClick={() => setSection('authorities')}><span>◇</span> Authorities <small>{cas.length}{caCursor ? '+' : ''}</small></button>
-        <button className={section === 'certificates' ? 'active' : ''} onClick={() => setSection('certificates')}><span>▤</span> Certificates</button>
-        <button className={section === 'audit' ? 'active' : ''} onClick={() => setSection('audit')}><span>◷</span> Audit trail</button>
+        <button className={section === 'overview' ? 'active' : ''} aria-current={section === 'overview' ? 'page' : undefined} onClick={() => setSection('overview')}><span>▦</span> Overview</button>
+        <button className={section === 'authorities' ? 'active' : ''} aria-current={section === 'authorities' ? 'page' : undefined} onClick={() => setSection('authorities')}><span>◇</span> Authorities <small>{cas.length}{caCursor ? '+' : ''}</small></button>
+        <button className={section === 'certificates' ? 'active' : ''} aria-current={section === 'certificates' ? 'page' : undefined} onClick={() => setSection('certificates')}><span>▤</span> Certificates</button>
+        <button className={section === 'audit' ? 'active' : ''} aria-current={section === 'audit' ? 'page' : undefined} onClick={() => setSection('audit')}><span>◷</span> Audit trail</button>
       </nav>
       <div className="sidebar-bottom"><div className="sidebar-note">Read-only access<br /><span>Changes and issuance are unavailable in this laboratory console.</span></div><div className="version">TRUST PLATFORM · V0.1 LAB</div></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">READ ONLY</span><button className="icon-button" title="Refresh data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">READ ONLY</span><button className="icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div></div>
         {dataError && <div className="notice error" role="alert">{dataError} <button onClick={() => setReload(value => value + 1)}>Retry</button></div>}
@@ -349,7 +349,7 @@ function Metric({ label, value, detail, icon }: { label: string; value: string; 
 }
 
 function AuthorityList({ cas, selectedCaId, onSelect, compact = false }: { cas: CertificateAuthority[]; selectedCaId: string | null; onSelect: (id: string) => void; compact?: boolean }) {
-  return <div className={compact ? 'authority-list compact' : 'authority-list'}>{cas.map(ca => <button key={ca.ca_id} className={ca.ca_id === selectedCaId ? 'authority-row selected' : 'authority-row'} onClick={() => onSelect(ca.ca_id)}><span className="ca-emblem">◇</span><span className="ca-text"><strong>{ca.display_name}</strong><small>{shortId(ca.ca_id)} · Policy {ca.policy_version}</small></span><span className="row-arrow">→</span></button>)}</div>;
+  return <div className={compact ? 'authority-list compact' : 'authority-list'}>{cas.map(ca => <button key={ca.ca_id} className={ca.ca_id === selectedCaId ? 'authority-row selected' : 'authority-row'} aria-pressed={ca.ca_id === selectedCaId} onClick={() => onSelect(ca.ca_id)}><span className="ca-emblem">◇</span><span className="ca-text"><strong>{ca.display_name}</strong><small>{shortId(ca.ca_id)} · Policy {ca.policy_version}</small></span><span className="row-arrow">→</span></button>)}</div>;
 }
 
 function Info({ label, value }: { label: string; value: string }) {
