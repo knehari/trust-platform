@@ -14,6 +14,6 @@ In a disposable PostgreSQL 16 database, apply migrations `0001`–`0013`, insert
 2. From the repository root, set `TRUST_DATABASE_URL` to the restricted login, `TRUST_OIDC_ISSUER=http://127.0.0.1:8080`, `TRUST_OIDC_AUDIENCE=trust-api`, then run `cargo run -p trust-management-api --locked`.
 3. `cd frontend`, set `VITE_OIDC_ISSUER=http://127.0.0.1:8080` and `VITE_OIDC_CLIENT_ID=trust-console`, then run `npm run dev`.
 
-Open `http://127.0.0.1:5173`, sign in, and verify that only the allowed CA appears. The console should show empty certificate/audit views until the laboratory database contains real records. The test issuer's key changes on restart; restart the API after restarting the issuer so JWKS pinning remains consistent. Do not copy this fixture into production Compose.
+Open `http://127.0.0.1:5173`, sign in, and verify that only the allowed CA appears. The console should show empty certificate/audit views until the laboratory database contains real records. The test issuer's key changes on restart; the API refreshes its JWKS when it sees the new key ID, subject to a five-second retry bound. Previously cached keys expire from the verifier within 60 seconds. Do not copy this fixture into production Compose.
 
 Browser smoke evidence on 2026-10-17: Authorization Code + PKCE exchanged once; dashboard displayed the single authorized `Allowed CA` from a populated two-CA PostgreSQL database; detail, certificate empty state, audit empty state, logout and fresh login were exercised. This does not prove production IAM or an HTTP issuance path.

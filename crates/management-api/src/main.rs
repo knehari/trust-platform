@@ -151,7 +151,7 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status":"up"}))
 }
 
-fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -161,6 +161,7 @@ fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, Sta
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let claims = verifier
         .verify(token)
+        .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
         return Err(StatusCode::FORBIDDEN);
@@ -206,7 +207,7 @@ async fn list_cas(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<Ca>>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier)?;
+    let claims = authorize(&headers, &state.verifier).await?;
     let ids: Vec<String> = claims
         .ca_ids
         .iter()
@@ -243,7 +244,7 @@ async fn get_ca(
     headers: HeaderMap,
     Path(ca_id): Path<String>,
 ) -> Result<Json<Ca>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier)?;
+    let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -271,7 +272,7 @@ async fn list_certificates(
     headers: HeaderMap,
     Path(ca_id): Path<String>,
 ) -> Result<Json<Vec<Certificate>>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier)?;
+    let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -308,7 +309,7 @@ async fn list_audit(
     headers: HeaderMap,
     Path(ca_id): Path<String>,
 ) -> Result<Json<Vec<Audit>>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier)?;
+    let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
