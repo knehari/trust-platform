@@ -22,6 +22,7 @@ pub mod certificate_profile;
 pub mod challenge_binding;
 pub mod cp_cps;
 pub mod crl;
+pub mod crl_orchestrator;
 pub mod crypto_migration;
 pub mod csr;
 pub mod identity_boundary;
