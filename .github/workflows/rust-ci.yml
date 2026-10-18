@@ -328,6 +328,8 @@ jobs:
           TRUST_RESTORE_ADMIN_URL="$TARGET_URL" \
           TRUST_RESTORE_READER_URL="postgresql://trust_restore_login_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh" \
             bash tests/management_restored_login.sh
+      - name: Management API requires verified TLS to PostgreSQL
+        run: bash tests/management_db_tls.sh
       - name: Roll back interrupted management restore
         run: |
           set -euo pipefail

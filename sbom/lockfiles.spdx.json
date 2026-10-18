@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-190ccd4e9e7855a572426e8b8e458cdc2a0113e4c008453c1801b6a4ee80365d",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-20a5530353711c775cdeb619cd4f20261c0e7df377a1416fd7c3a00b7b780bf4",
   "creationInfo": {
-    "created": "2026-10-18T17:10:09Z",
+    "created": "2026-10-18T17:10:22Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -4029,6 +4029,22 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-cargo-bff289c87d3a07edf474",
+      "name": "tokio-postgres-rustls",
+      "versionInfo": "0.14.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4c2ad44aa0ae96db89c4742212ed41645b2f597311ff6e1945542a4d9fadc2fb"
+        }
+      ]
+    },
+    {
       "SPDXID": "SPDXRef-cargo-38996aba476a1d0ac0a3",
       "name": "tokio-rustls",
       "versionInfo": "0.26.6",
@@ -6326,6 +6342,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-c2fcd70b92f911d1f01d"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-bff289c87d3a07edf474"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

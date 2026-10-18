@@ -49,6 +49,9 @@ services:
       TRUST_OIDC_AUDIENCE: trust-api
       TRUST_API_BIND: 0.0.0.0:8081
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      # Disposable lab network only. Deployments must use the default verify-full
+      # mode with TRUST_DATABASE_CA_FILE (see docs/architecture/management-api-readonly.md).
+      TRUST_DATABASE_TLS: disable-lab
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
       interval: 3s

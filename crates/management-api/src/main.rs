@@ -1,4 +1,5 @@
 mod auth;
+mod database;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -10,7 +11,8 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use postgres::{Client, NoTls};
+use database::Database;
+use postgres::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -33,7 +35,7 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 struct AppState {
     verifier: OidcVerifier,
-    database_url: String,
+    database: Database,
     database_slots: Arc<Semaphore>,
     http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
@@ -124,11 +126,20 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
-    let database_url = env::var("TRUST_DATABASE_URL")?;
+    let database = Database {
+        url: env::var("TRUST_DATABASE_URL")?,
+        tls: database::tls_from_settings(
+            env::var(database::TLS_MODE_ENV).ok().as_deref(),
+            env::var(database::CA_FILE_ENV).ok().as_deref(),
+        )?,
+    };
+    if matches!(database.tls, database::DatabaseTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"management_database_tls_disabled_lab"}));
+    }
     let verifier = OidcVerifier::discover(&issuer, &audience).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
     let safe_db_role = query_db(
-        database_url.clone(),
+        database.clone(),
         database_slots.clone(),
         restricted_reader_role,
     )
@@ -137,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !safe_db_role {
         return Err("management database login lacks read-only role isolation".into());
     }
-    query_db(database_url.clone(), database_slots.clone(), |db| {
+    query_db(database.clone(), database_slots.clone(), |db| {
         db.query("SELECT 1 FROM management_reader_scope LIMIT 1", &[])
             .map(|_| ())
     })
@@ -145,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|_| "management reader grants unavailable")?;
     let app = router(AppState {
         verifier,
-        database_url,
+        database,
         database_slots,
         http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
@@ -243,7 +254,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     {
         cache.available
     } else {
-        let checked = query_db(state.database_url, state.readiness_slots, |db| {
+        let checked = query_db(state.database, state.readiness_slots, |db| {
             if !restricted_reader_role(db)? {
                 return Ok(false);
             }
@@ -309,7 +320,7 @@ fn scoped_ca_id(raw: &str, claims: &Claims) -> Result<String, StatusCode> {
 }
 
 async fn query_db<T: Send + 'static>(
-    url: String,
+    database: Database,
     slots: Arc<Semaphore>,
     query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
 ) -> Result<T, StatusCode> {
@@ -320,16 +331,8 @@ async fn query_db<T: Send + 'static>(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut config: postgres::Config =
-            url.parse().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        config.connect_timeout(Duration::from_secs(3));
-        // Apply the limit at session startup so every management read, including
-        // startup checks, is bounded even after the connection succeeds.
-        config.options(&format!(
-            "-c statement_timeout={DATABASE_STATEMENT_TIMEOUT_MS}"
-        ));
-        let mut db = config
-            .connect(NoTls)
+        let mut db = database
+            .connect(DATABASE_STATEMENT_TIMEOUT_MS)
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         query(&mut db).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
     })
@@ -361,7 +364,7 @@ async fn list_cas(
         .collect();
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db(state.database, state.database_slots, move |db| {
         db.query(
             "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
@@ -407,7 +410,7 @@ async fn get_ca(
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
+    let row = query_db(state.database, state.database_slots, move |db| {
         db.query_opt(
             "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
@@ -438,7 +441,7 @@ async fn list_certificates(
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db(state.database, state.database_slots, move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer,&subject,&ca_id],
@@ -486,7 +489,7 @@ async fn list_audit(
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db(state.database, state.database_slots, move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer,&subject,&ca_id],
@@ -605,7 +608,7 @@ mod tests {
         .unwrap();
         let app = router(AppState {
             verifier,
-            database_url,
+            database: Database::lab_plaintext(database_url),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -692,7 +695,7 @@ mod tests {
         .unwrap();
         let app = router(AppState {
             verifier,
-            database_url,
+            database: Database::lab_plaintext(database_url),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -746,14 +749,14 @@ mod tests {
         };
         let slots = Arc::new(Semaphore::new(1));
         let held = slots.clone().acquire_owned().await.unwrap();
-        let busy = query_db(url.clone(), slots.clone(), |db| {
+        let busy = query_db(Database::lab_plaintext(url.clone()), slots.clone(), |db| {
             db.query_one("SELECT 1", &[])
                 .map(|row| row.get::<_, i32>(0))
         })
         .await;
         assert_eq!(busy, Err(StatusCode::SERVICE_UNAVAILABLE));
         drop(held);
-        let available = query_db(url, slots, |db| {
+        let available = query_db(Database::lab_plaintext(url), slots, |db| {
             db.query_one("SELECT 1", &[])
                 .map(|row| row.get::<_, i32>(0))
         })
@@ -767,12 +770,12 @@ mod tests {
             return; // The CI integration job supplies a disposable PostgreSQL database.
         };
         let slots = Arc::new(Semaphore::new(1));
-        let slow = query_db(url.clone(), slots.clone(), |db| {
+        let slow = query_db(Database::lab_plaintext(url.clone()), slots.clone(), |db| {
             db.query_one("SELECT pg_sleep(5)", &[]).map(|_| ())
         })
         .await;
         assert_eq!(slow, Err(StatusCode::SERVICE_UNAVAILABLE));
-        let recovered = query_db(url, slots, |db| {
+        let recovered = query_db(Database::lab_plaintext(url), slots, |db| {
             db.query_one("SELECT 1", &[])
                 .map(|row| row.get::<_, i32>(0))
         })
@@ -807,7 +810,7 @@ mod tests {
         let database_url = env::var("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
         let state = AppState {
             verifier,
-            database_url: database_url.clone(),
+            database: Database::lab_plaintext(database_url.clone()),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -886,8 +889,9 @@ mod tests {
         assert_eq!(concurrent_probe.status(), StatusCode::SERVICE_UNAVAILABLE);
         drop(refresh_in_progress);
         let unavailable_app = router(AppState {
-            database_url:
-                "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing".into(),
+            database: Database::lab_plaintext(
+                "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing",
+            ),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             ..state.clone()
         });
