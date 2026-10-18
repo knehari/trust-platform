@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
-import { ApiError, apiGet, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
+import { ApiError, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
@@ -35,10 +35,7 @@ export function App() {
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [selectedCertificate, setSelectedCertificate] = useState<Certificate | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [selectedAuditEvent, setSelectedAuditEvent] = useState<{ caId: string; eventId: string } | null>(null);
-  const [auditDetail, setAuditDetail] = useState<AuditEvent | null>(null);
-  const [auditDetailError, setAuditDetailError] = useState<string | null>(null);
-  const [auditDetailLoading, setAuditDetailLoading] = useState(false);
+  const [selectedAuditEvent, setSelectedAuditEvent] = useState<AuditEvent | null>(null);
   const [certificateCursor, setCertificateCursor] = useState<string | null>(null);
   const [auditCursor, setAuditCursor] = useState<string | null>(null);
   const [moreLoading, setMoreLoading] = useState(false);
@@ -193,21 +190,6 @@ export function App() {
     return () => { controller.abort(); moreController.current?.abort(); };
   }, [user, selectedCaId, reload]);
 
-  useEffect(() => {
-    setAuditDetail(null);
-    setAuditDetailError(null);
-    setAuditDetailLoading(false);
-    if (!user || user.expired || !selectedAuditEvent || selectedAuditEvent.caId !== selectedCaId) return;
-    const controller = new AbortController();
-    setAuditDetailLoading(true);
-    const { caId, eventId } = selectedAuditEvent;
-    apiGet<AuditEvent>(`/v1/cas/${encodeURIComponent(caId)}/audit/${encodeURIComponent(eventId)}`, user.access_token, controller.signal)
-      .then(record => { if (!controller.signal.aborted) setAuditDetail(record); })
-      .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load audit event detail.', setAuditDetailError); })
-      .finally(() => { if (!controller.signal.aborted) setAuditDetailLoading(false); });
-    return () => controller.abort();
-  }, [user, selectedCaId, selectedAuditEvent, reload]);
-
   async function loadOlder(kind: 'certificates' | 'audit') {
     const cursor = kind === 'certificates' ? certificateCursor : auditCursor;
     if (!user || user.expired || !selectedCaId || !cursor || detailLoading || moreLoading) return;
@@ -294,12 +276,13 @@ export function App() {
             {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
               {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
               {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificates.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setReload(value => value + 1)} /> : certificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{certificates.map(cert => <tr key={cert.request_id}><td className="mono"><button className="record-link" onClick={() => setSelectedCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>{certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>)}</>}</div>}
-              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditEvents.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setReload(value => value + 1)} /> : auditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><div className="timeline">{auditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><button className="record-link" onClick={() => setSelectedAuditEvent({ caId: event.ca_id, eventId: event.event_id })} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>{auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>)}{selectedAuditEvent?.caId === selectedCaId && <div className="record-detail"><h3>Audit event detail</h3>{auditDetailLoading ? <LoadingRows /> : auditDetailError ? <LoadFailure message={auditDetailError} onRetry={() => setSelectedAuditEvent({ ...selectedAuditEvent })} /> : auditDetail?.event_id === selectedAuditEvent.eventId && <div className="detail-grid"><Info label="EVENT ID" value={auditDetail.event_id} /><Info label="EVENT TYPE" value={auditDetail.event_type} /><Info label="DECISION" value={auditDetail.decision} /><Info label="POLICY VERSION" value={auditDetail.policy_version ?? 'Not recorded'} /><Info label="RECORDED" value={displayDate(auditDetail.recorded_at)} /></div>}</div>}</>}</div>}
+              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditEvents.length} records loaded</span></div>{detailLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setReload(value => value + 1)} /> : auditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><div className="timeline">{auditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><button className="record-link" onClick={() => setSelectedAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>{auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>)}</>}</div>}
             </>}
           </div></div>}
         </>}
       </main>
       {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && certificates.some(cert => cert.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} onClose={() => setSelectedCertificate(null)} />}
+      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && auditEvents.some(event => event.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={() => setSelectedAuditEvent(null)} />}
     </div>
   </div>;
 }
@@ -315,6 +298,20 @@ function CertificateDialog({ certificate, onClose }: { certificate: Certificate;
     <div className="dialog-heading"><div><div className="eyebrow">CERTIFICATE METADATA</div><h2 id="certificate-dialog-title">Certificate detail</h2></div><button className="dialog-close" aria-label="Close certificate detail" onClick={() => dialog.current?.close()}>×</button></div>
     <div className="detail-grid"><Info label="SERIAL" value={certificate.serial_hex} /><Info label="FINGERPRINT SHA-256" value={certificate.fingerprint_sha256} /><Info label="REQUEST ID" value={certificate.request_id} /><Info label="STATE" value={certificate.state} /><Info label="SIGNED" value={displayDate(certificate.signed_at)} /><Info label="PUBLISHED" value={displayDate(certificate.published_at)} /></div>
     <p className="dialog-note">Database metadata only. Certificate contents and cryptographic validity are not shown or verified here.</p>
+  </dialog>;
+}
+
+function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby="audit-dialog-title" onClose={onClose}>
+    <div className="dialog-heading"><div><div className="eyebrow">AUDIT METADATA</div><h2 id="audit-dialog-title">Audit event detail</h2></div><button className="dialog-close" aria-label="Close audit event detail" onClick={() => dialog.current?.close()}>×</button></div>
+    <div className="detail-grid"><Info label="EVENT ID" value={event.event_id} /><Info label="EVENT TYPE" value={event.event_type} /><Info label="DECISION" value={event.decision} /><Info label="POLICY VERSION" value={event.policy_version ?? 'Not recorded'} /><Info label="RECORDED" value={displayDate(event.recorded_at)} /></div>
+    <p className="dialog-note">Database metadata only. This view does not include actor identity or independent audit integrity proof.</p>
   </dialog>;
 }
 
