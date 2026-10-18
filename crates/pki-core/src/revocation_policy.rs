@@ -86,6 +86,57 @@ pub fn decide_status_change(
     }
 }
 
+/// Historical v2.8 contract (Draft PRs #28–#41), kept verbatim because the
+/// recovery inventory (docs/recovery/RECOVERY_PLAN.md) preserves every public
+/// interface and test. Nothing calls it. Its rules are weaker than
+/// `decide_status_change` and migration 0014 (it accepts reasons 6 and 8 in any
+/// context and trusts a caller-supplied `authorized` flag), so new code must
+/// not use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(note = "use decide_status_change; kept only for the recovery inventory")]
+pub enum RevocationError {
+    Unauthorized,
+    InvalidReason,
+    InvalidSerial,
+}
+
+#[deprecated(note = "use decide_status_change; kept only for the recovery inventory")]
+#[allow(deprecated)]
+pub fn authorize_revocation(
+    authorized: bool,
+    reason: u8,
+    serial: &[u8],
+) -> Result<(), RevocationError> {
+    if !authorized {
+        return Err(RevocationError::Unauthorized);
+    }
+    if !matches!(reason, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10) {
+        return Err(RevocationError::InvalidReason);
+    }
+    if serial.is_empty() || serial.len() > 20 || serial[0] & 0x80 != 0 {
+        return Err(RevocationError::InvalidSerial);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(deprecated)]
+mod legacy_tests {
+    use super::*;
+    #[test]
+    fn rejects_bad_reason_and_identity() {
+        assert_eq!(
+            authorize_revocation(false, 1, &[1]),
+            Err(RevocationError::Unauthorized)
+        );
+        assert_eq!(
+            authorize_revocation(true, 7, &[1]),
+            Err(RevocationError::InvalidReason)
+        );
+        assert!(authorize_revocation(true, 1, &[1]).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
