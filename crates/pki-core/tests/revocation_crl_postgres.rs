@@ -161,6 +161,41 @@ fn change(
     store.approve(&id, &checker, action, reason).unwrap();
 }
 
+/// Writes root.der, leaf1..3.der and crl1/crl2.der exactly as stored.
+fn export_stored_artefacts(
+    reader: &mut postgres::Client,
+    ca_id: &str,
+    root: &Certificate,
+    serials: [&SerialNumber; 3],
+    dir: &str,
+) {
+    let dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("root.der"), root.to_der().unwrap()).unwrap();
+    for (n, serial) in serials.iter().enumerate() {
+        let der: Vec<u8> = reader
+            .query_one(
+                "SELECT certificate_der FROM certificate
+                 WHERE ca_id=$1::text::uuid AND serial_der_content=$2",
+                &[&ca_id, &serial.as_der_content()],
+            )
+            .unwrap()
+            .get(0);
+        std::fs::write(dir.join(format!("leaf{}.der", n + 1)), der).unwrap();
+    }
+    for number in [1_i64, 2] {
+        let der: Vec<u8> = reader
+            .query_one(
+                "SELECT crl_der FROM crl_publication
+                 WHERE ca_id=$1::text::uuid AND crl_number=$2 AND status='STORED'",
+                &[&ca_id, &number],
+            )
+            .unwrap()
+            .get(0);
+        std::fs::write(dir.join(format!("crl{number}.der")), der).unwrap();
+    }
+}
+
 fn sqlstate(error: &RevocationStoreError) -> Option<String> {
     match error {
         RevocationStoreError::Database(e) => e.code().map(|c| c.code().to_owned()),
@@ -296,6 +331,12 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     };
     crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan2).unwrap();
     assert_eq!(signer.calls, 2);
+
+    // Hand the persisted artefacts (read back from PostgreSQL, not the
+    // in-memory values) to tests/crl_openssl_lab.sh when CI asks for them.
+    if let Ok(dir) = env::var("TRUST_CRL_EXPORT_DIR") {
+        export_stored_artefacts(&mut reader, &ca_id, &root, [&s1, &s2, &s3], &dir);
+    }
 
     // Replay: intent refused, signer untouched.
     assert_eq!(

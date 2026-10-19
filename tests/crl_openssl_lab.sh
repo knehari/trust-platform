@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # Lab-only: OpenSSL must accept the lab CRLs and enforce revocation / released holds.
+# Usage: crl_openssl_lab.sh            (generate with the in-memory lab example)
+#        crl_openssl_lab.sh <input-dir> (check root/leaf1..3/crl1..2.der written by
+#        the revocation_crl_postgres test from PostgreSQL via TRUST_CRL_EXPORT_DIR)
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -n "${RUNNER_TEMP:-}" ]; then
-  out="$RUNNER_TEMP/trust-crl-lab"
-  rm -rf "$out"
-  mkdir -p "$out"
-else
-  out="$(mktemp -d)"
-fi
-trap 'rm -rf "$out"' EXIT
-
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-cd "$root_dir"
-cargo run --locked -q -p trust-pki-core --features lab-software --example issue_crl_lab -- "$out"
+out="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/trust-crl-lab.XXXXXX")"
+trap 'rm -rf "$out"' EXIT
+
+if [ $# -ge 1 ]; then
+  source_label="PostgreSQL-stored"
+  for name in root leaf1 leaf2 leaf3 crl1 crl2; do
+    [ -s "$1/$name.der" ] || fail "missing $1/$name.der"
+    cp "$1/$name.der" "$out/"
+  done
+else
+  source_label="lab example"
+  cd "$root_dir"
+  cargo run --locked -q -p trust-pki-core --features lab-software --example issue_crl_lab -- "$out"
+fi
 
 for name in root leaf1 leaf2 leaf3; do
   openssl x509 -inform DER -in "$out/$name.der" -out "$out/$name.pem"
@@ -65,4 +71,4 @@ check crl2 leaf1 revoked
 check crl2 leaf2 ok
 check crl2 leaf3 ok
 
-echo "PASS: OpenSSL accepts lab CRLs and enforces revocation and released holds"
+echo "PASS: OpenSSL accepts $source_label CRLs and enforces revocation and released holds"
