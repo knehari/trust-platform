@@ -13,8 +13,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   role needs DML on `revocation` / `certificate_status_change` and could bypass
   maker-checker (spec §6). Design SECURITY DEFINER wrappers or a service role
   with EXECUTE only, plus INSERT guards on history and `crl_publication`.
-- AKI is derived from the SPKI hash, not read from the issuer's SKI extension;
-  verifier does not check issuer keyUsage cRLSign or curve (`crl.rs`).
+- Verifier does not check issuer keyUsage cRLSign or curve (`crl.rs`).
 - Authentication of revocation officers stays with the identity adapter.
 
 ## Test gaps

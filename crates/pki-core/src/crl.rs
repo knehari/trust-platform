@@ -8,16 +8,15 @@
 
 use crate::revocation::RevocationReason;
 use crate::serial::SerialNumber;
-use crate::x509_extensions;
 use sha2::{Digest, Sha256};
 use x509_cert::{
     crl::{RevokedCert, TbsCertList},
     der::{
         asn1::{GeneralizedTime, ObjectIdentifier, OctetString, Uint, UtcTime},
-        DateTime, Encode,
+        DateTime, Decode, Encode,
     },
     ext::{
-        pkix::{crl::CrlNumber, CrlReason},
+        pkix::{crl::CrlNumber, AuthorityKeyIdentifier, CrlReason, SubjectKeyIdentifier},
         Extension,
     },
     serial_number::SerialNumber as X509Serial,
@@ -27,12 +26,14 @@ use x509_cert::{
 };
 
 #[cfg(feature = "lab-software")]
-use x509_cert::{crl::CertificateList, der::Decode};
+use x509_cert::crl::CertificateList;
 
 const INVALIDITY_DATE_OID: &str = "2.5.29.24";
 const EXPIRED_CERTS_ON_CRL_OID: &str = "2.5.29.60";
 const CRL_NUMBER_OID: &str = "2.5.29.20";
 const REASON_CODE_OID: &str = "2.5.29.21";
+const SUBJECT_KEY_IDENTIFIER_OID: &str = "2.5.29.14";
+const AUTHORITY_KEY_IDENTIFIER_OID: &str = "2.5.29.35";
 /// CRL numbers stay below 2^63 so they fit a signed 64-bit database column.
 const MAX_CRL_NUMBER: u64 = 1 << 63;
 /// Earliest instant the builder encodes (1970-01-01T00:00:00Z).
@@ -268,6 +269,28 @@ fn revoked_cert(entry: &CrlEntry) -> Result<RevokedCert, CrlError> {
     })
 }
 
+/// RFC 5280 5.2.1: the CRL's AKI keyIdentifier is the issuer certificate's
+/// subjectKeyIdentifier, whatever method produced it. Fails closed when the
+/// issuer has no SKI, more than one, or an empty one: the key identifier is
+/// never recomputed from the public key.
+fn issuer_key_identifier(issuer: &Certificate) -> Result<OctetString, CrlError> {
+    let mut skis = issuer
+        .tbs_certificate
+        .extensions
+        .iter()
+        .flatten()
+        .filter(|e| e.extn_id.to_string() == SUBJECT_KEY_IDENTIFIER_OID);
+    let (Some(ski), None) = (skis.next(), skis.next()) else {
+        return Err(CrlError::Encoding);
+    };
+    let SubjectKeyIdentifier(id) = SubjectKeyIdentifier::from_der(ski.extn_value.as_bytes())
+        .map_err(|_| CrlError::Encoding)?;
+    if id.as_bytes().is_empty() {
+        return Err(CrlError::Encoding);
+    }
+    Ok(id)
+}
+
 /// Issuer name and authority key identifier come from `issuer`. Entries are
 /// sorted by serial bytes; duplicate serials, a non-increasing validity
 /// window or an out-of-range CRL number are rejected.
@@ -281,8 +304,11 @@ pub fn build_tbs_cert_list(
     {
         return Err(CrlError::Encoding);
     }
-    let key_id = x509_extensions::key_identifier(&issuer.tbs_certificate.subject_public_key_info)
-        .map_err(|_| CrlError::Encoding)?;
+    let aki = AuthorityKeyIdentifier {
+        key_identifier: Some(issuer_key_identifier(issuer)?),
+        authority_cert_issuer: None,
+        authority_cert_serial_number: None,
+    };
     let number_bytes = reservation.crl_number.to_be_bytes();
     let first = number_bytes
         .iter()
@@ -290,7 +316,10 @@ pub fn build_tbs_cert_list(
         .ok_or(CrlError::Encoding)?;
     let number = CrlNumber(Uint::new(&number_bytes[first..]).map_err(|_| CrlError::Encoding)?);
     let mut crl_extensions = vec![
-        x509_extensions::authority_key_identifier(&key_id).map_err(|_| CrlError::Encoding)?,
+        extension_from_der(
+            AUTHORITY_KEY_IDENTIFIER_OID,
+            aki.to_der().map_err(|_| CrlError::Encoding)?,
+        )?,
         extension_from_der(
             CRL_NUMBER_OID,
             number.to_der().map_err(|_| CrlError::Encoding)?,
@@ -410,8 +439,9 @@ mod tests {
     use super::*;
     use crate::lab_ca::EphemeralLabCa;
     use crate::orchestrator::ExternalSigner;
+    use crate::x509_extensions;
     use std::str::FromStr;
-    use x509_cert::{der::asn1::BitString, ext::pkix::AuthorityKeyIdentifier, name::Name};
+    use x509_cert::{der::asn1::BitString, name::Name};
 
     const THIS_UPDATE: i64 = 1_800_000_000; // 2027-01-15
     const NEXT_UPDATE: i64 = THIS_UPDATE + 7 * 24 * 3600;
@@ -823,5 +853,53 @@ mod tests {
             t.signature.oid = ObjectIdentifier::new("1.2.840.10045.4.3.3").unwrap();
         });
         assert_eq!(verifier.verify(&r, &bad_algorithm), reject);
+    }
+
+    /// The issuer certificate with extension `oid` removed and, if given,
+    /// `replacement` appended. Its own signature is not re-made: only the CRL
+    /// builder and verifier read these fields.
+    fn issuer_with(cert: &Certificate, oid: &str, replacement: Option<Extension>) -> Certificate {
+        let mut cert = cert.clone();
+        let exts = cert.tbs_certificate.extensions.as_mut().unwrap();
+        exts.retain(|e| e.extn_id.to_string() != oid);
+        exts.extend(replacement);
+        cert
+    }
+
+    fn aki_key_id(tbs_der: &[u8]) -> Vec<u8> {
+        let tbs = TbsCertList::from_der(tbs_der).unwrap();
+        let exts = tbs.crl_extensions.unwrap();
+        AuthorityKeyIdentifier::from_der(ext_value(&exts, "2.5.29.35").unwrap())
+            .unwrap()
+            .key_identifier
+            .unwrap()
+            .as_bytes()
+            .to_vec()
+    }
+
+    /// Regression: the AKI was a hash of the issuer key, which differs from
+    /// the issuer's SKI whenever the issuer used another key-id method
+    /// (RFC 5280 4.2.1.1 / 4.2.1.2), so path builders could not match it.
+    #[test]
+    fn aki_is_the_issuer_subject_key_identifier() {
+        let ca = ca();
+        let r = reservation(vec![]);
+        let ski = [0x5a; 20];
+        let issuer = issuer_with(
+            ca.root_certificate(),
+            "2.5.29.14",
+            Some(x509_extensions::subject_key_identifier(&ski).unwrap()),
+        );
+        assert_eq!(aki_key_id(&build_tbs_cert_list(&issuer, &r).unwrap()), ski);
+    }
+
+    #[test]
+    fn issuer_without_subject_key_identifier_is_refused() {
+        let ca = ca();
+        let issuer = issuer_with(ca.root_certificate(), "2.5.29.14", None);
+        assert_eq!(
+            build_tbs_cert_list(&issuer, &reservation(vec![])),
+            Err(CrlError::Encoding)
+        );
     }
 }
