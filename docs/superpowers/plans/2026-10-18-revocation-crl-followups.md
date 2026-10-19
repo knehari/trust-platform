@@ -19,16 +19,14 @@ or exposed service. The plan's Task 2 text still shows the original 4-argument
 - Authentication of revocation officers stays with the identity adapter.
 
 ## Test gaps
-- No OpenSSL check on a CRL stored through PostgreSQL (only the in-memory
-  example is checked); no DB+Rust test of `ETSI_EN_319_411_2` /
-  `ExpiredCertsOnCRL`; integration test asserts no timestamp values.
+- Integration test asserts no thisUpdate/nextUpdate values (OpenSSL now
+  checks the PostgreSQL-stored CRLs, and `ExpiredCertsOnCRL` is tested per
+  conformance target through PostgreSQL).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
   `tests/revocation_populated_upgrade.sh`).
 - No golden DER vector; no high-bit serial test; `crl_once` doubles ignore
   `operation_ref`; best-effort `mark_uncertain` failure path untested.
-- `tests/crl_concurrency.sh`: `sleep 0.5` gate can flake (poll `pg_locks`);
-  `wrong_rows` check is trivially true.
 - Fuzz seeds are signed by another key, so `crl_verify` never reaches signature
   success; `seed-corpus.sh` hides OpenSSL errors.
 - `lab_policy_gate` and the policy block of `revocation_lifecycle.sql` are not

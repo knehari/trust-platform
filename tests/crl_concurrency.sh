@@ -11,7 +11,7 @@ temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 
 sql() {
-  psql -X -A -t -v ON_ERROR_STOP=1 "$TRUST_CI_DATABASE_URL" -c "$1"
+  psql -X -q -A -t -v ON_ERROR_STOP=1 "$TRUST_CI_DATABASE_URL" -c "$1"
 }
 
 iss="https://idp.lab.invalid"
@@ -71,18 +71,46 @@ numbers="$(sql "SELECT count(*)||'|'||count(DISTINCT crl_number)||'|'||min(crl_n
 # Deterministic gate: while a reservation holds the CA row, an approval waits
 # for it *before* stamping decided_at. The CRL it produced therefore either
 # contains the change or predates the decision; a later CRL contains it.
+# Ordering comes from pg_locks, not from sleeps: the approver starts once the
+# gate's snapshot insert is visible as a granted lock, and the gate commits
+# only after it has seen the approver blocked behind it (10 s limit).
 (
-  sql "SELECT r.crl_number || '|' || s.t
+  PGAPPNAME=crl-gate sql "CREATE FUNCTION pg_temp.await_blocked() RETURNS boolean
+      LANGUAGE plpgsql AS \$fn\$
+      BEGIN
+          FOR i IN 1..200 LOOP
+              IF EXISTS (SELECT 1 FROM pg_locks l WHERE NOT l.granted
+                         AND pg_backend_pid() = ANY (pg_blocking_pids(l.pid))) THEN
+                  RETURN true;
+              END IF;
+              PERFORM pg_sleep(0.05);
+          END LOOP;
+          RETURN false;
+      END \$fn\$;
+      SELECT r.crl_number || '|' || s.t || '|' || s.blocked
       FROM reserve_crl('$ca','crl-worker-gate','race-op-gate') r,
-      LATERAL (SELECT pg_sleep(1.5), clock_timestamp() AS t WHERE r.crl_number > 0) s" > "$temp/gate-reserve"
+      LATERAL (SELECT pg_temp.await_blocked()::int AS blocked, clock_timestamp() AS t
+               WHERE r.crl_number > 0) s" > "$temp/gate-reserve"
 ) &
 gate_pid=$!
-sleep 0.5
+gate_holds=0
+for _ in $(seq 1 200); do
+  gate_holds="$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+    WHERE a.application_name='crl-gate' AND l.granted
+      AND l.relation='crl_entry_snapshot'::regclass")"
+  [ "$gate_holds" != "0" ] && break
+  sql "SELECT pg_sleep(0.05)" >/dev/null
+done
+if [ "$gate_holds" = "0" ]; then
+  echo "FAIL: gate reservation never held its locks" >&2
+  exit 1
+fi
 sql "SELECT approve_certificate_status_change('${changes[5]}','$iss','checker',
     'REVOKE',5::smallint)" >/dev/null
 wait "$gate_pid"
 gate_number="$(cut -d'|' -f1 "$temp/gate-reserve")"
 gate_release="$(cut -d'|' -f2 "$temp/gate-reserve")"
+gate_blocked="$(cut -d'|' -f3 "$temp/gate-reserve")"
 gate_late="$(sql "SELECT (decided_at >= '$gate_release'::timestamptz)::int FROM certificate_status_change
   WHERE change_id='${changes[5]}'")"
 gate_snapshot_has_5="$(sql "SELECT count(*) FROM crl_entry_snapshot
@@ -94,11 +122,17 @@ gate_after="$(sql "SELECT count(*) FROM crl_entry_snapshot s JOIN crl_publicatio
 
 approved="$(sql "SELECT count(*) FROM certificate_status_change WHERE ca_id='$ca' AND status='APPROVED'")"
 
-# A snapshot row must carry exactly the approved reason of its change.
+# Every snapshot row is the revocation written by an approved change: same
+# serial, reason and revoked_at = decided_at, decided no later than the
+# reservation (this_update is truncated to the second, hence the 1 s bound).
 wrong_rows="$(sql "SELECT count(*) FROM crl_entry_snapshot s
-  LEFT JOIN certificate_status_change c
-    ON c.ca_id=s.ca_id AND c.serial_der_content=s.serial_der_content AND c.status='APPROVED'
-  WHERE s.ca_id='$ca' AND (c.change_id IS NULL OR c.reason_code IS DISTINCT FROM s.reason_code)")"
+  JOIN crl_publication p ON p.ca_id=s.ca_id AND p.crl_number=s.crl_number
+  WHERE s.ca_id='$ca' AND NOT EXISTS (
+    SELECT 1 FROM certificate_status_change c
+    WHERE c.ca_id=s.ca_id AND c.serial_der_content=s.serial_der_content
+      AND c.status='APPROVED' AND c.action='REVOKE'
+      AND c.reason_code=s.reason_code AND c.decided_at=s.revoked_at
+      AND c.decided_at < p.this_update + interval '1 second')")"
 # A CRL without an approved change's row must have been reserved before the
 # approval was decided; otherwise the revocation would be missed while
 # crl_due / overdue_status_changes treat the CRL as covering it.
@@ -120,10 +154,10 @@ sizes="$(sql "SELECT string_agg(n::text, ',' ORDER BY n) FROM (
   WHERE p.ca_id='$ca' GROUP BY p.crl_number) x")"
 
 if [ "$numbers" != "12|12|1|12" ] || [ "$approved" != "5" ] || [ "$gate_late" != "1" ] \
-  || [ "$gate_snapshot_has_5" != "0" ] \
+  || [ "$gate_blocked" != "1" ] || [ "$gate_snapshot_has_5" != "0" ] \
   || [ "$gate_after" != "1" ] \
   || [ "$wrong_rows" != "0" ] || [ "$missed" != "0" ] || [ "$bad_digest" != "0" ]; then
-  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
+  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_blocked=$gate_blocked gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
   exit 1
 fi
 
