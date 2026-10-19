@@ -30,6 +30,8 @@ PostgreSQL's entrypoint runs migrations `0001`–`0013` and seed data only when 
 
 The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a separate empty PostgreSQL database. It seeds data after migration 0011, applies 0012–0013 and checks row preservation and reader privileges. This is an upgrade regression for those two migrations only; it does not upgrade an existing Compose volume or provide a repeatable production migration runner.
 
+`tests/revocation_populated_upgrade.sh` does the same for 0014–0015 in another empty database. Both migrations fail closed on rows they cannot carry forward and roll back entirely: 0014 aborts on a legacy `revocation` row with reason 7 or 8, and 0015 aborts on any pre-existing `crl_publication` row (it has no operation reference, intent, DER or entry snapshot). The script checks both aborts leave no 0014/0015 object behind, that each migration applies once the operator has removed the offending row, and that a legacy revocation stays irreversible, reports `REVOKED` and is frozen into the first CRL reservation with the canonical entry digest. There is no automatic conversion of legacy CRL rows.
+
 A second disposable database exercises [interrupted migration 0013 and manual retry](../operations/lab-management-migration-retry.md), checking that 0012 and existing rows survive a failed 0013 transaction before retry. That historical test uses direct SQL and has no ledger.
 
 The [laboratory management migration ledger](../operations/lab-management-migration-ledger.md) adds a separate operator runner for 0012–0013 and tests concurrent application, repeat runs, source drift and interruption on disposable databases. Compose still bootstraps its own empty volume with the historical SQL files.

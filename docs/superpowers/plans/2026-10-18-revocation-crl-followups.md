@@ -22,8 +22,9 @@ or exposed service. The plan's Task 2 text still shows the original 4-argument
 - No OpenSSL check on a CRL stored through PostgreSQL (only the in-memory
   example is checked); no DB+Rust test of `ETSI_EN_319_411_2` /
   `ExpiredCertsOnCRL`; integration test asserts no timestamp values.
-- Upgrade/migration-retry scripts stop at 0013; 0015 adds `operation_ref NOT
-  NULL` and would abort on a populated `crl_publication`.
+- Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
+  upgrade and its fail-closed aborts are covered by
+  `tests/revocation_populated_upgrade.sh`).
 - No golden DER vector; no high-bit serial test; `crl_once` doubles ignore
   `operation_ref`; best-effort `mark_uncertain` failure path untested.
 - `tests/crl_concurrency.sh`: `sleep 0.5` gate can flake (poll `pg_locks`);
