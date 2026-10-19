@@ -209,6 +209,10 @@ export function App() {
   }, [user, selectedCaId, reload]);
 
   useEffect(() => {
+    certificateMoreController.current?.abort();
+    certificateMoreController.current = null;
+    setCertificateMoreLoading(false);
+    setCertificateMoreError(null);
     setCertificateLoading(false);
     setCertificateCursor(null);
     setCertificates([]);
@@ -228,6 +232,10 @@ export function App() {
   }, [user, selectedCaId, reload, certificateReload]);
 
   useEffect(() => {
+    auditMoreController.current?.abort();
+    auditMoreController.current = null;
+    setAuditMoreLoading(false);
+    setAuditMoreError(null);
     setAuditLoading(false);
     setAuditCursor(null);
     setAuditEvents([]);
@@ -264,7 +272,7 @@ export function App() {
       const path = `/v1/cas/${encodeURIComponent(selectedCaId)}/${kind}?before=${encodeURIComponent(cursor)}`;
       if (kind === 'certificates') {
         const page = await apiGetPage<Certificate>(path, user.access_token, controller.signal);
-        if (detailKey.current === key) {
+        if (!controller.signal.aborted && certificateMoreController.current === controller && detailKey.current === key) {
           const scopedPage = requireScopedRows(page.items, selectedCaId);
           const nextCursor = requireAdvancingCursor(cursor, page.nextCursor);
           setCertificates(current => appendUniquePage(current, scopedPage, cert => cert.request_id));
@@ -272,7 +280,7 @@ export function App() {
         }
       } else {
         const page = await apiGetPage<AuditEvent>(path, user.access_token, controller.signal);
-        if (detailKey.current === key) {
+        if (!controller.signal.aborted && auditMoreController.current === controller && detailKey.current === key) {
           const scopedPage = requireScopedRows(page.items, selectedCaId);
           const nextCursor = requireAdvancingCursor(cursor, page.nextCursor);
           setAuditEvents(current => appendUniquePage(current, scopedPage, event => event.event_id));
@@ -280,13 +288,18 @@ export function App() {
         }
       }
     } catch (error) {
-      if (!controller.signal.aborted && detailKey.current === key) {
+      if (!controller.signal.aborted && (kind === 'certificates' ? certificateMoreController.current : auditMoreController.current) === controller && detailKey.current === key) {
         handleReadError(error, 'Could not load older records.', kind === 'certificates' ? setCertificateMoreError : setAuditMoreError);
       }
     } finally {
-      if (detailKey.current === key) {
-        if (kind === 'certificates') setCertificateMoreLoading(false);
-        else setAuditMoreLoading(false);
+      if ((kind === 'certificates' ? certificateMoreController.current : auditMoreController.current) === controller) {
+        if (kind === 'certificates') {
+          certificateMoreController.current = null;
+          setCertificateMoreLoading(false);
+        } else {
+          auditMoreController.current = null;
+          setAuditMoreLoading(false);
+        }
       }
     }
   }
