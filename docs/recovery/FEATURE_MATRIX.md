@@ -6,6 +6,8 @@ This table describes the unmerged laboratory stack through Draft #70. The
 historical PR #42 matrix below remains the reference for what was observed on
 PR #41; these increments have not landed on `main`.
 
+**19 October 2026 continuation:** Drafts #71–#93 extend the read-only management application with CA selection/error handling, no-store responses, scoped certificate and audit detail routes, metadata modals, independent list loading/retry and filters over already loaded rows. Draft #93 adds a local preflight that detects an older API binary missing the detail routes. All seven checks passed on its exact head `bb6c6b569bad5ec3134aa54f967fbefd2a4872c2`, including [Compose smoke](https://github.com/knehari/trust-platform/actions/runs/39173002831) and [Rust/schema](https://github.com/knehari/trust-platform/actions/runs/39173002823). The filters do not search unseen pages; the modals display database metadata, not certificate validity or independent audit integrity. The stack is still Draft-only, read-only and G0 blocked, with no human IAM or HTTP issuance.
+
 | Capability | Current demonstrated scope | Remaining boundary |
 |---|---|---|
 | C-01 policy gate serialization | #46: deterministic two-transaction regression and migration 0011; exact-head race and Rust/schema CI passed | General populated upgrades and independent review remain |
