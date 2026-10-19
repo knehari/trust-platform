@@ -1,12 +1,15 @@
 > Recovery execution update: see [EXECUTION_STATUS.md](EXECUTION_STATUS.md). The original PR #42 snapshot below is preserved as historical evidence; it is not the current delivery status.
 
-## Current stacked Draft increments (18 October 2026)
+## Current stacked Draft increments (20 October 2026)
 
-This table describes the unmerged laboratory stack through Draft #70. The
-historical PR #42 matrix below remains the reference for what was observed on
-PR #41; these increments have not landed on `main`.
+The table below records selected unmerged laboratory increments through Draft
+#70; the dated continuation notes cover later Drafts through #106. The
+historical PR #42 matrix remains the reference for what was observed on PR
+#41. None of these increments has landed on `main`.
 
 **19 October 2026 continuation:** Drafts #71–#93 extend the read-only management application with CA selection/error handling, no-store responses, scoped certificate and audit detail routes, metadata modals, independent list loading/retry and filters over already loaded rows. Draft #93 adds a local preflight that detects an older API binary missing the detail routes. All seven checks passed on its exact head `bb6c6b569bad5ec3134aa54f967fbefd2a4872c2`, including [Compose smoke](https://github.com/knehari/trust-platform/actions/runs/39173002831) and [Rust/schema](https://github.com/knehari/trust-platform/actions/runs/39173002823). The filters do not search unseen pages; the modals display database metadata, not certificate validity or independent audit integrity. The stack is still Draft-only, read-only and G0 blocked, with no human IAM or HTTP issuance.
+
+**20 October 2026 continuation:** Stacked Drafts #95–#106 add exact ID lookups through CA-scoped detail routes, guard returned identities, deduplicate overlapping pages, separate and cancel history pagination, display validated diagnostic request IDs, and check all three detail routes before local testing. Exact request/event lookups were exercised against records beyond the first 100 in a disposable browser fixture. [Draft #106](https://github.com/knehari/trust-platform/pull/106) passed all seven GitHub checks at `64d6bce4de728cfd792507e97b7fdf25f0e9b531` after the account-side runner scheduling block lifted. The one-CA browser fixture did not exercise a CA beyond the first page or an initially failed inventory with a successful direct CA lookup. Older billing-blocked PR checks remain historical failures until individually rerun. No human IAM, policy-controlled HTTP issuance, production deployment or G0 clearance is implied.
 
 | Capability | Current demonstrated scope | Remaining boundary |
 |---|---|---|
