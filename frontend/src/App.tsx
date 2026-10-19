@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
 import { ApiError, apiGet, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
-import { requireScopedRows, visibleScopedRows } from './scope';
+import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
 
@@ -326,7 +326,7 @@ export function App() {
     try {
       const ca = await apiGet<CertificateAuthority>(`/v1/cas/${caId}`, user.access_token, controller.signal);
       if (controller.signal.aborted) return;
-      requireScopedRows([ca], caId);
+      requireExactRecord(ca, caId, 'ca_id', caId);
       setCaLookupResult(ca);
       setSelectedCaId(ca.ca_id);
       setSection('authorities');
@@ -355,7 +355,7 @@ export function App() {
     try {
       const certificate = await apiGet<Certificate>(`/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/${requestId}`, user.access_token, controller.signal);
       if (controller.signal.aborted) return;
-      requireScopedRows([certificate], selectedCaId);
+      requireExactRecord(certificate, selectedCaId, 'request_id', requestId);
       setLookupResult(certificate);
       setSelectedCertificate(certificate);
     } catch (error) {
@@ -384,7 +384,7 @@ export function App() {
     try {
       const event = await apiGet<AuditEvent>(`/v1/cas/${encodeURIComponent(selectedCaId)}/audit/${eventId}`, user.access_token, controller.signal);
       if (controller.signal.aborted) return;
-      requireScopedRows([event], selectedCaId);
+      requireExactRecord(event, selectedCaId, 'event_id', eventId);
       setAuditLookupResult(event);
       setSelectedAuditEvent(event);
     } catch (error) {
