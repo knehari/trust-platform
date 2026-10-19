@@ -26,8 +26,13 @@ export interface AuditEvent {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  readonly status: number;
+  readonly requestId: string | null;
+
+  constructor(status: number, message: string, requestId: string | null = null) {
     super(message);
+    this.status = status;
+    this.requestId = requestId;
   }
 }
 
@@ -45,11 +50,13 @@ async function apiResponse(path: string, token: string, signal?: AbortSignal): P
     signal,
   });
   if (!response.ok) {
+    const rawRequestId = response.headers.get('x-request-id');
+    const requestId = rawRequestId && /^[0-9]{1,10}-[0-9]{1,20}$/.test(rawRequestId) ? rawRequestId : null;
     const message = response.status === 401 ? 'Your session has expired. Sign in again.'
       : response.status === 403 ? 'Your role or CA scope does not allow this view.'
       : response.status === 503 ? 'The management API or database is unavailable.'
       : `The request failed (${response.status}).`;
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, requestId ? `${message} Request ID: ${requestId}.` : message, requestId);
   }
   return response;
 }
