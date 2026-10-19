@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
 import { ApiError, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
+import { requireScopedRows, visibleScopedRows } from './scope';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
 
@@ -180,7 +181,7 @@ export function App() {
     void apiGetPage<Certificate>(`/v1/cas/${encodeURIComponent(selectedCaId)}/certificates`, user.access_token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
-        setCertificates(page.items);
+        setCertificates(requireScopedRows(page.items, selectedCaId));
         setCertificateCursor(page.nextCursor);
       })
       .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load certificates.', setCertificateError); })
@@ -199,7 +200,7 @@ export function App() {
     void apiGetPage<AuditEvent>(`/v1/cas/${encodeURIComponent(selectedCaId)}/audit`, user.access_token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
-        setAuditEvents(page.items);
+        setAuditEvents(requireScopedRows(page.items, selectedCaId));
         setAuditCursor(page.nextCursor);
       })
       .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load audit events.', setAuditError); })
@@ -221,13 +222,15 @@ export function App() {
       if (kind === 'certificates') {
         const page = await apiGetPage<Certificate>(path, user.access_token, controller.signal);
         if (detailKey.current === key) {
-          setCertificates(current => [...current, ...page.items]);
+          const scopedPage = requireScopedRows(page.items, selectedCaId);
+          setCertificates(current => [...current, ...scopedPage]);
           setCertificateCursor(page.nextCursor);
         }
       } else {
         const page = await apiGetPage<AuditEvent>(path, user.access_token, controller.signal);
         if (detailKey.current === key) {
-          setAuditEvents(current => [...current, ...page.items]);
+          const scopedPage = requireScopedRows(page.items, selectedCaId);
+          setAuditEvents(current => [...current, ...scopedPage]);
           setAuditCursor(page.nextCursor);
         }
       }
@@ -242,14 +245,16 @@ export function App() {
 
   useEffect(() => setCertificateFilter(''), [selectedCaId]);
   useEffect(() => setAuditFilter(''), [selectedCaId]);
+  const scopedCertificates = useMemo(() => visibleScopedRows(certificates, selectedCaId), [certificates, selectedCaId]);
+  const scopedAuditEvents = useMemo(() => visibleScopedRows(auditEvents, selectedCaId), [auditEvents, selectedCaId]);
   const filteredCertificates = useMemo(() => {
     const query = certificateFilter.trim().toLowerCase();
-    return query ? certificates.filter(cert => [cert.serial_hex, cert.fingerprint_sha256, cert.request_id, cert.state].some(value => value.toLowerCase().includes(query))) : certificates;
-  }, [certificates, certificateFilter]);
+    return query ? scopedCertificates.filter(cert => [cert.serial_hex, cert.fingerprint_sha256, cert.request_id, cert.state].some(value => value.toLowerCase().includes(query))) : scopedCertificates;
+  }, [scopedCertificates, certificateFilter]);
   const filteredAuditEvents = useMemo(() => {
     const query = auditFilter.trim().toLowerCase();
-    return query ? auditEvents.filter(event => [event.event_id, event.event_type, event.decision, event.policy_version ?? ''].some(value => value.toLowerCase().includes(query))) : auditEvents;
-  }, [auditEvents, auditFilter]);
+    return query ? scopedAuditEvents.filter(event => [event.event_id, event.event_type, event.decision, event.policy_version ?? ''].some(value => value.toLowerCase().includes(query))) : scopedAuditEvents;
+  }, [scopedAuditEvents, auditFilter]);
   const filteredCas = useMemo(() => {
     const query = caFilter.trim().toLowerCase();
     return query ? cas.filter(ca => [ca.ca_id, ca.display_name, ca.policy_version].some(value => value.toLowerCase().includes(query))) : cas;
@@ -298,7 +303,7 @@ export function App() {
         {!casLoading && cas.length === 0 && !dataError && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
         {cas.length > 0 && <>
           {section === 'overview' && <>
-            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={certificateLoading ? '…' : certificateError ? '—' : String(certificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={auditLoading ? '…' : auditError ? '—' : String(auditEvents.length)} detail="Records loaded" icon="◷" /></div>
+            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={certificateLoading ? '…' : certificateError ? '—' : String(scopedCertificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={auditLoading ? '…' : auditError ? '—' : String(scopedAuditEvents.length)} detail="Records loaded" icon="◷" /></div>
             <div className="section-head"><div><h2>Your authorities</h2><p>Choose an authority to inspect its records.</p></div><button className="link-button" onClick={() => setSection('authorities')}>View all authorities →</button></div>
             <label className="filter-field"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, authority ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">No matching authority among loaded records.</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />}
             {caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}
@@ -306,14 +311,14 @@ export function App() {
           {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><label className="filter-field authority-filter"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">No matching authority among loaded records.</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />}{caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}</div><div className="detail-panel">
             {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
               {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
-              {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${certificates.length} loaded records` : `${certificates.length} records loaded`}</span></div>{certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : certificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><label className="filter-field"><span>Filter loaded certificates</span><input type="search" value={certificateFilter} onChange={event => setCertificateFilter(event.target.value)} placeholder="Serial, fingerprint, request ID or state" /></label>{filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records.</p> : <div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{filteredCertificates.map(cert => <tr key={cert.request_id}><td className="mono"><button className="record-link" onClick={() => setSelectedCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>}{certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>)}</>}</div>}
-              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditFilter.trim() ? `${filteredAuditEvents.length} of ${auditEvents.length} loaded records` : `${auditEvents.length} records loaded`}</span></div>{auditLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setAuditReload(value => value + 1)} /> : auditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><label className="filter-field"><span>Filter loaded audit events</span><input type="search" value={auditFilter} onChange={event => setAuditFilter(event.target.value)} placeholder="Event ID, type, decision or policy" /></label>{filteredAuditEvents.length === 0 ? <p className="filter-empty">No matching event among loaded records.</p> : <div className="timeline">{filteredAuditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><button className="record-link" onClick={() => setSelectedAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>}{auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>)}</>}</div>}
+              {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${scopedCertificates.length} loaded records` : `${scopedCertificates.length} records loaded`}</span></div>{certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : scopedCertificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><label className="filter-field"><span>Filter loaded certificates</span><input type="search" value={certificateFilter} onChange={event => setCertificateFilter(event.target.value)} placeholder="Serial, fingerprint, request ID or state" /></label>{filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records.</p> : <div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{filteredCertificates.map(cert => <tr key={cert.request_id}><td className="mono"><button className="record-link" onClick={() => setSelectedCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>}{certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>)}</>}</div>}
+              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditFilter.trim() ? `${filteredAuditEvents.length} of ${scopedAuditEvents.length} loaded records` : `${scopedAuditEvents.length} records loaded`}</span></div>{auditLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setAuditReload(value => value + 1)} /> : scopedAuditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events are available for this authority in the laboratory database." /> : <><label className="filter-field"><span>Filter loaded audit events</span><input type="search" value={auditFilter} onChange={event => setAuditFilter(event.target.value)} placeholder="Event ID, type, decision or policy" /></label>{filteredAuditEvents.length === 0 ? <p className="filter-empty">No matching event among loaded records.</p> : <div className="timeline">{filteredAuditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><div><button className="record-link" onClick={() => setSelectedAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div>}{auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('audit')}>{moreLoading ? 'Loading…' : 'Load older audit events'}</button>)}</>}</div>}
             </>}
           </div></div>}
         </>}
       </main>
-      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && certificates.some(cert => cert.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} onClose={() => setSelectedCertificate(null)} />}
-      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && auditEvents.some(event => event.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={() => setSelectedAuditEvent(null)} />}
+      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} onClose={() => setSelectedCertificate(null)} />}
+      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={() => setSelectedAuditEvent(null)} />}
     </div>
   </div>;
 }
