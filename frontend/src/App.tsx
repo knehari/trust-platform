@@ -32,6 +32,11 @@ export function App() {
   const [caMoreError, setCaMoreError] = useState<string | null>(null);
   const caKey = useRef('');
   const caMoreController = useRef<AbortController | null>(null);
+  const [caLookupInput, setCaLookupInput] = useState('');
+  const [caLookupResult, setCaLookupResult] = useState<CertificateAuthority | null>(null);
+  const [caLookupError, setCaLookupError] = useState<string | null>(null);
+  const [caLookupLoading, setCaLookupLoading] = useState(false);
+  const caLookupController = useRef<AbortController | null>(null);
   const [certificateLoading, setCertificateLoading] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [certificateError, setCertificateError] = useState<string | null>(null);
@@ -68,6 +73,8 @@ export function App() {
     setUser(null);
     setCas([]);
     setSelectedCaId(null);
+    caLookupController.current?.abort();
+    setCaLookupResult(null);
     setCertificates([]);
     setSelectedCertificate(null);
     lookupController.current?.abort();
@@ -154,6 +161,15 @@ export function App() {
       .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load authorities.', setDataError); })
       .finally(() => { if (!controller.signal.aborted) setCasLoading(false); });
     return () => { controller.abort(); caMoreController.current?.abort(); };
+  }, [user, reload]);
+
+  useEffect(() => {
+    caLookupController.current?.abort();
+    setCaLookupInput('');
+    setCaLookupResult(null);
+    setCaLookupError(null);
+    setCaLookupLoading(false);
+    return () => caLookupController.current?.abort();
   }, [user, reload]);
 
   async function loadMoreCas() {
@@ -291,8 +307,36 @@ export function App() {
     const query = caFilter.trim().toLowerCase();
     return query ? cas.filter(ca => [ca.ca_id, ca.display_name, ca.policy_version].some(value => value.toLowerCase().includes(query))) : cas;
   }, [cas, caFilter]);
-  const selectedCa = useMemo(() => cas.find(ca => ca.ca_id === selectedCaId) ?? null, [cas, selectedCaId]);
+  const selectedCa = useMemo(() => cas.find(ca => ca.ca_id === selectedCaId) ?? (caLookupResult?.ca_id === selectedCaId ? caLookupResult : null), [cas, caLookupResult, selectedCaId]);
   const name = user?.profile.preferred_username ?? user?.profile.name ?? user?.profile.sub ?? 'Operator';
+
+  async function findAuthority() {
+    if (!user || user.expired) return;
+    const caId = caLookupInput.trim().toLowerCase();
+    caLookupController.current?.abort();
+    setCaLookupLoading(false);
+    setCaLookupError(null);
+    if (!uuidPattern.test(caId)) {
+      setCaLookupError('Enter a complete authority UUID.');
+      return;
+    }
+    const controller = new AbortController();
+    caLookupController.current = controller;
+    setCaLookupLoading(true);
+    try {
+      const ca = await apiGet<CertificateAuthority>(`/v1/cas/${caId}`, user.access_token, controller.signal);
+      if (controller.signal.aborted) return;
+      requireScopedRows([ca], caId);
+      setCaLookupResult(ca);
+      setSelectedCaId(ca.ca_id);
+      setSection('authorities');
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      handleReadError(error, 'Could not find the authority.', setCaLookupError);
+    } finally {
+      if (!controller.signal.aborted) setCaLookupLoading(false);
+    }
+  }
 
   async function findCertificate() {
     if (!user || user.expired || !selectedCaId) return;
@@ -398,7 +442,7 @@ export function App() {
             <label className="filter-field"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, authority ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">No matching authority among loaded records.</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />}
             {caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}
           </>}
-          {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><label className="filter-field authority-filter"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">No matching authority among loaded records.</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />}{caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}</div><div className="detail-panel">
+          {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><form className="exact-lookup authority-lookup" onSubmit={event => { event.preventDefault(); void findAuthority(); }}><label htmlFor="authority-id-lookup">Go to an authority by exact ID</label><div><input id="authority-id-lookup" type="search" value={caLookupInput} onChange={event => { caLookupController.current?.abort(); setCaLookupLoading(false); setCaLookupInput(event.target.value); setCaLookupError(null); }} placeholder="Authority UUID" aria-describedby={caLookupError ? 'authority-lookup-error' : undefined} /><button type="submit" disabled={caLookupLoading}>{caLookupLoading ? 'Finding…' : 'Find'}</button></div></form>{caLookupError && <p id="authority-lookup-error" className="lookup-error authority-lookup-message" role="alert">{caLookupError}</p>}{caLookupResult && !cas.some(ca => ca.ca_id === caLookupResult.ca_id) && <p className="lookup-result authority-lookup-message">Selected: <button className="link-button" onClick={() => { setSelectedCaId(caLookupResult.ca_id); setSection('authorities'); }}>{caLookupResult.display_name}</button></p>}<label className="filter-field authority-filter"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">No matching authority among loaded records.</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />}{caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}</div><div className="detail-panel">
             {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
               {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
               {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${scopedCertificates.length} loaded records` : `${scopedCertificates.length} records loaded`}</span></div><form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findCertificate(); }}><label htmlFor="certificate-request-lookup">Find a certificate by exact request ID across this authority's history</label><div><input id="certificate-request-lookup" type="search" value={lookupInput} onChange={event => { lookupController.current?.abort(); setLookupLoading(false); setLookupInput(event.target.value); setLookupResult(null); setLookupError(null); }} placeholder="Request UUID" aria-describedby={lookupError ? 'certificate-lookup-error' : undefined} /><button type="submit" disabled={lookupLoading}>{lookupLoading ? 'Finding…' : 'Find'}</button></div></form>{lookupError && <p id="certificate-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}{lookupResult?.ca_id === selectedCaId && <p className="lookup-result">Found serial <span className="mono">{lookupResult.serial_hex}</span> <button className="link-button" onClick={() => setSelectedCertificate(lookupResult)}>View detail</button></p>}{certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : scopedCertificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="This authority has no issued certificate metadata in the laboratory database." /> : <><label className="filter-field"><span>Filter loaded certificates</span><input type="search" value={certificateFilter} onChange={event => setCertificateFilter(event.target.value)} placeholder="Serial, fingerprint, request ID or state" /></label>{filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records.</p> : <div className="table-wrap"><table><thead><tr><th>SERIAL</th><th>STATE</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{filteredCertificates.map(cert => <tr key={cert.request_id}><td className="mono"><button className="record-link" onClick={() => setSelectedCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><span className="row-state">{cert.state}</span></td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>}{certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadOlder('certificates')}>{moreLoading ? 'Loading…' : 'Load older certificates'}</button>)}</>}</div>}
