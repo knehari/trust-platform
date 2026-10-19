@@ -487,8 +487,17 @@ export function App() {
   </div>;
 }
 
-function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { titleId: string; title: string; eyebrow: string; fields: { label: string; value: string }[]; note: string; onClose: () => void }) {
+function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { titleId: string; title: string; eyebrow: string; fields: { label: string; value: string; copyable?: boolean }[]; note: string; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [copyFeedback, setCopyFeedback] = useState('');
+  async function copyValue(label: string, value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyFeedback(`${label} copied.`);
+    } catch {
+      setCopyFeedback(`Could not copy ${label}. Select the value to copy it manually.`);
+    }
+  }
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
@@ -496,20 +505,21 @@ function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { ti
   }, []);
   return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
     <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}>×</button></div>
-    <div className="detail-grid">{fields.map(field => <Info key={field.label} label={field.label} value={field.value} />)}</div>
+    <div className="detail-grid">{fields.map(field => <div className="info-cell" key={field.label}><span>{field.label}</span><div className="metadata-value"><strong>{field.value}</strong>{field.copyable && <button type="button" className="link-button" aria-label={`Copy ${field.label.toLowerCase()}`} onClick={() => void copyValue(field.label, field.value)}>Copy</button>}</div></div>)}</div>
+    {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
     <p className="dialog-note">{note}</p>
   </dialog>;
 }
 
 function CertificateDialog({ certificate, onClose }: { certificate: Certificate; onClose: () => void }) {
   return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
-    fields={[{ label: 'SERIAL', value: certificate.serial_hex }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256 }, { label: 'REQUEST ID', value: certificate.request_id }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
+    fields={[{ label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
     note="Database metadata only. Certificate contents and cryptographic validity are not shown or verified here." />;
 }
 
 function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
   return <MetadataDialog titleId="audit-dialog-title" title="Audit event detail" eyebrow="AUDIT METADATA" onClose={onClose}
-    fields={[{ label: 'EVENT ID', value: event.event_id }, { label: 'EVENT TYPE', value: event.event_type }, { label: 'DECISION', value: event.decision }, { label: 'POLICY VERSION', value: event.policy_version ?? 'Not recorded' }, { label: 'RECORDED', value: displayDate(event.recorded_at) }]}
+    fields={[{ label: 'EVENT ID', value: event.event_id, copyable: true }, { label: 'EVENT TYPE', value: event.event_type }, { label: 'DECISION', value: event.decision }, { label: 'POLICY VERSION', value: event.policy_version ?? 'Not recorded' }, { label: 'RECORDED', value: displayDate(event.recorded_at) }]}
     note="Database metadata only. This view does not include actor identity or independent audit integrity proof." />;
 }
 
