@@ -8,6 +8,8 @@
 
 > **CA inventory checkpoint:** Draft #70 removes the silent 100-CA ceiling from the read-only API and console. A separate 102-CA fixture checks stable pages and exclusion of a CA named in the token but lacking a server-managed grant. Review and production data benchmarks remain open.
 
+> **Read-only console checkpoint — 19 October 2026:** Drafts #71–#93 add scoped certificate/audit detail routes, metadata modals, independent loading/retry, filters over loaded rows, stale-inventory clearing and a local API route preflight. All seven checks passed on [Draft #93](https://github.com/knehari/trust-platform/pull/93) at `bb6c6b569bad5ec3134aa54f967fbefd2a4872c2`. These unmerged changes improve the laboratory consultation path only; HTTP issuance, real IAM, independent security review and G0 remain open.
+
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
 # Trust Platform — Product & Engineering Roadmap
