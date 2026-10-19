@@ -683,3 +683,90 @@ fn out_of_range_invalidity_dates_are_refused() {
         );
     }
 }
+
+/// ETSI EN 319 411-2 keeps status beyond expiry: a CRL stored for that target
+/// carries ExpiredCertsOnCRL (2.5.29.60) set to the CA's creation time, and
+/// CRLs for the RFC 5280 and EN 319 411-1 targets do not.
+#[test]
+fn expired_certs_on_crl_follows_the_conformance_target() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    for (n, target) in ["RFC5280", "ETSI_EN_319_411_1", "ETSI_EN_319_411_2"]
+        .into_iter()
+        .enumerate()
+    {
+        let ca_id = fresh_ca(&url);
+        owner
+            .execute(
+                "UPDATE ca_revocation_policy
+                 SET conformance_target=$2, suspension_cps_ref='CPS 4.9.13 (lab)'
+                 WHERE ca_id=$1::text::uuid",
+                &[&ca_id, &target],
+            )
+            .unwrap();
+        let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let root = ca.root_certificate().clone();
+        let key_ref = ca.lab_signer_key_ref().to_owned();
+        let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+        let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 1);
+        let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+        change(
+            &mut store,
+            &ca_id,
+            &serial,
+            StatusAction::Revoke,
+            Some(RevocationReason::Superseded),
+        );
+
+        let operation = format!("crl-target-op-{n}");
+        let reservation = store
+            .reserve_crl(&ca_id, "crl-operator", &operation)
+            .unwrap();
+        let tbs = build_tbs_cert_list(&root, &reservation).unwrap();
+        let plan = CrlPlan {
+            reservation: &reservation,
+            signer_key_ref: &key_ref,
+            operation_ref: &operation,
+            tbs_der: &tbs,
+        };
+        let verifier = LabCrlVerifier::new(root.clone());
+        crl_once(&mut store, &mut ca, &LabCrlAssembler, &verifier, &plan).unwrap();
+
+        let row = owner
+            .query_one(
+                "SELECT p.crl_der, floor(extract(epoch FROM c.created_at))::bigint
+                 FROM crl_publication p JOIN ca c ON c.ca_id=p.ca_id
+                 WHERE p.ca_id=$1::text::uuid AND p.status='STORED'",
+                &[&ca_id],
+            )
+            .unwrap();
+        let stored: Vec<u8> = row.get(0);
+        let ca_created_unix: i64 = row.get(1);
+        let crl = x509_cert::crl::CertificateList::from_der(&stored).unwrap();
+        let expired_certs = crl
+            .tbs_cert_list
+            .crl_extensions
+            .iter()
+            .flatten()
+            .find(|e| e.extn_id.to_string() == "2.5.29.60");
+        if target == "ETSI_EN_319_411_2" {
+            let ext = expired_certs.expect("411-2 CRL must carry ExpiredCertsOnCRL");
+            assert!(!ext.critical);
+            let since =
+                x509_cert::der::asn1::GeneralizedTime::from_der(ext.extn_value.as_bytes()).unwrap();
+            assert_eq!(since.to_unix_duration().as_secs() as i64, ca_created_unix);
+        } else {
+            assert!(
+                expired_certs.is_none(),
+                "{target} CRL must not carry ExpiredCertsOnCRL"
+            );
+        }
+    }
+}
