@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
 import { ApiError, apiGet, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { oidcConfigurationError, userManager } from './oidc';
+import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
@@ -182,8 +183,9 @@ export function App() {
     try {
       const page = await apiGetPage<CertificateAuthority>(`/v1/cas?after=${encodeURIComponent(caCursor)}`, user.access_token, controller.signal);
       if (caKey.current === key) {
-        setCas(current => [...current, ...page.items]);
-        setCaCursor(page.nextCursor);
+        const nextCursor = requireAdvancingCursor(caCursor, page.nextCursor);
+        setCas(current => appendUniquePage(current, page.items, ca => ca.ca_id));
+        setCaCursor(nextCursor);
       }
     } catch (error) {
       if (!controller.signal.aborted && caKey.current === key) handleReadError(error, 'Could not load more authorities.', setCaMoreError);
@@ -255,15 +257,17 @@ export function App() {
         const page = await apiGetPage<Certificate>(path, user.access_token, controller.signal);
         if (detailKey.current === key) {
           const scopedPage = requireScopedRows(page.items, selectedCaId);
-          setCertificates(current => [...current, ...scopedPage]);
-          setCertificateCursor(page.nextCursor);
+          const nextCursor = requireAdvancingCursor(cursor, page.nextCursor);
+          setCertificates(current => appendUniquePage(current, scopedPage, cert => cert.request_id));
+          setCertificateCursor(nextCursor);
         }
       } else {
         const page = await apiGetPage<AuditEvent>(path, user.access_token, controller.signal);
         if (detailKey.current === key) {
           const scopedPage = requireScopedRows(page.items, selectedCaId);
-          setAuditEvents(current => [...current, ...scopedPage]);
-          setAuditCursor(page.nextCursor);
+          const nextCursor = requireAdvancingCursor(cursor, page.nextCursor);
+          setAuditEvents(current => appendUniquePage(current, scopedPage, event => event.event_id));
+          setAuditCursor(nextCursor);
         }
       }
     } catch (error) {
