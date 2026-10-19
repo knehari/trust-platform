@@ -16,9 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use trust_pki_core::{
-    crl::{
-        build_tbs_cert_list, CrlEntry, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier,
-    },
+    crl::{CrlEntry, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
     crl_orchestrator::{crl_once, CrlJournal, CrlPlan},
     csr::verify_pkcs10_p256,
     lab_ca::EphemeralLabCa,
@@ -153,19 +151,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reservation(2, vec![entry(1, RevocationReason::KeyCompromise)?])?,
     ];
 
-    let verifier = LabCrlVerifier::new(ca.root_certificate().clone());
+    let root = ca.root_certificate().clone();
+    let verifier = LabCrlVerifier::new(root.clone());
     let mut journal = MemoryJournal::default();
     let signer_key_ref = ca.lab_signer_key_ref().to_owned();
     let mut crls = Vec::new();
     for reservation in &reservations {
-        let tbs = build_tbs_cert_list(ca.root_certificate(), reservation)
-            .map_err(|e| format!("cannot build CRL TBS: {e:?}"))?;
         let operation_ref = format!("lab-crl-{}", reservation.crl_number());
         let plan = CrlPlan {
             reservation,
+            issuer: &root,
             signer_key_ref: &signer_key_ref,
             operation_ref: &operation_ref,
-            tbs_der: &tbs,
         };
         let crl = crl_once(&mut journal, &mut ca, &LabCrlAssembler, &verifier, &plan)
             .map_err(|e| format!("CRL issuance failed: {e:?}"))?;

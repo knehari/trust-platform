@@ -197,8 +197,10 @@ and `CrlVerifier` traits.
    `crl_entry_encoding` (`int4send(len) || serial || int8send(floor(epoch
    revoked_at)) || int2send(reason) || int8send(floor(epoch invalidity_at)
    or -1)`).
-2. **Build** — Rust builds the `TBSCertList` deterministically from the
-   reservation (entries sorted by serial).
+2. **Build** — `crl_once` itself builds the `TBSCertList` deterministically
+   from the reservation and the trusted issuer certificate in `CrlPlan`
+   (entries sorted by serial). Callers cannot supply TBS bytes, so the
+   journaled and signed bytes always match the reservation.
 3. **Intent** — `record_crl_intent(ca, crl_number, operation_ref, tbs_sha256,
    entries_sha256, this_update, next_update, expired_certs_on_crl_since)`; the
    CA core computes `entries_sha256` in Rust from the reservation it signs

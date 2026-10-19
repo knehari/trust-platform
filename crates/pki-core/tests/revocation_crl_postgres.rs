@@ -4,7 +4,7 @@
 
 use std::env;
 use trust_pki_core::{
-    crl::{build_tbs_cert_list, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
+    crl::{CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
     crl_orchestrator::{crl_once, CrlPlan},
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
@@ -291,12 +291,11 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     };
     assert_eq!(reason_of(&r1, &s1), Some(1));
     assert_eq!(reason_of(&r1, &s2), Some(6));
-    let tbs1 = build_tbs_cert_list(&root, &r1).unwrap();
     let plan1 = CrlPlan {
         reservation: &r1,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-op-1",
-        tbs_der: &tbs1,
     };
     let mut signer = CountingSigner {
         ca: &mut ca,
@@ -322,12 +321,11 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     assert_eq!(r2.crl_number(), 2);
     assert_eq!(r2.entries().len(), 1);
     assert_eq!(reason_of(&r2, &s1), Some(1));
-    let tbs2 = build_tbs_cert_list(&root, &r2).unwrap();
     let plan2 = CrlPlan {
         reservation: &r2,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-op-2",
-        tbs_der: &tbs2,
     };
     crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan2).unwrap();
     assert_eq!(signer.calls, 2);
@@ -352,12 +350,11 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
         .reserve_crl(&ca_id, "crl-operator", "crl-op-3")
         .unwrap();
     assert_eq!(r3.crl_number(), 3);
-    let tbs3 = build_tbs_cert_list(&root, &r3).unwrap();
     let plan3 = CrlPlan {
         reservation: &r3,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-op-3",
-        tbs_der: &tbs3,
     };
     assert_eq!(
         crl_once(
@@ -513,12 +510,11 @@ fn tampered_reservation_is_refused_before_signing() {
         r.expired_certs_on_crl_since_unix(),
     )
     .unwrap();
-    let tbs = build_tbs_cert_list(&root, &forged).unwrap();
     let plan = CrlPlan {
         reservation: &forged,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-tamper-1",
-        tbs_der: &tbs,
     };
     let verifier = LabCrlVerifier::new(root.clone());
     let mut signer = CountingSigner {
@@ -554,12 +550,11 @@ fn tampered_reservation_is_refused_before_signing() {
         r.expired_certs_on_crl_since_unix(),
     )
     .unwrap();
-    let tbs = build_tbs_cert_list(&root, &shifted).unwrap();
     let plan = CrlPlan {
         reservation: &shifted,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-tamper-1",
-        tbs_der: &tbs,
     };
     assert_eq!(
         crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan),
@@ -568,12 +563,11 @@ fn tampered_reservation_is_refused_before_signing() {
     assert_eq!(signer.calls, 0, "signer must not be called");
 
     // The genuine reservation is still signable and then covers the change.
-    let tbs = build_tbs_cert_list(&root, &r).unwrap();
     let plan = CrlPlan {
         reservation: &r,
+        issuer: &root,
         signer_key_ref: &key_ref,
         operation_ref: "crl-tamper-1",
-        tbs_der: &tbs,
     };
     crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan).unwrap();
     assert_eq!(signer.calls, 1);
@@ -729,12 +723,11 @@ fn expired_certs_on_crl_follows_the_conformance_target() {
         let reservation = store
             .reserve_crl(&ca_id, "crl-operator", &operation)
             .unwrap();
-        let tbs = build_tbs_cert_list(&root, &reservation).unwrap();
         let plan = CrlPlan {
             reservation: &reservation,
+            issuer: &root,
             signer_key_ref: &key_ref,
             operation_ref: &operation,
-            tbs_der: &tbs,
         };
         let verifier = LabCrlVerifier::new(root.clone());
         crl_once(&mut store, &mut ca, &LabCrlAssembler, &verifier, &plan).unwrap();

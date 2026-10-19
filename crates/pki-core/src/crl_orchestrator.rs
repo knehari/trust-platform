@@ -4,16 +4,20 @@
 //! Lab-only protocol scaffold, NOT a production API. A durable database intent
 //! and an external signature CANNOT be atomic; see `orchestrator::issue_once`.
 
-use crate::crl::{CrlAssembler, CrlError, CrlReservation, CrlVerifier};
+use crate::crl::{build_tbs_cert_list, CrlAssembler, CrlError, CrlReservation, CrlVerifier};
 use crate::orchestrator::ExternalSigner;
 use sha2::{Digest, Sha256};
+use x509_cert::Certificate;
 
 /// All references must already be authorized and bound to the reservation.
+/// There is no caller-supplied TBS: `crl_once` builds the bytes it journals
+/// and signs from `reservation` and `issuer`, so they cannot diverge from the
+/// reserved snapshot. `issuer` MUST come from a trusted service-side record.
 pub struct CrlPlan<'a> {
     pub reservation: &'a CrlReservation,
+    pub issuer: &'a Certificate,
     pub signer_key_ref: &'a str,
     pub operation_ref: &'a str,
-    pub tbs_der: &'a [u8],
 }
 
 /// The implementation MUST durably commit intent and return an error on replay.
@@ -54,15 +58,18 @@ where
     A: CrlAssembler,
     V: CrlVerifier,
 {
-    if plan.tbs_der.is_empty() || plan.operation_ref.is_empty() {
+    if plan.operation_ref.is_empty() {
         return Err(CrlError::JournalFailure);
     }
+    // Built before the intent: an issuer the builder refuses never reaches
+    // the journal or the signer.
+    let tbs_der = build_tbs_cert_list(plan.issuer, plan.reservation)?;
 
-    let tbs_sha256: [u8; 32] = Sha256::digest(plan.tbs_der).into();
+    let tbs_sha256: [u8; 32] = Sha256::digest(&tbs_der).into();
     // No signer invocation if the durable journal refuses or reports replay.
     journal.record_intent(plan, &tbs_sha256)?;
 
-    let signature = match signer.sign_once(plan.signer_key_ref, plan.operation_ref, plan.tbs_der) {
+    let signature = match signer.sign_once(plan.signer_key_ref, plan.operation_ref, &tbs_der) {
         Ok(bytes) => bytes,
         Err(_) => {
             record_uncertain(journal, plan);
@@ -70,7 +77,7 @@ where
         }
     };
 
-    let crl = match assembler.assemble(plan.tbs_der, &signature) {
+    let crl = match assembler.assemble(&tbs_der, &signature) {
         Ok(bytes) => bytes,
         Err(_) => {
             record_uncertain(journal, plan);
@@ -107,11 +114,13 @@ mod tests {
         uncertain_calls: u32,
         persisted: Option<([u8; 32], [u8; 32], Vec<u8>)>,
         intent_calls: u32,
+        intent_tbs: Option<[u8; 32]>,
     }
 
     impl CrlJournal for FakeJournal {
-        fn record_intent(&mut self, _p: &CrlPlan<'_>, _d: &[u8; 32]) -> Result<(), CrlError> {
+        fn record_intent(&mut self, _p: &CrlPlan<'_>, d: &[u8; 32]) -> Result<(), CrlError> {
             self.intent_calls += 1;
+            self.intent_tbs = Some(*d);
             if self.fail_intent {
                 return Err(CrlError::JournalFailure);
             }
@@ -140,10 +149,12 @@ mod tests {
     struct FakeSigner {
         calls: u32,
         fail: bool,
+        signed: Vec<u8>,
     }
     impl ExternalSigner for FakeSigner {
-        fn sign_once(&mut self, _k: &str, _o: &str, _t: &[u8]) -> Result<Vec<u8>, IssueError> {
+        fn sign_once(&mut self, _k: &str, _o: &str, t: &[u8]) -> Result<Vec<u8>, IssueError> {
             self.calls += 1;
+            self.signed = t.to_vec();
             if self.fail {
                 Err(IssueError::SigningFailure)
             } else {
@@ -179,18 +190,69 @@ mod tests {
         CrlReservation::new("lab-ca", 1, 1_700_000_000, 1_700_086_400, vec![], None).unwrap()
     }
 
-    fn plan<'a>(r: &'a CrlReservation, tbs: &'a [u8], op: &'a str) -> CrlPlan<'a> {
+    /// Structurally valid issuer for the TBS builder; its key and signature
+    /// are placeholders and are never verified by these tests.
+    fn issuer() -> Certificate {
+        use std::{str::FromStr, time::Duration};
+        use x509_cert::{
+            der::{
+                asn1::{BitString, ObjectIdentifier},
+                Any,
+            },
+            name::Name,
+            serial_number::SerialNumber,
+            spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned},
+            time::Validity,
+            TbsCertificate, Version,
+        };
+        let oid = |s: &str| ObjectIdentifier::new(s).unwrap();
+        let ecdsa_sha256 = AlgorithmIdentifierOwned {
+            oid: oid("1.2.840.10045.4.3.2"),
+            parameters: None,
+        };
+        let mut point = vec![0x04];
+        point.extend([0x11; 64]);
+        let name = Name::from_str("CN=Orchestrator Test Issuer").unwrap();
+        Certificate {
+            tbs_certificate: TbsCertificate {
+                version: Version::V3,
+                serial_number: SerialNumber::new(&[1]).unwrap(),
+                signature: ecdsa_sha256.clone(),
+                issuer: name.clone(),
+                validity: Validity::from_now(Duration::from_secs(3600)).unwrap(),
+                subject: name,
+                subject_public_key_info: SubjectPublicKeyInfoOwned {
+                    algorithm: AlgorithmIdentifierOwned {
+                        oid: oid("1.2.840.10045.2.1"),
+                        parameters: Some(Any::encode_from(&oid("1.2.840.10045.3.1.7")).unwrap()),
+                    },
+                    subject_public_key: BitString::from_bytes(&point).unwrap(),
+                },
+                issuer_unique_id: None,
+                subject_unique_id: None,
+                extensions: Some(vec![crate::x509_extensions::subject_key_identifier(
+                    &[7; 20],
+                )
+                .unwrap()]),
+            },
+            signature_algorithm: ecdsa_sha256,
+            signature: BitString::from_bytes(&[0]).unwrap(),
+        }
+    }
+
+    fn plan<'a>(r: &'a CrlReservation, issuer: &'a Certificate, op: &'a str) -> CrlPlan<'a> {
         CrlPlan {
             reservation: r,
+            issuer,
             signer_key_ref: "lab-key",
             operation_ref: op,
-            tbs_der: tbs,
         }
     }
 
     #[test]
     fn never_signs_without_intent() {
         let r = reservation();
+        let issuer = issuer();
         let mut journal = FakeJournal {
             fail_intent: true,
             ..Default::default()
@@ -201,7 +263,7 @@ mod tests {
             &mut signer,
             &Assembler(true),
             &Verifier(true),
-            &plan(&r, b"tbs", "op"),
+            &plan(&r, &issuer, "op"),
         );
         assert_eq!(result, Err(CrlError::JournalFailure));
         assert_eq!(signer.calls, 0);
@@ -212,6 +274,7 @@ mod tests {
     #[test]
     fn each_failure_after_intent_marks_uncertain() {
         let r = reservation();
+        let issuer = issuer();
         let cases: [(bool, bool, bool, bool, CrlError); 4] = [
             (true, false, false, false, CrlError::SigningFailure),
             (false, true, false, false, CrlError::AssemblyFailure),
@@ -232,7 +295,7 @@ mod tests {
                 &mut signer,
                 &Assembler(!asm_fail),
                 &Verifier(!ver_fail),
-                &plan(&r, b"tbs", "op"),
+                &plan(&r, &issuer, "op"),
             );
             assert_eq!(result, Err(expected.clone()));
             assert_eq!(journal.uncertain_calls, 1, "{expected:?}");
@@ -244,6 +307,7 @@ mod tests {
     #[test]
     fn success_signs_once_and_persists_verified_bytes() {
         let r = reservation();
+        let issuer = issuer();
         let mut journal = FakeJournal::default();
         let mut signer = FakeSigner::default();
         let der = crl_once(
@@ -251,35 +315,59 @@ mod tests {
             &mut signer,
             &Assembler(true),
             &Verifier(true),
-            &plan(&r, b"tbs", "op"),
+            &plan(&r, &issuer, "op"),
         )
         .unwrap();
         assert_eq!(signer.calls, 1);
         assert_eq!(journal.uncertain_calls, 0);
+        let built = build_tbs_cert_list(&issuer, &r).unwrap();
+        assert_eq!(signer.signed, built);
         let (tbs_hash, crl_hash, stored) = journal.persisted.unwrap();
         assert_eq!(stored, der);
         let expected_crl: [u8; 32] = Sha256::digest(&der).into();
-        let expected_tbs: [u8; 32] = Sha256::digest(b"tbs").into();
+        let expected_tbs: [u8; 32] = Sha256::digest(&built).into();
         assert_eq!(crl_hash, expected_crl);
         assert_eq!(tbs_hash, expected_tbs);
     }
 
     #[test]
-    fn empty_tbs_or_operation_is_rejected_before_journal() {
+    fn empty_operation_is_rejected_before_journal() {
         let r = reservation();
-        for (tbs, op) in [(&b""[..], "op"), (&b"tbs"[..], "")] {
-            let mut journal = FakeJournal::default();
-            let mut signer = FakeSigner::default();
-            let result = crl_once(
-                &mut journal,
-                &mut signer,
-                &Assembler(true),
-                &Verifier(true),
-                &plan(&r, tbs, op),
-            );
-            assert_eq!(result, Err(CrlError::JournalFailure));
-            assert_eq!(journal.intent_calls, 0);
-            assert_eq!(signer.calls, 0);
-        }
+        let issuer = issuer();
+        let mut journal = FakeJournal::default();
+        let mut signer = FakeSigner::default();
+        let result = crl_once(
+            &mut journal,
+            &mut signer,
+            &Assembler(true),
+            &Verifier(true),
+            &plan(&r, &issuer, ""),
+        );
+        assert_eq!(result, Err(CrlError::JournalFailure));
+        assert_eq!(journal.intent_calls, 0);
+        assert_eq!(signer.calls, 0);
+    }
+
+    /// Regression: the TBS used to be a caller field, journaled and signed
+    /// without any link to the reservation. Intent, signature and stored
+    /// digest now all cover the bytes built from the reservation.
+    #[test]
+    fn intent_and_signature_cover_the_tbs_built_from_the_reservation() {
+        let r = reservation();
+        let issuer = issuer();
+        let mut journal = FakeJournal::default();
+        let mut signer = FakeSigner::default();
+        crl_once(
+            &mut journal,
+            &mut signer,
+            &Assembler(true),
+            &Verifier(true),
+            &plan(&r, &issuer, "op"),
+        )
+        .unwrap();
+        let built = build_tbs_cert_list(&issuer, &r).unwrap();
+        let built_sha256: [u8; 32] = Sha256::digest(&built).into();
+        assert_eq!(journal.intent_tbs, Some(built_sha256));
+        assert_eq!(signer.signed, built);
     }
 }

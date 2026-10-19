@@ -5,6 +5,8 @@ Collected from the per-task and whole-branch reviews of
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
+Its `CrlPlan` still carries `tbs_der`; `crl_once` now builds the TBS from the
+reservation and `CrlPlan::issuer` (spec §4 step 2).
 
 ## Before non-lab use
 - Least-privilege write model: SQL functions are SECURITY INVOKER, so any caller
@@ -13,9 +15,6 @@ or exposed service. The plan's Task 2 text still shows the original 4-argument
   with EXECUTE only, plus INSERT guards on history and `crl_publication`.
 - AKI is derived from the SPKI hash, not read from the issuer's SKI extension;
   verifier does not check issuer keyUsage cRLSign or curve (`crl.rs`).
-- `crl_once` accepts `tbs_der` independently of the reservation; only the
-  verifier binds them, after signing. Build or re-check the TBS from the
-  reservation before `record_intent`.
 - Authentication of revocation officers stays with the identity adapter.
 
 ## Test gaps
