@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-20a5530353711c775cdeb619cd4f20261c0e7df377a1416fd7c3a00b7b780bf4",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-98e3cba6e4e7fcf28040160be06922cff7151d3cd8f41ad481be04ab158a4d3a",
   "creationInfo": {
-    "created": "2026-10-18T17:10:22Z",
+    "created": "2026-10-20T19:46:29Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -3309,9 +3309,9 @@
       ]
     },
     {
-      "SPDXID": "SPDXRef-cargo-8f61372be431d40426da",
+      "SPDXID": "SPDXRef-cargo-837a9d4c837bd5ea6666",
       "name": "rustls-webpki",
-      "versionInfo": "0.103.15",
+      "versionInfo": "0.103.16",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -3320,7 +3320,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+          "checksumValue": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
         }
       ]
     },
@@ -4623,9 +4623,9 @@
       ]
     },
     {
-      "SPDXID": "SPDXRef-cargo-df2603cd57f6c5577c64",
+      "SPDXID": "SPDXRef-cargo-8d2c108e4da8c4d65099",
       "name": "webpki-roots",
-      "versionInfo": "1.0.9",
+      "versionInfo": "1.0.10",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -4634,7 +4634,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+          "checksumValue": "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
         }
       ]
     },
@@ -6121,7 +6121,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-cargo-8f61372be431d40426da"
+      "relatedSpdxElement": "SPDXRef-cargo-837a9d4c837bd5ea6666"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -6541,7 +6541,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-cargo-df2603cd57f6c5577c64"
+      "relatedSpdxElement": "SPDXRef-cargo-8d2c108e4da8c4d65099"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
