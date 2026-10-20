@@ -31,6 +31,7 @@ export function App() {
   const [selectedCaId, setSelectedCaId] = useState<string | null>(null);
   const [section, setSection] = useState<Section>(() => readNavigation(window.location.search).section);
   const [navigationReady, setNavigationReady] = useState(false);
+  const [viewLinkStatus, setViewLinkStatus] = useState('');
   const [casLoading, setCasLoading] = useState(false);
   const [caCursor, setCaCursor] = useState<string | null>(null);
   const [caMoreLoading, setCaMoreLoading] = useState(false);
@@ -212,6 +213,19 @@ export function App() {
     const next = navigationUrl(section, selectedCaId);
     if (`${window.location.pathname}${window.location.search}` !== next) window.history.replaceState({}, '', next);
   }, [navigationReady, user, section, selectedCaId]);
+
+  useEffect(() => setViewLinkStatus(''), [section, selectedCaId]);
+
+  async function copyViewLink() {
+    if (!navigationReady) return;
+    const url = new URL(navigationUrl(section, selectedCaId), window.location.origin).href;
+    try {
+      await navigator.clipboard.writeText(url);
+      setViewLinkStatus('View link copied.');
+    } catch {
+      setViewLinkStatus('Could not copy the link. Use the address bar instead.');
+    }
+  }
 
   useEffect(() => {
     caLookupController.current?.abort();
@@ -517,7 +531,7 @@ export function App() {
     <div className="main-column">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">READ ONLY</span><button className="icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
       <main className="content">
-        <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div></div>
+        <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="view-link-tools"><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div><button type="button" className="copy-view-link" disabled={!navigationReady} onClick={() => void copyViewLink()}>Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
         {dataError && <div className="notice error" role="alert">{dataError} <button onClick={() => setReload(value => value + 1)}>Retry</button></div>}
         {linkedCaError && <div className="notice error" role="alert">{linkedCaError} <button onClick={() => setLinkedCaError(null)}>Dismiss</button></div>}
         {casLoading && <div className="notice loading"><span className="spinner" /> Loading scoped authorities…</div>}

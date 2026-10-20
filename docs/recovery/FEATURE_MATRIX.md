@@ -3,7 +3,7 @@
 ## Current stacked Draft increments (20 October 2026)
 
 The table below records selected unmerged laboratory increments through Draft
-#70; the dated continuation notes cover later Drafts through #106. The
+#70; the dated continuation notes cover selected later Drafts through #120. The
 historical PR #42 matrix remains the reference for what was observed on PR
 #41. None of these increments has landed on `main`.
 
@@ -12,6 +12,8 @@ historical PR #42 matrix remains the reference for what was observed on PR
 **20 October 2026 continuation:** Stacked Drafts #95–#106 add exact ID lookups through CA-scoped detail routes, guard returned identities, deduplicate overlapping pages, separate and cancel history pagination, display validated diagnostic request IDs, and check all three detail routes before local testing. Exact request/event lookups were exercised against records beyond the first 100 in a disposable browser fixture. [Draft #106](https://github.com/knehari/trust-platform/pull/106) passed all seven GitHub checks at `64d6bce4de728cfd792507e97b7fdf25f0e9b531` after the account-side runner scheduling block lifted. The one-CA browser fixture did not exercise a CA beyond the first page or an initially failed inventory with a successful direct CA lookup. Older billing-blocked PR checks remain historical failures until individually rerun. No human IAM, policy-controlled HTTP issuance, production deployment or G0 clearance is implied.
 
 **20 October 2026 console continuation:** Stacked Drafts [#115](https://github.com/knehari/trust-platform/pull/115)–[#119](https://github.com/knehari/trust-platform/pull/119) normalize pasted UUID forms for exact lookups, sort only the certificate and audit rows loaded in the browser, copy explicitly allowlisted metadata JSON from detail dialogs, and preserve a section/CA link through laboratory OIDC login. A linked off-page CA is fetched by exact ID and remains subject to the API's reader grants; an unavailable CA falls back to an authorized one with a visible notice. The local frontend build and 24 tests passed, and the link, denied-CA fallback, sorting, exact lookup and modal were exercised against the disposable browser fixture. These are read-only usability increments; local sorting does not search or order unseen pages, clipboard JSON is not an auditor export, and the URL does not grant access. Drafts are unmerged and remain subject to independent review and G0.
+
+**20 October 2026 link-sharing continuation:** [Draft #120](https://github.com/knehari/trust-platform/pull/120) adds a button that copies the current same-origin section/CA link after scope loading, with visible copy feedback. Only the canonical view and CA UUID enter the link; an opened link still requires OIDC and the server's CA grant. Local frontend build and 24 tests passed. The browser fixture confirmed the button, feedback and URL change, but its virtual clipboard did not expose the text written by the page, so pasted clipboard contents were not independently observed. The change remains read-only, unmerged and G0 blocked.
 
 | Capability | Current demonstrated scope | Remaining boundary |
 |---|---|---|
