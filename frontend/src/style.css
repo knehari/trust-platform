@@ -27,3 +27,27 @@
 
 .view-link-tools{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none}.copy-view-link{padding:8px 12px;border:1px solid #d6e9e4;border-radius:6px;background:#fff;color:#3c887c;font-size:11px;font-weight:700;cursor:pointer}.copy-view-link:hover:not(:disabled){background:#f4faf8}.copy-view-link:focus-visible{outline:2px solid #3c887c;outline-offset:2px}.copy-view-link:disabled{opacity:.5;cursor:wait}.view-link-status{max-width:220px;color:#438f83;font-size:11px;text-align:right}
 @media(max-width:760px){.page-heading{flex-wrap:wrap}.view-link-tools{align-items:flex-start}.view-link-status{text-align:left}}
+
+/* Shared type scale for the console, including data tables and detail dialogs. */
+:root{
+  --type-overline:11px;
+  --type-secondary:12px;
+  --type-control:13px;
+  --type-body:14px;
+  --type-subheading:16px;
+  --type-section:20px;
+  --type-detail:22px;
+  --type-page:30px;
+}
+body{font-size:var(--type-body);line-height:1.5}
+.page-heading h1,.login-card h1{font-size:var(--type-page)}
+.section-head h2,.empty-state h2{font-size:var(--type-section)}
+.detail-header h2,.dialog-heading h2{font-size:var(--type-detail)}
+.table-heading h3{font-size:var(--type-subheading)}
+.nav button,.ca-text strong,.sidebar-note,.page-heading p,.section-head p,.info-cell strong,.subtle-panel b,.subtle-panel p,.timeline-item strong,.timeline-item p,.empty-state p,.empty-detail p,.empty-detail strong,.notice,.loading-detail,td,.login-card p{font-size:var(--type-body)}
+.breadcrumb,.page-date,.metric small,.ca-text small,.table-heading span,.timeline-item small,.sidebar-note span,.nav small,.login-footnote,.dialog-note,.view-link-status,.copy-feedback,.filter-empty{font-size:var(--type-secondary)}
+.text-button,.link-button,.copy-view-link,.quick-links button,.filter-field,.filter-field input,.filter-field select,.exact-lookup label,.exact-lookup input,.exact-lookup button,.lookup-error,.lookup-result,.metadata-copy-json,.metadata-value button,.primary-button{font-size:var(--type-control)}
+.workspace-tag,.nav-label,.eyebrow,.metric-top,.panel-heading,.info-cell span,th,.read-badge,.state-pill,.row-state,.version,.login-footer{font-size:var(--type-overline)}
+.mono{font-size:var(--type-control)}
+.timeline-item .record-link{font-size:var(--type-body)}
+@media(max-width:760px){.page-heading h1,.login-card h1{font-size:26px}.detail-header{flex-direction:column;gap:12px}}
