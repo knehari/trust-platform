@@ -19,15 +19,16 @@ INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
   ('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('https://other-issuer.example.test','lab-operator','ffffffff-ffff-4fff-8fff-ffffffffffff');
 -- Synthetic metadata only: 3000 is a schema sentinel, not a signed X.509 certificate.
+-- These CNs are display fixtures, not claims parsed from certificate DER.
 INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,requester_id,policy_version,state) VALUES
   ('11111111-1111-4111-8111-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','compose-allowed',decode(repeat('01',32),'hex'),'compose-fixture','v1','SIGNED'),
   ('11111111-1111-4111-8111-000000000002','ffffffff-ffff-4fff-8fff-ffffffffffff','compose-hidden',decode(repeat('01',32),'hex'),'compose-fixture','v1','SIGNED');
 INSERT INTO serial_reservation(ca_id,serial_der_content,request_id) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',decode('010001','hex'),'11111111-1111-4111-8111-000000000001'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff',decode('010002','hex'),'11111111-1111-4111-8111-000000000002');
-INSERT INTO certificate(ca_id,serial_der_content,request_id,fingerprint_sha256,certificate_der,signed_at) VALUES
-  ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',decode('010001','hex'),'11111111-1111-4111-8111-000000000001',decode(repeat('02',32),'hex'),decode('3000','hex'),'2026-10-01T12:00:00Z'),
-  ('ffffffff-ffff-4fff-8fff-ffffffffffff',decode('010002','hex'),'11111111-1111-4111-8111-000000000002',decode(repeat('03',32),'hex'),decode('3000','hex'),'2026-10-01T12:00:00Z');
+INSERT INTO certificate(ca_id,serial_der_content,request_id,fingerprint_sha256,certificate_der,signed_at,subject_cn) VALUES
+  ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',decode('010001','hex'),'11111111-1111-4111-8111-000000000001',decode(repeat('02',32),'hex'),decode('3000','hex'),'2026-10-01T12:00:00Z','compose-allowed.lab.invalid'),
+  ('ffffffff-ffff-4fff-8fff-ffffffffffff',decode('010002','hex'),'11111111-1111-4111-8111-000000000002',decode(repeat('03',32),'hex'),decode('3000','hex'),'2026-10-01T12:00:00Z','compose-hidden.lab.invalid');
 INSERT INTO audit_event(event_id,ca_id,actor_id,event_type,decision,policy_version,recorded_at) VALUES
   ('33333333-3333-4333-8333-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','private-compose-actor','certificate.signed','allow','v1','2026-10-01T12:00:00Z'),
   ('33333333-3333-4333-8333-000000000002','ffffffff-ffff-4fff-8fff-ffffffffffff','hidden-compose-actor','certificate.signed','allow','v1','2026-10-01T12:00:00Z');

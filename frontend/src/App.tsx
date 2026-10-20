@@ -504,7 +504,7 @@ function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { ti
     return () => element?.close();
   }, []);
   return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button type="button" className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span><span>Close</span></button></div>
+    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button type="button" className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span></button></div>
     <div className="detail-grid">{fields.map(field => <div className="info-cell" key={field.label}><span>{field.label}</span><div className="metadata-value"><strong>{field.value}</strong>{field.copyable && <button type="button" className="link-button" aria-label={`Copy ${field.label.toLowerCase()}`} onClick={() => void copyValue(field.label, field.value)}>Copy</button>}</div></div>)}</div>
     {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
     <p className="dialog-note">{note}</p>
