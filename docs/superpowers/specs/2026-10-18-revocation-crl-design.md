@@ -67,7 +67,7 @@ Settings (`ca_revocation_policy`, one row per CA, defaults when absent):
 | `crl_validity` | 7 days | 1 hour – 90 days | `nextUpdate − thisUpdate`. Must be ≥ `crl_issue_interval`. |
 | `crl_issue_interval` | 24 hours | 1 hour – 7 days | Maximum time between two stored CRLs. |
 | `status_publication_deadline` | 24 hours | 1 hour – 7 days | Maximum time from proposal (request receipt) to a stored CRL reflecting the approved change. |
-| `keep_expired_on_crl` | true | — | Fixed to true in this slice; pruning needs the certificate's notAfter persisted and is a follow-up. |
+| `keep_expired_on_crl` | true | — | From 0031 may be false (not for ETSI EN 319 411-2): an entry leaves once a stored CRL issued after the certificate's `not_after` (recorded at issuance) has listed it; unknown `not_after` is never pruned. |
 
 Requirements already met by the design for every target: status covers
 certificates at least until expiry (CSS-6.3.10-04, entries are kept); status
@@ -191,8 +191,8 @@ and `CrlVerifier` traits.
    (serialising CRLs per CA), assigns `crl_number = last reserved + 1`, sets
    `this_update = clock_timestamp()` truncated to seconds and
    `next_update = this_update + crl_validity`, copies the current `revocation`
-   rows into `crl_entry_snapshot` (no pruning in this slice: `keep_expired_on_crl`
-   is fixed to true) and returns number and times. `entries_sha256` is the
+   rows into `crl_entry_snapshot` (from 0031, without the entries pruned under
+   `keep_expired_on_crl = false`, see `crl_entry_pruned_from`) and returns number and times. `entries_sha256` is the
    SHA-256 of the entries in serial order, each encoded by
    `crl_entry_encoding` (`int4send(len) || serial || int8send(floor(epoch
    revoked_at)) || int2send(reason) || int8send(floor(epoch invalidity_at)

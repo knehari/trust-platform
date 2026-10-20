@@ -53,5 +53,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - `reconcile_crl` (0021) stores a quarantined CRL only when the caller still
   holds its DER (`CrlError::VerifiedButNotStored`); a CRL lost with its
   process stays `RECONCILIATION_REQUIRED` (no signer read-back exists).
-- Expired-entry pruning (`keep_expired_on_crl = false`) needs a stored
-  `not_after`; entry order is raw serial bytes, not OpenSSL's (length, bytes).
+- Expired-entry pruning (`keep_expired_on_crl = false`): implemented in 0031
+  from `certificate.not_after` recorded at issuance; certificates stored
+  before 0031 have no `not_after` and are never pruned (no backfill). Entry
+  order is raw serial bytes, not OpenSSL's (length, bytes).

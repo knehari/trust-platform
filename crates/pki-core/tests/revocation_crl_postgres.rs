@@ -179,13 +179,27 @@ fn issue_leaf_with(
         None => verifier,
     };
     let der = issue_once(db, ca, &LabCertificateAssembler, &verifier, &plan).unwrap();
+    let cert = Certificate::from_der(&der).unwrap();
+    assert_eq!(cert.tbs_certificate.serial_number.as_bytes(), serial_data);
+    // The stored not_after is the certificate's (migration 0031).
+    let mut reader =
+        postgres::Client::connect(&env::var("TRUST_CI_DATABASE_URL").unwrap(), postgres::NoTls)
+            .unwrap();
+    let stored: i64 = reader
+        .query_one(
+            "SELECT extract(epoch FROM not_after)::bigint FROM certificate
+             WHERE ca_id = $1::text::uuid AND serial_der_content = $2",
+            &[&ca_id, &serial_data],
+        )
+        .unwrap()
+        .get(0);
     assert_eq!(
-        Certificate::from_der(&der)
-            .unwrap()
-            .tbs_certificate
-            .serial_number
-            .as_bytes(),
-        serial_data
+        stored,
+        cert.tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs() as i64
     );
     serial
 }

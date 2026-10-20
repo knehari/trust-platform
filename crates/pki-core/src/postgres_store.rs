@@ -617,8 +617,25 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
         certificate_sha256: &[u8; 32],
         certificate_der: &[u8],
     ) -> Result<(), crate::orchestrator::IssueError> {
+        // notAfter of the certificate the verifier has just accepted; the
+        // database prunes expired CRL entries by it (migration 0031).
+        let not_after_unix =
+            <x509_cert::Certificate as x509_cert::der::Decode>::from_der(certificate_der)
+                .ok()
+                .and_then(|cert| {
+                    i64::try_from(
+                        cert.tbs_certificate
+                            .validity
+                            .not_after
+                            .to_unix_duration()
+                            .as_secs(),
+                    )
+                    .ok()
+                })
+                .ok_or(crate::orchestrator::IssueError::PersistenceFailure)?;
         let result = self.client.query_one(
-            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7)",
+            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7,
+                                             to_timestamp($8::bigint::float8))",
             &[
                 &plan.ca_id,
                 &plan.request_id,
@@ -627,6 +644,7 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
                 &&tbs_sha256[..],
                 &&certificate_sha256[..],
                 &certificate_der,
+                &not_after_unix,
             ],
         );
         match result {

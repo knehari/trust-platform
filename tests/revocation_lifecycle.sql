@@ -301,7 +301,9 @@ BEGIN
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET conformance_target='ETSI_EN_319_411_2', status_publication_deadline='25 hours'$q$, '23514');
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET conformance_target='ETSI_EN_319_411_1', suspension_allowed=true, suspension_cps_ref=NULL$q$, '23514');
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET conformance_target='ETSI_EN_319_411_2', suspension_allowed=true, suspension_cps_ref=''$q$, '23514');
-    PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET keep_expired_on_crl=false$q$, '23514');
+    -- Before 0031 keep_expired_on_crl was fixed to true; since 0031 only
+    -- ETSI EN 319 411-2 CAs must keep expired entries (tests/crl_expired_pruning.sql).
+    PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET conformance_target='ETSI_EN_319_411_2', keep_expired_on_crl=false$q$, '23514');
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET conformance_target='NONE'$q$, '23514');
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET crl_validity='30 minutes'$q$, '23514');
     PERFORM pg_temp.expect_err($q$UPDATE ca_revocation_policy SET crl_validity='91 days'$q$, '23514');
