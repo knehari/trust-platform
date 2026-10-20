@@ -7,8 +7,17 @@
 --   (database) clock is behind the CA's latest thisUpdate fails closed
 --   instead of issuing a CRL that predates its predecessor. Equal values (two
 --   reservations in one second) stay allowed.
+-- * revocation.revoked_at is limited to the range the CRL builder encodes
+--   (1970-01-01 .. 9999-12-31), like invalidity_at in 0014. Existing rows
+--   outside it make this migration abort with nothing applied.
 -- Apply after 0015 as the migration owner.
 BEGIN;
+
+ALTER TABLE revocation
+    ADD CONSTRAINT revocation_revoked_at_range CHECK (
+        revoked_at >= TIMESTAMPTZ '1970-01-01 00:00:00+00'
+        AND revoked_at < TIMESTAMPTZ '10000-01-01 00:00:00+00'
+    );
 
 -- NULL on rows that recorded their intent before this migration; the stale
 -- intent sweep falls back to this_update for them.

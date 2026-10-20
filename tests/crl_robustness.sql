@@ -163,4 +163,31 @@ BEGIN
         'nothing reserved while the clock is behind');
 END $t$;
 
+-- --------------------------------------------------- revoked_at stays encodable
+-- Direct (legacy-style) rows, bypassing the lifecycle functions: a revocation
+-- date the CRL builder cannot encode would break every later CRL of the CA.
+INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                                requester_id, policy_version, state)
+VALUES ('d1d1d1d1-0000-4000-8000-000000000016', 'c0c0c0c0-0000-4000-8000-000000000017',
+        'idem-range', sha256('csr-range'::bytea), 'requester', 'lab-1', 'PUBLISHED');
+INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 'd1d1d1d1-0000-4000-8000-000000000016');
+INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                        certificate_der, signed_at)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 'd1d1d1d1-0000-4000-8000-000000000016',
+        sha256('der-range'::bytea), decode('3003020101', 'hex'), now());
+DO $t$ BEGIN
+    PERFORM pg_temp.expect_err($$INSERT INTO revocation(ca_id, serial_der_content, reason_code, revoked_at, actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 1, '1969-12-31 23:59:59+00', 'legacy')$$, '23514');
+    PERFORM pg_temp.expect_err($$INSERT INTO revocation(ca_id, serial_der_content, reason_code, revoked_at, actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 1, '10000-01-01 00:00:00+00', 'legacy')$$, '23514');
+    PERFORM pg_temp.expect_err($$INSERT INTO revocation(ca_id, serial_der_content, reason_code, revoked_at, actor_id)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 1, 'infinity', 'legacy')$$, '23514');
+    -- both bounds are encodable and accepted
+    INSERT INTO revocation(ca_id, serial_der_content, reason_code, revoked_at, actor_id)
+    VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 6, '1970-01-01 00:00:00+00', 'legacy');
+    UPDATE revocation SET reason_code = 1, revoked_at = '1970-01-01 00:00:00+00'
+    WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000017' AND serial_der_content = '\x16';
+END $t$;
+
 ROLLBACK;

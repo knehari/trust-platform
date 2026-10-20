@@ -4,12 +4,13 @@ set -euo pipefail
 # The supplied URL must name a new, disposable PostgreSQL database. This is
 # an upgrade regression for 0014-0016, not an online migration runner.
 #
-# 0014 and 0015 each run in one transaction and abort on pre-existing rows
-# they cannot carry forward: a revocation with reason 7 or 8 (0014) or any
+# 0014, 0015 and 0016 each run in one transaction and abort on pre-existing
+# rows they cannot carry forward: a revocation with reason 7 or 8 (0014), any
 # crl_publication row (0015, operation_ref etc. are NOT NULL without a
-# default). This script checks that both abort with nothing applied, that the
-# migration succeeds once the operator has removed the offending row, and that
-# legacy revocation rows survive and feed the CRL pipeline.
+# default) or a revocation date outside 1970..9999 (0016). This script checks
+# that each aborts with nothing applied, that the migration succeeds once the
+# operator has removed the offending row, and that legacy revocation rows
+# survive and feed the CRL pipeline.
 : "${TRUST_UPGRADE_DATABASE_URL:?set TRUST_UPGRADE_DATABASE_URL to an empty disposable database}"
 psql_bin=${TRUST_PSQL_BIN:-psql}
 
@@ -83,6 +84,19 @@ expect_eq 'crl_publication rows after 0015 abort' "$(scalar 'SELECT count(*) FRO
 # operator removes it (no guard exists before 0015), then retries.
 psql_run -c "DELETE FROM crl_publication" >/dev/null
 psql_run -f migrations/0015_crl_pipeline.sql >/dev/null
+
+# 0016 refuses a revocation date the CRL builder cannot encode. A hold (6)
+# is the only row the 0014 guard lets the operator delete.
+psql_run -c "INSERT INTO revocation (ca_id, serial_der_content, reason_code, revoked_at, actor_id)
+             VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', decode('02', 'hex'), 6,
+                     '1969-07-20T20:17:00Z', 'legacy-officer')" >/dev/null
+expect_abort migrations/0016_crl_robustness.sql revocation_revoked_at_range
+expect_eq '0016 objects after abort' \
+  "$(scalar "SELECT (to_regprocedure('abandon_stale_crl_reservations(uuid,interval)') IS NULL)::text
+               || (SELECT count(*) FROM information_schema.columns
+                   WHERE table_name = 'crl_publication' AND column_name = 'intent_recorded_at')")" \
+  'true0'
+psql_run -c "DELETE FROM revocation WHERE reason_code = 6" >/dev/null
 psql_run -f migrations/0016_crl_robustness.sql >/dev/null
 
 psql_run -f tests/revocation_populated_upgrade_verify.sql >/dev/null

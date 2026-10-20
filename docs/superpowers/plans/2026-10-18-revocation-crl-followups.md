@@ -33,7 +33,6 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - `record_crl_intent` accepts any still-`RESERVED` row, however old, until
   `abandon_stale_crl_reservations` (0016) is run; nothing schedules that sweep,
   and an intent is not refused when a higher CRL number is already stored.
-- `revocation.revoked_at` has no range CHECK (only direct/legacy rows at risk).
 - CA row `FOR UPDATE` in `reserve_crl` could be `FOR NO KEY UPDATE`.
 - `crl_due` is O(history) per call; read-only queries do not check isolation.
 - `Row::get` can panic in `revocation_store.rs` (use `try_get`).
