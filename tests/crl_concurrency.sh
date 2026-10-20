@@ -3,7 +3,7 @@
 # others approve prepared revocations. Numbers must be distinct and
 # consecutive, and a reservation must never observe a half-applied or
 # mis-timed approval.
-# Needs a database with migrations 0001..0015 applied and host psql:
+# Needs a database with migrations 0001..0016 applied and host psql:
 #   TRUST_CI_DATABASE_URL=postgresql://user:pw@127.0.0.1:5432/db bash tests/crl_concurrency.sh
 set -euo pipefail
 : "${TRUST_CI_DATABASE_URL:?TRUST_CI_DATABASE_URL is required}"

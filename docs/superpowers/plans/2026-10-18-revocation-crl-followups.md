@@ -30,9 +30,9 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   idempotent on a reused database (pre-existing).
 
 ## Robustness and hygiene
-- Orphan `RESERVED` CRL rows (failure between reserve and snapshot read, or
-  abandoned reservations) are never swept; stale-intent age is measured from
-  `this_update` (add `intent_recorded_at`).
+- `record_crl_intent` accepts any still-`RESERVED` row, however old, until
+  `abandon_stale_crl_reservations` (0016) is run; nothing schedules that sweep,
+  and an intent is not refused when a higher CRL number is already stored.
 - `this_update` is not forced monotonic across numbers (clock step back).
 - `revocation.revoked_at` has no range CHECK (only direct/legacy rows at risk).
 - CA row `FOR UPDATE` in `reserve_crl` could be `FOR NO KEY UPDATE`.

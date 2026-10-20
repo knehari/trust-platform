@@ -763,3 +763,49 @@ fn expired_certs_on_crl_follows_the_conformance_target() {
         }
     }
 }
+
+/// Migration 0016: a reservation abandoned by its worker is retired, and a
+/// late worker can no longer record an intent for it or reach the signer.
+#[test]
+fn abandoned_reservation_is_never_signed() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    let late = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-late-op")
+        .unwrap();
+    assert_eq!(store.abandon_stale_crl_reservations(&ca_id, 0).unwrap(), 1);
+
+    let mut signer = CountingSigner {
+        ca: &mut ca,
+        calls: 0,
+    };
+    let plan = CrlPlan {
+        reservation: &late,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-late-op",
+    };
+    let verifier = LabCrlVerifier::new(root.clone());
+    assert_eq!(
+        crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan),
+        Err(CrlError::ReplayedOrAmbiguousIntent)
+    );
+    assert_eq!(signer.calls, 0);
+
+    // The number stays taken: the next reservation is number 2.
+    let next = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-next-op")
+        .unwrap();
+    assert_eq!(next.crl_number(), 2);
+}

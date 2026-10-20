@@ -202,6 +202,21 @@ impl PgRevocationStore {
         .map_err(|_| RevocationStoreError::InconsistentResult)
     }
 
+    /// Retires RESERVED rows older than the threshold (no intent, so never
+    /// signed); `record_crl_intent` then refuses them. Returns the count.
+    pub fn abandon_stale_crl_reservations(
+        &mut self,
+        ca_id: &str,
+        older_than_seconds: i64,
+    ) -> Result<i32, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT abandon_stale_crl_reservations(
+                 $1::text::uuid, make_interval(secs => $2::bigint::float8))",
+            &[&ca_id, &older_than_seconds],
+        )?;
+        Ok(row.get(0))
+    }
+
     pub fn quarantine_stale_crl_intents(
         &mut self,
         ca_id: &str,
