@@ -1,7 +1,7 @@
 # ADR-0006 — Least-privilege write model for revocation, CRLs and CA administration
 
-**Status:** Proposed · 2026-10-20 · requires human security review. Implemented in the lab (migrations 0023–0024) at the repository owner's request; that implementation is not an acceptance of this ADR. Acceptance conditions are listed below.  
-**Scope:** Revocation lifecycle, CRL pipeline and CA administration (migrations 0014–0024) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
+**Status:** Proposed · 2026-10-20 · requires human security review. Implemented in the lab (migrations 0023–0026) at the repository owner's request; that implementation is not an acceptance of this ADR. Acceptance conditions are listed below.  
+**Scope:** Revocation lifecycle, CRL pipeline and CA administration (migrations 0014–0026) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
 **Related:** ADR-0007 (signed, key-distinct double control, split out of this ADR on 2026-10-20), ADR-0002 (signing and durable state), ADR-0003 (authenticated identity), ADR-0005 (Rust management control plane), `docs/security/threat-model.md` (revocation and CRL write path), spec `docs/superpowers/specs/2026-10-18-revocation-crl-design.md` §6.
 
 ## Context
@@ -45,6 +45,13 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 
 `abandon_stale_crl_reservations` and `quarantine_stale_crl_intents` run from a scheduled job as `trust_crl_operator`, which alerts through its exit status (`crl_housekeeping` example, `docs/operations/lab-crl-housekeeping.md`). Since 0017/0020 a stale reservation cannot be signed, so the sweep is hygiene and evidence, not a safety control.
 
+### E. Schema-change audit (migration 0026, lab answer to condition 3)
+
+- Event triggers on `ddl_command_end` and `sql_drop`, `ENABLE ALWAYS`, append every DDL command and object grant to `schema_change_audit`: command tag, object type and identity, session user, transaction id. No SQL text is stored, since it can carry credentials. Temporary objects are skipped.
+- `schema_change_audit` and the review ledger `schema_change_review` are owned by the NOLOGIN `trust_schema_audit_owner` and are append-only (row and TRUNCATE guards, also `ENABLE ALWAYS`). No service can read or write them.
+- Every reviewed migration ends with `acknowledge_schema_changes('<ref>')` (superuser only). `unreviewed_schema_changes()` (granted to `trust_crl_operator`) counts later changes, and `crl_housekeeping` exits with status 2 when it is above zero.
+- PostgreSQL fires no event trigger for roles, role membership, databases, `ALTER SYSTEM` or event triggers themselves, and a superuser can drop the triggers. Server logging (pgaudit) and external anchoring (condition 5) remain required, so condition 3 is only partly met.
+
 ## Alternatives considered
 
 - **Per-officer PostgreSQL logins (`session_user` as identity):** strong in-database authentication, but it couples human identity lifecycle to database roles and does not fit OIDC step-up. It could be revisited for an air-gapped deployment.
@@ -60,7 +67,7 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 
 1. Independent review of every `SECURITY DEFINER` function: search_path, dynamic SQL, error-message leakage, lock order, and that every input is validated before use.
 2. Runtime without superuser: deployment evidence that each service uses a dedicated non-superuser login with exactly one capability role, `NOINHERIT` where possible, no `CREATEROLE`, no owner membership, and `connect_lab_service` (or its production successor).
-3. Schema-change control: DDL and role changes on this database only through reviewed migrations, monitored (pgaudit or event triggers) and alerted.
+3. Schema-change control: DDL and role changes on this database only through reviewed migrations, monitored (pgaudit or event triggers) and alerted. Lab: section E covers DDL and object grants; role changes still need server logging.
 4. Evidence kept up to date in CI: `tests/revocation_privileges.sql`, `tests/ca_admin_dual_control.sql`, `least_privilege_roles_run_the_whole_pipeline`, `service_connections_refuse_privileged_sessions`.
 5. Audit trail anchored outside the database (append-only external log or timestamped hash chain), so that a superuser cannot rewrite `audit_event` unnoticed (open item D-04).
 6. Authenticated time source (NTP with drift alerting) for the database, since deadlines, thisUpdate and intent ordering use its clock.

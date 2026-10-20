@@ -13,6 +13,22 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    still held.
 3. reports `crl_due` and the number of `overdue_status_changes`.
 
+The example then reports `unreviewed_schema_changes` (migration 0026,
+database-wide): DDL and object grants recorded by the schema-change event
+triggers after the last `acknowledge_schema_changes` call. Each reviewed
+migration ends with that call, so any other count means someone changed the
+schema outside a reviewed migration. Investigate with a superuser:
+
+```
+SELECT * FROM schema_change_audit
+WHERE change_seq > (SELECT coalesce(max(reviewed_up_to), 0) FROM schema_change_review);
+```
+
+Acknowledge (as a superuser) only after the change was reviewed, naming the
+review reference: `SELECT acknowledge_schema_changes('0026_manual_review_x');`.
+Role changes are not in this audit; enable server logging (pgaudit, `ROLE`
+class) for them.
+
 Both thresholds default to 3600 seconds. Since 0017/0020 a stale or
 superseded reservation can no longer be signed, so the sweep is for hygiene
 and evidence. It is not what keeps old CRLs from being signed.
@@ -25,7 +41,7 @@ TRUST_DATABASE_URL=postgresql://... \
 Exit status:
 - 0: nothing to do;
 - 2: attention needed (something was retired or quarantined, a CRL is due,
-  or a change is overdue);
+  a change is overdue, or a schema change is unreviewed);
 - 1: error.
 
 A scheduler (cron, systemd timer) can therefore alert on any non-zero status.
@@ -36,5 +52,7 @@ The connection uses the lab `NoTls` adapter. Run it only against a loopback
 or private lab database. It authenticates nobody and holds no key. It
 refuses a privileged login (`connect_lab_service`): use a login granted only
 `trust_crl_operator` (migration 0023).
-Covered by `housekeeping_reports_and_cleans_up` in
-`crates/pki-core/tests/revocation_crl_postgres.rs`.
+Covered by `housekeeping_reports_and_cleans_up` and
+`unreviewed_schema_changes_reach_the_operator` in
+`crates/pki-core/tests/revocation_crl_postgres.rs`, and by
+`tests/schema_change_audit.sql`.

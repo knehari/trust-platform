@@ -3,7 +3,9 @@
 //! Retires reservations older than `--reserved-older-than` seconds (default
 //! 3600; never signed), quarantines intents older than `--intent-older-than`
 //! seconds (default 3600) and reports whether a CRL is due and how many
-//! status changes are past their publication deadline.
+//! status changes are past their publication deadline. It also reports
+//! schema changes not yet acknowledged by a reviewed migration (0026,
+//! database-wide).
 //!
 //! Exit status: 0 nothing to do, 2 attention needed (alert), 1 error.
 //! The database URL is read from TRUST_DATABASE_URL; the connection is the
@@ -43,11 +45,15 @@ fn run() -> Result<bool, String> {
     let report = store
         .crl_housekeeping(ca_id, reserved, intent)
         .map_err(|e| format!("housekeeping failed: {e:?}"))?;
+    let schema_changes = store
+        .unreviewed_schema_changes()
+        .map_err(|e| format!("schema-change report failed: {e:?}"))?;
     println!(
-        "ca={ca_id} abandoned={} quarantined={} crl_due={} overdue_changes={}",
+        "ca={ca_id} abandoned={} quarantined={} crl_due={} overdue_changes={} \
+         unreviewed_schema_changes={schema_changes}",
         report.abandoned, report.quarantined, report.crl_due, report.overdue_changes
     );
-    Ok(report.needs_attention())
+    Ok(report.needs_attention() || schema_changes > 0)
 }
 
 fn main() -> ExitCode {

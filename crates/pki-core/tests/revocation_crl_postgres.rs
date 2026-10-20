@@ -1562,3 +1562,32 @@ fn service_connections_refuse_privileged_sessions() {
         Some("42501")
     );
 }
+
+/// Migration 0026 (ADR-0006 condition 3): a schema change outside a reviewed
+/// migration reaches the housekeeping operator; other service roles cannot
+/// read the audit.
+#[test]
+fn unreviewed_schema_changes_reach_the_operator() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let table = format!("schema_audit_probe_{}", fresh_ca(&url).replace('-', "_"));
+    owner
+        .batch_execute(&format!("CREATE TABLE {table} (a INT)"))
+        .unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    assert!(operator.unreviewed_schema_changes().unwrap() >= 1);
+    let mut officer =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_revocation_officer_api")).unwrap();
+    assert_eq!(
+        sqlstate(&officer.unreviewed_schema_changes().unwrap_err()).as_deref(),
+        Some("42501")
+    );
+    owner.batch_execute(&format!("DROP TABLE {table}")).unwrap();
+}

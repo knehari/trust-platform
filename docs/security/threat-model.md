@@ -16,7 +16,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
 
-## Revocation and CRL write path (lab, migrations 0014-0024, ADR-0006, ADR-0007)
+## Revocation and CRL write path (lab, migrations 0014-0026, ADR-0006, ADR-0007)
 
 | Threat | Control in the lab slice | Residual risk / open |
 | --- | --- | --- |
@@ -28,6 +28,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 | A service runs with a superuser or owner-member login and bypasses everything | `connect_lab_service` refuses privileged `session_user` (0024 commit) | Only enforced by the services that use it; deployment evidence required (ADR-0006 acceptance condition 2) |
 | One CA admin registers an issuer or grants officers alone, or grants themselves officer rights | 0024 `ca_admin_change`: two distinct admins, approval of the exact content digest, no self-grant | Textual admin identities (ADR-0007) |
 | Stale or superseded CRL signed late | Only the highest reserved number may record an intent; staleness and nextUpdate checks (0017, 0020, 0021) | Relies on the database clock |
+| A function, grant or guard is changed outside a reviewed migration (e.g. `SECURITY DEFINER` reset, trigger disabled) | Catalog invariant in tests/revocation_privileges.sql (0025); 0026 event triggers record every DDL and object grant (append-only, `ENABLE ALWAYS`, no SQL text) and `crl_housekeeping` alerts on changes no reviewed migration acknowledged | Roles, role membership, `ALTER SYSTEM` and event triggers themselves are not recorded (server logging/pgaudit needed); a superuser can drop the triggers or the rows (external anchoring, ADR-0006 condition 5) |
 | Lost or ambiguous signature | Durable intent before signing, quarantine, reconciliation of a held DER (0021), housekeeping alerts | A CRL lost with its process cannot be recovered (no signer read-back) |
 
 ## Open

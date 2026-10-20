@@ -492,6 +492,16 @@ impl PgRevocationStore {
         })
     }
 
+    /// Schema changes (DDL, object grants) recorded since the last reviewed
+    /// migration acknowledged them (migration 0026, ADR-0006 condition 3).
+    /// Database-wide, not per CA; anything above zero needs an operator.
+    pub fn unreviewed_schema_changes(&mut self) -> Result<i64, RevocationStoreError> {
+        let row = self
+            .client
+            .query_one("SELECT unreviewed_schema_changes()", &[])?;
+        column(&row, 0)
+    }
+
     pub fn quarantine_stale_crl_intents(
         &mut self,
         ca_id: &str,
