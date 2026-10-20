@@ -3,7 +3,7 @@
 # others approve prepared revocations. Numbers must be distinct and
 # consecutive, and a reservation must never observe a half-applied or
 # mis-timed approval.
-# Needs a database with migrations 0001..0017 applied and host psql:
+# Needs a database with migrations 0001..0018 applied and host psql:
 #   TRUST_CI_DATABASE_URL=postgresql://user:pw@127.0.0.1:5432/db bash tests/crl_concurrency.sh
 set -euo pipefail
 : "${TRUST_CI_DATABASE_URL:?TRUST_CI_DATABASE_URL is required}"
@@ -120,6 +120,42 @@ gate_after="$(sql "SELECT count(*) FROM crl_entry_snapshot s JOIN crl_publicatio
   WHERE p.ca_id='$ca' AND p.operation_ref='race-op-after'
     AND s.serial_der_content=decode('05','hex') AND s.reason_code=5")"
 
+# Lock scope: a reservation in progress must not block issuance-side writes
+# that only reference the CA row (foreign-key checks take FOR KEY SHARE).
+# The holder keeps its transaction open until the probe has finished.
+(
+  PGAPPNAME=crl-holder sql "CREATE FUNCTION pg_temp.await_probe() RETURNS void
+      LANGUAGE plpgsql AS \$fn\$
+      BEGIN
+          -- each statement takes a fresh READ COMMITTED snapshot
+          FOR i IN 1..200 LOOP
+              EXIT WHEN EXISTS (SELECT 1 FROM certificate_request
+                                WHERE ca_id='$ca' AND idempotency_key='crl-lock-probe');
+              PERFORM pg_sleep(0.05);
+          END LOOP;
+      END \$fn\$;
+      SELECT crl_number FROM reserve_crl('$ca','crl-worker-hold','race-op-hold');
+      SELECT pg_temp.await_probe()" >/dev/null
+) &
+holder_pid=$!
+holder_holds=0
+for _ in $(seq 1 200); do
+  holder_holds="$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+    WHERE a.application_name='crl-holder' AND l.granted
+      AND l.relation='crl_entry_snapshot'::regclass")"
+  [ "$holder_holds" != "0" ] && break
+  sql "SELECT pg_sleep(0.05)" >/dev/null
+done
+fk_insert_ok=0
+if [ "$holder_holds" != "0" ] && sql "SET lock_timeout = '2s';
+    INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,
+        requester_id,policy_version,state)
+    VALUES (gen_random_uuid(),'$ca','crl-lock-probe',sha256('probe'::bytea),
+            'requester','v1','PUBLISHED')" >/dev/null 2>"$temp/fk-insert.err"; then
+  fk_insert_ok=1
+fi
+wait "$holder_pid" || true
+
 approved="$(sql "SELECT count(*) FROM certificate_status_change WHERE ca_id='$ca' AND status='APPROVED'")"
 
 # Every snapshot row is the revocation written by an approved change: same
@@ -153,11 +189,13 @@ sizes="$(sql "SELECT string_agg(n::text, ',' ORDER BY n) FROM (
   LEFT JOIN crl_entry_snapshot s ON s.ca_id=p.ca_id AND s.crl_number=p.crl_number
   WHERE p.ca_id='$ca' GROUP BY p.crl_number) x")"
 
+if [ "$fk_insert_ok" != "1" ]; then cat "$temp/fk-insert.err" >&2; fi
 if [ "$numbers" != "12|12|1|12" ] || [ "$approved" != "5" ] || [ "$gate_late" != "1" ] \
   || [ "$gate_blocked" != "1" ] || [ "$gate_snapshot_has_5" != "0" ] \
+  || [ "$fk_insert_ok" != "1" ] \
   || [ "$gate_after" != "1" ] \
   || [ "$wrong_rows" != "0" ] || [ "$missed" != "0" ] || [ "$bad_digest" != "0" ]; then
-  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_blocked=$gate_blocked gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
+  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_blocked=$gate_blocked fk_insert_ok=$fk_insert_ok gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
   exit 1
 fi
 
