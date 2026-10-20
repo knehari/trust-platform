@@ -16,5 +16,7 @@ test('untrusted navigation values cannot become paths or authority IDs', () => {
   assert.deepEqual(readNavigation(`?ca=${ca}`), { section: 'authorities', caId: ca });
   assert.equal(navigationUrl('overview', null), '/?view=overview');
   const destination = readNavigation(`?view=audit&ca=${ca}&token=secret`);
-  assert.equal(navigationUrl(destination.section, destination.caId), `/?view=audit&ca=${ca}`);
+  const oidcState = navigationUrl(destination.section, destination.caId).slice(1);
+  assert.equal(oidcState, `?view=audit&ca=${ca}`);
+  assert.deepEqual(readNavigation(oidcState), destination);
 });

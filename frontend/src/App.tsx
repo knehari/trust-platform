@@ -490,7 +490,7 @@ export function App() {
         {(oidcConfigurationError || sessionError) && <div className="notice error" role="alert">{oidcConfigurationError || sessionError}</div>}
         <button className="primary-button" disabled={!userManager} onClick={() => {
           const destination = readNavigation(window.location.search);
-          void userManager?.signinRedirect({ state: navigationUrl(destination.section, destination.caId) })
+          void userManager?.signinRedirect({ state: navigationUrl(destination.section, destination.caId).slice(1) })
             .catch(() => setSessionError('OIDC sign-in could not start. Check the local test issuer.'));
         }}>
           Sign in with your organization <span aria-hidden="true">↗</span>
