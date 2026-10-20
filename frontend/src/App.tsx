@@ -5,13 +5,12 @@ import { sortLoadedAuditEvents, type AuditSort } from './audit-sort';
 import { filterLoadedCertificates } from './certificate-filter';
 import { sortLoadedCertificates, type CertificateSort } from './certificate-sort';
 import { auditMetadataJson, certificateMetadataJson } from './metadata-copy';
+import { navigationUrl, readNavigation, type Section } from './navigation';
 import { oidcConfigurationError, userManager } from './oidc';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
 import { canonicalSerialHex } from './serial';
 import { canonicalUuid } from './uuid';
-
-type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
 
 function displayDate(value: string | null): string {
   if (!value) return '—';
@@ -30,7 +29,8 @@ export function App() {
   const [cas, setCas] = useState<CertificateAuthority[]>([]);
   const [caFilter, setCaFilter] = useState('');
   const [selectedCaId, setSelectedCaId] = useState<string | null>(null);
-  const [section, setSection] = useState<Section>('overview');
+  const [section, setSection] = useState<Section>(() => readNavigation(window.location.search).section);
+  const [navigationReady, setNavigationReady] = useState(false);
   const [casLoading, setCasLoading] = useState(false);
   const [caCursor, setCaCursor] = useState<string | null>(null);
   const [caMoreLoading, setCaMoreLoading] = useState(false);
@@ -47,6 +47,7 @@ export function App() {
   const [certificateError, setCertificateError] = useState<string | null>(null);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
+  const [linkedCaError, setLinkedCaError] = useState<string | null>(null);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
   const [selectedCertificate, setSelectedCertificate] = useState<Certificate | null>(null);
   const [certificateFilter, setCertificateFilter] = useState('');
@@ -126,7 +127,9 @@ export function App() {
           ? await userManager.signinRedirectCallback()
           : await userManager.getUser();
         if (window.location.pathname === '/auth/callback') {
-          window.history.replaceState({}, '', '/');
+          const destination = typeof current?.state === 'string' ? readNavigation(current.state) : readNavigation('');
+          window.history.replaceState({}, '', navigationUrl(destination.section, destination.caId));
+          if (!cancelled) setSection(destination.section);
         }
         if (!cancelled) setUser(current && !current.expired ? current : null);
       } catch {
@@ -145,6 +148,7 @@ export function App() {
 
   useEffect(() => {
     if (!user || user.expired) return;
+    setNavigationReady(false);
     caKey.current = `${user.access_token}/${reload}`;
     caMoreController.current?.abort();
     setCaMoreLoading(false);
@@ -158,19 +162,56 @@ export function App() {
     setSelectedAuditEvent(null);
     setCaFilter('');
     const controller = new AbortController();
+    const linkedCaId = readNavigation(window.location.search).caId;
     setCasLoading(true);
     setDataError(null);
-    apiGetPage<CertificateAuthority>('/v1/cas', user.access_token, controller.signal)
-      .then(page => {
+    setLinkedCaError(null);
+    async function loadAuthorities() {
+      let firstPage: CertificateAuthority[] = [];
+      try {
+        const page = await apiGetPage<CertificateAuthority>('/v1/cas', user!.access_token, controller.signal);
         if (controller.signal.aborted) return;
-        setCas(page.items);
+        firstPage = page.items;
+        setCas(firstPage);
         setCaCursor(page.nextCursor);
-        setSelectedCaId(current => page.items.some(ca => ca.ca_id === current) ? current : page.items[0]?.ca_id ?? null);
-      })
-      .catch(error => { if (!controller.signal.aborted) handleReadError(error, 'Could not load authorities.', setDataError); })
-      .finally(() => { if (!controller.signal.aborted) setCasLoading(false); });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        handleReadError(error, 'Could not load authorities.', setDataError);
+        if (error instanceof ApiError && error.status === 401) return;
+      }
+      if (linkedCaId && !firstPage.some(ca => ca.ca_id === linkedCaId)) {
+        try {
+          const ca = await apiGet<CertificateAuthority>(`/v1/cas/${linkedCaId}`, user!.access_token, controller.signal);
+          if (controller.signal.aborted) return;
+          requireExactRecord(ca, linkedCaId, 'ca_id', linkedCaId);
+          setCaLookupResult(ca);
+          setSelectedCaId(linkedCaId);
+          return;
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          if (error instanceof ApiError && error.status === 401) {
+            handleReadError(error, 'Could not open linked authority.', setDataError);
+            return;
+          }
+          setLinkedCaError('The linked authority is unavailable for this session. Showing an authority in your scope instead.');
+        }
+      }
+      if (!controller.signal.aborted) setSelectedCaId(linkedCaId && firstPage.some(ca => ca.ca_id === linkedCaId) ? linkedCaId : firstPage[0]?.ca_id ?? null);
+    }
+    void loadAuthorities().finally(() => {
+      if (!controller.signal.aborted) {
+        setCasLoading(false);
+        setNavigationReady(true);
+      }
+    });
     return () => { controller.abort(); caMoreController.current?.abort(); };
   }, [user, reload]);
+
+  useEffect(() => {
+    if (!navigationReady || !user || user.expired) return;
+    const next = navigationUrl(section, selectedCaId);
+    if (`${window.location.pathname}${window.location.search}` !== next) window.history.replaceState({}, '', next);
+  }, [navigationReady, user, section, selectedCaId]);
 
   useEffect(() => {
     caLookupController.current?.abort();
@@ -447,7 +488,11 @@ export function App() {
         <h1>Clear oversight for every certificate authority.</h1>
         <p>Review CA inventory, certificate metadata and audit activity through a scoped, read-only session.</p>
         {(oidcConfigurationError || sessionError) && <div className="notice error" role="alert">{oidcConfigurationError || sessionError}</div>}
-        <button className="primary-button" disabled={!userManager} onClick={() => void userManager?.signinRedirect().catch(() => setSessionError('OIDC sign-in could not start. Check the local test issuer.'))}>
+        <button className="primary-button" disabled={!userManager} onClick={() => {
+          const destination = readNavigation(window.location.search);
+          void userManager?.signinRedirect({ state: navigationUrl(destination.section, destination.caId).slice(1) })
+            .catch(() => setSessionError('OIDC sign-in could not start. Check the local test issuer.'));
+        }}>
           Sign in with your organization <span aria-hidden="true">↗</span>
         </button>
         <div className="login-footnote">Access is limited to the authorities assigned to your account. No signing keys are available in this console.</div>
@@ -474,6 +519,7 @@ export function App() {
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div></div>
         {dataError && <div className="notice error" role="alert">{dataError} <button onClick={() => setReload(value => value + 1)}>Retry</button></div>}
+        {linkedCaError && <div className="notice error" role="alert">{linkedCaError} <button onClick={() => setLinkedCaError(null)}>Dismiss</button></div>}
         {casLoading && <div className="notice loading"><span className="spinner" /> Loading scoped authorities…</div>}
         {section === 'overview' && !casLoading && cas.length === 0 && !dataError && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
         {(cas.length > 0 || (section !== 'overview' && !casLoading)) && <>
