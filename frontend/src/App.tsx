@@ -4,6 +4,7 @@ import { ApiError, apiGet, apiGetPage, type AuditEvent, type Certificate, type C
 import { oidcConfigurationError, userManager } from './oidc';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
+import { canonicalSerialHex } from './serial';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
 
@@ -18,7 +19,6 @@ function shortId(value: string): string {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const serialHexPattern = /^(?:[0-9a-f]{2}){1,20}$/i;
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -372,12 +372,13 @@ export function App() {
     if (!user || user.expired || !selectedCaId) return;
     const identifier = lookupInput.trim().toLowerCase();
     const byRequest = uuidPattern.test(identifier);
+    const serialHex = byRequest ? null : canonicalSerialHex(identifier);
     lookupController.current?.abort();
     setLookupLoading(false);
     setLookupResult(null);
     setLookupError(null);
-    if (!byRequest && !serialHexPattern.test(identifier)) {
-      setLookupError('Enter a complete request UUID or a certificate serial in hex (for example, 010001).');
+    if (!byRequest && !serialHex) {
+      setLookupError('Enter a complete request UUID or a positive hex serial (for example, 010001, 0x10001 or 01:00:01).');
       return;
     }
     const controller = new AbortController();
@@ -386,10 +387,10 @@ export function App() {
     try {
       const path = byRequest
         ? `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/${identifier}`
-        : `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/by-serial/${identifier}`;
+        : `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/by-serial/${serialHex}`;
       const certificate = await apiGet<Certificate>(path, user.access_token, controller.signal);
       if (controller.signal.aborted) return;
-      requireExactRecord(certificate, selectedCaId, byRequest ? 'request_id' : 'serial_hex', identifier);
+      requireExactRecord(certificate, selectedCaId, byRequest ? 'request_id' : 'serial_hex', byRequest ? identifier : serialHex!);
       setLookupResult(certificate);
       setSelectedCertificate(certificate);
     } catch (error) {
