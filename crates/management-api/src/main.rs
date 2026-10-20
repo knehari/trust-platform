@@ -64,6 +64,7 @@ struct Certificate {
     state: String,
     signed_at: String,
     published_at: Option<String>,
+    subject_cn: Option<String>,
 }
 #[derive(Serialize)]
 struct Audit {
@@ -472,7 +473,7 @@ async fn list_certificates(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
@@ -502,6 +503,7 @@ fn certificate_from_row(row: Row) -> Certificate {
         state: row.get(4),
         signed_at: row.get(5),
         published_at: row.get(6),
+        subject_cn: row.get(7),
     }
 }
 
@@ -524,7 +526,7 @@ async fn get_certificate(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query_opt(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
              FROM management_certificate WHERE ca_id=$1 AND request_id=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &request_id, &issuer, &subject],

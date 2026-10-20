@@ -4,6 +4,7 @@ SET LOCAL ROLE trust_api_reader;
 DO $test$ BEGIN
     PERFORM count(*) FROM management_ca;
     PERFORM count(*) FROM management_certificate;
+    PERFORM subject_cn FROM management_certificate LIMIT 1;
     PERFORM count(*) FROM management_audit;
     PERFORM count(*) FROM management_reader_scope;
     BEGIN

@@ -14,6 +14,7 @@ export interface Certificate {
   state: string;
   signed_at: string;
   published_at: string | null;
+  subject_cn: string | null;
 }
 
 export interface AuditEvent {

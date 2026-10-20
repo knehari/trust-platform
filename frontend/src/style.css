@@ -18,3 +18,4 @@
 
 .authority-lookup{margin:0 16px 14px;padding:12px}.authority-lookup-message{margin:0 16px 14px;overflow-wrap:anywhere}
 .metadata-value{display:flex;align-items:start;justify-content:space-between;gap:10px}.metadata-value strong{min-width:0}.metadata-value button{flex:none}.copy-feedback{color:#438f83;font-size:12px;margin:12px 0 0}
+.dialog-heading>div{min-width:0}.dialog-close{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;min-height:40px;margin:-4px -4px 0 0;padding:7px 10px;border:1px solid #d7e5e5;border-radius:8px;background:#f7fbfa;color:#315c5a;font-size:12px;font-weight:700;line-height:1}.dialog-close span:first-child{font-size:21px;font-weight:400;line-height:.7}.dialog-close:hover{background:#eaf5f2}

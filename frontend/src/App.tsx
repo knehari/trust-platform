@@ -504,7 +504,7 @@ function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { ti
     return () => element?.close();
   }, []);
   return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}>×</button></div>
+    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button type="button" className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span><span>Close</span></button></div>
     <div className="detail-grid">{fields.map(field => <div className="info-cell" key={field.label}><span>{field.label}</span><div className="metadata-value"><strong>{field.value}</strong>{field.copyable && <button type="button" className="link-button" aria-label={`Copy ${field.label.toLowerCase()}`} onClick={() => void copyValue(field.label, field.value)}>Copy</button>}</div></div>)}</div>
     {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
     <p className="dialog-note">{note}</p>
@@ -513,7 +513,7 @@ function MetadataDialog({ titleId, title, eyebrow, fields, note, onClose }: { ti
 
 function CertificateDialog({ certificate, onClose }: { certificate: Certificate; onClose: () => void }) {
   return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
-    fields={[{ label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
+    fields={[{ label: 'CN', value: certificate.subject_cn || 'Not recorded' }, { label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
     note="Database metadata only. Certificate contents and cryptographic validity are not shown or verified here." />;
 }
 

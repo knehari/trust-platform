@@ -206,7 +206,7 @@ components:
         created_at: { type: string, format: date-time }
     Certificate:
       type: object
-      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at]
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn]
       properties:
         ca_id: { type: string, format: uuid }
         serial_hex: { type: string }
@@ -215,6 +215,7 @@ components:
         state: { type: string }
         signed_at: { type: string, format: date-time }
         published_at: { type: [string, 'null'], format: date-time }
+        subject_cn: { type: [string, 'null'], description: Verified single-CN subject when recorded; null for historical or unsupported subjects }
     AuditEvent:
       type: object
       required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]

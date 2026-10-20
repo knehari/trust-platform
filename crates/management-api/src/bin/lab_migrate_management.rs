@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012 and 0013.
+//! Transactional laboratory runner for management migrations 0012–0014.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, NoTls, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 2] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 3] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -30,6 +30,14 @@ const MIGRATIONS: [(&str, &str, &[&str]); 2] = [
             "public.management_reader_scope",
         ],
     ),
+    (
+        "0014_certificate_subject_cn",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0014_certificate_subject_cn.sql"
+        )),
+        &[],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -44,7 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0013 recorded and current");
+    println!("PASS: management migrations 0012–0014 recorded and current");
     Ok(())
 }
 
@@ -97,12 +105,12 @@ fn apply_migration(
         if stored != checksum {
             return Err(io::Error::other(format!("migration {version} checksum drift")).into());
         }
-        if !relations_present(&mut tx, expected_relations, true)? {
+        if !schema_present(&mut tx, version, expected_relations, true)? {
             return Err(io::Error::other(format!("recorded {version} schema missing")).into());
         }
         println!("SKIP: {version} already recorded with matching checksum");
     } else {
-        if !relations_present(&mut tx, expected_relations, false)? {
+        if !schema_present(&mut tx, version, expected_relations, false)? {
             return Err(io::Error::other(format!(
                 "untracked {version} schema; manual adoption required"
             ))
@@ -117,6 +125,26 @@ fn apply_migration(
     }
     tx.commit()?;
     Ok(())
+}
+
+fn schema_present(
+    tx: &mut Transaction<'_>,
+    version: &str,
+    relations: &[&str],
+    require_all: bool,
+) -> Result<bool, postgres::Error> {
+    if version == "0014_certificate_subject_cn" {
+        let row = tx.query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='certificate'::regclass \
+             AND attname='subject_cn' AND NOT attisdropped), \
+             EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='management_certificate'::regclass \
+             AND attname='subject_cn' AND NOT attisdropped), \
+             to_regprocedure('store_signed_certificate(uuid,uuid,text,bytea,bytea,bytea,bytea,text)') IS NOT NULL",
+            &[],
+        )?;
+        return Ok((0..3).all(|index| row.get::<usize, bool>(index) == require_all));
+    }
+    relations_present(tx, relations, require_all)
 }
 
 fn relations_present(

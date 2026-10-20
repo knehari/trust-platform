@@ -11,10 +11,10 @@ for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql; 
 done
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_populated_upgrade_seed.sql >/dev/null
 
-for migration in migrations/0012*.sql migrations/0013*.sql; do
+for migration in migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql; do
   "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
 done
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_api_readonly.sql >/dev/null
 
-echo 'PASS: populated 0011 -> 0013 management upgrade preserved rows and read-only grants'
+echo 'PASS: populated 0011 -> 0014 management upgrade preserved rows and read-only grants'
