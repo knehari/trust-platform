@@ -58,8 +58,13 @@ where
     A: CrlAssembler,
     V: CrlVerifier,
 {
-    if plan.operation_ref.is_empty() {
+    if plan.operation_ref.is_empty() || plan.signer_key_ref.is_empty() {
         return Err(CrlError::JournalFailure);
+    }
+    // The verifier must check against the very issuer the TBS is built from;
+    // otherwise a mismatch would only surface after the signature.
+    if verifier.issuer() != plan.issuer {
+        return Err(CrlError::IssuerMismatch);
     }
     // Built before the intent: an issuer the builder refuses never reaches
     // the journal or the signer.
@@ -191,14 +196,27 @@ mod tests {
         }
     }
 
-    struct Verifier(bool);
+    struct Verifier {
+        ok: bool,
+        issuer: Certificate,
+    }
     impl CrlVerifier for Verifier {
         fn verify(&self, _r: &CrlReservation, _d: &[u8]) -> Result<(), CrlError> {
-            if self.0 {
+            if self.ok {
                 Ok(())
             } else {
                 Err(CrlError::VerificationFailure)
             }
+        }
+        fn issuer(&self) -> &Certificate {
+            &self.issuer
+        }
+    }
+
+    fn verifier(issuer: &Certificate, ok: bool) -> Verifier {
+        Verifier {
+            ok,
+            issuer: issuer.clone(),
         }
     }
 
@@ -291,7 +309,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, "op"),
         );
         assert_eq!(result, Err(CrlError::JournalFailure));
@@ -323,7 +341,7 @@ mod tests {
                 &mut journal,
                 &mut signer,
                 &Assembler(!asm_fail),
-                &Verifier(!ver_fail),
+                &verifier(&issuer, !ver_fail),
                 &plan(&r, &issuer, "op"),
             );
             assert_eq!(result, Err(expected.clone()));
@@ -343,7 +361,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, "op"),
         )
         .unwrap();
@@ -369,7 +387,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, ""),
         );
         assert_eq!(result, Err(CrlError::JournalFailure));
@@ -390,7 +408,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, "op"),
         )
         .unwrap();
@@ -411,7 +429,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, "op"),
         );
         assert_eq!(result, Err(CrlError::Encoding));
@@ -431,7 +449,7 @@ mod tests {
             &mut journal,
             &mut signer,
             &Assembler(true),
-            &Verifier(true),
+            &verifier(&issuer, true),
             &plan(&r, &issuer, "op"),
         )
         .unwrap();
@@ -461,7 +479,7 @@ mod tests {
                 &mut journal,
                 &mut signer,
                 &Assembler(true),
-                &Verifier(!ver_fail),
+                &verifier(&issuer, !ver_fail),
                 &plan(&r, &issuer, "op"),
             );
             assert_eq!(result, Err(expected.clone()));
@@ -469,5 +487,42 @@ mod tests {
             assert!(journal.persisted.is_none(), "{expected:?}");
             assert_eq!(signer.calls, 1, "{expected:?}");
         }
+    }
+
+    /// Regression: a verifier for another issuer, or an empty signer key
+    /// reference, used to be noticed only after the intent and signature.
+    #[test]
+    fn mismatched_verifier_or_empty_key_ref_never_reaches_journal_or_signer() {
+        let r = reservation();
+        let issuer = issuer();
+        let mut other = issuer.clone();
+        other.tbs_certificate.serial_number =
+            x509_cert::serial_number::SerialNumber::new(&[2]).unwrap();
+        let mut journal = FakeJournal::default();
+        let mut signer = FakeSigner::default();
+        assert_eq!(
+            crl_once(
+                &mut journal,
+                &mut signer,
+                &Assembler(true),
+                &verifier(&other, true),
+                &plan(&r, &issuer, "op"),
+            ),
+            Err(CrlError::IssuerMismatch)
+        );
+        let mut no_key = plan(&r, &issuer, "op");
+        no_key.signer_key_ref = "";
+        assert_eq!(
+            crl_once(
+                &mut journal,
+                &mut signer,
+                &Assembler(true),
+                &verifier(&issuer, true),
+                &no_key,
+            ),
+            Err(CrlError::JournalFailure)
+        );
+        assert_eq!(journal.intent_calls, 0);
+        assert_eq!(signer.calls, 0);
     }
 }

@@ -57,6 +57,9 @@ pub enum CrlError {
     AssemblyFailure,
     VerificationFailure,
     PersistenceFailure,
+    /// The plan's issuer, the verifier's issuer or the signer key reference
+    /// do not belong together; refused before any intent or signature.
+    IssuerMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +188,9 @@ pub trait CrlAssembler {
 /// Independent check of a finished CRL against its reservation.
 pub trait CrlVerifier {
     fn verify(&self, reservation: &CrlReservation, crl_der: &[u8]) -> Result<(), CrlError>;
+
+    /// The trusted issuer certificate this verifier checks against.
+    fn issuer(&self) -> &Certificate;
 }
 
 /// UTCTime for 1970 (unix epoch; earlier instants are rejected) through 2049,
@@ -469,6 +475,10 @@ impl LabCrlVerifier {
 impl CrlVerifier for LabCrlVerifier {
     fn verify(&self, reservation: &CrlReservation, crl_der: &[u8]) -> Result<(), CrlError> {
         self.check(reservation, crl_der)
+    }
+
+    fn issuer(&self) -> &Certificate {
+        &self.issuer
     }
 }
 

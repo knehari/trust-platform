@@ -343,8 +343,9 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     );
     assert_eq!(signer.calls, 2);
 
-    // A verifier built from another CA rejects: fail closed and quarantine.
-    let other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    // A verifier built from another CA than the plan's issuer is a
+    // configuration error: refused before the intent, nothing is signed.
+    let mut other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
     let wrong_verifier = LabCrlVerifier::new(other.root_certificate().clone());
     let r3 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-3")
@@ -364,16 +365,42 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
             &wrong_verifier,
             &plan3
         ),
-        Err(CrlError::VerificationFailure)
+        Err(CrlError::IssuerMismatch)
     );
-    let status3: String = reader
-        .query_one(
-            "SELECT status FROM crl_publication WHERE ca_id=$1::text::uuid AND crl_number=3",
-            &[&ca_id],
+    assert_eq!(signer.calls, 2, "no signature for a mismatched verifier");
+    let status_of = |c: &mut postgres::Client, n: i64| -> String {
+        c.query_one(
+            "SELECT status FROM crl_publication WHERE ca_id=$1::text::uuid AND crl_number=$2",
+            &[&ca_id, &n],
         )
         .unwrap()
-        .get(0);
-    assert_eq!(status3, "RECONCILIATION_REQUIRED");
+        .get(0)
+    };
+    assert_eq!(status_of(&mut reader, 3), "RESERVED");
+
+    // A signature by another key fails independent verification after
+    // signing: fail closed and quarantine.
+    let other_key_ref = other.lab_signer_key_ref().to_owned();
+    let mut wrong_signer = CountingSigner {
+        ca: &mut other,
+        calls: 0,
+    };
+    let plan3_other_key = CrlPlan {
+        signer_key_ref: &other_key_ref,
+        ..plan3
+    };
+    assert_eq!(
+        crl_once(
+            &mut store,
+            &mut wrong_signer,
+            &LabCrlAssembler,
+            &verifier,
+            &plan3_other_key
+        ),
+        Err(CrlError::VerificationFailure)
+    );
+    assert_eq!(wrong_signer.calls, 1);
+    assert_eq!(status_of(&mut reader, 3), "RECONCILIATION_REQUIRED");
     let r4 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-4")
         .unwrap();

@@ -200,7 +200,10 @@ and `CrlVerifier` traits.
 2. **Build** — `crl_once` itself builds the `TBSCertList` deterministically
    from the reservation and the trusted issuer certificate in `CrlPlan`
    (entries sorted by serial). Callers cannot supply TBS bytes, so the
-   journaled and signed bytes always match the reservation. The issuer must
+   journaled and signed bytes always match the reservation. Before the
+   intent, `crl_once` also refuses an empty signer key reference and a
+   verifier whose issuer certificate differs from the plan's
+   (`CrlError::IssuerMismatch`). The issuer must
    carry exactly one keyUsage with cRLSign (an absent keyUsage is refused),
    exactly one non-empty subjectKeyIdentifier (copied into the AKI, never
    recomputed) and an id-ecPublicKey key on the named curve P-256; otherwise
