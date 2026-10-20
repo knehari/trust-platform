@@ -3,7 +3,7 @@
 # others approve prepared revocations. Numbers must be distinct and
 # consecutive, and a reservation must never observe a half-applied or
 # mis-timed approval.
-# Needs a database with migrations 0001..0018 applied and host psql:
+# Needs a database with migrations 0001..0019 applied and host psql:
 #   TRUST_CI_DATABASE_URL=postgresql://user:pw@127.0.0.1:5432/db bash tests/crl_concurrency.sh
 set -euo pipefail
 : "${TRUST_CI_DATABASE_URL:?TRUST_CI_DATABASE_URL is required}"
@@ -17,15 +17,16 @@ sql() {
 iss="https://idp.lab.invalid"
 ca="$(sql "SELECT gen_random_uuid()")"
 
-# Fixture: own CA, five issued certificates, maker/checker grants, five
+# Fixture: own CA, six issued certificates, maker/checker grants, five
 # PROPOSED revocations with distinct reason codes (1..5). Changes 1..4 race
-# the reservations; change 5 is used by the deterministic gate check.
+# the reservations; change 5 is used by the deterministic gate check;
+# certificate 6 is used by the grant-lock probe.
 sql "INSERT INTO ca(ca_id,display_name,policy_version) VALUES
     ('$ca','CRL Concurrency CA','v1')" >/dev/null
 sql "INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,
         requester_id,policy_version,state)
      SELECT gen_random_uuid(),'$ca','crl-race-'||n,sha256(('csr'||n)::bytea),'requester','v1','PUBLISHED'
-     FROM generate_series(1,5) n" >/dev/null
+     FROM generate_series(1,6) n" >/dev/null
 sql "INSERT INTO serial_reservation(ca_id,serial_der_content,request_id)
      SELECT '$ca',decode('0'||row_number() OVER (ORDER BY idempotency_key),'hex'),request_id
      FROM certificate_request WHERE ca_id='$ca'" >/dev/null
@@ -135,7 +136,7 @@ gate_after="$(sql "SELECT count(*) FROM crl_entry_snapshot s JOIN crl_publicatio
           END LOOP;
       END \$fn\$;
       SELECT crl_number FROM reserve_crl('$ca','crl-worker-hold','race-op-hold');
-      SELECT pg_temp.await_probe()" >/dev/null
+      SELECT pg_temp.await_probe()" >/dev/null 2>"$temp/holder.err"
 ) &
 holder_pid=$!
 holder_holds=0
@@ -146,6 +147,7 @@ for _ in $(seq 1 200); do
   [ "$holder_holds" != "0" ] && break
   sql "SELECT pg_sleep(0.05)" >/dev/null
 done
+: > "$temp/fk-insert.err"
 fk_insert_ok=0
 if [ "$holder_holds" != "0" ] && sql "SET lock_timeout = '2s';
     INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,
@@ -154,7 +156,49 @@ if [ "$holder_holds" != "0" ] && sql "SET lock_timeout = '2s';
             'requester','v1','PUBLISHED')" >/dev/null 2>"$temp/fk-insert.err"; then
   fk_insert_ok=1
 fi
-wait "$holder_pid" || true
+holder_ok=1
+wait "$holder_pid" || holder_ok=0
+
+# Grant lock: a rejection holds the checker's grant FOR SHARE until it
+# commits, so deleting that grant concurrently must wait (lock_timeout).
+grant_change="$(sql "SELECT propose_certificate_status_change('$ca',decode('06','hex'),
+    'REVOKE',1::smallint,NULL,'$iss','maker')")"
+(
+  PGAPPNAME=crl-rejecter sql "CREATE FUNCTION pg_temp.await_done() RETURNS void
+      LANGUAGE plpgsql AS \$fn\$
+      BEGIN
+          FOR i IN 1..200 LOOP
+              EXIT WHEN EXISTS (SELECT 1 FROM certificate_request
+                                WHERE ca_id='$ca' AND idempotency_key='grant-probe-done');
+              PERFORM pg_sleep(0.05);
+          END LOOP;
+      END \$fn\$;
+      SELECT reject_certificate_status_change('$grant_change','$iss','checker');
+      SELECT pg_temp.await_done()" >/dev/null 2>"$temp/rejecter.err"
+) &
+rejecter_pid=$!
+rejecter_holds=0
+for _ in $(seq 1 200); do
+  rejecter_holds="$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+    WHERE a.application_name='crl-rejecter' AND l.granted
+      AND l.relation='certificate_status_change'::regclass")"
+  [ "$rejecter_holds" != "0" ] && break
+  sql "SELECT pg_sleep(0.05)" >/dev/null
+done
+: > "$temp/grant-delete.err"
+grant_delete_blocked=0
+if [ "$rejecter_holds" != "0" ] && ! sql "SET lock_timeout = '2s';
+    DELETE FROM revocation_officer_grant
+    WHERE issuer='$iss' AND subject='checker' AND ca_id='$ca'" >/dev/null 2>"$temp/grant-delete.err" \
+  && grep -q 'lock timeout' "$temp/grant-delete.err"; then
+  grant_delete_blocked=1
+fi
+sql "INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,
+        requester_id,policy_version,state)
+    VALUES (gen_random_uuid(),'$ca','grant-probe-done',sha256('done'::bytea),
+            'requester','v1','PUBLISHED')" >/dev/null
+rejecter_ok=1
+wait "$rejecter_pid" || rejecter_ok=0
 
 approved="$(sql "SELECT count(*) FROM certificate_status_change WHERE ca_id='$ca' AND status='APPROVED'")"
 
@@ -189,13 +233,20 @@ sizes="$(sql "SELECT string_agg(n::text, ',' ORDER BY n) FROM (
   LEFT JOIN crl_entry_snapshot s ON s.ca_id=p.ca_id AND s.crl_number=p.crl_number
   WHERE p.ca_id='$ca' GROUP BY p.crl_number) x")"
 
-if [ "$fk_insert_ok" != "1" ]; then cat "$temp/fk-insert.err" >&2; fi
+if [ "$fk_insert_ok" != "1" ] || [ "$holder_ok" != "1" ]; then
+  cat "$temp/fk-insert.err" "$temp/holder.err" >&2
+fi
+if [ "$grant_delete_blocked" != "1" ] || [ "$rejecter_ok" != "1" ]; then
+  echo "grant delete was not blocked by the concurrent rejection" >&2
+  cat "$temp/grant-delete.err" "$temp/rejecter.err" >&2
+fi
 if [ "$numbers" != "12|12|1|12" ] || [ "$approved" != "5" ] || [ "$gate_late" != "1" ] \
   || [ "$gate_blocked" != "1" ] || [ "$gate_snapshot_has_5" != "0" ] \
-  || [ "$fk_insert_ok" != "1" ] \
+  || [ "$fk_insert_ok" != "1" ] || [ "$holder_ok" != "1" ] \
+  || [ "$grant_delete_blocked" != "1" ] || [ "$rejecter_ok" != "1" ] \
   || [ "$gate_after" != "1" ] \
   || [ "$wrong_rows" != "0" ] || [ "$missed" != "0" ] || [ "$bad_digest" != "0" ]; then
-  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_blocked=$gate_blocked fk_insert_ok=$fk_insert_ok gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
+  echo "FAIL: CRL race numbers=$numbers approved=$approved gate_late=$gate_late gate_blocked=$gate_blocked fk_insert_ok=$fk_insert_ok holder_ok=$holder_ok grant_delete_blocked=$grant_delete_blocked rejecter_ok=$rejecter_ok gate_after=$gate_after gate_snapshot_has_5=$gate_snapshot_has_5 wrong_rows=$wrong_rows missed=$missed bad_digest=$bad_digest sizes=$sizes" >&2
   exit 1
 fi
 

@@ -33,6 +33,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   be signed, but it stays `RESERVED` until the sweep runs; ADR-0006 part C
   proposes a scheduled operator job.
 - `crl_due` is O(history) per call; read-only queries do not check isolation.
+- The lifecycle audit decision format is built in four function bodies
+  (0018/0019); a shared SQL helper would keep it in one place.
 - Reject path and approve's generic message still fold maker=checker wording;
   intent mismatch is reported as
   `ReplayedOrAmbiguousIntent` (no distinct variant).

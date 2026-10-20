@@ -2,12 +2,13 @@
 set -euo pipefail
 
 # The supplied URL must name a new, disposable PostgreSQL database. This is
-# an upgrade regression for 0014-0018, not an online migration runner.
+# an upgrade regression for 0014-0019, not an online migration runner.
 #
-# 0014, 0015 and 0016 each run in one transaction and abort on pre-existing
-# rows they cannot carry forward: a revocation with reason 7 or 8 (0014), any
-# crl_publication row (0015, operation_ref etc. are NOT NULL without a
-# default) or a revocation date outside 1970..9999 (0016). This script checks
+# 0014, 0015, 0016, 0018 and 0019 each run in one transaction and abort on
+# pre-existing rows they cannot carry forward: a revocation with reason 7 or
+# 8 (0014), any crl_publication row (0015, operation_ref etc. are NOT NULL
+# without a default), a revocation date outside 1970..9999 (0016) or a
+# suspension CPS reference without text (0018, 0019). This script checks
 # that each aborts with nothing applied, that the migration succeeds once the
 # operator has removed the offending row, and that legacy revocation rows
 # survive and feed the CRL pipeline.
@@ -99,8 +100,25 @@ expect_eq '0016 objects after abort' \
 psql_run -c "DELETE FROM revocation WHERE reason_code = 6" >/dev/null
 psql_run -f migrations/0016_crl_robustness.sql >/dev/null
 psql_run -f migrations/0017_crl_intent_ordering.sql >/dev/null
+
+# 0018 refuses a blank suspension CPS reference, 0019 one without any
+# letter or digit (a no-break space passes 0018 but not 0019).
+psql_run -c "INSERT INTO ca_revocation_policy (ca_id, suspension_cps_ref)
+             VALUES ('ffffffff-ffff-4fff-8fff-ffffffffffff', '   ')" >/dev/null
+expect_abort migrations/0018_revocation_hygiene.sql suspension_cps_ref_not_blank
+expect_eq '0018 objects after abort' \
+  "$(scalar "SELECT count(*) FROM pg_constraint WHERE conname = 'suspension_cps_ref_not_blank'")" 0
+psql_run -c "UPDATE ca_revocation_policy SET suspension_cps_ref = E'\\u00A0'
+             WHERE ca_id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'" >/dev/null
 psql_run -f migrations/0018_revocation_hygiene.sql >/dev/null
+expect_abort migrations/0019_revocation_review_fixes.sql suspension_cps_ref_not_blank
+expect_eq '0019 objects after abort' \
+  "$(scalar "SELECT count(*) FROM pg_get_functiondef('record_crl_intent(uuid,bigint,text,bytea,bytea,bigint,bigint,bigint)'::regprocedure) d
+             WHERE d LIKE '%may already be signed%'")" 0
+psql_run -c "UPDATE ca_revocation_policy SET suspension_cps_ref = 'CPS 4.9.13'
+             WHERE ca_id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'" >/dev/null
+psql_run -f migrations/0019_revocation_review_fixes.sql >/dev/null
 
 psql_run -f tests/revocation_populated_upgrade_verify.sql >/dev/null
 
-echo 'PASS: populated 0013 -> 0018 revocation upgrade aborts on unsupported rows and preserves legacy revocations'
+echo 'PASS: populated 0013 -> 0019 revocation upgrade aborts on unsupported rows and preserves legacy revocations'

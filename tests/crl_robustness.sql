@@ -206,7 +206,7 @@ BEGIN
     -- CRL 1 would now be older than a stored CRL: never signed
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
         1, 'order-op-1', sha256('tbs-1'::bytea))$$, '23514',
-        'CRL intent refused: a higher CRL number is already stored');
+        'CRL intent refused: a higher CRL number may already be signed');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
         = 'RESERVED', 'refused intent leaves the reservation untouched');
 
@@ -283,6 +283,49 @@ BEGIN
             'certificate.status.proposed=SUSPEND:pending_approval:change=' || c3 || ':reason=6',
             'certificate.status.withdrawn=SUSPEND:withdrawn:change=' || c3 || ':reason=6']) x),
         'lifecycle audit decisions carry change id and reason');
+END $t$;
+
+-- --------------------------------------------- review fixes (migration 0019)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000020', 'CRL Review Lab CA', 'lab-1');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000020';
+BEGIN
+    -- a higher number with a recorded intent (signed or about to be) blocks n
+    PERFORM reserve_crl(ca, 'crl-worker', 'review-op-1');
+    PERFORM reserve_crl(ca, 'crl-worker', 'review-op-2');
+    PERFORM reserve_crl(ca, 'crl-worker', 'review-op-3');
+    PERFORM pg_temp.intent(ca, 3, 'review-op-3', sha256('tbs-3'::bytea));
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
+        2, 'review-op-2', sha256('tbs-2'::bytea))$$, '23514',
+        'CRL intent refused: a higher CRL number may already be signed');
+    -- ... and so does a quarantined higher number (possibly signed)
+    PERFORM mark_crl_uncertain(ca, 3, 'review-op-3');
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
+        1, 'review-op-1', sha256('tbs-1'::bytea))$$, '23514',
+        'CRL intent refused: a higher CRL number may already be signed');
+
+    -- a reservation whose nextUpdate has passed is refused even when the
+    -- current policy interval (changed after the reservation) is longer
+    INSERT INTO ca_revocation_policy(ca_id, crl_issue_interval, crl_validity)
+    VALUES (ca, INTERVAL '2 days', INTERVAL '2 days');
+    INSERT INTO crl_publication(ca_id, crl_number, this_update, next_update, status,
+                                operation_ref, actor_id, entries_sha256)
+    VALUES (ca, 4, date_trunc('second', clock_timestamp() - INTERVAL '90 minutes'),
+            date_trunc('second', clock_timestamp() - INTERVAL '30 minutes'),
+            'RESERVED', 'review-op-4', 'crl-worker', sha256('\x'::bytea));
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
+        4, 'review-op-4', sha256('tbs-4'::bytea))$$, '23514',
+        'CRL intent refused: the reserved nextUpdate has passed');
+
+    -- CPS reference: non-ASCII blanks and invisible characters are not text
+    PERFORM pg_temp.expect_err($$UPDATE ca_revocation_policy SET suspension_cps_ref = E'\u00A0'
+        WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000020'$$, '23514');
+    PERFORM pg_temp.expect_err($$UPDATE ca_revocation_policy SET suspension_cps_ref = E'\u200B\u3000'
+        WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000020'$$, '23514');
+    UPDATE ca_revocation_policy SET suspension_cps_ref = 'CPS §4.9.13'
+    WHERE ca_id = ca;
 END $t$;
 
 ROLLBACK;
