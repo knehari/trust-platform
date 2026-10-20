@@ -30,7 +30,12 @@ write path either:
   - `Cache-Control: public, max-age` runs until nextUpdate, capped at one
     hour;
   - a CRL past its nextUpdate is still served, with `no-cache`, so that
-    relying parties see it is stale.
+    relying parties see it is stale;
+  - conditional requests (RFC 9110 §13): `If-None-Match` (weak comparison, `*`
+    accepted) and otherwise `If-Modified-Since` against thisUpdate get
+    `304 Not Modified` with the same validators and cache headers. The
+    answer is given only after re-verification, so a client holding a CRL
+    whose stored copy was altered gets 503, not 304.
 - At most 16 requests run concurrently; the others get 503.
 
 ```

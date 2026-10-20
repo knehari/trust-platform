@@ -24,7 +24,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -150,7 +150,37 @@ fn cache_control(now: i64, next_update: Option<i64>) -> HeaderValue {
     }
 }
 
-async fn serve_crl(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+/// RFC 9110 13.1.2: weak comparison of the entity tags in If-None-Match.
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    if_none_match.split(',').map(str::trim).any(|candidate| {
+        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+    })
+}
+
+/// Whether the client's copy is current (RFC 9110 13.1.2, 13.1.3,
+/// 13.2.2): If-None-Match decides when present; otherwise If-Modified-Since
+/// against thisUpdate. An unparsable date is ignored, as RFC 9110 requires.
+fn not_modified(request: &HeaderMap, etag: &str, this_update_unix: i64) -> bool {
+    if let Some(value) = request.get(header::IF_NONE_MATCH) {
+        return value
+            .to_str()
+            .map(|value| etag_matches(value, etag))
+            .unwrap_or(false);
+    }
+    request
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| httpdate::parse_http_date(value).ok())
+        .and_then(|since| since.duration_since(UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_secs()).ok())
+        .is_some_and(|since| this_update_unix <= since)
+}
+
+async fn serve_crl(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    request: HeaderMap,
+) -> Response {
     let Some(ca_id) = ca_from_path(&file).map(str::to_owned) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -184,7 +214,15 @@ async fn serve_crl(State(state): State<AppState>, Path(file): Path<String>) -> R
         }));
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    let mut response = Response::new(Body::from(stored.crl_der));
+    let etag = format!("\"{}\"", stored.crl_number);
+    // Only after the CRL re-verified: a 304 never vouches for a tampered CRL.
+    let mut response = if not_modified(&request, &etag, stored.this_update_unix) {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        response
+    } else {
+        Response::new(Body::from(stored.crl_der))
+    };
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
@@ -194,7 +232,7 @@ async fn serve_crl(State(state): State<AppState>, Path(file): Path<String>) -> R
         header::CACHE_CONTROL,
         cache_control((state.now_unix)(), stored.next_update_unix),
     );
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", stored.crl_number)) {
+    if let Ok(etag) = HeaderValue::from_str(&etag) {
         headers.insert(header::ETAG, etag);
     }
     if let Some(value) = http_date(stored.this_update_unix) {
@@ -367,6 +405,85 @@ mod tests {
             let response = get(Ok(Some(stored())), &path, system_now).await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    async fn conditional(
+        crl: StoredCrl,
+        header_name: header::HeaderName,
+        value: &str,
+    ) -> (StatusCode, HeaderMap, usize) {
+        let response = router(AppState {
+            source: Arc::new(Fixed(Ok(Some(crl)))),
+            slots: Arc::new(Semaphore::new(1)),
+            now_unix: system_now,
+        })
+        .oneshot(
+            Request::get(format!("/crl/{CA}.crl"))
+                .header(header_name, value)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, body.len())
+    }
+
+    #[tokio::test]
+    async fn conditional_requests_follow_rfc_9110() {
+        let crl = stored();
+        let this_update =
+            httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs(crl.this_update_unix as u64));
+        let earlier = httpdate::fmt_http_date(
+            UNIX_EPOCH + Duration::from_secs(crl.this_update_unix as u64 - 1),
+        );
+        for (name, value) in [
+            (header::IF_NONE_MATCH, "\"7\""),
+            (header::IF_NONE_MATCH, "W/\"7\""),
+            (header::IF_NONE_MATCH, "\"3\", \"7\""),
+            (header::IF_NONE_MATCH, "*"),
+            (header::IF_MODIFIED_SINCE, this_update.as_str()),
+        ] {
+            let (status, headers, length) = conditional(crl.clone(), name.clone(), value).await;
+            assert_eq!(status, StatusCode::NOT_MODIFIED, "{name}: {value}");
+            assert_eq!(length, 0);
+            assert_eq!(headers[header::ETAG], "\"7\"");
+            assert!(headers.contains_key(header::CACHE_CONTROL));
+            assert!(headers.contains_key(header::EXPIRES));
+        }
+        for (name, value) in [
+            (header::IF_NONE_MATCH, "\"6\""),
+            (header::IF_MODIFIED_SINCE, earlier.as_str()),
+            (header::IF_MODIFIED_SINCE, "not a date"),
+        ] {
+            let (status, _, length) = conditional(crl.clone(), name.clone(), value).await;
+            assert_eq!(status, StatusCode::OK, "{name}: {value}");
+            assert_eq!(length, crl.crl_der.len());
+        }
+        // If-None-Match decides over If-Modified-Since.
+        let response = router(AppState {
+            source: Arc::new(Fixed(Ok(Some(crl.clone())))),
+            slots: Arc::new(Semaphore::new(1)),
+            now_unix: system_now,
+        })
+        .oneshot(
+            Request::get(format!("/crl/{CA}.crl"))
+                .header(header::IF_NONE_MATCH, "\"6\"")
+                .header(header::IF_MODIFIED_SINCE, this_update.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // A tampered CRL is refused even to a client that holds it.
+        let mut flipped = crl;
+        let last = flipped.crl_der.len() - 1;
+        flipped.crl_der[last] ^= 1;
+        let (status, _, _) = conditional(flipped, header::IF_NONE_MATCH, "\"7\"").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

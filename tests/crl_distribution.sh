@@ -66,6 +66,13 @@ curl -sf -D "$temp/headers" -o "$temp/served.der" "http://127.0.0.1:$port/crl/$c
 cmp -s "$temp/served.der" "$temp/expected.der" || fail "served CRL differs from the stored one"
 grep -qi '^content-type: application/pkix-crl' "$temp/headers" || fail "wrong content type"
 grep -qi "^etag: \"$number\"" "$temp/headers" || fail "ETag is not the CRL number"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: \"$number\"" "http://127.0.0.1:$port/crl/$ca.crl")" = 304 ] \
+  || fail "current ETag not answered with 304"
+last_modified="$(grep -i '^last-modified:' "$temp/headers" | cut -d' ' -f2- | tr -d '\r')"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: $last_modified" "http://127.0.0.1:$port/crl/$ca.crl")" = 304 ] \
+  || fail "If-Modified-Since thisUpdate not answered with 304"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'If-None-Match: "0"' "http://127.0.0.1:$port/crl/$ca.crl")" = 200 ] \
+  || fail "stale ETag not answered with the CRL"
 openssl crl -inform DER -in "$temp/served.der" -CAfile "$temp/issuer.pem" -noout 2>&1 \
   | grep -q "verify OK" || fail "OpenSSL does not verify the served CRL"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -I "http://127.0.0.1:$port/crl/$ca.crl")" = 200 ] \
