@@ -199,6 +199,10 @@ fn router(state: AppState) -> Router {
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
+            "/v1/cas/{ca_id}/certificates/by-serial/{serial_hex}",
+            get(get_certificate_by_serial),
+        )
+        .route(
             "/v1/cas/{ca_id}/certificates/{request_id}",
             get(get_certificate),
         )
@@ -349,6 +353,27 @@ fn scoped_ca_id(raw: &str, claims: &Claims) -> Result<String, StatusCode> {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(canonical)
+}
+
+fn canonical_serial_hex(raw: &str) -> Result<String, StatusCode> {
+    if !(2..=40).contains(&raw.len())
+        || raw.len() % 2 != 0
+        || !raw.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let bytes: Vec<u8> = raw
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    if bytes[0] >= 0x80
+        || bytes.iter().all(|byte| *byte == 0)
+        || (bytes[0] == 0 && (bytes.len() == 1 || bytes[1] < 0x80))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(raw.to_ascii_lowercase())
 }
 
 async fn query_db<T: Send + 'static>(
@@ -530,6 +555,33 @@ async fn get_certificate(
              FROM management_certificate WHERE ca_id=$1 AND request_id=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &request_id, &issuer, &subject],
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?
+      .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(certificate_from_row(row)))
+}
+
+async fn get_certificate_by_serial(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((ca_id, serial_hex)): Path<(String, String)>,
+) -> Result<Json<Certificate>, StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let serial_hex = canonical_serial_hex(&serial_hex)?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer, &subject, &ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query_opt(
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+             FROM management_certificate WHERE ca_id=$1 AND serial_hex=$2 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
+            &[&ca_id, &serial_hex, &issuer, &subject],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?
       .ok_or(StatusCode::NOT_FOUND)?;
@@ -787,6 +839,30 @@ mod tests {
         assert_eq!(certificate["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
         assert_eq!(certificate["subject_cn"], "paged-0001.lab.invalid");
         assert!(certificate.get("certificate_der").is_none());
+        let serial_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/by-serial";
+        let (status, by_serial) =
+            detail_response(&app, &token, &format!("{serial_base}/010001")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(by_serial["request_id"], certificate["request_id"]);
+        assert_eq!(by_serial["subject_cn"], "paged-0001.lab.invalid");
+        let (status, uppercase) =
+            detail_response(&app, &token, &format!("{serial_base}/01000A")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(uppercase["serial_hex"], "01000a");
+        for serial in ["0", "00", "80", "0001", "zz", "ff"] {
+            let (status, _) =
+                detail_response(&app, &token, &format!("{serial_base}/{serial}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "serial {serial}");
+        }
+        let (status, _) = detail_response(&app, &token, &format!("{serial_base}/010067")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = detail_response(
+            &app,
+            &token,
+            "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates/by-serial/010001",
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = detail_response(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/11111111-1111-4111-8111-000000000999").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = detail_response(&app, &token, "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates/11111111-1111-4111-8111-000000000001").await;
@@ -809,6 +885,9 @@ mod tests {
         )
         .unwrap();
         let (status, _) = detail_response(&app, &unprovisioned, allowed).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) =
+            detail_response(&app, &unprovisioned, &format!("{serial_base}/010001")).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let allowed_event = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit/33333333-3333-4333-8333-000000000001";
         let (status, event) = detail_response(&app, &token, allowed_event).await;

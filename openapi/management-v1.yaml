@@ -124,6 +124,28 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { description: No certificate metadata for that request in the authorized CA }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates/by-serial/{serial_hex}:
+    get:
+      summary: Find one certificate metadata record by exact issuer-scoped serial
+      description: Accepts canonical DER-content hex, case-insensitively. The signed CA scope and current server-owned reader grant are checked before the restricted metadata view is queried. Certificate DER is not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: serial_hex
+          required: true
+          schema: { type: string, pattern: '^(?:[0-9A-Fa-f]{2}){1,20}$', maxLength: 40 }
+      responses:
+        '200':
+          description: Certificate metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No certificate with that serial in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/audit:
     get:
       summary: Read one ordered page of audit event metadata for a scoped CA, at most 100
