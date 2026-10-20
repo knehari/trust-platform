@@ -77,17 +77,28 @@ impl PgRevocationStore {
             .ok()
             .and_then(|d| i64::try_from(d.as_secs()).ok())
             .ok_or(RevocationStoreError::InconsistentResult)?;
+        // RELEASE carries no reason and no invalidity date (0014 refuses both).
+        if action == StatusAction::Release && invalidity_at_unix.is_some() {
+            return Err(RevocationStoreError::Denied(
+                StatusChangeError::ReasonNotAllowedForAction,
+            ));
+        }
         check_invalidity_date(invalidity_at_unix, now_unix)
             .map_err(RevocationStoreError::Denied)?;
         let current = self.status(ca_id, serial)?;
-        let allowed: bool = column(
-            &self.client.query_one(
-                "SELECT COALESCE((SELECT suspension_allowed FROM ca_revocation_policy
-                                  WHERE ca_id = $1::text::uuid), false)",
-                &[&ca_id],
-            )?,
-            0,
-        )?;
+        // The suspension policy only matters for SUSPEND.
+        let allowed: bool = if action == StatusAction::Suspend {
+            column(
+                &self.client.query_one(
+                    "SELECT COALESCE((SELECT suspension_allowed FROM ca_revocation_policy
+                                      WHERE ca_id = $1::text::uuid), false)",
+                    &[&ca_id],
+                )?,
+                0,
+            )?
+        } else {
+            false
+        };
         decide_status_change(current, action, reason, allowed)
             .map_err(RevocationStoreError::Denied)?;
         let code: Option<i16> = reason.map(RevocationReason::code);

@@ -16,6 +16,12 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
   signer keys (known deviation). ADR-0006 part B proposes signed claims.
 - Authentication of revocation officers stays with the identity adapter.
+- Nothing binds `CrlReservation::ca_id` to `CrlPlan::issuer`: there is no CA
+  certificate table to check it against, so a caller passing another CA's
+  issuer, key and verifier would store that CA's CRL under this ca_id.
+  `crl_once` now refuses a verifier whose issuer differs from the plan's, but
+  the signer cannot be asked for its public key before signing
+  (`ExternalSigner` is the historical issuance trait).
 
 ## Test gaps
 - Integration test asserts no thisUpdate/nextUpdate values (OpenSSL now
@@ -44,7 +50,12 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - The lifecycle audit decision format is built in four function bodies
   (0018/0019); a shared SQL helper would keep it in one place.
 - Reject path and approve's generic message still fold maker=checker wording;
-  intent mismatch is reported as
-  `ReplayedOrAmbiguousIntent` (no distinct variant).
+  every 23514 from `record_crl_intent` (replay, content mismatch, and the certain
+  "reserve again" refusals: superseded, stale, nextUpdate passed) is reported
+  as `ReplayedOrAmbiguousIntent`; a distinct SQLSTATE/variant would let workers
+  re-reserve instead of escalating.
+- When `persist_verified` fails after a verified signature, `crl_once` marks
+  the number uncertain and drops the DER; returning it would let
+  reconciliation store it instead of losing the number.
 - Expired-entry pruning (`keep_expired_on_crl = false`) needs a stored
   `not_after`; entry order is raw serial bytes, not OpenSSL's (length, bytes).

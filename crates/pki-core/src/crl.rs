@@ -390,6 +390,8 @@ pub fn build_tbs_cert_list(
         crl_extensions.push(generalized_time_extension(EXPIRED_CERTS_ON_CRL_OID, since)?);
     }
 
+    // Defence in depth (see builder_rejects_invalid_reservations): the
+    // sealed constructor already sorts and de-duplicates.
     let mut entries: Vec<&CrlEntry> = reservation.entries.iter().collect();
     entries.sort_by(|a, b| a.serial.cmp(&b.serial));
     if entries
@@ -475,10 +477,9 @@ impl LabCrlVerifier {
         if expected != tbs_der {
             return Err(fail);
         }
+        // id-ecPublicKey on P-256 was enforced by check_issuer, through
+        // build_tbs_cert_list above.
         let spki = &self.issuer.tbs_certificate.subject_public_key_info;
-        if spki.algorithm.oid.to_string() != "1.2.840.10045.2.1" {
-            return Err(fail);
-        }
         let sec1 = spki
             .subject_public_key
             .as_bytes()

@@ -931,3 +931,50 @@ fn reservation_older_than_a_stored_crl_is_never_signed() {
     );
     assert_eq!(signer.calls, 1);
 }
+
+/// RELEASE carries no invalidity date (migration 0014 refuses it); the Rust
+/// pre-check must say so with a typed denial before any SQL write.
+#[test]
+fn release_with_an_invalidity_date_is_denied_before_sql() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 301);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &serial,
+        StatusAction::Suspend,
+        Some(RevocationReason::CertificateHold),
+    );
+    let maker = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "maker",
+    };
+    let result = store.propose(
+        &ca_id,
+        &serial,
+        StatusAction::Release,
+        None,
+        Some(1_700_000_000),
+        &maker,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(RevocationStoreError::Denied(
+                StatusChangeError::ReasonNotAllowedForAction
+            ))
+        ),
+        "got {result:?}"
+    );
+}
