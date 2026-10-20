@@ -23,6 +23,10 @@ test('detects an older API missing the authority detail route', () => withServer
 test('detects an older API missing detail routes', () => withServer(404, async base => {
   await assert.rejects(checkApi(base), /Rebuild and restart trust-management-api/);
 }));
+test('detects an older API missing serial lookup', () => withServer(
+  path => path?.includes('/by-serial/') ? 404 : 401,
+  async base => { await assert.rejects(checkApi(base), /by-serial\/010001.*missing \(404\)/); },
+));
 test('does not mistake an unavailable API for a compatible one', () => withServer(503, async base => {
   await assert.rejects(checkApi(base), /returned 503/);
 }));
