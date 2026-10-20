@@ -809,3 +809,42 @@ fn abandoned_reservation_is_never_signed() {
         .unwrap();
     assert_eq!(next.crl_number(), 2);
 }
+
+/// A database answer of the wrong shape is an error, never a panic. A
+/// private schema shadows `certificate_status` with a NULL-returning function
+/// and only this test's connection puts it first on its search_path.
+#[test]
+fn malformed_database_answer_is_an_error_not_a_panic() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let schema = format!("shadow_{}", ca_id.replace('-', ""));
+    owner
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema};
+             CREATE FUNCTION {schema}.certificate_status(uuid, bytea) RETURNS text
+                 LANGUAGE sql AS 'SELECT NULL::text';"
+        ))
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let shadowed = format!("{url}{separator}options=-csearch_path%3D{schema},public");
+    let mut store = PgRevocationStore::connect_lab(&shadowed).unwrap();
+    let serial = SerialNumber::from_positive_der_content(&[0x01]).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.status(&ca_id, &serial)
+    }));
+    owner
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .unwrap();
+    assert!(
+        matches!(result, Ok(Err(RevocationStoreError::InconsistentResult))),
+        "expected InconsistentResult, got a panic or another outcome"
+    );
+}

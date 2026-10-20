@@ -11,7 +11,7 @@ use crate::crl_orchestrator::{CrlJournal, CrlPlan};
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
 use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
-use postgres::{error::SqlState, Client, Error as PgError, NoTls};
+use postgres::{error::SqlState, types::FromSqlOwned, Client, Error as PgError, NoTls, Row};
 
 #[derive(Debug)]
 pub enum RevocationStoreError {
@@ -24,6 +24,13 @@ impl From<PgError> for RevocationStoreError {
     fn from(value: PgError) -> Self {
         Self::Database(value)
     }
+}
+
+/// Column `idx` of `row`; a NULL or mistyped value is an inconsistent
+/// database answer, never a panic.
+fn column<T: FromSqlOwned>(row: &Row, idx: usize) -> Result<T, RevocationStoreError> {
+    row.try_get(idx)
+        .map_err(|_| RevocationStoreError::InconsistentResult)
 }
 
 pub struct PgRevocationStore {
@@ -48,7 +55,7 @@ impl PgRevocationStore {
             "SELECT certificate_status($1::text::uuid, $2)",
             &[&ca_id, &serial.as_der_content()],
         )?;
-        let value: String = row.get(0);
+        let value: String = column(&row, 0)?;
         CertificateStatus::from_sql(&value).ok_or(RevocationStoreError::InconsistentResult)
     }
 
@@ -73,14 +80,14 @@ impl PgRevocationStore {
         check_invalidity_date(invalidity_at_unix, now_unix)
             .map_err(RevocationStoreError::Denied)?;
         let current = self.status(ca_id, serial)?;
-        let allowed: bool = self
-            .client
-            .query_one(
+        let allowed: bool = column(
+            &self.client.query_one(
                 "SELECT COALESCE((SELECT suspension_allowed FROM ca_revocation_policy
                                   WHERE ca_id = $1::text::uuid), false)",
                 &[&ca_id],
-            )?
-            .get(0);
+            )?,
+            0,
+        )?;
         decide_status_change(current, action, reason, allowed)
             .map_err(RevocationStoreError::Denied)?;
         let code: Option<i16> = reason.map(RevocationReason::code);
@@ -98,7 +105,7 @@ impl PgRevocationStore {
                 &maker.subject,
             ],
         )?;
-        Ok(row.get(0))
+        column(&row, 0)
     }
 
     pub fn approve(
@@ -163,10 +170,10 @@ impl PgRevocationStore {
              FROM reserve_crl($1::text::uuid, $2, $3)",
             &[&ca_id, &actor, &operation_ref],
         )?;
-        let number: i64 = row.get(0);
-        let this_update_unix: i64 = row.get(1);
-        let next_update_unix: i64 = row.get(2);
-        let expired_certs_on_crl_since_unix: Option<i64> = row.get(3);
+        let number: i64 = column(&row, 0)?;
+        let this_update_unix: i64 = column(&row, 1)?;
+        let next_update_unix: i64 = column(&row, 2)?;
+        let expired_certs_on_crl_since_unix: Option<i64> = column(&row, 3)?;
 
         let rows = self.client.query(
             "SELECT serial_der_content,
@@ -178,15 +185,15 @@ impl PgRevocationStore {
         )?;
         let mut entries = Vec::with_capacity(rows.len());
         for r in rows {
-            let serial_bytes: Vec<u8> = r.get(0);
-            let reason_code: i16 = r.get(2);
+            let serial_bytes: Vec<u8> = column(&r, 0)?;
+            let reason_code: i16 = column(&r, 2)?;
             entries.push(CrlEntry {
                 serial: SerialNumber::from_positive_der_content(&serial_bytes)
                     .map_err(|_| RevocationStoreError::InconsistentResult)?,
-                revoked_at_unix: r.get(1),
+                revoked_at_unix: column(&r, 1)?,
                 reason: RevocationReason::from_code(reason_code)
                     .map_err(|_| RevocationStoreError::InconsistentResult)?,
-                invalidity_at_unix: r.get(3),
+                invalidity_at_unix: column(&r, 3)?,
             });
         }
         // The sealed reservation is the only thing the CA core can sign; its
@@ -214,7 +221,7 @@ impl PgRevocationStore {
                  $1::text::uuid, make_interval(secs => $2::bigint::float8))",
             &[&ca_id, &older_than_seconds],
         )?;
-        Ok(row.get(0))
+        column(&row, 0)
     }
 
     pub fn quarantine_stale_crl_intents(
@@ -227,7 +234,7 @@ impl PgRevocationStore {
                  $1::text::uuid, make_interval(secs => $2::bigint::float8))",
             &[&ca_id, &older_than_seconds],
         )?;
-        Ok(row.get(0))
+        column(&row, 0)
     }
 }
 
