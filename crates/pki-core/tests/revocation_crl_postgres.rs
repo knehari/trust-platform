@@ -1916,3 +1916,96 @@ fn a_skewed_database_clock_is_refused_before_signing() {
     assert_eq!(report.abandoned, 1);
     assert!(report.needs_attention());
 }
+
+/// Migration 0032: a revoked certificate stored with a not_after earlier
+/// than its real expiry would be pruned from the CRL by 0031; the Rust core
+/// re-reads the certificate before recording the intent and refuses to sign
+/// the CRL that leaves it out.
+#[test]
+fn a_falsified_expiry_cannot_prune_a_revoked_certificate() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET keep_expired_on_crl = false
+             WHERE ca_id = $1::text::uuid",
+            &[&ca_id],
+        )
+        .unwrap();
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+
+    // A real leaf (valid for a day), stored as if it had expired yesterday.
+    let (csr, authorization, binding) = context();
+    let serial = SerialNumber::from_positive_der_content(&[0x0a]).unwrap();
+    let leaf = ca
+        .issue_leaf(&csr, &authorization, &serial, &binding)
+        .unwrap();
+    owner
+        .execute(
+            "WITH request AS (
+                 INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                     requester_id, policy_version, state)
+                 VALUES (gen_random_uuid(), $1::text::uuid, 'falsified-expiry',
+                         sha256('csr'::bytea), 'requester', 'v1', 'PUBLISHED')
+                 RETURNING request_id),
+             reservation AS (
+                 INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+                 SELECT $1::text::uuid, '\\x0a', request_id FROM request
+                 RETURNING request_id)
+             INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                 certificate_der, signed_at, not_after)
+             SELECT $1::text::uuid, '\\x0a', request_id, sha256($2), $2,
+                    now() - interval '2 days', now() - interval '1 day'
+             FROM reservation",
+            &[&ca_id, &leaf.to_der().unwrap()],
+        )
+        .unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &serial,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+
+    let verifier = LabCrlVerifier::new(root.clone());
+    let sign = |store: &mut PgRevocationStore, ca: &mut EphemeralLabCa, op: &str| {
+        let reservation = store.reserve_crl(&ca_id, "crl-operator", op).unwrap();
+        let plan = CrlPlan {
+            reservation: &reservation,
+            issuer: &root,
+            signer_key_ref: &key_ref,
+            operation_ref: op,
+        };
+        let result = crl_once(store, ca, &LabCrlAssembler, &verifier, &plan);
+        (reservation.entries().len(), result)
+    };
+    // CRL 1 still lists it (not yet on a CRL issued after the claimed expiry).
+    let (listed, first) = sign(&mut store, &mut ca, "crl-falsified-1");
+    assert_eq!(listed, 1);
+    first.unwrap();
+    // CRL 2 would leave it out: refused before signing.
+    let (listed, second) = sign(&mut store, &mut ca, "crl-falsified-2");
+    assert_eq!(listed, 0, "the database pruned the entry");
+    assert_eq!(second.unwrap_err(), CrlError::UnexplainedOmission);
+    let status: String = owner
+        .query_one(
+            "SELECT status FROM crl_publication WHERE ca_id = $1::text::uuid AND crl_number = 2",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "RESERVED", "no intent, nothing signed");
+}

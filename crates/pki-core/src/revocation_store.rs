@@ -10,7 +10,7 @@ use crate::audit_chain::parse_uuid;
 use crate::clock::{
     system_clock_us, this_update_plausible, ClockReading, ClockSource, DEFAULT_MAX_CLOCK_SKEW_US,
 };
-use crate::crl::{check_crl_issuer, CrlEntry, CrlError, CrlReservation};
+use crate::crl::{check_crl_issuer, check_pruned_entry, CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::officer_credential::{
     canonical_officer_key, CredentialChange, CredentialChangeKind, CredentialError,
@@ -1014,6 +1014,27 @@ impl CrlJournal for PgRevocationStore {
         let number =
             i64::try_from(reservation.crl_number()).map_err(|_| CrlError::JournalFailure)?;
         let entries_sha256 = reservation.entries_sha256();
+        // Every revocation the snapshot leaves out must be explained by the
+        // stored certificate's own expiry (0031 pruning, 0032 check).
+        let omitted = self
+            .client
+            .query(
+                "SELECT serial_der_content, not_after_unix, certificate_der
+                 FROM crl_pruned_entries($1::text::uuid, $2::bigint)",
+                &[&reservation.ca_id(), &number],
+            )
+            .map_err(|_| CrlError::JournalFailure)?;
+        for row in &omitted {
+            let serial: Vec<u8> = row.try_get(0).map_err(|_| CrlError::JournalFailure)?;
+            let not_after: Option<i64> = row.try_get(1).map_err(|_| CrlError::JournalFailure)?;
+            let der: Option<Vec<u8>> = row.try_get(2).map_err(|_| CrlError::JournalFailure)?;
+            check_pruned_entry(
+                &serial,
+                not_after,
+                der.as_deref(),
+                reservation.this_update_unix(),
+            )?;
+        }
         // Binds the intent to the CA's registered issuer certificate (0022).
         let issuer_der = plan.issuer.to_der().map_err(|_| CrlError::IssuerMismatch)?;
         let issuer_sha256: [u8; 32] = Sha256::digest(&issuer_der).into();

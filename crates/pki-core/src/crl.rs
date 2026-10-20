@@ -70,6 +70,9 @@ pub enum CrlError {
     /// The plan's issuer, the verifier's issuer or the signer key reference
     /// do not belong together; refused before any intent or signature.
     IssuerMismatch,
+    /// A revocation is missing from the CRL without an expiry that the
+    /// certificate itself confirms (migration 0032); nothing was signed.
+    UnexplainedOmission,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,6 +443,40 @@ pub fn build_tbs_cert_list(
 }
 
 /// Assembles a CRL from EXACTLY the bytes previously journaled.
+/// An entry left out of a CRL (`crl_pruned_entries`, migration 0032) is
+/// only acceptable if the stored certificate itself shows it expired before
+/// thisUpdate: same serial, notAfter equal to the stored `not_after` (whole
+/// seconds) and earlier than thisUpdate. Anything else (no certificate, no
+/// stored expiry, a stored expiry earlier than the real one) fails closed.
+pub fn check_pruned_entry(
+    serial_der_content: &[u8],
+    stored_not_after_unix: Option<i64>,
+    certificate_der: Option<&[u8]>,
+    this_update_unix: i64,
+) -> Result<(), CrlError> {
+    let fail = CrlError::UnexplainedOmission;
+    let (Some(stored), Some(der)) = (stored_not_after_unix, certificate_der) else {
+        return Err(fail);
+    };
+    let certificate = Certificate::from_der(der).map_err(|_| fail.clone())?;
+    let not_after = i64::try_from(
+        certificate
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs(),
+    )
+    .map_err(|_| fail.clone())?;
+    if certificate.tbs_certificate.serial_number.as_bytes() != serial_der_content
+        || not_after != stored
+        || not_after >= this_update_unix
+    {
+        return Err(fail);
+    }
+    Ok(())
+}
+
 /// What a distribution point learns from a stored CRL it re-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishedCrl {
@@ -698,6 +735,51 @@ mod tests {
             Ok(Time::GeneralTime(_))
         ));
         assert_eq!(rfc5280_time(-1), Err(CrlError::Encoding));
+    }
+
+    #[test]
+    fn pruned_entries_must_be_confirmed_by_the_certificate() {
+        let ca = ca();
+        let root = root(&ca);
+        let der = root.to_der().unwrap();
+        let serial = root.tbs_certificate.serial_number.as_bytes().to_vec();
+        let not_after = root
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs() as i64;
+        assert_eq!(
+            check_pruned_entry(&serial, Some(not_after), Some(&der), not_after + 1),
+            Ok(())
+        );
+        for (serial, stored, der, this_update) in [
+            // Recorded expiry earlier than the certificate's real one.
+            (
+                &serial[..],
+                Some(not_after - 86_400),
+                Some(&der[..]),
+                not_after + 1,
+            ),
+            // Not yet expired at thisUpdate.
+            (&serial[..], Some(not_after), Some(&der[..]), not_after),
+            // Another certificate's DER.
+            (&[0x7f][..], Some(not_after), Some(&der[..]), not_after + 1),
+            // No stored expiry, no certificate, garbage.
+            (&serial[..], None, Some(&der[..]), not_after + 1),
+            (&serial[..], Some(not_after), None, not_after + 1),
+            (
+                &serial[..],
+                Some(not_after),
+                Some(&[0x30, 0x00][..]),
+                not_after + 1,
+            ),
+        ] {
+            assert_eq!(
+                check_pruned_entry(serial, stored, der, this_update),
+                Err(CrlError::UnexplainedOmission)
+            );
+        }
     }
 
     #[test]
