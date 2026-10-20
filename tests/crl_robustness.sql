@@ -136,4 +136,31 @@ BEGIN
     PERFORM pg_temp.expect_err($$SELECT abandon_stale_crl_reservations(NULL, INTERVAL '1 hour')$$, '22023');
 END $t$;
 
+-- ------------------------------------------ thisUpdate never moves backwards
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000017', 'CRL Clock Lab CA', 'lab-1');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000017';
+    r RECORD;
+BEGIN
+    -- Equal thisUpdate (two reservations in one second) stays allowed.
+    SELECT * INTO r FROM reserve_crl(ca, 'crl-worker', 'clock-op-1');
+    PERFORM pg_temp.must((SELECT crl_number FROM reserve_crl(ca, 'crl-worker', 'clock-op-2')) = 2,
+        'same-second reservations are allowed');
+
+    -- A CRL already reserved one hour ahead: the database clock is now behind
+    -- it (clock stepped back), so the next reservation fails closed.
+    INSERT INTO crl_publication(ca_id, crl_number, this_update, next_update, status,
+                                operation_ref, actor_id, entries_sha256)
+    VALUES (ca, 3, date_trunc('second', clock_timestamp()) + INTERVAL '1 hour',
+            date_trunc('second', clock_timestamp()) + INTERVAL '1 hour 7 days',
+            'ABANDONED', 'clock-op-3', 'crl-worker', sha256('\x'::bytea));
+    PERFORM pg_temp.expect_err_msg(
+        $$SELECT * FROM reserve_crl('c0c0c0c0-0000-4000-8000-000000000017', 'crl-worker', 'clock-op-4')$$,
+        '23514', 'clock is behind the latest CRL thisUpdate of this CA');
+    PERFORM pg_temp.must((SELECT count(*) FROM crl_publication WHERE ca_id = ca) = 3,
+        'nothing reserved while the clock is behind');
+END $t$;
+
 ROLLBACK;
