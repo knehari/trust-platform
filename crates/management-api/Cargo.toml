@@ -18,6 +18,9 @@ sha2 = "=0.10.9"
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring"] }
 tokio = { version = "=1.53.2", features = ["macros", "rt-multi-thread", "net", "sync"] }
 uuid = "=1.18.1"
+httpdate = "=1.0.3"
+trust-pki-core = { path = "../pki-core" }
+x509-cert = "=0.2.5"
 
 [dev-dependencies]
 base64 = "=0.22.1"
@@ -25,3 +28,4 @@ rand = "=0.8.6"
 rsa = { version = "=0.9.8", features = ["pem"] }
 tower = "=0.5.3"
 http-body-util = "=0.1.5"
+trust-pki-core = { path = "../pki-core", features = ["lab-software"] }

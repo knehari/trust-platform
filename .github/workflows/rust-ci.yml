@@ -203,6 +203,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0027_audit_chain.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0028_officer_credentials.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0029_signed_status_changes.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0030_crl_distribution.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_lifecycle.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/crl_pipeline.sql
@@ -257,6 +258,8 @@ jobs:
             cargo test -p trust-pki-core --test revocation_crl_postgres --features postgres-store,lab-software --locked
           # OpenSSL checks the CRLs and leaves exactly as persisted in PostgreSQL.
           bash tests/crl_openssl_lab.sh "$RUNNER_TEMP/stored-crl"
+          # The distribution point serves those CRLs and refuses an altered one.
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_distribution.sh
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test policy_decisions --features postgres-store,lab-software --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test audit_chain_postgres --features postgres-store --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test signed_status_change_postgres --features postgres-store,lab-software --locked

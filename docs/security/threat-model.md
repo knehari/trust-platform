@@ -16,7 +16,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
 
-## Revocation and CRL write path (lab, migrations 0014-0029, ADR-0006, ADR-0007)
+## Revocation and CRL write path (lab, migrations 0014-0030, ADR-0006, ADR-0007)
 
 | Threat | Control in the lab slice | Residual risk / open |
 | --- | --- | --- |
@@ -30,6 +30,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 | Stale or superseded CRL signed late | Only the highest reserved number may record an intent; staleness and nextUpdate checks (0017, 0020, 0021) | Relies on the database clock |
 | A function, grant or guard is changed outside a reviewed migration (e.g. `SECURITY DEFINER` reset, trigger disabled) | Catalog invariant in tests/revocation_privileges.sql (0025); 0026 event triggers record every DDL and object grant (append-only, `ENABLE ALWAYS`, no SQL text) and `crl_housekeeping` alerts on changes no reviewed migration acknowledged | Roles, role membership, `ALTER SYSTEM` and event triggers themselves are not recorded (server logging/pgaudit needed); a superuser can drop the triggers or the rows (external anchoring, ADR-0006 condition 5) |
 | A superuser rewrites, deletes or truncates the audit trail, or recomputes it consistently | 0027 sealed hash chain over `audit_event` and `schema_change_audit`; Rust re-encodes every record and checks heads against checkpoints exported outside the database (`audit_chain_anchor`, exit 3) | Unsealed records and entries after the last checkpoint; checkpoints not signed or timestamped; forged records inserted before sealing are sealed too |
+| A CRL altered or substituted in the database is published to relying parties; the public endpoint becomes a write path | 0030: `trust_crl_publisher` can only read the latest stored CRL; the distribution point refuses privileged logins and re-verifies signature, issuer, number and times before serving (503 otherwise) | No TLS or availability engineering; a stale CRL is still served (uncached); denial of service by withholding new CRLs is not detected here (housekeeping `crl_due`) |
 | Lost or ambiguous signature | Durable intent before signing, quarantine, reconciliation of a held DER (0021), housekeeping alerts | A CRL lost with its process cannot be recovered (no signer read-back) |
 
 ## Open

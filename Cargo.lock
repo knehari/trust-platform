@@ -1993,6 +1993,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "http-body-util",
+ "httpdate",
  "jsonwebtoken",
  "postgres",
  "rand 0.8.6",
@@ -2005,7 +2006,9 @@ dependencies = [
  "tokio",
  "tokio-postgres-rustls",
  "tower",
+ "trust-pki-core",
  "uuid",
+ "x509-cert",
 ]
 
 [[package]]

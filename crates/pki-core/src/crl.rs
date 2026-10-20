@@ -440,6 +440,79 @@ pub fn build_tbs_cert_list(
 }
 
 /// Assembles a CRL from EXACTLY the bytes previously journaled.
+/// What a distribution point learns from a stored CRL it re-checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedCrl {
+    pub crl_number: u64,
+    pub this_update_unix: i64,
+    pub next_update_unix: Option<i64>,
+}
+
+/// Re-checks a stored CRL before it is served (RFC 5280 6.3.3 from the
+/// publisher's side): canonical DER, ECDSA P-256/SHA-256 in both algorithm
+/// fields, issued by `issuer` (the CA's registered issuer certificate) and
+/// signed by its key, with exactly one CRL number. Content was checked
+/// against the reservation before storage (`LabCrlVerifier`); this only
+/// guards against a stored CRL altered or substituted afterwards.
+pub fn verify_published_crl(
+    issuer: &Certificate,
+    crl_der: &[u8],
+) -> Result<PublishedCrl, CrlError> {
+    let fail = CrlError::VerificationFailure;
+    let crl = x509_cert::crl::CertificateList::from_der(crl_der).map_err(|_| fail.clone())?;
+    if crl.to_der().map_err(|_| fail.clone())? != crl_der {
+        return Err(fail);
+    }
+    let identifier = ecdsa_sha256_identifier().map_err(|_| fail.clone())?;
+    let tbs = &crl.tbs_cert_list;
+    if crl.signature_algorithm != identifier
+        || tbs.signature != identifier
+        || tbs.issuer != issuer.tbs_certificate.subject
+    {
+        return Err(fail);
+    }
+    let tbs_der = tbs.to_der().map_err(|_| fail.clone())?;
+    let sec1 = issuer
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .as_bytes()
+        .ok_or_else(|| fail.clone())?;
+    let signature = crl.signature.as_bytes().ok_or_else(|| fail.clone())?;
+    trust_pki_crypto::verify_p256_ecdsa_sha256(sec1, &tbs_der, signature)
+        .map_err(|_| fail.clone())?;
+    let mut numbers = tbs
+        .crl_extensions
+        .iter()
+        .flatten()
+        .filter(|e| e.extn_id.to_string() == CRL_NUMBER_OID);
+    let number = match (numbers.next(), numbers.next()) {
+        (Some(extension), None) => {
+            CrlNumber::from_der(extension.extn_value.as_bytes()).map_err(|_| fail.clone())?
+        }
+        _ => return Err(fail),
+    };
+    let bytes = number.0.as_bytes();
+    if bytes.len() > 8 {
+        return Err(fail);
+    }
+    let mut buffer = [0u8; 8];
+    buffer[8 - bytes.len()..].copy_from_slice(bytes);
+    let crl_number = u64::from_be_bytes(buffer);
+    if crl_number >= MAX_CRL_NUMBER {
+        return Err(fail);
+    }
+    let unix = |time: &Time| i64::try_from(time.to_unix_duration().as_secs()).ok();
+    Ok(PublishedCrl {
+        crl_number,
+        this_update_unix: unix(&tbs.this_update).ok_or_else(|| fail.clone())?,
+        next_update_unix: match &tbs.next_update {
+            Some(time) => Some(unix(time).ok_or(fail)?),
+            None => None,
+        },
+    })
+}
+
 #[cfg(feature = "lab-software")]
 pub struct LabCrlAssembler;
 
@@ -625,6 +698,51 @@ mod tests {
             Ok(Time::GeneralTime(_))
         ));
         assert_eq!(rfc5280_time(-1), Err(CrlError::Encoding));
+    }
+
+    #[test]
+    fn published_crl_is_rechecked_against_the_registered_issuer() {
+        let mut ca = ca();
+        let r = reservation(vec![entry(&[0x01], RevocationReason::KeyCompromise, None)]);
+        let der = issue(&mut ca, &r);
+        assert_eq!(
+            verify_published_crl(&root(&ca), &der).unwrap(),
+            PublishedCrl {
+                crl_number: 1,
+                this_update_unix: THIS_UPDATE,
+                next_update_unix: Some(NEXT_UPDATE),
+            }
+        );
+        // Altered content, even re-signed by another CA, is refused.
+        let mut other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let foreign = issue(&mut other, &r);
+        assert_eq!(
+            verify_published_crl(&root(&ca), &foreign),
+            Err(CrlError::VerificationFailure)
+        );
+        let mut flipped = der.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 1;
+        assert_eq!(
+            verify_published_crl(&root(&ca), &flipped),
+            Err(CrlError::VerificationFailure)
+        );
+        let mut trailing = der.clone();
+        trailing.push(0);
+        assert_eq!(
+            verify_published_crl(&root(&ca), &trailing),
+            Err(CrlError::VerificationFailure)
+        );
+        let renumbered = resigned(&mut ca, &der, |tbs| {
+            tbs.crl_extensions
+                .as_mut()
+                .unwrap()
+                .retain(|e| e.extn_id.to_string() != CRL_NUMBER_OID);
+        });
+        assert_eq!(
+            verify_published_crl(&root(&ca), &renumbered),
+            Err(CrlError::VerificationFailure)
+        );
     }
 
     #[test]

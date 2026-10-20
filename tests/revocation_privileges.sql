@@ -120,7 +120,8 @@ BEGIN
     FROM pg_proc p, aclexplode(p.proacl) a
     WHERE p.pronamespace = 'public'::regnamespace
       AND a.grantee::regrole::text IN ('trust_revocation_officer_api', 'trust_crl_signer',
-          'trust_crl_operator', 'trust_ca_admin', 'trust_audit_sealer', 'trust_audit_verifier')
+          'trust_crl_operator', 'trust_ca_admin', 'trust_audit_sealer', 'trust_audit_verifier',
+          'trust_crl_publisher')
       AND (NOT p.prosecdef
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
     PERFORM pg_temp.must(bad IS NULL, 'granted functions without definer settings: ' || coalesce(bad, ''));
