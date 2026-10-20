@@ -279,6 +279,10 @@ impl CrlJournal for PgRevocationStore {
             Err(e) if e.code() == Some(&SqlState::CHECK_VIOLATION) => {
                 Err(CrlError::ReplayedOrAmbiguousIntent)
             }
+            // Certain refusal (migration 0021): nothing signed, reserve again.
+            Err(e) if e.code() == Some(&SqlState::OBJECT_NOT_IN_PREREQUISITE_STATE) => {
+                Err(CrlError::ReserveAgain)
+            }
             Err(_) => Err(CrlError::JournalFailure),
         }
     }

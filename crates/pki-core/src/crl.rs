@@ -58,6 +58,11 @@ pub enum CrlError {
     AssemblyFailure,
     VerificationFailure,
     PersistenceFailure,
+    /// Nothing was signed and nothing can be signed for this reservation
+    /// (abandoned, superseded by a higher number, stale or past nextUpdate):
+    /// reserve a new CRL number. Unlike `ReplayedOrAmbiguousIntent`, no
+    /// reconciliation is needed.
+    ReserveAgain,
     /// The plan's issuer, the verifier's issuer or the signer key reference
     /// do not belong together; refused before any intent or signature.
     IssuerMismatch,

@@ -826,7 +826,7 @@ fn abandoned_reservation_is_never_signed() {
     let verifier = LabCrlVerifier::new(root.clone());
     assert_eq!(
         crl_once(&mut store, &mut signer, &LabCrlAssembler, &verifier, &plan),
-        Err(CrlError::ReplayedOrAmbiguousIntent)
+        Err(CrlError::ReserveAgain)
     );
     assert_eq!(signer.calls, 0);
 
@@ -927,7 +927,7 @@ fn reservation_older_than_a_stored_crl_is_never_signed() {
             &verifier,
             &plan(&late, "crl-slow-op"),
         ),
-        Err(CrlError::ReplayedOrAmbiguousIntent)
+        Err(CrlError::ReserveAgain)
     );
     assert_eq!(signer.calls, 1);
 }

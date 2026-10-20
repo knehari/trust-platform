@@ -112,8 +112,9 @@ BEGIN
         'abandon is idempotent');
 
     -- an abandoned reservation can never be signed, quarantined or reopened
-    PERFORM pg_temp.expect_err($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000016',
-        1, 'stale-op', sha256('tbs-1'::bytea))$$, '23514');
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000016',
+        1, 'stale-op', sha256('tbs-1'::bytea))$$, '55000',
+        'CRL intent refused: the reservation was abandoned');
     PERFORM pg_temp.expect_err($$SELECT mark_crl_uncertain('c0c0c0c0-0000-4000-8000-000000000016',
         1, 'stale-op')$$, '23514');
     PERFORM pg_temp.expect_err($$UPDATE crl_publication SET status = 'RESERVED'
@@ -206,7 +207,7 @@ BEGIN
                                sha256('der-2'::bytea), 'der-2'::bytea);
     -- CRL 1 would now be older than a stored CRL: never signed
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
-        1, 'order-op-1', sha256('tbs-1'::bytea))$$, '23514',
+        1, 'order-op-1', sha256('tbs-1'::bytea))$$, '55000',
         'CRL intent refused: a higher CRL number has been reserved');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
         = 'RESERVED', 'refused intent leaves the reservation untouched');
@@ -219,7 +220,7 @@ BEGIN
             date_trunc('second', clock_timestamp() - INTERVAL '25 hours') + INTERVAL '7 days',
             'RESERVED', 'order-op-3', 'crl-worker', sha256('\x'::bytea));
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
-        3, 'order-op-3', sha256('tbs-3'::bytea))$$, '23514',
+        3, 'order-op-3', sha256('tbs-3'::bytea))$$, '55000',
         'CRL intent refused: reservation older than the CRL issue interval');
     -- the per-CA interval applies
     INSERT INTO ca_revocation_policy(ca_id, crl_issue_interval, crl_validity)
@@ -299,12 +300,12 @@ BEGIN
     PERFORM reserve_crl(ca, 'crl-worker', 'review-op-3');
     PERFORM pg_temp.intent(ca, 3, 'review-op-3', sha256('tbs-3'::bytea));
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
-        2, 'review-op-2', sha256('tbs-2'::bytea))$$, '23514',
+        2, 'review-op-2', sha256('tbs-2'::bytea))$$, '55000',
         'CRL intent refused: a higher CRL number has been reserved');
     -- ... and so does a quarantined higher number (possibly signed)
     PERFORM mark_crl_uncertain(ca, 3, 'review-op-3');
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
-        1, 'review-op-1', sha256('tbs-1'::bytea))$$, '23514',
+        1, 'review-op-1', sha256('tbs-1'::bytea))$$, '55000',
         'CRL intent refused: a higher CRL number has been reserved');
 
     -- a reservation whose nextUpdate has passed is refused even when the
@@ -317,7 +318,7 @@ BEGIN
             date_trunc('second', clock_timestamp() - INTERVAL '30 minutes'),
             'RESERVED', 'review-op-4', 'crl-worker', sha256('\x'::bytea));
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
-        4, 'review-op-4', sha256('tbs-4'::bytea))$$, '23514',
+        4, 'review-op-4', sha256('tbs-4'::bytea))$$, '55000',
         'CRL intent refused: the reserved nextUpdate has passed');
 
     -- CPS reference: non-ASCII blanks and invisible characters are not text
@@ -375,7 +376,7 @@ BEGIN
     PERFORM reserve_crl(ca, 'crl-worker', 'cover-op-2');
     PERFORM reserve_crl(ca, 'crl-worker', 'cover-op-3');
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000021',
-        2, 'cover-op-2', sha256('tbs-2'::bytea))$$, '23514',
+        2, 'cover-op-2', sha256('tbs-2'::bytea))$$, '55000',
         'CRL intent refused: a higher CRL number has been reserved');
     PERFORM pg_temp.must(pg_temp.intent(ca, 3, 'cover-op-3', sha256('tbs-3'::bytea))
         = 'INTENT_RECORDED', 'the highest number records its intent');

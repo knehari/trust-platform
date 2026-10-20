@@ -50,10 +50,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - The lifecycle audit decision format is built in four function bodies
   (0018/0019); a shared SQL helper would keep it in one place.
 - Reject path and approve's generic message still fold maker=checker wording;
-  every 23514 from `record_crl_intent` (replay, content mismatch, and the certain
-  "reserve again" refusals: superseded, stale, nextUpdate passed) is reported
-  as `ReplayedOrAmbiguousIntent`; a distinct SQLSTATE/variant would let workers
-  re-reserve instead of escalating.
+  (0021 reports the certain "reserve again" refusals as SQLSTATE 55000 /
+  `CrlError::ReserveAgain`.)
 - When `persist_verified` fails after a verified signature, `crl_once` marks
   the number uncertain and drops the DER; returning it would let
   reconciliation store it instead of losing the number.
