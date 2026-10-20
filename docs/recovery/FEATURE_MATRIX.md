@@ -3,7 +3,7 @@
 ## Current stacked Draft increments (20 October 2026)
 
 The table below records selected unmerged laboratory increments through Draft
-#70; the dated continuation notes cover selected later Drafts through #120. The
+#70; the dated continuation notes cover selected later Drafts through #121. The
 historical PR #42 matrix remains the reference for what was observed on PR
 #41. None of these increments has landed on `main`.
 
@@ -14,6 +14,8 @@ historical PR #42 matrix remains the reference for what was observed on PR
 **20 October 2026 console continuation:** Stacked Drafts [#115](https://github.com/knehari/trust-platform/pull/115)–[#119](https://github.com/knehari/trust-platform/pull/119) normalize pasted UUID forms for exact lookups, sort only the certificate and audit rows loaded in the browser, copy explicitly allowlisted metadata JSON from detail dialogs, and preserve a section/CA link through laboratory OIDC login. A linked off-page CA is fetched by exact ID and remains subject to the API's reader grants; an unavailable CA falls back to an authorized one with a visible notice. The local frontend build and 24 tests passed, and the link, denied-CA fallback, sorting, exact lookup and modal were exercised against the disposable browser fixture. These are read-only usability increments; local sorting does not search or order unseen pages, clipboard JSON is not an auditor export, and the URL does not grant access. Drafts are unmerged and remain subject to independent review and G0.
 
 **20 October 2026 link-sharing continuation:** [Draft #120](https://github.com/knehari/trust-platform/pull/120) adds a button that copies the current same-origin section/CA link after scope loading, with visible copy feedback. Only the canonical view and CA UUID enter the link; an opened link still requires OIDC and the server's CA grant. Local frontend build and 24 tests passed. The browser fixture confirmed the button, feedback and URL change, but its virtual clipboard did not expose the text written by the page, so pasted clipboard contents were not independently observed. The change remains read-only, unmerged and G0 blocked.
+
+**20 October 2026 typography continuation:** [Draft #121](https://github.com/knehari/trust-platform/pull/121) establishes a consistent text hierarchy in the read-only console and adjusts the mobile CA heading for the larger labels. Frontend build and browser views at 390 px and 1280 px, including the certificate dialog, passed locally. It changes presentation only; no API, scope, certificate validation or audit integrity capability is added. It remains unmerged and subject to independent review and G0.
 
 | Capability | Current demonstrated scope | Remaining boundary |
 |---|---|---|
