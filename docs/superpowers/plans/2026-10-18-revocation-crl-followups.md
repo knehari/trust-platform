@@ -9,13 +9,14 @@ Its `CrlPlan` still carries `tbs_der`; `crl_once` now builds the TBS from the
 reservation and `CrlPlan::issuer` (spec §4 step 2).
 
 ## Before non-lab use
-- Least-privilege write model: implemented in the lab by 0023 (ADR-0006 part
-  A; tests/revocation_privileges.sql, least_privilege_roles_run_the_whole_pipeline).
-  Open: threat-model update, independent review of the SECURITY DEFINER
-  functions, real service logins and their credentials, and the owner role
-  holding UPDATE on `ca`/`certificate` (row locks).
+- Least-privilege write model and dual-controlled CA administration:
+  implemented in the lab by 0023-0024 (ADR-0006). Open: its acceptance
+  conditions (independent review of the SECURITY DEFINER functions, runtime
+  without superuser, schema-change control, external audit anchoring,
+  authenticated time), real service logins and their credentials, and the
+  owner role holding UPDATE on `ca`/`certificate` (row locks).
 - Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
-  signer keys (known deviation). ADR-0006 part B proposes signed claims.
+  signer keys (known deviation). ADR-0007 proposes WebAuthn-signed claims.
 - Authentication of revocation officers stays with the identity adapter.
 - CA issuer binding (0022) has one immutable issuer certificate per CA; key
   rollover (several issuer certificates over time, CRLs signed by the new key
@@ -34,7 +35,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 ## Robustness and hygiene
 - `crl_housekeeping` (lab example, `docs/operations/lab-crl-housekeeping.md`)
   runs the sweeps and alerts through its exit status; deploying it on a
-  schedule, and under the ADR-0006 operator role, remains open.
+  schedule with a `trust_crl_operator` login remains open.
 - `crl_due` / `overdue_status_changes` are O(history) per call (a
   `crl_change_covered` call and supersession probe per approved change, no
   supporting index); read-only queries do not check isolation.

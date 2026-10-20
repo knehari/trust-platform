@@ -1,62 +1,66 @@
-# ADR-0006 — Least-privilege write model and signed double control for certificate status changes
+# ADR-0006 — Least-privilege write model for revocation, CRLs and CA administration
 
-**Status:** Proposed · 2026-10-20 · requires human security review. Part A was implemented in the lab (migration 0023) at the repository owner's request on 2026-10-20; that implementation is not an acceptance of this ADR. The threat-model update and independent review of the SECURITY DEFINER functions remain open; parts B and C (production scheduling) are not implemented.  
-**Scope:** Migrations 0014–0017 (revocation lifecycle and CRL pipeline) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
-**Related:** ADR-0002 (signing and durable state), ADR-0003 (authenticated identity), ADR-0005 (Rust management control plane), `docs/security/v1-6-approval-challenge-replay-design.md`, spec `docs/superpowers/specs/2026-10-18-revocation-crl-design.md` §6.
+**Status:** Proposed · 2026-10-20 · requires human security review. Implemented in the lab (migrations 0023–0024) at the repository owner's request; that implementation is not an acceptance of this ADR. Acceptance conditions are listed below.  
+**Scope:** Revocation lifecycle, CRL pipeline and CA administration (migrations 0014–0024) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
+**Related:** ADR-0007 (signed, key-distinct double control, split out of this ADR on 2026-10-20), ADR-0002 (signing and durable state), ADR-0003 (authenticated identity), ADR-0005 (Rust management control plane), `docs/security/threat-model.md` (revocation and CRL write path), spec `docs/superpowers/specs/2026-10-18-revocation-crl-design.md` §6.
 
 ## Context
 
-The lab revocation slice enforces maker-checker in PL/pgSQL. Two gaps remain, and both must be closed before a non-ephemeral issuer or an exposed API.
+The lab revocation slice enforced maker-checker in PL/pgSQL functions that were all `SECURITY INVOKER`. A service able to call them therefore needed `INSERT`/`UPDATE`/`DELETE` on the underlying tables. With those grants it could revoke, release or suspend directly, without a second actor. It could also add rows to a CRL snapshot (fake coverage) or insert a `STORED` publication that skipped the signing intent and independent verification. Review evidence: on migration 0022, one role holding the required DML inserted a revocation with no status change (`rows=1, changes=0`).
 
-1. **Direct writes bypass maker-checker.** Every function is `SECURITY INVOKER`. A role that can call `approve_certificate_status_change` therefore needs `INSERT`/`UPDATE`/`DELETE` on `revocation` and `certificate_status_change`. With these grants it can insert a revocation row or an `APPROVED` change directly, without a second actor. The guard triggers and CHECKs (irreversibility, encodable dates, legal transitions) still hold; the two-actor rule does not. The same applies to `crl_publication`, where `record_crl_intent` and `store_verified_crl` are the only intended writers.
-2. **Double control is textual, not cryptographic.** The database compares `(issuer, subject)` strings and requires them to differ, and to hold a `revocation_officer_grant`. `AGENTS.md` requires double control to rest on *cryptographically distinct signer keys as well as separately authenticated actors, not different textual key IDs alone*. The current slice does not meet that requirement. This is a known deviation from repository policy, recorded here and in spec §6.
+Two administrative operations were also single-actor:
+- registering a CA's issuer certificate (0022), which decides whose CRLs count;
+- maintaining revocation officer grants, which decides who may revoke.
 
-Moving functions to `SECURITY DEFINER` alone does not solve (2): whoever may `EXECUTE` the approve function can still pass any checker identity string. The database cannot authenticate an OIDC subject.
+Signing the decisions with distinct officer keys is a separate, larger design. It depends on IAM, officer hardware and procedures, and is now ADR-0007. This ADR covers only what the database and the service connections must enforce.
 
 ## Decision (proposed)
 
-### A. Database privilege model
+### A. Database privilege model (migration 0023)
 
-- A dedicated **owner role** (`NOLOGIN`) owns `revocation`, `certificate_status_change`, `revocation_officer_grant`, `crl_publication`, `crl_entry_snapshot` and the functions of 0014–0017. Migrations run as this owner (or a migration role that is a member of it). No application login is a member.
-- Every state-changing function becomes `SECURITY DEFINER`, with `SET search_path = pg_catalog, public` (or a dedicated schema) and schema-qualified references. `EXECUTE` is revoked from `PUBLIC` and granted per role. Functions validate every argument as today; input errors keep their SQLSTATEs.
-- Separate **NOLOGIN capability roles**, each granted to a distinct service login:
-  - `trust_revocation_officer_api` gets `EXECUTE` on `propose_`, `approve_`, `reject_` and `withdraw_certificate_status_change`, plus `certificate_status`;
-  - `trust_crl_signer` gets `EXECUTE` on `reserve_crl`, `crl_snapshot_entries`, `record_crl_intent`, `mark_crl_uncertain` and `store_verified_crl`;
-  - `trust_crl_operator` gets `EXECUTE` on `crl_due`, `overdue_status_changes`, `abandon_stale_crl_reservations` and `quarantine_stale_crl_intents`.
-  None of them gets table DML. The management reader (`trust_api_reader`, 0012/0013) gets read-only views only.
-- `revocation_officer_grant` stays server-owned: no API write path, provisioned by an operator procedure and audited.
-- Tests prove the model from each login: direct `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` on every protected table fails with 42501; each function is callable only by its intended role; and a `search_path` object planted by a caller is not resolved.
+- The **owner role** `trust_revocation_owner` (`NOLOGIN`) owns the revocation, CRL and CA-administration tables and functions. No login is a member. Migrations run as a superuser or a dedicated migration role. The owner holds `SELECT`/`UPDATE` on `ca` and `certificate` (row locks) and `INSERT` on `audit_event`.
+- Every function a service calls is `SECURITY DEFINER` with `search_path = pg_catalog, public, pg_temp`. Temporary objects are looked up last, so a caller cannot shadow a table. `EXECUTE` is revoked from `PUBLIC`. Helpers and trigger functions are owned by the same role and are never granted to a service.
+- **Capability roles** (`NOLOGIN`), each granted to a distinct service login, get `EXECUTE` only and no table DML:
+  - `trust_revocation_officer_api`: status lifecycle, plus `SELECT` on `ca_revocation_policy`;
+  - `trust_crl_signer`: reserve, snapshot, intent, store, reconcile, plus `SELECT` on `crl_publication`;
+  - `trust_crl_operator`: due/overdue reports and housekeeping;
+  - `trust_ca_admin`: CA-administration proposals and decisions (0024).
+- The management reader (`trust_api_reader`, 0012/0013) keeps read-only views only.
 
-### B. Signed, key-distinct double control
+### B. Dual control of CA administration (migration 0024)
 
-- `revocation_officer_grant` gains the officer's pinned **P-256 public key**, normalised to uncompressed SEC1, together with its SHA-256 fingerprint and validity window. A grant without a key cannot sign.
-- `propose_` and `approve_` take a **canonical status-change claim**: CA id, serial, action, reason, invalidity date, change id, policy edition, and a one-time challenge. They also take the officer's ECDSA signature over that claim.
-- The **Rust CA core** verifies both signatures before calling the database. It reuses `policy_decisions::verify_dual_approval`, which already rejects the same key under another id or another SEC1 encoding.
-- The database **cannot verify ECDSA** (as noted in 0009). It records the claim digest, both signatures and both key fingerprints, and enforces through CHECKs and the grant join that:
-  - the fingerprints differ;
-  - each fingerprint belongs to the signing officer's current grant;
-  - the claim digest matches the stored change fields.
-  A direct call with a forged signature cannot be ruled out by SQL alone. That is why `EXECUTE` on `approve_` is restricted to the service login (part A), and why the signature is re-verifiable offline from the stored evidence.
-- Challenges follow the v1.6 design (CSPRNG nonce, digest persisted, consumed once in the approving transaction), so a signed approval cannot be replayed onto another change.
-- Authentication of the officers (OIDC with step-up) remains with the identity adapter (ADR-0003/0005). The key binds the decision; the token binds the session. Both are required.
+- `ca_admin_grant` lists the CA admins. The DBA bootstraps it under change control; no service can write it.
+- Registering the issuer certificate and granting or removing a revocation officer go through `ca_admin_change`:
+  - one CA admin proposes;
+  - a second, distinct CA admin approves the exact content digest it reviewed: the certificate's SHA-256, or the length-prefixed kind and officer identity;
+  - every step is audited, and the history is append-only.
+- A CA admin can never grant an officer role to themselves, as maker or as checker, so administration and revocation stay separate duties.
+- `register_ca_issuer` is no longer granted to any service. It remains for superuser bootstrap only.
 
-### C. Housekeeping
+### C. Service connections refuse privileged logins
 
-`abandon_stale_crl_reservations` and `quarantine_stale_crl_intents` (0016) run from a scheduled job under `trust_crl_operator`, with an alert when either returns a non-zero count. A lab version of the job exists (`crl_housekeeping` example, `docs/operations/lab-crl-housekeeping.md`); it does not yet run under that role. Since 0017 a stale reservation cannot be signed, so the sweep is hygiene and evidence, not a safety control.
+`PgRevocationStore::connect_lab_service` refuses (`PrivilegedSession`) a session whose login is a superuser, can create roles, bypasses row-level security or is a member of `trust_revocation_owner`. The check uses `session_user`, so setting a role does not hide a privileged login. Services, and the `crl_housekeeping` job, connect through it.
+
+### D. Housekeeping
+
+`abandon_stale_crl_reservations` and `quarantine_stale_crl_intents` run from a scheduled job as `trust_crl_operator`, which alerts through its exit status (`crl_housekeeping` example, `docs/operations/lab-crl-housekeeping.md`). Since 0017/0020 a stale reservation cannot be signed, so the sweep is hygiene and evidence, not a safety control.
 
 ## Alternatives considered
 
-- **Per-officer PostgreSQL logins (`session_user` as identity):** strong in-database authentication, but it couples human identity lifecycle to database roles and needs a login per officer and per environment. It also does not fit OIDC step-up. It could be revisited for an air-gapped deployment.
-- **`SECURITY DEFINER` only (part A without B):** closes direct DML. It still lets the service, or anyone holding its credentials, assert two textual identities, which violates `AGENTS.md`. It is acceptable only as an intermediate step and must not be described as double control.
-- **Verifying signatures inside PostgreSQL (extension):** adds native code to the database trust base and duplicates the Rust verification path. It is rejected for the lab.
+- **Per-officer PostgreSQL logins (`session_user` as identity):** strong in-database authentication, but it couples human identity lifecycle to database roles and does not fit OIDC step-up. It could be revisited for an air-gapped deployment.
+- **Table grants plus triggers only:** triggers already guard transitions and immutability. They cannot express "this write must come from the maker-checker function", and a service holding DML can still bypass them.
 
-## Consequences and verification gates
+## Consequences
 
-- Migration 0018+ would change function security and ownership. Existing lab databases need the owner-role migration, which is a breaking change for anyone calling the functions as `trust_ci`. The CI fixtures must create the service logins.
-- The revocation API (not yet built) must call through the Rust core so that signatures are verified before the database call.
-- Required evidence before implementation is accepted:
-  - a threat model update in `docs/security/threat-model.md`;
-  - RED/GREEN tests for each privilege and signature rule, including the same key under two ids, compressed versus uncompressed, a replayed challenge, a swapped maker/checker, a revoked grant mid-flow and direct DML as each login. The direct writes found by review that must be impossible from every service login are: `INSERT` into `revocation` (revoke without a change), `DELETE` of a hold (release without a change), `INSERT` into `crl_entry_snapshot` for an existing CRL (fake coverage), and `INSERT` of a `STORED` row into `crl_publication` (skips intent and verification);
-  - concurrency tests for challenge consumption;
-  - an independent review of the `SECURITY DEFINER` functions (search_path, dynamic SQL, error leakage).
-- Until this ADR is accepted and implemented, the lab slice's maker-checker must be described as **textual two-actor control with a single trusted service**, not as cryptographic double control.
+- Identities are still asserted by the calling service as `(issuer, subject)` text. This is **textual two-actor control with EXECUTE-only service roles**, not cryptographic double control, and it remains a known deviation from `AGENTS.md` until ADR-0007 is implemented.
+- Superusers and the owner role bypass the model, as does anyone who can `SET ROLE` to the owner. Operations must keep service logins away from them; the service connection check enforces this on the service side only.
+- Bootstrap of the first CA admins and of the issuer certificate is a DBA action outside dual control.
+
+## Acceptance conditions (to be confirmed by a human reviewer)
+
+1. Independent review of every `SECURITY DEFINER` function: search_path, dynamic SQL, error-message leakage, lock order, and that every input is validated before use.
+2. Runtime without superuser: deployment evidence that each service uses a dedicated non-superuser login with exactly one capability role, `NOINHERIT` where possible, no `CREATEROLE`, no owner membership, and `connect_lab_service` (or its production successor).
+3. Schema-change control: DDL and role changes on this database only through reviewed migrations, monitored (pgaudit or event triggers) and alerted.
+4. Evidence kept up to date in CI: `tests/revocation_privileges.sql`, `tests/ca_admin_dual_control.sql`, `least_privilege_roles_run_the_whole_pipeline`, `service_connections_refuse_privileged_sessions`.
+5. Audit trail anchored outside the database (append-only external log or timestamped hash chain), so that a superuser cannot rewrite `audit_event` unnoticed (open item D-04).
+6. Authenticated time source (NTP with drift alerting) for the database, since deadlines, thisUpdate and intent ordering use its clock.

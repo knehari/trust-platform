@@ -16,15 +16,17 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
 
-## Revocation and CRL write path (lab, migrations 0014-0023, ADR-0006)
+## Revocation and CRL write path (lab, migrations 0014-0024, ADR-0006, ADR-0007)
 
 | Threat | Control in the lab slice | Residual risk / open |
 | --- | --- | --- |
 | A service login revokes, releases or suspends without maker-checker by writing tables directly | 0023: tables owned by NOLOGIN `trust_revocation_owner`; SECURITY DEFINER functions; capability roles have EXECUTE only (tests/revocation_privileges.sql) | Superusers, the owner role and anyone able to `SET ROLE` to it bypass; deployment must keep service logins out of those |
-| One actor plays maker and checker by asserting two identities | Database refuses equal `(issuer, subject)`; officer grants are server-owned | Identities are asserted by the calling service: textual, not key-distinct (ADR-0006 part B not implemented; known deviation from AGENTS.md) |
+| One actor plays maker and checker by asserting two identities | Database refuses equal `(issuer, subject)`; officer grants are server-owned | Identities are asserted by the calling service: textual, not key-distinct (ADR-0007 not implemented; known deviation from AGENTS.md) |
 | Fake coverage: rows added to a CRL snapshot or a `STORED` row inserted without signing | No INSERT for services (0023); snapshot and publication guards; store checks digests | Owner/superuser can still insert |
-| CRL signed by another CA's key or stored under the wrong CA | 0022 registered issuer certificate per CA; `crl_once` checks the verifier issuer and the signer's SPKI before the intent | Key rollover not modelled; registration is an admin action with no maker-checker |
+| CRL signed by another CA's key or stored under the wrong CA | 0022 registered issuer certificate per CA; `crl_once` checks the verifier issuer and the signer's SPKI before the intent | Key rollover not modelled; registration needs two CA admins (0024) but their identities are textual; DBA bootstrap outside dual control |
 | Shadowing through `search_path` or temporary objects | Service functions pin `search_path = pg_catalog, public, pg_temp` (planted temp table test) | Independent review of every SECURITY DEFINER body (dynamic SQL, error leakage) still required |
+| A service runs with a superuser or owner-member login and bypasses everything | `connect_lab_service` refuses privileged `session_user` (0024 commit) | Only enforced by the services that use it; deployment evidence required (ADR-0006 acceptance condition 2) |
+| One CA admin registers an issuer or grants officers alone, or grants themselves officer rights | 0024 `ca_admin_change`: two distinct admins, approval of the exact content digest, no self-grant | Textual admin identities (ADR-0007) |
 | Stale or superseded CRL signed late | Only the highest reserved number may record an intent; staleness and nextUpdate checks (0017, 0020, 0021) | Relies on the database clock |
 | Lost or ambiguous signature | Durable intent before signing, quarantine, reconciliation of a held DER (0021), housekeeping alerts | A CRL lost with its process cannot be recovered (no signer read-back) |
 

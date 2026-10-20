@@ -1,7 +1,7 @@
 # Laboratory CRL housekeeping
 
 Lab only. `crates/pki-core/examples/crl_housekeeping.rs` runs one housekeeping
-pass for one CA (ADR-0006 part C, proposed). It calls
+pass for one CA (ADR-0006 section D, proposed). It calls
 `PgRevocationStore::crl_housekeeping`, which:
 
 1. retires `RESERVED` CRL numbers older than `--reserved-older-than` seconds
