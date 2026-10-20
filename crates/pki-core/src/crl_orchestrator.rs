@@ -7,7 +7,14 @@
 use crate::crl::{build_tbs_cert_list, CrlAssembler, CrlError, CrlReservation, CrlVerifier};
 use crate::orchestrator::ExternalSigner;
 use sha2::{Digest, Sha256};
-use x509_cert::Certificate;
+use x509_cert::{der::Encode, Certificate};
+
+/// The public key behind a signer key reference, asked before any intent so
+/// that a key that is not the issuer's is refused without signing. An
+/// implementation that cannot answer must return an error (fail closed).
+pub trait SignerPublicKey {
+    fn signer_spki_der(&self, key_ref: &str) -> Result<Vec<u8>, CrlError>;
+}
 
 /// All references must already be authorized and bound to the reservation.
 /// There is no caller-supplied TBS: `crl_once` builds the bytes it journals
@@ -104,7 +111,7 @@ pub fn crl_once<J, S, A, V>(
 ) -> Result<Vec<u8>, CrlError>
 where
     J: CrlJournal,
-    S: ExternalSigner,
+    S: ExternalSigner + SignerPublicKey,
     A: CrlAssembler,
     V: CrlVerifier,
 {
@@ -115,6 +122,17 @@ where
     // otherwise a mismatch would only surface after the signature.
     if verifier.issuer() != plan.issuer {
         return Err(CrlError::IssuerMismatch);
+    }
+    // The key behind signer_key_ref must be the issuer's own key.
+    let issuer_spki = plan
+        .issuer
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|_| CrlError::IssuerMismatch)?;
+    match signer.signer_spki_der(plan.signer_key_ref) {
+        Ok(spki) if spki == issuer_spki => {}
+        _ => return Err(CrlError::IssuerMismatch),
     }
     // Built before the intent: an issuer the builder refuses never reaches
     // the journal or the signer.
@@ -221,6 +239,19 @@ mod tests {
         fail: bool,
         signed: Vec<u8>,
         operation_ref: String,
+        wrong_key: bool,
+    }
+    impl SignerPublicKey for FakeSigner {
+        fn signer_spki_der(&self, _key_ref: &str) -> Result<Vec<u8>, CrlError> {
+            if self.wrong_key {
+                return Err(CrlError::IssuerMismatch);
+            }
+            Ok(issuer()
+                .tbs_certificate
+                .subject_public_key_info
+                .to_der()
+                .unwrap())
+        }
     }
     impl ExternalSigner for FakeSigner {
         fn sign_once(&mut self, _k: &str, o: &str, t: &[u8]) -> Result<Vec<u8>, IssueError> {
@@ -587,6 +618,21 @@ mod tests {
             ),
             Err(CrlError::IssuerMismatch)
         );
+        let mut other_key_signer = FakeSigner {
+            wrong_key: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            crl_once(
+                &mut journal,
+                &mut other_key_signer,
+                &Assembler(true),
+                &verifier(&issuer, true),
+                &plan(&r, &issuer, "op"),
+            ),
+            Err(CrlError::IssuerMismatch)
+        );
+        assert_eq!(other_key_signer.calls, 0);
         let mut no_key = plan(&r, &issuer, "op");
         no_key.signer_key_ref = "";
         assert_eq!(

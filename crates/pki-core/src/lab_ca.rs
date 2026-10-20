@@ -275,6 +275,18 @@ impl EphemeralLabCa {
     }
 }
 
+/// Public key of the lab signing key; fails for any other key reference.
+impl crate::crl_orchestrator::SignerPublicKey for EphemeralLabCa {
+    fn signer_spki_der(&self, key_ref: &str) -> Result<Vec<u8>, crate::crl::CrlError> {
+        if key_ref != self.signer.key_ref().0 {
+            return Err(crate::crl::CrlError::IssuerMismatch);
+        }
+        self.signer
+            .public_key_spki_der(self.signer.key_ref())
+            .map_err(|_| crate::crl::CrlError::IssuerMismatch)
+    }
+}
+
 /// The CA signing key stays in this ephemeral issuer; this is NOT an HSM.
 impl crate::orchestrator::ExternalSigner for EphemeralLabCa {
     fn sign_once(

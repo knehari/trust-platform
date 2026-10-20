@@ -19,9 +19,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Nothing binds `CrlReservation::ca_id` to `CrlPlan::issuer`: there is no CA
   certificate table to check it against, so a caller passing another CA's
   issuer, key and verifier would store that CA's CRL under this ca_id.
-  `crl_once` now refuses a verifier whose issuer differs from the plan's, but
-  the signer cannot be asked for its public key before signing
-  (`ExternalSigner` is the historical issuance trait).
+  `crl_once` refuses a verifier whose issuer differs from the plan's and a
+  signer whose key is not the issuer's (`SignerPublicKey`).
 
 ## Test gaps
 - Integration test asserts no thisUpdate/nextUpdate values (OpenSSL now

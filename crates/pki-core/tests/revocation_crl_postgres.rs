@@ -5,7 +5,7 @@
 use std::env;
 use trust_pki_core::{
     crl::{CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
-    crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan},
+    crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan, SignerPublicKey},
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
     lab_x509_verifier::{LabCertificateAssembler, LabX509Verifier},
@@ -66,6 +66,36 @@ fn context() -> (
 struct CountingSigner<'a> {
     ca: &'a mut EphemeralLabCa,
     calls: u32,
+}
+
+impl SignerPublicKey for CountingSigner<'_> {
+    fn signer_spki_der(&self, key_ref: &str) -> Result<Vec<u8>, CrlError> {
+        self.ca.signer_spki_der(key_ref)
+    }
+}
+
+/// Signs with the right key, then corrupts the signature: the CRL fails
+/// independent verification after signing (quarantine path).
+struct CorruptingSigner<'a>(&'a mut EphemeralLabCa);
+
+impl SignerPublicKey for CorruptingSigner<'_> {
+    fn signer_spki_der(&self, key_ref: &str) -> Result<Vec<u8>, CrlError> {
+        self.0.signer_spki_der(key_ref)
+    }
+}
+
+impl ExternalSigner for CorruptingSigner<'_> {
+    fn sign_once(
+        &mut self,
+        key_ref: &str,
+        operation_ref: &str,
+        tbs_der: &[u8],
+    ) -> Result<Vec<u8>, IssueError> {
+        let mut signature = self.0.sign_once(key_ref, operation_ref, tbs_der)?;
+        let last = signature.len() - 1;
+        signature[last] ^= 0x01;
+        Ok(signature)
+    }
 }
 
 impl ExternalSigner for CountingSigner<'_> {
@@ -378,8 +408,8 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     };
     assert_eq!(status_of(&mut reader, 3), "RESERVED");
 
-    // A signature by another key fails independent verification after
-    // signing: fail closed and quarantine.
+    // A signer holding another key than the issuer's is refused before the
+    // intent: the CA would otherwise sign with an unexpected key.
     let other_key_ref = other.lab_signer_key_ref().to_owned();
     let mut wrong_signer = CountingSigner {
         ca: &mut other,
@@ -397,9 +427,26 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
             &verifier,
             &plan3_other_key
         ),
+        Err(CrlError::IssuerMismatch)
+    );
+    assert_eq!(
+        wrong_signer.calls, 0,
+        "no signature by a key that is not the issuer's"
+    );
+    assert_eq!(status_of(&mut reader, 3), "RESERVED");
+
+    // A bad signature by the right key fails independent verification after
+    // signing: fail closed and quarantine.
+    assert_eq!(
+        crl_once(
+            &mut store,
+            &mut CorruptingSigner(signer.ca),
+            &LabCrlAssembler,
+            &verifier,
+            &plan3
+        ),
         Err(CrlError::VerificationFailure)
     );
-    assert_eq!(wrong_signer.calls, 1);
     assert_eq!(status_of(&mut reader, 3), "RECONCILIATION_REQUIRED");
     let r4 = store
         .reserve_crl(&ca_id, "crl-operator", "crl-op-4")
