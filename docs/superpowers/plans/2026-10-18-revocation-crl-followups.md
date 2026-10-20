@@ -22,8 +22,6 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
   `tests/revocation_populated_upgrade.sh`).
-- Fuzz seeds are signed by another key, so `crl_verify` never reaches signature
-  success; `seed-corpus.sh` hides OpenSSL errors.
 - `lab_policy_gate` and the policy block of `revocation_lifecycle.sql` are not
   idempotent on a reused database (pre-existing).
 
