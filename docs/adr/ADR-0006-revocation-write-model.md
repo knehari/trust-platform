@@ -62,6 +62,14 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
   - checkpoints are neither signed nor timestamped (RFC 3161);
   - the anchor's storage is a deployment decision.
 
+### G. Database clock cross-check (lab answer to condition 6)
+
+- The Rust core reads the database clock between two readings of its own (`clock::ClockReading`, `PgRevocationStore::database_clock`).
+- `reserve_crl` refuses (`RevocationStoreError::ClockSkew`), before any intent or signature, when the thisUpdate the database chose is not within the bound (default 2 s) of the host-clock interval that brackets the call. The reservation stays `RESERVED` and housekeeping retires it.
+- `crl_housekeeping` reports skew and uncertainty, and alerts when they exceed the bound.
+- The clock source is injectable (`set_clock_source`), for an authenticated time adapter or for tests.
+- Open: this detects disagreement between two clocks, not wrong time on both. Authenticated time (NTS or a trusted time-stamping service) with drift alerting remains a deployment requirement.
+
 ## Alternatives considered
 
 - **Per-officer PostgreSQL logins (`session_user` as identity):** strong in-database authentication, but it couples human identity lifecycle to database roles and does not fit OIDC step-up. It could be revisited for an air-gapped deployment.
@@ -80,4 +88,4 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 3. Schema-change control: DDL and role changes on this database only through reviewed migrations, monitored (pgaudit or event triggers) and alerted. Lab: section E covers DDL and object grants; role changes still need server logging.
 4. Evidence kept up to date in CI: `tests/revocation_privileges.sql`, `tests/ca_admin_dual_control.sql`, `least_privilege_roles_run_the_whole_pipeline`, `service_connections_refuse_privileged_sessions`.
 5. Audit trail anchored outside the database (append-only external log or timestamped hash chain), so that a superuser cannot rewrite `audit_event` unnoticed (open item D-04). Lab: section F; signed or timestamped checkpoints and the anchor's storage remain open.
-6. Authenticated time source (NTP with drift alerting) for the database, since deadlines, thisUpdate and intent ordering use its clock.
+6. Authenticated time source (NTP with drift alerting) for the database, since deadlines, thisUpdate and intent ordering use its clock. Lab: section G cross-checks the database clock against the Rust core's; authenticating either remains open.

@@ -4,6 +4,7 @@
 
 use std::env;
 use trust_pki_core::{
+    clock,
     crl::{CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
     crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan, SignerPublicKey},
     csr::{verify_pkcs10_p256, VerifiedCsr},
@@ -1868,4 +1869,50 @@ fn issued_certificates_point_relying_parties_to_the_crl() {
         std::fs::write(dir.join("valid.der"), &stored[1]).unwrap();
         std::fs::write(dir.join("ca_id"), &ca_id).unwrap();
     }
+}
+
+/// ADR-0006 condition 6: the database clock is checked against the Rust
+/// core's clock. Here the Rust clock runs a minute ahead (a database a
+/// minute behind): the CRL reservation is refused before anything can be
+/// signed, stays RESERVED, and housekeeping retires it and raises the alarm.
+#[test]
+fn a_skewed_database_clock_is_refused_before_signing() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    let reading = store.database_clock().unwrap();
+    assert!(
+        reading.within(clock::DEFAULT_MAX_CLOCK_SKEW_US),
+        "{reading:?}"
+    );
+
+    fn a_minute_ahead() -> i64 {
+        clock::system_clock_us() + 60_000_000
+    }
+    store.set_clock_source(a_minute_ahead);
+    assert!(matches!(
+        store.reserve_crl(&ca_id, "crl-operator", "crl-skew-op"),
+        Err(RevocationStoreError::ClockSkew)
+    ));
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let status: String = reader
+        .query_one(
+            "SELECT status FROM crl_publication WHERE ca_id = $1::text::uuid",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "RESERVED", "never got an intent");
+    let report = store.crl_housekeeping(&ca_id, 0, 3600).unwrap();
+    assert!(!report.clock_within_bound, "{report:?}");
+    assert!(report.clock.skew_us < -55_000_000, "{report:?}");
+    assert_eq!(report.abandoned, 1);
+    assert!(report.needs_attention());
 }

@@ -7,6 +7,9 @@
 //! 0014/0015, which remain the authority.
 
 use crate::audit_chain::parse_uuid;
+use crate::clock::{
+    system_clock_us, this_update_plausible, ClockReading, ClockSource, DEFAULT_MAX_CLOCK_SKEW_US,
+};
 use crate::crl::{check_crl_issuer, CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::officer_credential::{
@@ -41,6 +44,10 @@ pub enum RevocationStoreError {
     /// The credential is unknown, removed or not the acting officer's, the
     /// challenge was already used, or stored evidence is incomplete.
     SignedApprovalRefused,
+    /// The database clock disagrees with the Rust core's clock beyond the
+    /// configured bound (ADR-0006 condition 6). Nothing was signed; a CRL
+    /// reservation made meanwhile stays RESERVED and housekeeping retires it.
+    ClockSkew,
 }
 
 /// A challenge as stored (migration 0029): the claim the officer must sign
@@ -192,17 +199,26 @@ pub struct CrlHousekeepingReport {
     pub crl_due: bool,
     /// `overdue_status_changes`: changes past their publication deadline.
     pub overdue_changes: i64,
+    /// Database clock against the Rust core's clock (ADR-0006 condition 6).
+    pub clock: ClockReading,
+    pub clock_within_bound: bool,
 }
 
 impl CrlHousekeepingReport {
     /// True when an operator or the CRL issuer must act.
     pub fn needs_attention(&self) -> bool {
-        self.abandoned > 0 || self.quarantined > 0 || self.crl_due || self.overdue_changes > 0
+        self.abandoned > 0
+            || self.quarantined > 0
+            || self.crl_due
+            || self.overdue_changes > 0
+            || !self.clock_within_bound
     }
 }
 
 pub struct PgRevocationStore {
     client: Client,
+    clock: ClockSource,
+    max_clock_skew_us: i64,
 }
 
 impl PgRevocationStore {
@@ -211,7 +227,11 @@ impl PgRevocationStore {
     /// NoTls is suitable ONLY for CI's loopback test database.
     pub fn connect_lab(conn_str: &str) -> Result<Self, RevocationStoreError> {
         let client = Client::connect(conn_str, NoTls)?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            clock: system_clock_us,
+            max_clock_skew_us: DEFAULT_MAX_CLOCK_SKEW_US,
+        })
     }
 
     /// Like `connect_lab`, for a service login: refuses (fail closed) a
@@ -763,6 +783,7 @@ impl PgRevocationStore {
         actor: &str,
         operation_ref: &str,
     ) -> Result<CrlReservation, RevocationStoreError> {
+        let before = (self.clock)();
         let row = self.client.query_one(
             "SELECT crl_number,
                     floor(extract(epoch FROM this_update))::bigint,
@@ -771,6 +792,12 @@ impl PgRevocationStore {
              FROM reserve_crl($1::text::uuid, $2, $3)",
             &[&ca_id, &actor, &operation_ref],
         )?;
+        let after = (self.clock)();
+        // The database chose thisUpdate; refuse a misdated CRL before it can
+        // be signed (ADR-0006 condition 6).
+        if !this_update_plausible(column(&row, 1)?, before, after, self.max_clock_skew_us) {
+            return Err(RevocationStoreError::ClockSkew);
+        }
         let number: i64 = column(&row, 0)?;
         self.reservation_from_snapshot(
             ca_id,
@@ -867,6 +894,31 @@ impl PgRevocationStore {
     /// One scheduled housekeeping pass (ADR-0006 part C): retire stale
     /// reservations, quarantine stale intents, then report whether a CRL is
     /// due and how many changes are past their publication deadline.
+    /// The clock the database is checked against: the host clock by
+    /// default; an authenticated time source adapter (or a test) may
+    /// replace it. Microseconds since the Unix epoch.
+    pub fn set_clock_source(&mut self, clock: ClockSource) {
+        self.clock = clock;
+    }
+
+    /// Bound on |database clock - Rust clock| plus measurement uncertainty
+    /// (default `clock::DEFAULT_MAX_CLOCK_SKEW_US`).
+    pub fn set_max_clock_skew_us(&mut self, max_skew_us: i64) {
+        self.max_clock_skew_us = max_skew_us;
+    }
+
+    /// One database clock reading bracketed by two readings of the Rust
+    /// core's clock.
+    pub fn database_clock(&mut self) -> Result<ClockReading, RevocationStoreError> {
+        let before = (self.clock)();
+        let row = self.client.query_one(
+            "SELECT (extract(epoch FROM clock_timestamp()) * 1000000)::bigint",
+            &[],
+        )?;
+        let after = (self.clock)();
+        Ok(ClockReading::bracket(before, column(&row, 0)?, after))
+    }
+
     pub fn crl_housekeeping(
         &mut self,
         ca_id: &str,
@@ -880,11 +932,14 @@ impl PgRevocationStore {
                     (SELECT count(*) FROM overdue_status_changes($1::text::uuid))",
             &[&ca_id],
         )?;
+        let clock = self.database_clock()?;
         Ok(CrlHousekeepingReport {
             abandoned,
             quarantined,
             crl_due: column(&row, 0)?,
             overdue_changes: column(&row, 1)?,
+            clock,
+            clock_within_bound: clock.within(self.max_clock_skew_us),
         })
     }
 

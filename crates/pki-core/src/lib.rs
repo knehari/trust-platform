@@ -22,6 +22,7 @@ pub mod authentication;
 pub mod ca_observation;
 pub mod certificate_profile;
 pub mod challenge_binding;
+pub mod clock;
 pub mod cp_cps;
 pub mod crl;
 pub mod crl_orchestrator;

@@ -3,7 +3,8 @@
 //! Retires reservations older than `--reserved-older-than` seconds (default
 //! 3600; never signed), quarantines intents older than `--intent-older-than`
 //! seconds (default 3600) and reports whether a CRL is due and how many
-//! status changes are past their publication deadline. It also reports
+//! status changes are past their publication deadline, and whether the
+//! database clock agrees with this host's (ADR-0006 condition 6). It also reports
 //! schema changes not yet acknowledged by a reviewed migration (0026,
 //! database-wide).
 //!
@@ -50,8 +51,15 @@ fn run() -> Result<bool, String> {
         .map_err(|e| format!("schema-change report failed: {e:?}"))?;
     println!(
         "ca={ca_id} abandoned={} quarantined={} crl_due={} overdue_changes={} \
-         unreviewed_schema_changes={schema_changes}",
-        report.abandoned, report.quarantined, report.crl_due, report.overdue_changes
+         unreviewed_schema_changes={schema_changes} clock_skew_us={} clock_uncertainty_us={} \
+         clock_ok={}",
+        report.abandoned,
+        report.quarantined,
+        report.crl_due,
+        report.overdue_changes,
+        report.clock.skew_us,
+        report.clock.uncertainty_us,
+        report.clock_within_bound
     );
     Ok(report.needs_attention() || schema_changes > 0)
 }

@@ -13,6 +13,13 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    still held.
 3. reports `crl_due` and the number of `overdue_status_changes`.
 
+It also reads the database clock between two readings of the host clock
+(`clock_skew_us`, `clock_uncertainty_us`, `clock_ok`) and alerts when
+|skew| + uncertainty exceeds 2 s (ADR-0006 condition 6). The same bound
+makes `PgRevocationStore::reserve_crl` refuse a reservation whose thisUpdate
+disagrees with the host clock (`ClockSkew`, nothing signed). Both hosts
+still need authenticated time (NTS) of their own.
+
 The example then reports `unreviewed_schema_changes` (migration 0026,
 database-wide): DDL and object grants recorded by the schema-change event
 triggers after the last `acknowledge_schema_changes` call. Each reviewed
@@ -41,7 +48,8 @@ TRUST_DATABASE_URL=postgresql://... \
 Exit status:
 - 0: nothing to do;
 - 2: attention needed (something was retired or quarantined, a CRL is due,
-  a change is overdue, or a schema change is unreviewed);
+  a change is overdue, a schema change is unreviewed, or the clocks
+  disagree);
 - 1: error.
 
 A scheduler (cron, systemd timer) can therefore alert on any non-zero status.
