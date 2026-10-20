@@ -5,8 +5,16 @@
 --   that merely reference the CA (certificate_request, audit_event, ...) are
 --   no longer blocked while a reservation is in progress. The comments in
 --   0014 and 0015 that mention FOR UPDATE describe the earlier lock.
+-- * ca_revocation_policy.suspension_cps_ref must contain a non-blank
+--   character: ETSI targets require a CPS reference before allowing
+--   suspension, and whitespace satisfied the 0014 NOT NULL/length check.
+--   Existing blank values make this migration abort with nothing applied.
 -- Apply after 0017 as the migration owner.
 BEGIN;
+
+ALTER TABLE ca_revocation_policy
+    ADD CONSTRAINT suspension_cps_ref_not_blank
+    CHECK (suspension_cps_ref IS NULL OR suspension_cps_ref ~ '[^[:space:]]');
 
 CREATE OR REPLACE FUNCTION reserve_crl(p_ca UUID, p_actor TEXT, p_operation_ref TEXT)
 RETURNS TABLE(crl_number BIGINT, this_update TIMESTAMPTZ, next_update TIMESTAMPTZ,

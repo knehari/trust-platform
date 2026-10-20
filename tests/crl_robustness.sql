@@ -227,4 +227,18 @@ BEGIN
         = 'INTENT_RECORDED', 'within a 2-day interval the intent is accepted');
 END $t$;
 
+-- ----------------------------- suspension CPS reference is meaningful (0018)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000019', 'CPS Ref Lab CA', 'lab-1');
+DO $t$ BEGIN
+    -- an ETSI target with suspension needs a CPS reference; blanks are not one
+    PERFORM pg_temp.expect_err($$INSERT INTO ca_revocation_policy(ca_id, conformance_target,
+        suspension_allowed, suspension_cps_ref)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000019', 'ETSI_EN_319_411_1', true, '   ')$$, '23514');
+    PERFORM pg_temp.expect_err($$INSERT INTO ca_revocation_policy(ca_id, suspension_cps_ref)
+        VALUES ('c0c0c0c0-0000-4000-8000-000000000019', E'\t\n')$$, '23514');
+    INSERT INTO ca_revocation_policy(ca_id, conformance_target, suspension_allowed, suspension_cps_ref)
+    VALUES ('c0c0c0c0-0000-4000-8000-000000000019', 'ETSI_EN_319_411_1', true, 'CPS 4.9.13');
+END $t$;
+
 ROLLBACK;
