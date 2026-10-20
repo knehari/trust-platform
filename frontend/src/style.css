@@ -20,3 +20,5 @@
 .metadata-value{display:flex;align-items:start;justify-content:space-between;gap:10px}.metadata-value strong{min-width:0}.metadata-value button{flex:none}.copy-feedback{color:#438f83;font-size:12px;margin:12px 0 0}
 .dialog-heading>div{min-width:0}.dialog-close{display:grid;place-items:center;flex:none;width:40px;height:40px;margin:-5px -5px 0 0;padding:0;border:0;border-radius:8px;background:transparent;color:#718596;font-size:24px;font-weight:400;line-height:1}.dialog-close:hover{background:#f1f6f5;color:#315c5a}
 .certificate-table{min-width:800px;table-layout:fixed}.certificate-table th:first-child{width:28%}.certificate-table .certificate-cn{overflow-wrap:anywhere}.certificate-cn .record-link{text-align:left}
+
+.filter-field select{width:100%;padding:10px 12px;border:1px solid #d7e2e8;border-radius:7px;background:#fff;color:#263d50;font:inherit;font-weight:400}.filter-field select:focus-visible{outline:2px solid #3c887c;outline-offset:2px}
