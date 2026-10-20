@@ -281,7 +281,11 @@ handles intents left by a crash. No automatic re-sign.
   DML on `revocation` and `certificate_status_change` and could bypass
   maker-checker with direct writes (the guard triggers and CHECKs still hold,
   the two-actor rule does not); the least-privilege write model is deferred to
-  the API slice.
+  the API slice and proposed in ADR-0006.
+- Maker-checker compares textual `(issuer, subject)` identities only. `AGENTS.md`
+  requires cryptographically distinct signer keys as well; this slice does not
+  meet that requirement (known deviation). ADR-0006 proposes signed claims
+  verified by the Rust core with `verify_dual_approval`.
 - An ETSI conformance target is a configuration guard, not evidence of
   conformity; only an assessment by a conformity assessment body can establish
   that.

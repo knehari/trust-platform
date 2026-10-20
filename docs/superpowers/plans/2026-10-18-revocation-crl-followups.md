@@ -11,8 +11,10 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 ## Before non-lab use
 - Least-privilege write model: SQL functions are SECURITY INVOKER, so any caller
   role needs DML on `revocation` / `certificate_status_change` and could bypass
-  maker-checker (spec §6). Design SECURITY DEFINER wrappers or a service role
-  with EXECUTE only, plus INSERT guards on history and `crl_publication`.
+  maker-checker (spec §6). Proposed design: ADR-0006 (SECURITY DEFINER
+  functions, EXECUTE-only service roles), pending human review.
+- Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
+  signer keys (known deviation). ADR-0006 part B proposes signed claims.
 - Authentication of revocation officers stays with the identity adapter.
 
 ## Test gaps
@@ -28,7 +30,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 ## Robustness and hygiene
 - Nothing schedules `abandon_stale_crl_reservations` /
   `quarantine_stale_crl_intents`; since 0017 a stale reservation can no longer
-  be signed, but it stays `RESERVED` until the sweep runs.
+  be signed, but it stays `RESERVED` until the sweep runs; ADR-0006 part C
+  proposes a scheduled operator job.
 - CA row `FOR UPDATE` in `reserve_crl` could be `FOR NO KEY UPDATE`.
 - `crl_due` is O(history) per call; read-only queries do not check isolation.
 - Audit rows carry no `change_id`/reason; reject path and approve's generic
