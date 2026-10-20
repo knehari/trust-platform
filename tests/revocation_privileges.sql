@@ -85,6 +85,30 @@ INSERT INTO revocation_officer_grant(issuer, subject, ca_id) VALUES
 INSERT INTO ca_revocation_policy(ca_id, suspension_allowed)
 VALUES ('c0c0c0c0-0000-4000-8000-000000000a23', true);
 
+-- -------------------- every service function keeps its definer settings
+-- (CREATE OR REPLACE in a later migration silently resets SECURITY DEFINER
+-- and the pinned search_path; 0025 found this.)
+DO $t$
+DECLARE
+    bad TEXT;
+BEGIN
+    SELECT string_agg(p.oid::regprocedure::text, ', ') INTO bad
+    FROM pg_proc p
+    WHERE p.pronamespace = 'public'::regnamespace
+      AND p.proname IN ('certificate_status', 'propose_certificate_status_change',
+          'approve_certificate_status_change', 'reject_certificate_status_change',
+          'withdraw_certificate_status_change', 'reserve_crl', 'crl_snapshot_entries',
+          'record_crl_intent', 'mark_crl_uncertain', 'store_verified_crl',
+          'store_reconciled_crl', 'quarantine_stale_crl_intents',
+          'abandon_stale_crl_reservations', 'crl_due', 'overdue_status_changes',
+          'register_ca_issuer', 'propose_ca_admin_change', 'approve_ca_admin_change',
+          'reject_ca_admin_change')
+      AND (NOT p.prosecdef
+           OR p.proowner <> 'trust_revocation_owner'::regrole
+           OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
+    PERFORM pg_temp.must(bad IS NULL, 'service functions without definer settings: ' || coalesce(bad, ''));
+END $t$;
+
 -- ------------------------------------------------ no direct DML for anyone
 DO $t$
 DECLARE

@@ -36,12 +36,12 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - `crl_housekeeping` (lab example, `docs/operations/lab-crl-housekeeping.md`)
   runs the sweeps and alerts through its exit status; deploying it on a
   schedule with a `trust_crl_operator` login remains open.
-- `crl_due` / `overdue_status_changes` are O(history) per call (a
-  `crl_change_covered` call and supersession probe per approved change, no
-  supporting index); read-only queries do not check isolation.
-- Lock order: `propose_` locks the grant before the certificate, `approve_`,
-  `reject_` and `withdraw_` the certificate first; with concurrent bulk grant
-  deletion this can deadlock (PostgreSQL aborts one transaction, fail closed).
+- `crl_due` / `overdue_status_changes` still call `crl_change_covered` per
+  approved change (the supersession probe is indexed since 0025); read-only
+  queries do not check isolation.
+- Closed in 0025: `propose_` locked the grant before the certificate while
+  `approve_`/`reject_`/`withdraw_` locked the certificate first, so a bulk grant
+  deletion could deadlock (`tests/revocation_lock_order.sh`).
 - Migrations copy whole function bodies to change one line (0016-0020), and the
   entries digest expression is repeated in `reserve_crl` and
   `store_verified_crl`; shared helpers would reduce drift.
