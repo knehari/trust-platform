@@ -7,7 +7,7 @@
 //! 0014/0015, which remain the authority.
 
 use crate::crl::{CrlEntry, CrlError, CrlReservation};
-use crate::crl_orchestrator::{CrlJournal, CrlPlan};
+use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal};
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
 use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
@@ -182,10 +182,49 @@ impl PgRevocationStore {
             &[&ca_id, &actor, &operation_ref],
         )?;
         let number: i64 = column(&row, 0)?;
-        let this_update_unix: i64 = column(&row, 1)?;
-        let next_update_unix: i64 = column(&row, 2)?;
-        let expired_certs_on_crl_since_unix: Option<i64> = column(&row, 3)?;
+        self.reservation_from_snapshot(
+            ca_id,
+            number,
+            column(&row, 1)?,
+            column(&row, 2)?,
+            column(&row, 3)?,
+        )
+    }
 
+    /// Rebuilds the sealed reservation of an existing CRL number from its
+    /// publication row and frozen snapshot, e.g. to reconcile a quarantined
+    /// CRL with `crl_orchestrator::reconcile_crl`.
+    pub fn load_reservation(
+        &mut self,
+        ca_id: &str,
+        crl_number: u64,
+    ) -> Result<CrlReservation, RevocationStoreError> {
+        let number =
+            i64::try_from(crl_number).map_err(|_| RevocationStoreError::InconsistentResult)?;
+        let row = self.client.query_one(
+            "SELECT floor(extract(epoch FROM this_update))::bigint,
+                    floor(extract(epoch FROM next_update))::bigint,
+                    floor(extract(epoch FROM expired_certs_on_crl_since))::bigint
+             FROM crl_publication WHERE ca_id = $1::text::uuid AND crl_number = $2",
+            &[&ca_id, &number],
+        )?;
+        self.reservation_from_snapshot(
+            ca_id,
+            number,
+            column(&row, 0)?,
+            column(&row, 1)?,
+            column(&row, 2)?,
+        )
+    }
+
+    fn reservation_from_snapshot(
+        &mut self,
+        ca_id: &str,
+        number: i64,
+        this_update_unix: i64,
+        next_update_unix: i64,
+        expired_certs_on_crl_since_unix: Option<i64>,
+    ) -> Result<CrlReservation, RevocationStoreError> {
         let rows = self.client.query(
             "SELECT serial_der_content,
                     floor(extract(epoch FROM revoked_at))::bigint,
@@ -246,6 +285,40 @@ impl PgRevocationStore {
             &[&ca_id, &older_than_seconds],
         )?;
         column(&row, 0)
+    }
+}
+
+impl CrlReconciliationJournal for PgRevocationStore {
+    fn store_reconciled(
+        &mut self,
+        reservation: &CrlReservation,
+        operation_ref: &str,
+        actor: &str,
+        tbs_sha256: &[u8; 32],
+        crl_sha256: &[u8; 32],
+        crl_der: &[u8],
+    ) -> Result<(), CrlError> {
+        let number =
+            i64::try_from(reservation.crl_number()).map_err(|_| CrlError::PersistenceFailure)?;
+        match self.client.query_one(
+            "SELECT store_reconciled_crl($1::text::uuid, $2::bigint, $3, $4, $5, $6, $7)",
+            &[
+                &reservation.ca_id(),
+                &number,
+                &operation_ref,
+                &&tbs_sha256[..],
+                &&crl_sha256[..],
+                &crl_der,
+                &actor,
+            ],
+        ) {
+            Ok(_) => Ok(()),
+            // Not quarantined after an intent, other operation or TBS hash.
+            Err(e) if e.code() == Some(&SqlState::CHECK_VIOLATION) => {
+                Err(CrlError::ReplayedOrAmbiguousIntent)
+            }
+            Err(_) => Err(CrlError::PersistenceFailure),
+        }
     }
 }
 

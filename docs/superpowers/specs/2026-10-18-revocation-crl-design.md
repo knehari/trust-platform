@@ -224,7 +224,11 @@ and `CrlVerifier` traits.
    entries exactly equal the snapshot (serial, date, reason, invalidity date);
    `ExpiredCertsOnCRL` present exactly when the target is
    `ETSI_EN_319_411_2`.
-6. **Store** — `store_verified_crl(ca, crl_number, operation_ref, tbs_sha256,
+6. **Store** — (if storing fails after a verified signature, `crl_once`
+   returns the DER as `CrlError::VerifiedButNotStored` and the row is
+   quarantined; `reconcile_crl` re-verifies it against the reservation rebuilt
+   by `load_reservation` and stores it through `store_reconciled_crl`, 0021.)
+   `store_verified_crl(ca, crl_number, operation_ref, tbs_sha256,
    crl_sha256, crl_der)` checks the intent and moves the row to `STORED`.
 
 `crl_publication` (0001) gains `status` in `RESERVED | INTENT_RECORDED |

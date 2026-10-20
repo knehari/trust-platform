@@ -58,6 +58,10 @@ pub enum CrlError {
     AssemblyFailure,
     VerificationFailure,
     PersistenceFailure,
+    /// The CRL was signed and independently verified, but storing it failed;
+    /// the number is quarantined. Keep these bytes and hand them to
+    /// `crl_orchestrator::reconcile_crl` instead of losing the number.
+    VerifiedButNotStored(Vec<u8>),
     /// Nothing was signed and nothing can be signed for this reservation
     /// (abandoned, superseded by a higher number, stale or past nextUpdate):
     /// reserve a new CRL number. Unlike `ReplayedOrAmbiguousIntent`, no

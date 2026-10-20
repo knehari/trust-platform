@@ -382,4 +382,43 @@ BEGIN
         = 'INTENT_RECORDED', 'the highest number records its intent');
 END $t$;
 
+-- ------------------------------- reconciliation of quarantined CRLs (0021)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000022', 'CRL Reconcile Lab CA', 'lab-1');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000022';
+BEGIN
+    -- quarantined before any intent: never signed, cannot be reconciled
+    PERFORM reserve_crl(ca, 'crl-worker', 'rec-op-1');
+    PERFORM mark_crl_uncertain(ca, 1, 'rec-op-1');
+    PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
+        1, 'rec-op-1', sha256('tbs-1'::bytea), sha256('der-1'::bytea), 'der-1'::bytea, 'reviewer')$$,
+        '23514');
+    PERFORM pg_temp.expect_err($$UPDATE crl_publication SET status = 'STORED',
+        crl_der = 'der-1'::bytea, crl_sha256 = sha256('der-1'::bytea), tbs_sha256 = sha256('t'::bytea)
+        WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000022' AND crl_number = 1$$, '23514');
+
+    -- quarantined after its intent: reconciled only with the journaled TBS hash
+    PERFORM reserve_crl(ca, 'crl-worker', 'rec-op-2');
+    PERFORM pg_temp.intent(ca, 2, 'rec-op-2', sha256('tbs-2'::bytea));
+    PERFORM mark_crl_uncertain(ca, 2, 'rec-op-2');
+    PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
+        2, 'rec-op-2', sha256('other-tbs'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer')$$,
+        '23514');
+    PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
+        2, 'rec-op-2', sha256('tbs-2'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, '')$$,
+        '22023');
+    PERFORM pg_temp.must(store_reconciled_crl(ca, 2, 'rec-op-2', sha256('tbs-2'::bytea),
+        sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer') = 'STORED', 'reconciled');
+    PERFORM pg_temp.must((SELECT status = 'STORED' AND crl_der = 'der-2'::bytea FROM crl_publication
+        WHERE ca_id = ca AND crl_number = 2), 'stored bytes');
+    PERFORM pg_temp.must((SELECT count(*) FROM audit_event WHERE ca_id = ca
+        AND event_type = 'crl.reconciled' AND actor_id = 'reviewer' AND decision = 'STORED:2') = 1,
+        'audit crl.reconciled');
+    PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
+        2, 'rec-op-2', sha256('tbs-2'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer')$$,
+        '23514');
+END $t$;
+
 ROLLBACK;

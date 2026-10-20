@@ -35,6 +35,56 @@ pub trait CrlJournal {
     ) -> Result<(), CrlError>;
 }
 
+/// Stores a quarantined CRL after independent re-verification. The
+/// implementation MUST refuse unless the row recorded an intent with exactly
+/// this TBS hash and its snapshot still matches the reservation.
+pub trait CrlReconciliationJournal {
+    fn store_reconciled(
+        &mut self,
+        reservation: &CrlReservation,
+        operation_ref: &str,
+        actor: &str,
+        tbs_sha256: &[u8; 32],
+        crl_sha256: &[u8; 32],
+        crl_der: &[u8],
+    ) -> Result<(), CrlError>;
+}
+
+/// Reconciles a CRL that was signed and verified but whose storage failed
+/// (`CrlError::VerifiedButNotStored`). Never signs: the DER is verified again
+/// against the reservation (rebuilt from the database snapshot by the caller)
+/// with the trusted issuer, and only then stored. The database additionally
+/// requires the TBS hash journaled before signing.
+pub fn reconcile_crl<J, V>(
+    journal: &mut J,
+    verifier: &V,
+    reservation: &CrlReservation,
+    operation_ref: &str,
+    actor: &str,
+    crl_der: &[u8],
+) -> Result<(), CrlError>
+where
+    J: CrlReconciliationJournal,
+    V: CrlVerifier,
+{
+    if operation_ref.is_empty() || actor.is_empty() || crl_der.is_empty() {
+        return Err(CrlError::JournalFailure);
+    }
+    verifier.verify(reservation, crl_der)?;
+    // Verification proved the DER carries exactly this TBS.
+    let tbs_der = build_tbs_cert_list(verifier.issuer(), reservation)?;
+    let tbs_sha256: [u8; 32] = Sha256::digest(&tbs_der).into();
+    let crl_sha256: [u8; 32] = Sha256::digest(crl_der).into();
+    journal.store_reconciled(
+        reservation,
+        operation_ref,
+        actor,
+        &tbs_sha256,
+        &crl_sha256,
+        crl_der,
+    )
+}
+
 fn record_uncertain<J: CrlJournal>(journal: &mut J, plan: &CrlPlan<'_>) {
     // Best effort only: a database outage can prevent this write.
     // Recovery MUST scan durable intents without a result and treat them as ambiguous.
@@ -101,7 +151,8 @@ where
         .is_err()
     {
         record_uncertain(journal, plan);
-        return Err(CrlError::PersistenceFailure);
+        // Signed and verified: hand the bytes back for reconcile_crl.
+        return Err(CrlError::VerifiedButNotStored(crl));
     }
 
     Ok(crl)
@@ -339,11 +390,20 @@ mod tests {
     fn each_failure_after_intent_marks_uncertain() {
         let r = reservation();
         let issuer = issuer();
+        // The persistence case returns the verified CRL (tbs || fake sig).
+        let mut signed = build_tbs_cert_list(&issuer, &r).unwrap();
+        signed.extend_from_slice(&[0xab, 0xcd]);
         let cases: [(bool, bool, bool, bool, CrlError); 4] = [
             (true, false, false, false, CrlError::SigningFailure),
             (false, true, false, false, CrlError::AssemblyFailure),
             (false, false, true, false, CrlError::VerificationFailure),
-            (false, false, false, true, CrlError::PersistenceFailure),
+            (
+                false,
+                false,
+                false,
+                true,
+                CrlError::VerifiedButNotStored(signed),
+            ),
         ];
         for (sign_fail, asm_fail, ver_fail, persist_fail, expected) in cases {
             let mut journal = FakeJournal {
@@ -541,5 +601,71 @@ mod tests {
         );
         assert_eq!(journal.intent_calls, 0);
         assert_eq!(signer.calls, 0);
+    }
+
+    /// (tbs_sha256, crl_sha256, crl_der, actor) handed to the journal.
+    type Reconciled = ([u8; 32], [u8; 32], Vec<u8>, String);
+
+    #[derive(Default)]
+    struct FakeReconciliation {
+        stored: Option<Reconciled>,
+    }
+    impl CrlReconciliationJournal for FakeReconciliation {
+        fn store_reconciled(
+            &mut self,
+            _r: &CrlReservation,
+            op: &str,
+            actor: &str,
+            tbs: &[u8; 32],
+            crl: &[u8; 32],
+            der: &[u8],
+        ) -> Result<(), CrlError> {
+            assert_eq!(op, "op");
+            self.stored = Some((*tbs, *crl, der.to_vec(), actor.to_owned()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reconcile_verifies_before_storing_and_never_signs() {
+        let r = reservation();
+        let issuer = issuer();
+        let der = b"verified crl".to_vec();
+        let mut journal = FakeReconciliation::default();
+        assert_eq!(
+            reconcile_crl(
+                &mut journal,
+                &verifier(&issuer, false),
+                &r,
+                "op",
+                "reviewer",
+                &der
+            ),
+            Err(CrlError::VerificationFailure)
+        );
+        assert!(journal.stored.is_none());
+        reconcile_crl(
+            &mut journal,
+            &verifier(&issuer, true),
+            &r,
+            "op",
+            "reviewer",
+            &der,
+        )
+        .unwrap();
+        let (tbs, crl, stored, actor) = journal.stored.unwrap();
+        let expected_tbs: [u8; 32] =
+            Sha256::digest(build_tbs_cert_list(&issuer, &r).unwrap()).into();
+        let expected_crl: [u8; 32] = Sha256::digest(&der).into();
+        assert_eq!(
+            (tbs, crl, stored, actor.as_str()),
+            (expected_tbs, expected_crl, der, "reviewer")
+        );
+        let mut journal = FakeReconciliation::default();
+        assert_eq!(
+            reconcile_crl(&mut journal, &verifier(&issuer, true), &r, "op", "", &[1]),
+            Err(CrlError::JournalFailure)
+        );
+        assert!(journal.stored.is_none());
     }
 }

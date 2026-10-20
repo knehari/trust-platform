@@ -52,8 +52,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Reject path and approve's generic message still fold maker=checker wording;
   (0021 reports the certain "reserve again" refusals as SQLSTATE 55000 /
   `CrlError::ReserveAgain`.)
-- When `persist_verified` fails after a verified signature, `crl_once` marks
-  the number uncertain and drops the DER; returning it would let
-  reconciliation store it instead of losing the number.
+- `reconcile_crl` (0021) stores a quarantined CRL only when the caller still
+  holds its DER (`CrlError::VerifiedButNotStored`); a CRL lost with its
+  process stays `RECONCILIATION_REQUIRED` (no signer read-back exists).
 - Expired-entry pruning (`keep_expired_on_crl = false`) needs a stored
   `not_after`; entry order is raw serial bytes, not OpenSSL's (length, bytes).

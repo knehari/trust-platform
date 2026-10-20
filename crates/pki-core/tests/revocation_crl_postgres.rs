@@ -5,7 +5,7 @@
 use std::env;
 use trust_pki_core::{
     crl::{CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
-    crl_orchestrator::{crl_once, CrlPlan},
+    crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan},
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
     lab_x509_verifier::{LabCertificateAssembler, LabX509Verifier},
@@ -976,5 +976,144 @@ fn release_with_an_invalidity_date_is_denied_before_sql() {
             ))
         ),
         "got {result:?}"
+    );
+}
+
+/// Journal whose final store always fails, as after a lost connection.
+struct FailingStore<'a>(&'a mut PgRevocationStore);
+
+impl CrlJournal for FailingStore<'_> {
+    fn record_intent(&mut self, plan: &CrlPlan<'_>, tbs_sha256: &[u8; 32]) -> Result<(), CrlError> {
+        self.0.record_intent(plan, tbs_sha256)
+    }
+    fn mark_uncertain(&mut self, plan: &CrlPlan<'_>) -> Result<(), CrlError> {
+        self.0.mark_uncertain(plan)
+    }
+    fn persist_verified(
+        &mut self,
+        _plan: &CrlPlan<'_>,
+        _tbs_sha256: &[u8; 32],
+        _crl_sha256: &[u8; 32],
+        _crl_der: &[u8],
+    ) -> Result<(), CrlError> {
+        Err(CrlError::PersistenceFailure)
+    }
+}
+
+/// A CRL signed and verified but not stored is returned to the caller and,
+/// after independent re-verification against the rebuilt reservation, stored
+/// by reconciliation instead of losing the number.
+#[test]
+fn verified_crl_whose_storage_failed_is_reconciled() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 401);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &serial,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let status = |c: &mut postgres::Client| -> String {
+        c.query_one(
+            "SELECT status FROM crl_publication WHERE ca_id=$1::text::uuid AND crl_number=1",
+            &[&ca_id],
+        )
+        .unwrap()
+        .get(0)
+    };
+
+    let reservation = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-lost-op")
+        .unwrap();
+    let verifier = LabCrlVerifier::new(root.clone());
+    let plan = CrlPlan {
+        reservation: &reservation,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-lost-op",
+    };
+    let crl = match crl_once(
+        &mut FailingStore(&mut store),
+        &mut ca,
+        &LabCrlAssembler,
+        &verifier,
+        &plan,
+    ) {
+        Err(CrlError::VerifiedButNotStored(der)) => der,
+        other => panic!("expected VerifiedButNotStored, got {other:?}"),
+    };
+    assert_eq!(status(&mut reader), "RECONCILIATION_REQUIRED");
+
+    // The reservation is rebuilt from the database, not taken from memory.
+    let rebuilt = store.load_reservation(&ca_id, 1).unwrap();
+    assert_eq!(rebuilt, reservation);
+
+    // Altered bytes are refused by the independent verifier.
+    let mut altered = crl.clone();
+    let last = altered.len() - 1;
+    altered[last] ^= 0x01;
+    assert_eq!(
+        reconcile_crl(
+            &mut store,
+            &verifier,
+            &rebuilt,
+            "crl-lost-op",
+            "crl-reviewer",
+            &altered
+        ),
+        Err(CrlError::VerificationFailure)
+    );
+    assert_eq!(status(&mut reader), "RECONCILIATION_REQUIRED");
+
+    reconcile_crl(
+        &mut store,
+        &verifier,
+        &rebuilt,
+        "crl-lost-op",
+        "crl-reviewer",
+        &crl,
+    )
+    .unwrap();
+    assert_eq!(status(&mut reader), "STORED");
+    let row = reader
+        .query_one(
+            "SELECT p.crl_der,
+                    (SELECT count(*) FROM audit_event a WHERE a.ca_id = p.ca_id
+                       AND a.event_type = 'crl.reconciled' AND a.actor_id = 'crl-reviewer'
+                       AND a.decision = 'STORED:1')
+             FROM crl_publication p WHERE p.ca_id=$1::text::uuid AND p.crl_number=1",
+            &[&ca_id],
+        )
+        .unwrap();
+    let stored: Vec<u8> = row.get(0);
+    let audits: i64 = row.get(1);
+    assert_eq!((stored, audits), (crl.clone(), 1));
+
+    // Reconciling again is refused: the row is final.
+    assert_eq!(
+        reconcile_crl(
+            &mut store,
+            &verifier,
+            &rebuilt,
+            "crl-lost-op",
+            "crl-reviewer",
+            &crl
+        ),
+        Err(CrlError::ReplayedOrAmbiguousIntent)
     );
 }
