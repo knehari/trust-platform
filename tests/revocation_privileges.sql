@@ -102,11 +102,28 @@ BEGIN
           'store_reconciled_crl', 'quarantine_stale_crl_intents',
           'abandon_stale_crl_reservations', 'crl_due', 'overdue_status_changes',
           'register_ca_issuer', 'propose_ca_admin_change', 'approve_ca_admin_change',
-          'reject_ca_admin_change')
+          'reject_ca_admin_change', 'propose_credential_change',
+          'approve_credential_change', 'reject_credential_change')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
     PERFORM pg_temp.must(bad IS NULL, 'service functions without definer settings: ' || coalesce(bad, ''));
+END $t$;
+
+-- Any function explicitly granted to a capability role runs with definer
+-- rights and a pinned search_path, whoever owns it (covers new functions).
+DO $t$
+DECLARE
+    bad TEXT;
+BEGIN
+    SELECT string_agg(DISTINCT p.oid::regprocedure::text, ', ') INTO bad
+    FROM pg_proc p, aclexplode(p.proacl) a
+    WHERE p.pronamespace = 'public'::regnamespace
+      AND a.grantee::regrole::text IN ('trust_revocation_officer_api', 'trust_crl_signer',
+          'trust_crl_operator', 'trust_ca_admin', 'trust_audit_sealer', 'trust_audit_verifier')
+      AND (NOT p.prosecdef
+           OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
+    PERFORM pg_temp.must(bad IS NULL, 'granted functions without definer settings: ' || coalesce(bad, ''));
 END $t$;
 
 -- ------------------------------------------------ no direct DML for anyone

@@ -6,8 +6,12 @@
 //! and signs nothing. Every rule applied here is re-checked by migrations
 //! 0014/0015, which remain the authority.
 
+use crate::audit_chain::parse_uuid;
 use crate::crl::{check_crl_issuer, CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
+use crate::officer_credential::{
+    canonical_officer_key, CredentialChange, CredentialChangeKind, CredentialError,
+};
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
 use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
@@ -26,6 +30,45 @@ pub enum RevocationStoreError {
     /// security or is a member of the owner role: a service must not run
     /// with it (ADR-0006).
     PrivilegedSession,
+    /// An officer credential is malformed (key not on P-256, field out of
+    /// bounds, CA id not a canonical UUID); nothing was sent (ADR-0007).
+    InvalidCredential(CredentialError),
+}
+
+/// The officer credential content a CA admin proposes or reviews
+/// (migration 0028). The key may be in any SEC1 form; it is canonicalised.
+pub struct CredentialContent<'a> {
+    pub ca_id: &'a str,
+    pub credential_id: &'a [u8],
+    pub officer: &'a OfficerIdentity<'a>,
+    pub person_id: &'a str,
+    pub public_key_sec1: &'a [u8],
+}
+
+impl CredentialContent<'_> {
+    /// The canonical key and the digest the checker approves.
+    fn reviewed(
+        &self,
+        kind: CredentialChangeKind,
+    ) -> Result<([u8; 33], [u8; 32]), RevocationStoreError> {
+        let key = canonical_officer_key(self.public_key_sec1)
+            .map_err(RevocationStoreError::InvalidCredential)?;
+        let change = CredentialChange {
+            kind,
+            ca_id: parse_uuid(self.ca_id).ok_or(RevocationStoreError::InvalidCredential(
+                CredentialError::InvalidInput,
+            ))?,
+            credential_id: self.credential_id,
+            officer_issuer: self.officer.issuer,
+            officer_subject: self.officer.subject,
+            person_id: self.person_id,
+            public_key: &key,
+        };
+        change
+            .validate()
+            .map_err(RevocationStoreError::InvalidCredential)?;
+        Ok((key, change.digest()))
+    }
 }
 
 /// Officer grant changes under CA-admin dual control (migration 0024).
@@ -206,6 +249,73 @@ impl PgRevocationStore {
         let digest = officer_grant_digest(action, officer);
         self.client.query_one(
             "SELECT approve_ca_admin_change($1::text::uuid, $2, $3, $4)",
+            &[&change_id, &checker.issuer, &checker.subject, &&digest[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Proposes enrolling an officer credential (CA admin, maker). The key
+    /// is curve-checked and canonicalised first, so one key in two encodings
+    /// is one key to the database.
+    pub fn propose_credential_enrollment(
+        &mut self,
+        content: &CredentialContent<'_>,
+        maker: &OfficerIdentity<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let (key, _) = content.reviewed(CredentialChangeKind::Enroll)?;
+        let row = self.client.query_one(
+            "SELECT propose_credential_change($1::text::uuid, 'ENROLL_CREDENTIAL', $2, $3, $4,
+                                              $5, $6, $7, $8)::text",
+            &[
+                &content.ca_id,
+                &content.credential_id,
+                &content.officer.issuer,
+                &content.officer.subject,
+                &content.person_id,
+                &&key[..],
+                &maker.issuer,
+                &maker.subject,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Proposes removing an active officer credential (CA admin, maker).
+    pub fn propose_credential_removal(
+        &mut self,
+        ca_id: &str,
+        credential_id: &[u8],
+        officer: &OfficerIdentity<'_>,
+        maker: &OfficerIdentity<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT propose_credential_change($1::text::uuid, 'REMOVE_CREDENTIAL', $2, $3, $4,
+                                              NULL, NULL, $5, $6)::text",
+            &[
+                &ca_id,
+                &credential_id,
+                &officer.issuer,
+                &officer.subject,
+                &maker.issuer,
+                &maker.subject,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Approves a credential change (CA admin, checker) for exactly the
+    /// content the checker reviewed; for a removal, the person and key of
+    /// the credential being removed.
+    pub fn approve_credential_change(
+        &mut self,
+        change_id: &str,
+        kind: CredentialChangeKind,
+        reviewed: &CredentialContent<'_>,
+        checker: &OfficerIdentity<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let (_, digest) = reviewed.reviewed(kind)?;
+        self.client.query_one(
+            "SELECT approve_credential_change($1::text::uuid, $2, $3, $4)",
             &[&change_id, &checker.issuer, &checker.subject, &&digest[..]],
         )?;
         Ok(())

@@ -1,6 +1,6 @@
 # ADR-0007 — Signed, key-distinct double control for certificate status changes and CA administration
 
-**Status:** Proposed · 2026-10-20 · design only, nothing implemented. Requires human security review and IAM decisions before implementation.  
+**Status:** Proposed · 2026-10-20 · requires human security review and IAM decisions. Step 1 (credential registry and canonical claim, migration 0028) is implemented in the lab at the repository owner's request; that is not an acceptance of this ADR, and no approval is signed yet.  
 **Scope:** Approval of status changes (suspend, release, revoke) and of CA-administration changes (issuer registration, officer grants) on top of ADR-0006. Laboratory only.  
 **Related:** ADR-0006 (least-privilege write model; this ADR was split out of it), ADR-0003 (authenticated identity), `crates/pki-core/src/policy_decisions.rs` (`verify_dual_approval`), `docs/security/v1-6-approval-challenge-replay-design.md`, `AGENTS.md` (double control).
 
@@ -64,6 +64,14 @@ Dual control must not make the CA miss revocation deadlines. Examples are the CA
 ### 7. Where the decision is taken
 
 Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It verifies the WebAuthn assertions and the claim before calling the database. The stored evidence lets an auditor re-verify every approval offline, without trusting the service.
+
+## Lab implementation status
+
+- **Step 1 (migration 0028, `officer_credential` module):**
+  - Credential registry: WebAuthn credential id, P-256 key stored as canonical compressed SEC1 after a curve check in Rust, unique key digest, person id, signature counter.
+  - Enrolment and removal under CA-admin dual control (section 5), with one person per officer identity and per CA (section 3).
+  - `StatusChangeClaim`, the canonical, domain-separated, length-prefixed claim of section 2, whose SHA-256 is the WebAuthn challenge.
+- **Not yet:** signed approvals, the WebAuthn assertion verification, challenges (section 4), CA-admin claims, urgency rules (section 6). The person identifier is whatever the caller supplies until the IAM decision.
 
 ## Alternatives considered
 

@@ -9,12 +9,14 @@ use trust_pki_core::{
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
     lab_x509_verifier::{LabCertificateAssembler, LabX509Verifier},
+    officer_credential::{canonical_officer_key, CredentialChangeKind, CredentialError},
     orchestrator::{issue_once, ExternalSigner, IssuancePlan, IssueError},
     postgres_store::PgIssuanceStore,
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
     revocation_policy::StatusChangeError,
     revocation_store::{
-        officer_grant_digest, OfficerGrantAction, PgRevocationStore, RevocationStoreError,
+        officer_grant_digest, CredentialContent, OfficerGrantAction, PgRevocationStore,
+        RevocationStoreError,
     },
     serial::SerialNumber,
     x509_extensions::ApprovedPolicyBinding,
@@ -1590,4 +1592,164 @@ fn unreviewed_schema_changes_reach_the_operator() {
         Some("42501")
     );
     owner.batch_execute(&format!("DROP TABLE {table}")).unwrap();
+}
+
+/// A fresh random P-256 public key (uncompressed SEC1) from an ephemeral
+/// lab CA; nothing is signed with it.
+fn fresh_p256_key() -> Vec<u8> {
+    EphemeralLabCa::new("Sovereign Trust Lab Root")
+        .unwrap()
+        .root_certificate()
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes()
+        .to_vec()
+}
+
+/// Migration 0028 (ADR-0007 step 1): officer keys are compared as curve
+/// points. One key enrolled once in uncompressed form cannot be enrolled
+/// again in compressed form for another officer; an invalid point never
+/// reaches the database, and raw uncompressed bytes are refused by it.
+#[test]
+fn officer_credentials_compare_keys_as_curve_points() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    owner
+        .execute(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id)
+             VALUES ($2, 'admin-a', $1::text::uuid), ($2, 'admin-b', $1::text::uuid)",
+            &[&ca_id, &ISSUER],
+        )
+        .unwrap();
+    // fresh_ca already grants the officers "maker" and "checker".
+    let mut admin = PgRevocationStore::connect_lab(&url_as(&url, "trust_ca_admin")).unwrap();
+    let identity = |subject| OfficerIdentity {
+        issuer: ISSUER,
+        subject,
+    };
+    let (admin_a, admin_b) = (identity("admin-a"), identity("admin-b"));
+    let (maker, checker) = (identity("maker"), identity("checker"));
+    // Credential ids unique per run: the CA id bytes plus a tag.
+    let credential = |tag: u8| {
+        let mut id = ca_id.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let uncompressed = fresh_p256_key();
+    assert_eq!(uncompressed.len(), 65);
+    let compressed = canonical_officer_key(&uncompressed).unwrap();
+
+    let enrol = |admin: &mut PgRevocationStore, content: &CredentialContent<'_>| {
+        let change = admin.propose_credential_enrollment(content, &admin_a)?;
+        admin.approve_credential_change(&change, CredentialChangeKind::Enroll, content, &admin_b)
+    };
+    let first_id = credential(1);
+    let first = CredentialContent {
+        ca_id: &ca_id,
+        credential_id: &first_id,
+        officer: &maker,
+        person_id: "person-maker",
+        public_key_sec1: &uncompressed,
+    };
+    enrol(&mut admin, &first).unwrap();
+    let stored: Vec<u8> = owner
+        .query_one(
+            "SELECT public_key_sec1 FROM officer_credential WHERE credential_id = $1",
+            &[&first_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, compressed.to_vec(), "stored in canonical form");
+
+    // The same key, compressed, under another credential id and officer.
+    let second_id = credential(2);
+    let same_key = CredentialContent {
+        ca_id: &ca_id,
+        credential_id: &second_id,
+        officer: &checker,
+        person_id: "person-checker",
+        public_key_sec1: &compressed,
+    };
+    let refused = enrol(&mut admin, &same_key).unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+    // Raw uncompressed bytes are refused by the database itself.
+    let raw = owner
+        .query_one(
+            "SELECT propose_credential_change($1::text::uuid, 'ENROLL_CREDENTIAL', $2, $3,
+                 'checker', 'person-checker', $4, $3, 'admin-a')",
+            &[&ca_id, &second_id, &ISSUER, &uncompressed],
+        )
+        .unwrap_err();
+    assert_eq!(raw.code().map(|c| c.code()), Some("22023"));
+    // A point off the curve never reaches the database.
+    let mut off_curve = uncompressed.clone();
+    off_curve[64] ^= 1;
+    let invalid = admin
+        .propose_credential_enrollment(
+            &CredentialContent {
+                public_key_sec1: &off_curve,
+                ..same_key
+            },
+            &admin_a,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        invalid,
+        RevocationStoreError::InvalidCredential(CredentialError::InvalidPublicKey)
+    ));
+
+    // The checker approves only the content it reviewed.
+    let other_key = fresh_p256_key();
+    let checker_content = CredentialContent {
+        public_key_sec1: &other_key,
+        ..same_key
+    };
+    let change = admin
+        .propose_credential_enrollment(&checker_content, &admin_a)
+        .unwrap();
+    let misread = admin
+        .approve_credential_change(
+            &change,
+            CredentialChangeKind::Enroll,
+            &CredentialContent {
+                person_id: "someone-else",
+                ..checker_content
+            },
+            &admin_b,
+        )
+        .unwrap_err();
+    assert_eq!(sqlstate(&misread).as_deref(), Some("23514"));
+    admin
+        .approve_credential_change(
+            &change,
+            CredentialChangeKind::Enroll,
+            &checker_content,
+            &admin_b,
+        )
+        .unwrap();
+
+    // Removal: the checker reviews the stored person and key.
+    let removal = admin
+        .propose_credential_removal(&ca_id, &first_id, &maker, &admin_b)
+        .unwrap();
+    admin
+        .approve_credential_change(&removal, CredentialChangeKind::Remove, &first, &admin_a)
+        .unwrap();
+    let status: String = owner
+        .query_one(
+            "SELECT status FROM officer_credential WHERE credential_id = $1",
+            &[&first_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "REMOVED");
 }

@@ -37,6 +37,7 @@ pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
 pub mod native_typed_csr_binding;
+pub mod officer_credential;
 #[cfg(all(feature = "lab-software", unix))]
 pub mod openssl_classical_server_lab;
 #[cfg(all(feature = "lab-software", unix))]
