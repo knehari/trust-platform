@@ -59,7 +59,7 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 - A superuser who rewrites, deletes or truncates history, or recomputes the whole chain, is detected at the next verification against the exported checkpoints (`docs/operations/lab-audit-chain.md`).
 - Open:
   - records and entries newer than the last checkpoint are not protected;
-  - checkpoints are neither signed nor timestamped (RFC 3161);
+  - checkpoints can be signed with the anchoring host's P-256 key (`--anchor-key`; HSM custody open) but are not timestamped by a third party (RFC 3161);
   - the anchor's storage is a deployment decision.
 
 ### G. Database clock cross-check (lab answer to condition 6)

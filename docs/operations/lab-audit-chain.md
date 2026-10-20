@@ -56,8 +56,19 @@ administrators:
 - copy the last line out of band, for example into a ticket, a signed email
   or an RFC 3161 timestamp request.
 
-The lab does not sign or timestamp checkpoints; that, and an authenticated
-time source, remain open (D-04, ADR-0006 conditions 5 and 6).
+Signed checkpoints: with `--anchor-key <pkcs8.der>`, every appended line
+is signed with the anchoring host's P-256 key:
+`audit-chain-checkpoint v2 <seq> <head> <signature>`, ECDSA/SHA-256 over
+`trust-platform:audit-checkpoint:v1\0 || seq || head`. Every existing line
+must then verify with that key. A second verifier holding only
+`--anchor-public-key <spki.der>` checks the signatures and appends nothing.
+An edited, unsigned or foreign-key line is reported as tampering (exit 3),
+so whoever can write the file but does not hold the key cannot rewrite the
+anchor. The lab key is a plaintext PKCS#8 file
+(`openssl genpkey ... | openssl pkcs8 -topk8 -nocrypt -outform DER`); in
+production it belongs in an HSM. Checkpoints are still not timestamped by
+a third party (RFC 3161), which remains open with authenticated time
+(D-04, ADR-0006 conditions 5 and 6).
 
 ## Limits
 

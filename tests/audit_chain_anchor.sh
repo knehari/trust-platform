@@ -15,7 +15,7 @@ psql_run() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" "$@"; }
 for migration in migrations/*.sql; do
   psql_run -f "$migration" >/dev/null
 done
-cargo build -q --locked -p trust-pki-core --features postgres-store --example audit_chain_anchor
+cargo build -q --locked -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor
 bin="target/debug/examples/audit_chain_anchor"
 as_role() { # <role> <args...>
   local role="$1"; shift
@@ -56,6 +56,34 @@ expect_status 0 "seal" as_role trust_audit_sealer seal
 expect_status 0 "third verification" as_role trust_audit_verifier verify "$anchor"
 cp "$anchor" "$temp/anchor.before"
 
+# Signed anchor (lab P-256 key generated here, PKCS#8 DER; an HSM in production).
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null \
+  | openssl pkcs8 -topk8 -nocrypt -outform DER -out "$temp/anchor.key"
+openssl pkey -inform DER -in "$temp/anchor.key" -pubout -outform DER -out "$temp/anchor.pub"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null \
+  | openssl pkcs8 -topk8 -nocrypt -outform DER -out "$temp/other.key"
+openssl pkey -inform DER -in "$temp/other.key" -pubout -outform DER -out "$temp/other.pub"
+signed="$temp/signed-checkpoints"
+expect_status 0 "signed anchor" as_role trust_audit_verifier verify "$signed" --anchor-key "$temp/anchor.key"
+grep -q '^audit-chain-checkpoint v2 ' "$signed" || { echo "FAIL: no signed checkpoint" >&2; exit 1; }
+expect_status 0 "public-key verifier" as_role trust_audit_verifier verify "$signed" --anchor-public-key "$temp/anchor.pub"
+expect_status 3 "another anchor key" as_role trust_audit_verifier verify "$signed" --anchor-public-key "$temp/other.pub"
+expect_status 1 "mismatched key pair" as_role trust_audit_verifier verify "$signed" \
+  --anchor-key "$temp/anchor.key" --anchor-public-key "$temp/other.pub"
+# Someone with file access but not the key edits the head: refused.
+python3 - "$signed" <<'PY'
+import sys
+path = sys.argv[1]
+parts = open(path).read().split(" ")
+head = parts[3]
+parts[3] = ("0" if head[0] != "0" else "1") + head[1:]
+open(path, "w").write(" ".join(parts))
+PY
+expect_status 3 "edited signed checkpoint" as_role trust_audit_verifier verify "$signed" --anchor-public-key "$temp/anchor.pub"
+grep -q "tampered_anchor" "$temp/out" || { cat "$temp/out" >&2; echo "FAIL: wrong finding" >&2; exit 1; }
+# An unsigned line in a signed anchor is refused too.
+expect_status 3 "unsigned line in a signed anchor" as_role trust_audit_verifier verify "$anchor" --anchor-public-key "$temp/anchor.pub"
+
 # A superuser rewrites a sealed record and recomputes the chain: the
 # database is internally consistent again, the exported checkpoints are not.
 psql_run >/dev/null <<'SQL'
@@ -78,4 +106,4 @@ expect_status 0 "fresh anchor accepts the rewritten chain" \
 echo "not a checkpoint" >>"$anchor"
 expect_status 1 "damaged checkpoint file" as_role trust_audit_verifier verify "$anchor"
 
-echo "PASS: sealed audit chain anchored outside the database detects a superuser rewrite"
+echo "PASS: sealed audit chain anchored outside the database (signed checkpoints) detects a superuser rewrite"

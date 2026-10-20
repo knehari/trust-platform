@@ -214,6 +214,79 @@ impl Checkpoint {
     }
 }
 
+const SIGNED_CHECKPOINT_TAG: &str = "audit-chain-checkpoint v2";
+
+/// What an anchor key signs for a checkpoint: domain tag, sequence (8-byte
+/// big-endian) and head.
+pub fn checkpoint_signing_message(checkpoint: &Checkpoint) -> Vec<u8> {
+    let mut message = b"trust-platform:audit-checkpoint:v1\0".to_vec();
+    message.extend_from_slice(&checkpoint.sequence.to_be_bytes());
+    message.extend_from_slice(&checkpoint.head);
+    message
+}
+
+/// A checkpoint signed by the anchoring host's P-256 key (ECDSA/SHA-256,
+/// DER): `audit-chain-checkpoint v2 <seq> <head-hex> <signature-hex>`.
+/// The signature binds the exported head to the anchor key, so the anchor
+/// file cannot be edited without it either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedCheckpoint {
+    pub checkpoint: Checkpoint,
+    pub signature_der: Vec<u8>,
+}
+
+impl SignedCheckpoint {
+    pub fn to_line(&self) -> String {
+        let head: String = self
+            .checkpoint
+            .head
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let signature: String = self
+            .signature_der
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        format!(
+            "{SIGNED_CHECKPOINT_TAG} {} {head} {signature}",
+            self.checkpoint.sequence
+        )
+    }
+
+    pub fn parse_line(line: &str) -> Option<Self> {
+        let rest = line
+            .strip_prefix(SIGNED_CHECKPOINT_TAG)?
+            .strip_prefix(' ')?;
+        let (body, signature) = rest.rsplit_once(' ')?;
+        let checkpoint = Checkpoint::parse_line(&format!("{CHECKPOINT_TAG} {body}"))?;
+        if signature.len() % 2 != 0
+            || !(16..=160).contains(&signature.len())
+            || signature.bytes().any(|c| c.is_ascii_uppercase())
+        {
+            return None;
+        }
+        let signature_der = (0..signature.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&signature[i..i + 2], 16).ok())
+            .collect::<Option<Vec<u8>>>()?;
+        Some(Self {
+            checkpoint,
+            signature_der,
+        })
+    }
+
+    /// The signature verifies with the anchor's public key (SEC1).
+    pub fn verify(&self, anchor_public_key_sec1: &[u8]) -> bool {
+        trust_pki_crypto::verify_p256_ecdsa_sha256(
+            anchor_public_key_sec1,
+            &checkpoint_signing_message(&self.checkpoint),
+            &self.signature_der,
+        )
+        .is_ok()
+    }
+}
+
 /// Why a sealed chain failed verification; `sequence` is the first bad entry
 /// (or the checkpoint that could not be reached).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,6 +495,60 @@ mod tests {
         assert_eq!(Checkpoint::parse_line(&line.replace(" 42 ", " 0 ")), None);
         assert_eq!(Checkpoint::parse_line(&line[..line.len() - 2]), None);
         assert_eq!(Checkpoint::parse_line(&format!("{line} extra")), None);
+    }
+
+    #[cfg(feature = "lab-software")]
+    #[test]
+    fn signed_checkpoints_bind_sequence_and_head_to_the_anchor_key() {
+        use trust_pki_crypto::{lab::EphemeralP256Signer, SignatureAlgorithm, SigningProvider};
+        let signer = EphemeralP256Signer::generate("anchor").unwrap();
+        let spki = signer.public_key_spki_der(signer.key_ref()).unwrap();
+        let sec1 =
+            <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(&spki)
+                .unwrap()
+                .subject_public_key
+                .raw_bytes()
+                .to_vec();
+        let checkpoint = Checkpoint {
+            sequence: 7,
+            head: [0xcd; 32],
+        };
+        let signed = SignedCheckpoint {
+            checkpoint,
+            signature_der: signer
+                .sign(
+                    signer.key_ref(),
+                    SignatureAlgorithm::EcdsaP256Sha256,
+                    &checkpoint_signing_message(&checkpoint),
+                )
+                .unwrap(),
+        };
+        let line = signed.to_line();
+        let parsed = SignedCheckpoint::parse_line(&line).unwrap();
+        assert_eq!(parsed, signed);
+        assert!(parsed.verify(&sec1));
+        // Another head or sequence under the same signature does not verify.
+        let moved = line.replacen(" 7 ", " 8 ", 1);
+        assert!(!SignedCheckpoint::parse_line(&moved).unwrap().verify(&sec1));
+        let other_head = line.replacen(&"cd".repeat(32), &"ce".repeat(32), 1);
+        assert!(!SignedCheckpoint::parse_line(&other_head)
+            .unwrap()
+            .verify(&sec1));
+        // Another key does not verify; malformed lines do not parse.
+        let other = EphemeralP256Signer::generate("other").unwrap();
+        let other_spki = other.public_key_spki_der(other.key_ref()).unwrap();
+        let other_sec1 =
+            <x509_cert::spki::SubjectPublicKeyInfoOwned as x509_cert::der::Decode>::from_der(
+                &other_spki,
+            )
+            .unwrap()
+            .subject_public_key
+            .raw_bytes()
+            .to_vec();
+        assert!(!parsed.verify(&other_sec1));
+        assert!(SignedCheckpoint::parse_line(&checkpoint.to_line()).is_none());
+        assert!(SignedCheckpoint::parse_line(&line.to_uppercase()).is_none());
+        assert!(SignedCheckpoint::parse_line(&format!("{line}0")).is_none());
     }
 
     #[test]
