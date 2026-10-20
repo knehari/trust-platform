@@ -33,8 +33,8 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   be signed, but it stays `RESERVED` until the sweep runs; ADR-0006 part C
   proposes a scheduled operator job.
 - `crl_due` is O(history) per call; read-only queries do not check isolation.
-- Audit rows carry no `change_id`/reason; reject path and approve's generic
-  message still fold maker=checker wording; intent mismatch is reported as
+- Reject path and approve's generic message still fold maker=checker wording;
+  intent mismatch is reported as
   `ReplayedOrAmbiguousIntent` (no distinct variant).
 - Expired-entry pruning (`keep_expired_on_crl = false`) needs a stored
   `not_after`; entry order is raw serial bytes, not OpenSSL's (length, bytes).

@@ -241,4 +241,48 @@ DO $t$ BEGIN
     VALUES ('c0c0c0c0-0000-4000-8000-000000000019', 'ETSI_EN_319_411_1', true, 'CPS 4.9.13');
 END $t$;
 
+-- --------------------------- lifecycle audit names the change and reason (0018)
+INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                                requester_id, policy_version, state)
+SELECT ('d1d1d1d1-0000-4000-8000-00000000002' || n)::uuid, 'c0c0c0c0-0000-4000-8000-000000000019',
+       'idem-audit-' || n, sha256(('csr-audit' || n)::bytea), 'requester', 'lab-1', 'PUBLISHED'
+FROM generate_series(1, 3) n;
+INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000019', decode('2' || n, 'hex'),
+       ('d1d1d1d1-0000-4000-8000-00000000002' || n)::uuid
+FROM generate_series(1, 3) n;
+INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                        certificate_der, signed_at)
+SELECT 'c0c0c0c0-0000-4000-8000-000000000019', decode('2' || n, 'hex'),
+       ('d1d1d1d1-0000-4000-8000-00000000002' || n)::uuid,
+       sha256(('der-audit' || n)::bytea), decode('3003020101', 'hex'), now()
+FROM generate_series(1, 3) n;
+INSERT INTO revocation_officer_grant(issuer, subject, ca_id) VALUES
+ ('https://idp.lab.invalid', 'maker',   'c0c0c0c0-0000-4000-8000-000000000019'),
+ ('https://idp.lab.invalid', 'checker', 'c0c0c0c0-0000-4000-8000-000000000019');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000019';
+    iss CONSTANT TEXT := 'https://idp.lab.invalid';
+    c1 UUID; c2 UUID; c3 UUID;
+BEGIN
+    c1 := propose_certificate_status_change(ca, '\x21', 'REVOKE', 4::smallint, NULL, iss, 'maker');
+    PERFORM approve_certificate_status_change(c1, iss, 'checker', 'REVOKE', 4::smallint);
+    c2 := propose_certificate_status_change(ca, '\x22', 'REVOKE', 1::smallint, NULL, iss, 'maker');
+    PERFORM reject_certificate_status_change(c2, iss, 'checker');
+    c3 := propose_certificate_status_change(ca, '\x23', 'SUSPEND', 6::smallint, NULL, iss, 'maker');
+    PERFORM withdraw_certificate_status_change(c3, iss, 'maker');
+    -- one transaction: recorded_at is identical, so compare as sorted sets
+    PERFORM pg_temp.must((SELECT array_agg(event_type || '=' || decision ORDER BY event_type || '=' || decision)
+        FROM audit_event WHERE ca_id = ca AND event_type LIKE 'certificate.status.%')
+        = (SELECT array_agg(x ORDER BY x) FROM unnest(ARRAY[
+            'certificate.status.proposed=REVOKE:pending_approval:change=' || c1 || ':reason=4',
+            'certificate.status.approved=REVOKE:applied:change=' || c1 || ':reason=4',
+            'certificate.status.proposed=REVOKE:pending_approval:change=' || c2 || ':reason=1',
+            'certificate.status.rejected=REVOKE:rejected:change=' || c2 || ':reason=1',
+            'certificate.status.proposed=SUSPEND:pending_approval:change=' || c3 || ':reason=6',
+            'certificate.status.withdrawn=SUSPEND:withdrawn:change=' || c3 || ':reason=6']) x),
+        'lifecycle audit decisions carry change id and reason');
+END $t$;
+
 ROLLBACK;
