@@ -6,6 +6,7 @@ import { oidcConfigurationError, userManager } from './oidc';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
 import { canonicalSerialHex } from './serial';
+import { canonicalUuid } from './uuid';
 
 type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
 
@@ -18,8 +19,6 @@ function displayDate(value: string | null): string {
 function shortId(value: string): string {
   return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
-
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -342,12 +341,12 @@ export function App() {
 
   async function findAuthority() {
     if (!user || user.expired) return;
-    const caId = caLookupInput.trim().toLowerCase();
+    const caId = canonicalUuid(caLookupInput);
     caLookupController.current?.abort();
     setCaLookupLoading(false);
     setCaLookupError(null);
-    if (!uuidPattern.test(caId)) {
-      setCaLookupError('Enter a complete authority UUID.');
+    if (!caId) {
+      setCaLookupError('Enter a complete authority UUID (plain, braced or urn:uuid form).');
       return;
     }
     const controller = new AbortController();
@@ -370,14 +369,14 @@ export function App() {
 
   async function findCertificate() {
     if (!user || user.expired || !selectedCaId) return;
-    const identifier = lookupInput.trim().toLowerCase();
-    const byRequest = uuidPattern.test(identifier);
-    const serialHex = byRequest ? null : canonicalSerialHex(identifier);
+    const identifier = lookupInput.trim();
+    const requestId = canonicalUuid(identifier);
+    const serialHex = requestId ? null : canonicalSerialHex(identifier);
     lookupController.current?.abort();
     setLookupLoading(false);
     setLookupResult(null);
     setLookupError(null);
-    if (!byRequest && !serialHex) {
+    if (!requestId && !serialHex) {
       setLookupError('Enter a complete request UUID or a positive hex serial (for example, 010001, 0x10001 or 01:00:01).');
       return;
     }
@@ -385,12 +384,12 @@ export function App() {
     lookupController.current = controller;
     setLookupLoading(true);
     try {
-      const path = byRequest
-        ? `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/${identifier}`
+      const path = requestId
+        ? `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/${requestId}`
         : `/v1/cas/${encodeURIComponent(selectedCaId)}/certificates/by-serial/${serialHex}`;
       const certificate = await apiGet<Certificate>(path, user.access_token, controller.signal);
       if (controller.signal.aborted) return;
-      requireExactRecord(certificate, selectedCaId, byRequest ? 'request_id' : 'serial_hex', byRequest ? identifier : serialHex!);
+      requireExactRecord(certificate, selectedCaId, requestId ? 'request_id' : 'serial_hex', requestId ?? serialHex!);
       setLookupResult(certificate);
       setSelectedCertificate(certificate);
     } catch (error) {
@@ -404,13 +403,13 @@ export function App() {
 
   async function findAuditEvent() {
     if (!user || user.expired || !selectedCaId) return;
-    const eventId = auditLookupInput.trim().toLowerCase();
+    const eventId = canonicalUuid(auditLookupInput);
     auditLookupController.current?.abort();
     setAuditLookupLoading(false);
     setAuditLookupResult(null);
     setAuditLookupError(null);
-    if (!uuidPattern.test(eventId)) {
-      setAuditLookupError('Enter a complete event UUID.');
+    if (!eventId) {
+      setAuditLookupError('Enter a complete event UUID (plain, braced or urn:uuid form).');
       return;
     }
     const controller = new AbortController();
