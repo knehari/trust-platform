@@ -9,10 +9,11 @@ Its `CrlPlan` still carries `tbs_der`; `crl_once` now builds the TBS from the
 reservation and `CrlPlan::issuer` (spec §4 step 2).
 
 ## Before non-lab use
-- Least-privilege write model: SQL functions are SECURITY INVOKER, so any caller
-  role needs DML on `revocation` / `certificate_status_change` and could bypass
-  maker-checker (spec §6). Proposed design: ADR-0006 (SECURITY DEFINER
-  functions, EXECUTE-only service roles), pending human review.
+- Least-privilege write model: implemented in the lab by 0023 (ADR-0006 part
+  A; tests/revocation_privileges.sql, least_privilege_roles_run_the_whole_pipeline).
+  Open: threat-model update, independent review of the SECURITY DEFINER
+  functions, real service logins and their credentials, and the owner role
+  holding UPDATE on `ca`/`certificate` (row locks).
 - Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
   signer keys (known deviation). ADR-0006 part B proposes signed claims.
 - Authentication of revocation officers stays with the identity adapter.

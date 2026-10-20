@@ -1291,3 +1291,121 @@ fn crl_of_another_ca_is_refused_before_signing() {
         Err(RevocationStoreError::InvalidIssuer)
     ));
 }
+
+/// `url` with `role` set for the session (the test login is a superuser,
+/// which may assume any role; a deployment grants each service login one
+/// capability role instead).
+fn url_as(url: &str, role: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}options=-crole%3D{role}")
+}
+
+/// Migration 0023 (ADR-0006 part A): the Rust store runs the whole pipeline
+/// with EXECUTE-only capability roles, and each role is refused the others'
+/// functions.
+#[test]
+fn least_privilege_roles_run_the_whole_pipeline() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 501);
+
+    let mut admin = PgRevocationStore::connect_lab(&url_as(&url, "trust_ca_admin")).unwrap();
+    let mut officer =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_revocation_officer_api")).unwrap();
+    let mut signer_store =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_signer")).unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+
+    admin.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+    change(
+        &mut officer,
+        &ca_id,
+        &serial,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+    assert_eq!(
+        officer.status(&ca_id, &serial).unwrap(),
+        CertificateStatus::Revoked
+    );
+
+    let reservation = signer_store
+        .reserve_crl(&ca_id, "crl-operator", "crl-lp-op")
+        .unwrap();
+    assert_eq!(reservation.entries().len(), 1);
+    let plan = CrlPlan {
+        reservation: &reservation,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-lp-op",
+    };
+    let verifier = LabCrlVerifier::new(root.clone());
+    crl_once(
+        &mut signer_store,
+        &mut ca,
+        &LabCrlAssembler,
+        &verifier,
+        &plan,
+    )
+    .unwrap();
+    assert_eq!(
+        signer_store
+            .load_reservation(&ca_id, reservation.crl_number())
+            .unwrap(),
+        reservation
+    );
+    assert!(!operator
+        .crl_housekeeping(&ca_id, 3600, 3600)
+        .unwrap()
+        .needs_attention());
+
+    // Each role is refused the others' functions (42501).
+    let maker = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "maker",
+    };
+    let denied = |e: &RevocationStoreError| sqlstate(e).as_deref() == Some("42501");
+    assert!(denied(
+        &signer_store
+            .propose(
+                &ca_id,
+                &serial,
+                StatusAction::Revoke,
+                Some(RevocationReason::Superseded),
+                None,
+                &maker
+            )
+            .unwrap_err()
+    ));
+    assert!(denied(
+        &officer
+            .reserve_crl(&ca_id, "x", "crl-lp-denied")
+            .unwrap_err()
+    ));
+    assert!(denied(
+        &operator
+            .reserve_crl(&ca_id, "x", "crl-lp-denied")
+            .unwrap_err()
+    ));
+    assert!(denied(
+        &signer_store
+            .crl_housekeeping(&ca_id, 3600, 3600)
+            .unwrap_err()
+    ));
+    assert!(denied(
+        &officer
+            .register_ca_issuer(&ca_id, &root, "officer")
+            .unwrap_err()
+    ));
+}

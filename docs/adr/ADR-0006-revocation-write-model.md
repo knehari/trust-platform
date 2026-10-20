@@ -1,6 +1,6 @@
 # ADR-0006 — Least-privilege write model and signed double control for certificate status changes
 
-**Status:** Proposed · 2026-10-20 · requires human security review before any implementation  
+**Status:** Proposed · 2026-10-20 · requires human security review. Part A was implemented in the lab (migration 0023) at the repository owner's request on 2026-10-20; that implementation is not an acceptance of this ADR. The threat-model update and independent review of the SECURITY DEFINER functions remain open; parts B and C (production scheduling) are not implemented.  
 **Scope:** Migrations 0014–0017 (revocation lifecycle and CRL pipeline) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
 **Related:** ADR-0002 (signing and durable state), ADR-0003 (authenticated identity), ADR-0005 (Rust management control plane), `docs/security/v1-6-approval-challenge-replay-design.md`, spec `docs/superpowers/specs/2026-10-18-revocation-crl-design.md` §6.
 

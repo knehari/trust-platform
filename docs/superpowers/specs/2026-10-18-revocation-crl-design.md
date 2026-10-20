@@ -292,8 +292,9 @@ handles intents left by a crash. No automatic re-sign.
 - The SQL functions are `SECURITY INVOKER`, so any role able to call them needs
   DML on `revocation` and `certificate_status_change` and could bypass
   maker-checker with direct writes (the guard triggers and CHECKs still hold,
-  the two-actor rule does not); the least-privilege write model is deferred to
-  the API slice and proposed in ADR-0006.
+  the two-actor rule does not). Since 0023 (ADR-0006 part A, lab) the
+  functions are SECURITY DEFINER and service roles have EXECUTE only, so this
+  holds only for superusers and the owner role.
 - Maker-checker compares textual `(issuer, subject)` identities only. `AGENTS.md`
   requires cryptographically distinct signer keys as well; this slice does not
   meet that requirement (known deviation). ADR-0006 proposes signed claims
