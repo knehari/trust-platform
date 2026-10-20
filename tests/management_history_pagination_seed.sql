@@ -1,4 +1,5 @@
 -- Disposable metadata only. Certificate DER is a schema sentinel, not a signed X.509 object.
+-- Subject CNs below are explicitly synthetic display fixtures, not parsed certificate claims.
 INSERT INTO ca (ca_id, display_name, policy_version) VALUES
     ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'Paged Lab CA', 'v1'),
     ('ffffffff-ffff-4fff-8fff-ffffffffffff', 'Hidden Lab CA', 'v1');
@@ -17,12 +18,13 @@ SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
        ('11111111-1111-4111-8111-' || lpad(to_hex(n), 12, '0'))::uuid
 FROM generate_series(1, 102) AS n;
 
-INSERT INTO certificate (ca_id, serial_der_content, request_id, fingerprint_sha256, certificate_der, signed_at)
+INSERT INTO certificate (ca_id, serial_der_content, request_id, fingerprint_sha256, certificate_der, signed_at, subject_cn)
 SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
        decode('01' || lpad(to_hex(n), 4, '0'), 'hex'),
        ('11111111-1111-4111-8111-' || lpad(to_hex(n), 12, '0'))::uuid,
        decode(repeat('02', 32), 'hex'), decode('3000', 'hex'),
-       '2026-10-01T12:00:00Z'::timestamptz
+       '2026-10-01T12:00:00Z'::timestamptz,
+       'paged-' || lpad(to_hex(n), 4, '0') || '.lab.invalid'
 FROM generate_series(1, 102) AS n;
 
 INSERT INTO audit_event (event_id, ca_id, actor_id, event_type, decision, policy_version, recorded_at)

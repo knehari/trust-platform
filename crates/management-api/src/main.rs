@@ -785,6 +785,7 @@ mod tests {
             "11111111-1111-4111-8111-000000000001"
         );
         assert_eq!(certificate["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        assert_eq!(certificate["subject_cn"], "paged-0001.lab.invalid");
         assert!(certificate.get("certificate_der").is_none());
         let (status, _) = detail_response(&app, &token, "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/11111111-1111-4111-8111-000000000999").await;
         assert_eq!(status, StatusCode::NOT_FOUND);

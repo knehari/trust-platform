@@ -215,7 +215,7 @@ components:
         state: { type: string }
         signed_at: { type: string, format: date-time }
         published_at: { type: [string, 'null'], format: date-time }
-        subject_cn: { type: [string, 'null'], description: Verified single-CN subject when recorded; null for historical or unsupported subjects }
+        subject_cn: { type: [string, 'null'], description: Recorded subject CN when available; null for historical or unsupported subjects. Disposable lab fixtures may use synthetic values. }
     AuditEvent:
       type: object
       required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]
