@@ -55,8 +55,15 @@ run_migration "$TRUST_LEDGER_DATABASE_URL" >"$logs/first" 2>&1 &
 first_pid=$!
 run_migration "$TRUST_LEDGER_DATABASE_URL" >"$logs/second" 2>&1 &
 second_pid=$!
-wait "$first_pid"
-wait "$second_pid"
+first_status=0
+second_status=0
+wait "$first_pid" || first_status=$?
+wait "$second_pid" || second_status=$?
+if [[ "$first_status" != 0 || "$second_status" != 0 ]]; then
+  echo 'Concurrent migration runner failed:' >&2
+  cat "$logs/first" "$logs/second" >&2
+  exit 1
+fi
 if [[ $(grep -hc '^APPLY:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 3 ]] ||
    [[ $(grep -hc '^SKIP:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 3 ]]; then
   echo 'Concurrent runners did not apply each migration exactly once' >&2
