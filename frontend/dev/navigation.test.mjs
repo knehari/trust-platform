@@ -15,4 +15,6 @@ test('untrusted navigation values cannot become paths or authority IDs', () => {
   assert.deepEqual(readNavigation('?view=https://evil.invalid&ca=not-a-uuid&token=secret'), { section: 'overview', caId: null });
   assert.deepEqual(readNavigation(`?ca=${ca}`), { section: 'authorities', caId: ca });
   assert.equal(navigationUrl('overview', null), '/?view=overview');
+  const destination = readNavigation(`?view=audit&ca=${ca}&token=secret`);
+  assert.equal(navigationUrl(destination.section, destination.caId), `/?view=audit&ca=${ca}`);
 });

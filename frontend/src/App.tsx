@@ -488,7 +488,11 @@ export function App() {
         <h1>Clear oversight for every certificate authority.</h1>
         <p>Review CA inventory, certificate metadata and audit activity through a scoped, read-only session.</p>
         {(oidcConfigurationError || sessionError) && <div className="notice error" role="alert">{oidcConfigurationError || sessionError}</div>}
-        <button className="primary-button" disabled={!userManager} onClick={() => void userManager?.signinRedirect({ state: window.location.search }).catch(() => setSessionError('OIDC sign-in could not start. Check the local test issuer.'))}>
+        <button className="primary-button" disabled={!userManager} onClick={() => {
+          const destination = readNavigation(window.location.search);
+          void userManager?.signinRedirect({ state: navigationUrl(destination.section, destination.caId) })
+            .catch(() => setSessionError('OIDC sign-in could not start. Check the local test issuer.'));
+        }}>
           Sign in with your organization <span aria-hidden="true">↗</span>
         </button>
         <div className="login-footnote">Access is limited to the authorities assigned to your account. No signing keys are available in this console.</div>
