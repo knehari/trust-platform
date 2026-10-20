@@ -848,3 +848,59 @@ fn malformed_database_answer_is_an_error_not_a_panic() {
         "expected InconsistentResult, got a panic or another outcome"
     );
 }
+
+/// Migration 0017: once CRL n+1 is stored, a late worker holding the
+/// reservation for n is refused before signing.
+#[test]
+fn reservation_older_than_a_stored_crl_is_never_signed() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    let late = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-slow-op")
+        .unwrap();
+    let fast = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-fast-op")
+        .unwrap();
+    let verifier = LabCrlVerifier::new(root.clone());
+    let mut signer = CountingSigner {
+        ca: &mut ca,
+        calls: 0,
+    };
+    let plan = |reservation, operation_ref| CrlPlan {
+        reservation,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref,
+    };
+    crl_once(
+        &mut store,
+        &mut signer,
+        &LabCrlAssembler,
+        &verifier,
+        &plan(&fast, "crl-fast-op"),
+    )
+    .unwrap();
+    assert_eq!(signer.calls, 1);
+    assert_eq!(
+        crl_once(
+            &mut store,
+            &mut signer,
+            &LabCrlAssembler,
+            &verifier,
+            &plan(&late, "crl-slow-op"),
+        ),
+        Err(CrlError::ReplayedOrAmbiguousIntent)
+    );
+    assert_eq!(signer.calls, 1);
+}

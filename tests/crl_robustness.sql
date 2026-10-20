@@ -83,7 +83,7 @@ DECLARE
     v_before TIMESTAMPTZ;
 BEGIN
     PERFORM pg_temp.old_reservation(1, INTERVAL '3 days', 'stale-op');
-    PERFORM pg_temp.old_reservation(2, INTERVAL '3 days', 'old-intent-op');
+    PERFORM pg_temp.old_reservation(2, INTERVAL '3 hours', 'old-intent-op');
     PERFORM pg_temp.old_reservation(3, INTERVAL '0 seconds', 'fresh-op');
 
     -- the intent time is the moment of the intent, not the reservation
@@ -188,6 +188,43 @@ DO $t$ BEGIN
     VALUES ('c0c0c0c0-0000-4000-8000-000000000017', '\x16', 6, '1970-01-01 00:00:00+00', 'legacy');
     UPDATE revocation SET reason_code = 1, revoked_at = '1970-01-01 00:00:00+00'
     WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000017' AND serial_der_content = '\x16';
+END $t$;
+
+-- ------------------------------- intent ordering and staleness (migration 0017)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000018', 'CRL Order Lab CA', 'lab-1');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000018';
+BEGIN
+    -- two workers reserve 1 and 2; 2 is signed and stored first
+    PERFORM reserve_crl(ca, 'crl-worker', 'order-op-1');
+    PERFORM reserve_crl(ca, 'crl-worker', 'order-op-2');
+    PERFORM pg_temp.intent(ca, 2, 'order-op-2', sha256('tbs-2'::bytea));
+    PERFORM store_verified_crl(ca, 2, 'order-op-2', sha256('tbs-2'::bytea),
+                               sha256('der-2'::bytea), 'der-2'::bytea);
+    -- CRL 1 would now be older than a stored CRL: never signed
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
+        1, 'order-op-1', sha256('tbs-1'::bytea))$$, '23514',
+        'CRL intent refused: a higher CRL number is already stored');
+    PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
+        = 'RESERVED', 'refused intent leaves the reservation untouched');
+
+    -- a reservation older than the issue interval (default 24 h) is stale:
+    -- a newer CRL is already due, so it is never signed
+    INSERT INTO crl_publication(ca_id, crl_number, this_update, next_update, status,
+                                operation_ref, actor_id, entries_sha256)
+    VALUES (ca, 3, date_trunc('second', clock_timestamp() - INTERVAL '25 hours'),
+            date_trunc('second', clock_timestamp() - INTERVAL '25 hours') + INTERVAL '7 days',
+            'RESERVED', 'order-op-3', 'crl-worker', sha256('\x'::bytea));
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
+        3, 'order-op-3', sha256('tbs-3'::bytea))$$, '23514',
+        'CRL intent refused: reservation older than the CRL issue interval');
+    -- the per-CA interval applies
+    INSERT INTO ca_revocation_policy(ca_id, crl_issue_interval, crl_validity)
+    VALUES (ca, INTERVAL '2 days', INTERVAL '7 days');
+    PERFORM pg_temp.must(pg_temp.intent(ca, 3, 'order-op-3', sha256('tbs-3'::bytea))
+        = 'INTENT_RECORDED', 'within a 2-day interval the intent is accepted');
 END $t$;
 
 ROLLBACK;

@@ -26,9 +26,9 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   idempotent on a reused database (pre-existing).
 
 ## Robustness and hygiene
-- `record_crl_intent` accepts any still-`RESERVED` row, however old, until
-  `abandon_stale_crl_reservations` (0016) is run; nothing schedules that sweep,
-  and an intent is not refused when a higher CRL number is already stored.
+- Nothing schedules `abandon_stale_crl_reservations` /
+  `quarantine_stale_crl_intents`; since 0017 a stale reservation can no longer
+  be signed, but it stays `RESERVED` until the sweep runs.
 - CA row `FOR UPDATE` in `reserve_crl` could be `FOR NO KEY UPDATE`.
 - `crl_due` is O(history) per call; read-only queries do not check isolation.
 - Audit rows carry no `change_id`/reason; reject path and approve's generic
