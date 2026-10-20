@@ -1,6 +1,6 @@
 # ADR-0007 — Signed, key-distinct double control for certificate status changes and CA administration
 
-**Status:** Proposed · 2026-10-20 · requires human security review and IAM decisions. Step 1 (credential registry and canonical claim, migration 0028) is implemented in the lab at the repository owner's request; that is not an acceptance of this ADR, and no approval is signed yet.  
+**Status:** Proposed · 2026-10-20 · requires human security review and IAM decisions. Steps 1 and 2 (credential registry and canonical claim, migration 0028; signed status-change approvals, migration 0029) are implemented in the lab at the repository owner's request; that is not an acceptance of this ADR.  
 **Scope:** Approval of status changes (suspend, release, revoke) and of CA-administration changes (issuer registration, officer grants) on top of ADR-0006. Laboratory only.  
 **Related:** ADR-0006 (least-privilege write model; this ADR was split out of it), ADR-0003 (authenticated identity), `crates/pki-core/src/policy_decisions.rs` (`verify_dual_approval`), `docs/security/v1-6-approval-challenge-replay-design.md`, `AGENTS.md` (double control).
 
@@ -71,7 +71,22 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - Credential registry: WebAuthn credential id, P-256 key stored as canonical compressed SEC1 after a curve check in Rust, unique key digest, person id, signature counter.
   - Enrolment and removal under CA-admin dual control (section 5), with one person per officer identity and per CA (section 3).
   - `StatusChangeClaim`, the canonical, domain-separated, length-prefixed claim of section 2, whose SHA-256 is the WebAuthn challenge.
-- **Not yet:** signed approvals, the WebAuthn assertion verification, challenges (section 4), CA-admin claims, urgency rules (section 6). The person identifier is whatever the caller supplies until the IAM decision.
+- **Step 2 (migration 0029, `webauthn` module, `PgRevocationStore::submit_signed`):**
+  - Single-use challenges bound to the change and the acting officer (section 4).
+  - Verification of the ES256 WebAuthn assertion in Rust: RP id hash, UP and UV flags, origin, `webauthn.get` type, challenge equal to the claim digest, non-regressing counter. Attested data, extensions and cross-origin ceremonies are refused.
+  - Database re-checks of everything except the ECDSA signature, and storage of the evidence.
+  - Distinct keys and persons for maker and checker.
+  - Removal of the maker's credential voids a pending proposal.
+  - A per-CA, one-way `signed_approvals_required` setting.
+  - Offline re-verification (`reverify_signed_change`).
+  - Tests cover every case in the evidence list below except "same person with two credentials", which the registry refuses at enrolment (0028), and the counter of a removed credential.
+- **Not yet:**
+  - CA-admin signed claims (`trust-platform/ca-admin/v1`);
+  - signed reject and withdraw;
+  - urgency rules and break-glass (section 6);
+  - attestation policy.
+
+  The person identifier is whatever the caller supplies until the IAM decision.
 
 ## Alternatives considered
 

@@ -11,10 +11,12 @@ use crate::crl::{check_crl_issuer, CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::officer_credential::{
     canonical_officer_key, CredentialChange, CredentialChangeKind, CredentialError,
+    StatusChangeClaim,
 };
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
 use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
+use crate::webauthn::{verify_assertion, Assertion, RelyingParty, WebAuthnError};
 use postgres::{error::SqlState, types::FromSqlOwned, Client, Error as PgError, NoTls, Row};
 use sha2::{Digest, Sha256};
 use x509_cert::{der::Encode, Certificate};
@@ -33,6 +35,70 @@ pub enum RevocationStoreError {
     /// An officer credential is malformed (key not on P-256, field out of
     /// bounds, CA id not a canonical UUID); nothing was sent (ADR-0007).
     InvalidCredential(CredentialError),
+    /// A signed approval failed verification in the Rust core (ADR-0007
+    /// step 2); nothing was sent, or stored evidence does not re-verify.
+    InvalidAssertion(WebAuthnError),
+    /// The credential is unknown, removed or not the acting officer's, the
+    /// challenge was already used, or stored evidence is incomplete.
+    SignedApprovalRefused,
+}
+
+/// A challenge as stored (migration 0029): the claim the officer must sign
+/// and who must sign it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedChallenge {
+    pub purpose: SignedStep,
+    pub claim: StatusChangeClaim,
+    pub actor_issuer: String,
+    pub actor_subject: String,
+    pub consumed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignedStep {
+    Propose,
+    Approve,
+}
+
+/// An enrolled credential as stored (migration 0028).
+struct StoredCredential {
+    issuer: String,
+    subject: String,
+    public_key_sec1: Vec<u8>,
+    sign_count: i64,
+    active: bool,
+}
+
+fn claim_action(action: &str) -> Result<&'static str, RevocationStoreError> {
+    match action {
+        "SUSPEND" => Ok("SUSPEND"),
+        "RELEASE" => Ok("RELEASE"),
+        "REVOKE" => Ok("REVOKE"),
+        _ => Err(RevocationStoreError::InconsistentResult),
+    }
+}
+
+fn hex_uuid(bytes: &[u8; 16]) -> String {
+    bytes
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let dash = if [4, 6, 8, 10].contains(&i) { "-" } else { "" };
+            format!("{dash}{b:02x}")
+        })
+        .collect()
+}
+
+fn uuid_column(row: &Row, idx: usize) -> Result<[u8; 16], RevocationStoreError> {
+    let text: String = column(row, idx)?;
+    parse_uuid(&text).ok_or(RevocationStoreError::InconsistentResult)
+}
+
+fn hash_column(row: &Row, idx: usize) -> Result<[u8; 32], RevocationStoreError> {
+    let bytes: Vec<u8> = column(row, idx)?;
+    bytes
+        .try_into()
+        .map_err(|_| RevocationStoreError::InconsistentResult)
 }
 
 /// The officer credential content a CA admin proposes or reviews
@@ -318,6 +384,226 @@ impl PgRevocationStore {
             "SELECT approve_credential_change($1::text::uuid, $2, $3, $4)",
             &[&change_id, &checker.issuer, &checker.subject, &&digest[..]],
         )?;
+        Ok(())
+    }
+
+    /// Asks for a single-use challenge to sign a proposal (ADR-0007 step 2).
+    /// Returns the challenge id; `signed_challenge` gives the claim to sign.
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_proposal_challenge(
+        &mut self,
+        ca_id: &str,
+        serial: &SerialNumber,
+        action: StatusAction,
+        reason: Option<RevocationReason>,
+        invalidity_at_unix: Option<i64>,
+        maker: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let code: Option<i16> = reason.map(RevocationReason::code);
+        let row = self.client.query_one(
+            "SELECT issue_status_change_challenge('PROPOSE', $1::text::uuid, NULL, $2, $3,
+                 $4::smallint, to_timestamp($5::bigint::float8), $6, $7, $8)::text",
+            &[
+                &ca_id,
+                &serial.as_der_content(),
+                &action.as_sql(),
+                &code,
+                &invalidity_at_unix,
+                &maker.issuer,
+                &maker.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Asks for a single-use challenge to sign the approval of `change_id`.
+    pub fn issue_approval_challenge(
+        &mut self,
+        change_id: &str,
+        checker: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT issue_status_change_challenge('APPROVE', NULL, $1::text::uuid, NULL, NULL,
+                 NULL, NULL, $2, $3, $4)::text",
+            &[&change_id, &checker.issuer, &checker.subject, &ttl_seconds],
+        )?;
+        column(&row, 0)
+    }
+
+    /// The stored challenge and the claim rebuilt from it: what the officer
+    /// signs, and what a submission is verified against.
+    pub fn signed_challenge(
+        &mut self,
+        challenge_id: &str,
+    ) -> Result<SignedChallenge, RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT purpose, ca_id::text, change_id::text, issuer_certificate_sha256,
+                    serial_der_content, action, reason_code, invalidity_us, policy_edition,
+                    challenge_sha256, expires_us, actor_issuer, actor_subject, consumed
+             FROM status_change_challenge_claim($1::text::uuid)",
+            &[&challenge_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        let purpose = match column::<String>(row, 0)?.as_str() {
+            "PROPOSE" => SignedStep::Propose,
+            "APPROVE" => SignedStep::Approve,
+            _ => return Err(RevocationStoreError::InconsistentResult),
+        };
+        let reason: Option<i16> = column(row, 6)?;
+        let claim = StatusChangeClaim {
+            change_id: uuid_column(row, 2)?,
+            ca_id: uuid_column(row, 1)?,
+            issuer_certificate_sha256: hash_column(row, 3)?,
+            serial_der_content: column(row, 4)?,
+            action: claim_action(&column::<String>(row, 5)?)?,
+            reason: reason
+                .map(|r| u8::try_from(r).map_err(|_| RevocationStoreError::InconsistentResult))
+                .transpose()?,
+            invalidity_date_us: column(row, 7)?,
+            policy_edition: column(row, 8)?,
+            challenge_sha256: hash_column(row, 9)?,
+            expires_at_us: column(row, 10)?,
+        };
+        claim
+            .validate()
+            .map_err(|_| RevocationStoreError::InconsistentResult)?;
+        Ok(SignedChallenge {
+            purpose,
+            claim,
+            actor_issuer: column(row, 11)?,
+            actor_subject: column(row, 12)?,
+            consumed: column(row, 13)?,
+        })
+    }
+
+    fn stored_credential(
+        &mut self,
+        ca_id: &[u8; 16],
+        credential_id: &[u8],
+    ) -> Result<StoredCredential, RevocationStoreError> {
+        let ca_text = hex_uuid(ca_id);
+        let rows = self.client.query(
+            "SELECT issuer, subject, public_key_sec1, sign_count, active
+             FROM officer_credential_for($1::text::uuid, $2)",
+            &[&ca_text, &credential_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        Ok(StoredCredential {
+            issuer: column(row, 0)?,
+            subject: column(row, 1)?,
+            public_key_sec1: column(row, 2)?,
+            sign_count: column(row, 3)?,
+            active: column(row, 4)?,
+        })
+    }
+
+    /// Submits a signed proposal or approval. The Rust core verifies the
+    /// WebAuthn assertion against the claim rebuilt from the stored
+    /// challenge and the enrolled key before anything is written; the
+    /// database re-checks the rest (migration 0029). Returns the change id.
+    pub fn submit_signed(
+        &mut self,
+        challenge_id: &str,
+        credential_id: &[u8],
+        assertion: &Assertion<'_>,
+        rp: &RelyingParty<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let challenge = self.signed_challenge(challenge_id)?;
+        let credential = self.stored_credential(&challenge.claim.ca_id, credential_id)?;
+        if challenge.consumed
+            || !credential.active
+            || (credential.issuer.as_str(), credential.subject.as_str())
+                != (
+                    challenge.actor_issuer.as_str(),
+                    challenge.actor_subject.as_str(),
+                )
+        {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        let stored_count = u32::try_from(credential.sign_count)
+            .map_err(|_| RevocationStoreError::InconsistentResult)?;
+        verify_assertion(
+            assertion,
+            rp,
+            &credential.public_key_sec1,
+            &challenge.claim.digest(),
+            stored_count,
+        )
+        .map_err(RevocationStoreError::InvalidAssertion)?;
+        let function = match challenge.purpose {
+            SignedStep::Propose => "propose_signed_status_change",
+            SignedStep::Approve => "approve_signed_status_change",
+        };
+        self.client.query_one(
+            &format!("SELECT {function}($1::text::uuid, $2, $3, $4, $5)::text"),
+            &[
+                &challenge_id,
+                &credential_id,
+                &assertion.authenticator_data,
+                &assertion.client_data_json,
+                &assertion.signature_der,
+            ],
+        )?;
+        Ok(hex_uuid(&challenge.claim.change_id))
+    }
+
+    /// Re-verifies the stored evidence of a signed change offline: both
+    /// assertions against the enrolled keys and the claims rebuilt from
+    /// their challenges, with distinct keys and persons. Exposes an
+    /// assertion that reached the database without the Rust core.
+    pub fn reverify_signed_change(
+        &mut self,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT role, challenge_id::text, public_key_sec1, person_id, claim_sha256,
+                    authenticator_data, client_data_json, signature_der
+             FROM status_change_signatures($1::text::uuid)",
+            &[&change_id],
+        )?;
+        if rows.len() != 2 {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        let mut keys = Vec::new();
+        let mut persons = Vec::new();
+        for row in &rows {
+            let challenge = self.signed_challenge(&column::<String>(row, 1)?)?;
+            let digest = challenge.claim.digest();
+            if hash_column(row, 4)? != digest || hex_uuid(&challenge.claim.change_id) != change_id {
+                return Err(RevocationStoreError::SignedApprovalRefused);
+            }
+            let key: Vec<u8> = column(row, 2)?;
+            let authenticator_data: Vec<u8> = column(row, 5)?;
+            let client_data_json: Vec<u8> = column(row, 6)?;
+            let signature_der: Vec<u8> = column(row, 7)?;
+            // The counter was enforced when the evidence was stored; offline
+            // only the signature and the bindings are re-checked.
+            verify_assertion(
+                &Assertion {
+                    authenticator_data: &authenticator_data,
+                    client_data_json: &client_data_json,
+                    signature_der: &signature_der,
+                },
+                rp,
+                &key,
+                &digest,
+                0,
+            )
+            .map_err(RevocationStoreError::InvalidAssertion)?;
+            keys.push(key);
+            persons.push(column::<String>(row, 3)?);
+        }
+        if keys[0] == keys[1] || persons[0] == persons[1] {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
         Ok(())
     }
 

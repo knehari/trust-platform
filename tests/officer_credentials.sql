@@ -152,7 +152,14 @@ UPDATE officer_credential SET sign_count = 5 WHERE credential_id = decode(repeat
 SELECT pg_temp.expect_err($$UPDATE officer_credential SET sign_count = 4
                             WHERE credential_id = decode(repeat('05', 16), 'hex')$$, '23514');
 SELECT pg_temp.expect_err($$DELETE FROM officer_credential$$, '23514');
-SELECT pg_temp.expect_err($$TRUNCATE officer_credential$$, '23514');
+-- Refused by the guard, or earlier by the foreign key of 0029's signatures.
+DO $tr$
+BEGIN
+    TRUNCATE officer_credential;
+    RAISE EXCEPTION 'TRUNCATE officer_credential succeeded';
+EXCEPTION WHEN SQLSTATE '23514' OR SQLSTATE '0A000' THEN
+    NULL;
+END $tr$;
 SELECT pg_temp.expect_err($$UPDATE officer_credential_change SET person_id = 'x'$$, '23514');
 SELECT pg_temp.expect_err($$DELETE FROM officer_credential_change$$, '23514');
 

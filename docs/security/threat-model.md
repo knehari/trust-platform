@@ -16,12 +16,12 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
 
-## Revocation and CRL write path (lab, migrations 0014-0028, ADR-0006, ADR-0007)
+## Revocation and CRL write path (lab, migrations 0014-0029, ADR-0006, ADR-0007)
 
 | Threat | Control in the lab slice | Residual risk / open |
 | --- | --- | --- |
 | A service login revokes, releases or suspends without maker-checker by writing tables directly | 0023: tables owned by NOLOGIN `trust_revocation_owner`; SECURITY DEFINER functions; capability roles have EXECUTE only (tests/revocation_privileges.sql) | Superusers, the owner role and anyone able to `SET ROLE` to it bypass; deployment must keep service logins out of those |
-| One actor plays maker and checker by asserting two identities | Database refuses equal `(issuer, subject)`; officer grants are server-owned | Identities are asserted by the calling service: textual, not key-distinct (known deviation from AGENTS.md). ADR-0007 step 1 (0028) registers each officer's P-256 keys and person under CA-admin dual control, keys compared as curve points; approvals are not signed yet (step 2) |
+| One actor plays maker and checker by asserting two identities | Database refuses equal `(issuer, subject)`; officer grants are server-owned | Identities are asserted by the calling service: textual, not key-distinct (known deviation from AGENTS.md). ADR-0007 steps 1-2 (0028-0029): enrolled P-256 keys and persons under CA-admin dual control; per CA, `signed_approvals_required` makes maker and checker sign the canonical claim with WebAuthn (UP+UV, origin, counter, single-use challenge), with distinct keys and persons. Open: the database cannot verify ECDSA, so a holder of the officer API role could store a forged assertion (exposed by `reverify_signed_change`); CA-admin actions are still textual; IAM person ids are asserted |
 | Fake coverage: rows added to a CRL snapshot or a `STORED` row inserted without signing | No INSERT for services (0023); snapshot and publication guards; store checks digests | Owner/superuser can still insert |
 | CRL signed by another CA's key or stored under the wrong CA | 0022 registered issuer certificate per CA; `crl_once` checks the verifier issuer and the signer's SPKI before the intent | Key rollover not modelled; registration needs two CA admins (0024) but their identities are textual; DBA bootstrap outside dual control |
 | Shadowing through `search_path` or temporary objects | Service functions pin `search_path = pg_catalog, public, pg_temp` (planted temp table test) | Independent review of every SECURITY DEFINER body (dynamic SQL, error leakage) still required |

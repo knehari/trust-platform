@@ -75,6 +75,7 @@ pub mod rsa_pss_x509_lab;
 pub mod serial;
 pub mod serial_binding;
 pub mod tenant_isolation;
+pub mod webauthn;
 pub mod x509_extensions;
 
 use trust_pki_policy::{

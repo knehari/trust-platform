@@ -2012,7 +2012,9 @@ dependencies = [
 name = "trust-pki-core"
 version = "0.1.0"
 dependencies = [
+ "base64ct",
  "postgres",
+ "serde_json",
  "sha2 0.10.9",
  "trust-pki-crypto",
  "trust-pki-policy",

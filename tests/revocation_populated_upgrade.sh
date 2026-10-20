@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # The supplied URL must name a new, disposable PostgreSQL database. This is
-# an upgrade regression for 0014-0028, not an online migration runner.
+# an upgrade regression for 0014-0029, not an online migration runner.
 #
 # 0014, 0015, 0016, 0018 and 0019 each run in one transaction and abort on
 # pre-existing rows they cannot carry forward: a revocation with reason 7 or
@@ -127,7 +127,8 @@ psql_run -f migrations/0025_status_change_lock_order.sql >/dev/null
 psql_run -f migrations/0026_schema_change_audit.sql >/dev/null
 psql_run -f migrations/0027_audit_chain.sql >/dev/null
 psql_run -f migrations/0028_officer_credentials.sql >/dev/null
+psql_run -f migrations/0029_signed_status_changes.sql >/dev/null
 
 psql_run -f tests/revocation_populated_upgrade_verify.sql >/dev/null
 
-echo 'PASS: populated 0013 -> 0028 revocation upgrade aborts on unsupported rows and preserves legacy revocations'
+echo 'PASS: populated 0013 -> 0029 revocation upgrade aborts on unsupported rows and preserves legacy revocations'

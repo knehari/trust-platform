@@ -111,7 +111,7 @@ fn claim_field(out: &mut Vec<u8>, value: Option<&[u8]>) {
         None => out.push(0),
         Some(bytes) => {
             out.push(1);
-            // Fields are bounded (serial <= 20 bytes, edition <= 64 bytes).
+            // Fields are bounded (serial <= 20 bytes, edition <= 128 characters).
             out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             out.extend_from_slice(bytes);
         }
@@ -129,7 +129,7 @@ impl StatusChangeClaim {
         };
         let ok = action_ok
             && (1..=20).contains(&self.serial_der_content.len())
-            && (1..=64).contains(&self.policy_edition.len());
+            && (1..=128).contains(&self.policy_edition.chars().count());
         ok.then_some(()).ok_or(CredentialError::InvalidInput)
     }
 
