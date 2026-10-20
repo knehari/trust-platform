@@ -16,7 +16,10 @@ use x509_cert::{
         DateTime, Decode, Encode,
     },
     ext::{
-        pkix::{crl::CrlNumber, AuthorityKeyIdentifier, CrlReason, SubjectKeyIdentifier},
+        pkix::{
+            crl::CrlNumber, AuthorityKeyIdentifier, CrlReason, KeyUsage, KeyUsages,
+            SubjectKeyIdentifier,
+        },
         Extension,
     },
     serial_number::SerialNumber as X509Serial,
@@ -34,6 +37,9 @@ const CRL_NUMBER_OID: &str = "2.5.29.20";
 const REASON_CODE_OID: &str = "2.5.29.21";
 const SUBJECT_KEY_IDENTIFIER_OID: &str = "2.5.29.14";
 const AUTHORITY_KEY_IDENTIFIER_OID: &str = "2.5.29.35";
+const KEY_USAGE_OID: &str = "2.5.29.15";
+const EC_PUBLIC_KEY_OID: &str = "1.2.840.10045.2.1";
+const P256_CURVE_OID: &str = "1.2.840.10045.3.1.7";
 /// CRL numbers stay below 2^63 so they fit a signed 64-bit database column.
 const MAX_CRL_NUMBER: u64 = 1 << 63;
 /// Earliest instant the builder encodes (1970-01-01T00:00:00Z).
@@ -269,20 +275,50 @@ fn revoked_cert(entry: &CrlEntry) -> Result<RevokedCert, CrlError> {
     })
 }
 
+/// The single extension `oid` of `issuer`; none or several fail closed.
+fn single_extension<'a>(issuer: &'a Certificate, oid: &str) -> Result<&'a Extension, CrlError> {
+    let mut found = issuer
+        .tbs_certificate
+        .extensions
+        .iter()
+        .flatten()
+        .filter(|e| e.extn_id.to_string() == oid);
+    match (found.next(), found.next()) {
+        (Some(extension), None) => Ok(extension),
+        _ => Err(CrlError::Encoding),
+    }
+}
+
+/// The issuer may sign CRLs with the only lab CRL algorithm: keyUsage present
+/// with cRLSign (RFC 5280 4.2.1.3; an absent keyUsage is not read as "any
+/// usage") and an id-ecPublicKey key on the named curve P-256. Nothing is
+/// inferred from the signature algorithm the TBS will carry.
+fn check_issuer(issuer: &Certificate) -> Result<(), CrlError> {
+    let usage = single_extension(issuer, KEY_USAGE_OID)?;
+    let KeyUsage(flags) =
+        KeyUsage::from_der(usage.extn_value.as_bytes()).map_err(|_| CrlError::Encoding)?;
+    if !flags.contains(KeyUsages::CRLSign) {
+        return Err(CrlError::Encoding);
+    }
+    let algorithm = &issuer.tbs_certificate.subject_public_key_info.algorithm;
+    let curve = algorithm
+        .parameters
+        .as_ref()
+        .ok_or(CrlError::Encoding)?
+        .decode_as::<ObjectIdentifier>()
+        .map_err(|_| CrlError::Encoding)?;
+    if algorithm.oid.to_string() != EC_PUBLIC_KEY_OID || curve.to_string() != P256_CURVE_OID {
+        return Err(CrlError::Encoding);
+    }
+    Ok(())
+}
+
 /// RFC 5280 5.2.1: the CRL's AKI keyIdentifier is the issuer certificate's
 /// subjectKeyIdentifier, whatever method produced it. Fails closed when the
 /// issuer has no SKI, more than one, or an empty one: the key identifier is
 /// never recomputed from the public key.
 fn issuer_key_identifier(issuer: &Certificate) -> Result<OctetString, CrlError> {
-    let mut skis = issuer
-        .tbs_certificate
-        .extensions
-        .iter()
-        .flatten()
-        .filter(|e| e.extn_id.to_string() == SUBJECT_KEY_IDENTIFIER_OID);
-    let (Some(ski), None) = (skis.next(), skis.next()) else {
-        return Err(CrlError::Encoding);
-    };
+    let ski = single_extension(issuer, SUBJECT_KEY_IDENTIFIER_OID)?;
     let SubjectKeyIdentifier(id) = SubjectKeyIdentifier::from_der(ski.extn_value.as_bytes())
         .map_err(|_| CrlError::Encoding)?;
     if id.as_bytes().is_empty() {
@@ -291,9 +327,10 @@ fn issuer_key_identifier(issuer: &Certificate) -> Result<OctetString, CrlError> 
     Ok(id)
 }
 
-/// Issuer name and authority key identifier come from `issuer`. Entries are
-/// sorted by serial bytes; duplicate serials, a non-increasing validity
-/// window or an out-of-range CRL number are rejected.
+/// Issuer name and authority key identifier come from `issuer`, which must
+/// pass `check_issuer`. Entries are sorted by serial bytes; duplicate serials,
+/// a non-increasing validity window or an out-of-range CRL number are
+/// rejected.
 pub fn build_tbs_cert_list(
     issuer: &Certificate,
     reservation: &CrlReservation,
@@ -304,6 +341,7 @@ pub fn build_tbs_cert_list(
     {
         return Err(CrlError::Encoding);
     }
+    check_issuer(issuer)?;
     let aki = AuthorityKeyIdentifier {
         key_identifier: Some(issuer_key_identifier(issuer)?),
         authority_cert_issuer: None,
@@ -441,7 +479,11 @@ mod tests {
     use crate::orchestrator::ExternalSigner;
     use crate::x509_extensions;
     use std::str::FromStr;
-    use x509_cert::{der::asn1::BitString, name::Name};
+    use x509_cert::{
+        der::{asn1::BitString, Any},
+        ext::pkix::{KeyUsage, KeyUsages},
+        name::Name,
+    };
 
     const THIS_UPDATE: i64 = 1_800_000_000; // 2027-01-15
     const NEXT_UPDATE: i64 = THIS_UPDATE + 7 * 24 * 3600;
@@ -901,5 +943,51 @@ mod tests {
             build_tbs_cert_list(&issuer, &reservation(vec![])),
             Err(CrlError::Encoding)
         );
+    }
+
+    fn key_usage(usages: KeyUsage) -> Extension {
+        Extension {
+            extn_id: ObjectIdentifier::new("2.5.29.15").unwrap(),
+            critical: true,
+            extn_value: OctetString::new(usages.to_der().unwrap()).unwrap(),
+        }
+    }
+
+    /// Regression: issuers that may not sign CRLs (RFC 5280 4.2.1.3: no
+    /// keyUsage cRLSign) or whose key is not a P-256 key were accepted by the
+    /// builder and, with a valid signature, by the verifier.
+    #[test]
+    fn issuer_must_hold_crl_sign_and_a_p256_key() {
+        let mut ca = ca();
+        let r = reservation(vec![]);
+        let good = issue(&mut ca, &r);
+        let root = ca.root_certificate();
+        let cert_sign_only = issuer_with(
+            root,
+            "2.5.29.15",
+            Some(key_usage(KeyUsage(KeyUsages::KeyCertSign.into()))),
+        );
+        let no_key_usage = issuer_with(root, "2.5.29.15", None);
+        let mut p384 = root.clone();
+        p384.tbs_certificate
+            .subject_public_key_info
+            .algorithm
+            .parameters =
+            Some(Any::encode_from(&ObjectIdentifier::new("1.3.132.0.34").unwrap()).unwrap());
+        let mut two_key_usages = root.clone();
+        two_key_usages
+            .tbs_certificate
+            .extensions
+            .as_mut()
+            .unwrap()
+            .push(key_usage(KeyUsage(KeyUsages::CRLSign.into())));
+        for issuer in [cert_sign_only, no_key_usage, p384, two_key_usages] {
+            assert_eq!(build_tbs_cert_list(&issuer, &r), Err(CrlError::Encoding));
+            assert_eq!(
+                LabCrlVerifier::new(issuer).verify(&r, &good),
+                Err(CrlError::VerificationFailure)
+            );
+        }
+        LabCrlVerifier::new(root.clone()).verify(&r, &good).unwrap();
     }
 }

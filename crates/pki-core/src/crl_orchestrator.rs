@@ -196,8 +196,12 @@ mod tests {
         use std::{str::FromStr, time::Duration};
         use x509_cert::{
             der::{
-                asn1::{BitString, ObjectIdentifier},
-                Any,
+                asn1::{BitString, ObjectIdentifier, OctetString},
+                Any, Encode,
+            },
+            ext::{
+                pkix::{KeyUsage, KeyUsages},
+                Extension,
             },
             name::Name,
             serial_number::SerialNumber,
@@ -230,10 +234,19 @@ mod tests {
                 },
                 issuer_unique_id: None,
                 subject_unique_id: None,
-                extensions: Some(vec![crate::x509_extensions::subject_key_identifier(
-                    &[7; 20],
-                )
-                .unwrap()]),
+                extensions: Some(vec![
+                    crate::x509_extensions::subject_key_identifier(&[7; 20]).unwrap(),
+                    Extension {
+                        extn_id: oid("2.5.29.15"),
+                        critical: true,
+                        extn_value: OctetString::new(
+                            KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign)
+                                .to_der()
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    },
+                ]),
             },
             signature_algorithm: ecdsa_sha256,
             signature: BitString::from_bytes(&[0]).unwrap(),
@@ -369,5 +382,24 @@ mod tests {
         let built_sha256: [u8; 32] = Sha256::digest(&built).into();
         assert_eq!(journal.intent_tbs, Some(built_sha256));
         assert_eq!(signer.signed, built);
+    }
+
+    #[test]
+    fn issuer_refused_by_the_builder_never_reaches_journal_or_signer() {
+        let r = reservation();
+        let mut issuer = issuer();
+        issuer.tbs_certificate.extensions = None;
+        let mut journal = FakeJournal::default();
+        let mut signer = FakeSigner::default();
+        let result = crl_once(
+            &mut journal,
+            &mut signer,
+            &Assembler(true),
+            &Verifier(true),
+            &plan(&r, &issuer, "op"),
+        );
+        assert_eq!(result, Err(CrlError::Encoding));
+        assert_eq!(journal.intent_calls, 0);
+        assert_eq!(signer.calls, 0);
     }
 }

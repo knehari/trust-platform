@@ -200,7 +200,11 @@ and `CrlVerifier` traits.
 2. **Build** — `crl_once` itself builds the `TBSCertList` deterministically
    from the reservation and the trusted issuer certificate in `CrlPlan`
    (entries sorted by serial). Callers cannot supply TBS bytes, so the
-   journaled and signed bytes always match the reservation.
+   journaled and signed bytes always match the reservation. The issuer must
+   carry exactly one keyUsage with cRLSign (an absent keyUsage is refused),
+   exactly one non-empty subjectKeyIdentifier (copied into the AKI, never
+   recomputed) and an id-ecPublicKey key on the named curve P-256; otherwise
+   the build fails before any intent or signature.
 3. **Intent** — `record_crl_intent(ca, crl_number, operation_ref, tbs_sha256,
    entries_sha256, this_update, next_update, expired_certs_on_crl_since)`; the
    CA core computes `entries_sha256` in Rust from the reservation it signs
