@@ -51,10 +51,18 @@ pub trait CrlReconciliationJournal {
         reservation: &CrlReservation,
         operation_ref: &str,
         actor: &str,
-        tbs_sha256: &[u8; 32],
-        crl_sha256: &[u8; 32],
-        crl_der: &[u8],
+        crl: &ReconciledCrl<'_>,
     ) -> Result<(), CrlError>;
+}
+
+/// A re-verified CRL and the digests the database checks it against.
+pub struct ReconciledCrl<'a> {
+    /// SHA-256 of the issuer certificate it was verified with (0022).
+    pub issuer_sha256: [u8; 32],
+    /// SHA-256 of its TBSCertList (must equal the journaled intent).
+    pub tbs_sha256: [u8; 32],
+    pub crl_sha256: [u8; 32],
+    pub crl_der: &'a [u8],
 }
 
 /// Reconciles a CRL that was signed and verified but whose storage failed
@@ -82,13 +90,21 @@ where
     let tbs_der = build_tbs_cert_list(verifier.issuer(), reservation)?;
     let tbs_sha256: [u8; 32] = Sha256::digest(&tbs_der).into();
     let crl_sha256: [u8; 32] = Sha256::digest(crl_der).into();
+    let issuer_der = verifier
+        .issuer()
+        .to_der()
+        .map_err(|_| CrlError::IssuerMismatch)?;
+    let issuer_sha256: [u8; 32] = Sha256::digest(&issuer_der).into();
     journal.store_reconciled(
         reservation,
         operation_ref,
         actor,
-        &tbs_sha256,
-        &crl_sha256,
-        crl_der,
+        &ReconciledCrl {
+            issuer_sha256,
+            tbs_sha256,
+            crl_sha256,
+            crl_der,
+        },
     )
 }
 
@@ -662,12 +678,15 @@ mod tests {
             _r: &CrlReservation,
             op: &str,
             actor: &str,
-            tbs: &[u8; 32],
-            crl: &[u8; 32],
-            der: &[u8],
+            crl: &ReconciledCrl<'_>,
         ) -> Result<(), CrlError> {
             assert_eq!(op, "op");
-            self.stored = Some((*tbs, *crl, der.to_vec(), actor.to_owned()));
+            self.stored = Some((
+                crl.tbs_sha256,
+                crl.crl_sha256,
+                crl.crl_der.to_vec(),
+                actor.to_owned(),
+            ));
             Ok(())
         }
     }

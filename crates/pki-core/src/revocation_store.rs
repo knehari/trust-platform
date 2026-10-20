@@ -6,18 +6,22 @@
 //! and signs nothing. Every rule applied here is re-checked by migrations
 //! 0014/0015, which remain the authority.
 
-use crate::crl::{CrlEntry, CrlError, CrlReservation};
-use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal};
+use crate::crl::{check_crl_issuer, CrlEntry, CrlError, CrlReservation};
+use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
 use crate::revocation_policy::{check_invalidity_date, decide_status_change, StatusChangeError};
 use crate::serial::SerialNumber;
 use postgres::{error::SqlState, types::FromSqlOwned, Client, Error as PgError, NoTls, Row};
+use sha2::{Digest, Sha256};
+use x509_cert::{der::Encode, Certificate};
 
 #[derive(Debug)]
 pub enum RevocationStoreError {
     Database(PgError),
     Denied(StatusChangeError),
     InconsistentResult,
+    /// The certificate cannot issue CRLs (see `crl::check_crl_issuer`).
+    InvalidIssuer,
 }
 
 impl From<PgError> for RevocationStoreError {
@@ -65,6 +69,35 @@ impl PgRevocationStore {
     pub fn connect_lab(conn_str: &str) -> Result<Self, RevocationStoreError> {
         let client = Client::connect(conn_str, NoTls)?;
         Ok(Self { client })
+    }
+
+    /// Registers `issuer` as the certificate this CA signs CRLs with, after
+    /// checking it can (`crl::check_crl_issuer`, valid now). Idempotent for
+    /// the same certificate; a different one is refused by the database.
+    /// Returns its SHA-256, which record_crl_intent requires (0022).
+    pub fn register_ca_issuer(
+        &mut self,
+        ca_id: &str,
+        issuer: &Certificate,
+        actor: &str,
+    ) -> Result<[u8; 32], RevocationStoreError> {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .ok_or(RevocationStoreError::InconsistentResult)?;
+        check_crl_issuer(issuer, now_unix).map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let der = issuer
+            .to_der()
+            .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let row = self.client.query_one(
+            "SELECT register_ca_issuer($1::text::uuid, $2, $3)",
+            &[&ca_id, &der, &actor],
+        )?;
+        let fingerprint: Vec<u8> = column(&row, 0)?;
+        fingerprint
+            .try_into()
+            .map_err(|_| RevocationStoreError::InconsistentResult)
     }
 
     pub fn status(
@@ -339,25 +372,28 @@ impl CrlReconciliationJournal for PgRevocationStore {
         reservation: &CrlReservation,
         operation_ref: &str,
         actor: &str,
-        tbs_sha256: &[u8; 32],
-        crl_sha256: &[u8; 32],
-        crl_der: &[u8],
+        crl: &ReconciledCrl<'_>,
     ) -> Result<(), CrlError> {
         let number =
             i64::try_from(reservation.crl_number()).map_err(|_| CrlError::PersistenceFailure)?;
         match self.client.query_one(
-            "SELECT store_reconciled_crl($1::text::uuid, $2::bigint, $3, $4, $5, $6, $7)",
+            "SELECT store_reconciled_crl($1::text::uuid, $2::bigint, $3, $4, $5, $6, $7, $8)",
             &[
                 &reservation.ca_id(),
                 &number,
                 &operation_ref,
-                &&tbs_sha256[..],
-                &&crl_sha256[..],
-                &crl_der,
+                &&crl.tbs_sha256[..],
+                &&crl.crl_sha256[..],
+                &crl.crl_der,
                 &actor,
+                &&crl.issuer_sha256[..],
             ],
         ) {
             Ok(_) => Ok(()),
+            // Not the CA's registered issuer certificate (0022).
+            Err(e) if e.code() == Some(&SqlState::UNDEFINED_OBJECT) => {
+                Err(CrlError::IssuerMismatch)
+            }
             // Not quarantined after an intent, other operation or TBS hash.
             Err(e) if e.code() == Some(&SqlState::CHECK_VIOLATION) => {
                 Err(CrlError::ReplayedOrAmbiguousIntent)
@@ -377,9 +413,12 @@ impl CrlJournal for PgRevocationStore {
         let number =
             i64::try_from(reservation.crl_number()).map_err(|_| CrlError::JournalFailure)?;
         let entries_sha256 = reservation.entries_sha256();
+        // Binds the intent to the CA's registered issuer certificate (0022).
+        let issuer_der = plan.issuer.to_der().map_err(|_| CrlError::IssuerMismatch)?;
+        let issuer_sha256: [u8; 32] = Sha256::digest(&issuer_der).into();
         match self.client.query_one(
             "SELECT record_crl_intent($1::text::uuid, $2::bigint, $3, $4, $5,
-                                      $6::bigint, $7::bigint, $8::bigint)",
+                                      $6::bigint, $7::bigint, $8::bigint, $9)",
             &[
                 &reservation.ca_id(),
                 &number,
@@ -389,9 +428,14 @@ impl CrlJournal for PgRevocationStore {
                 &reservation.this_update_unix(),
                 &reservation.next_update_unix(),
                 &reservation.expired_certs_on_crl_since_unix(),
+                &&issuer_sha256[..],
             ],
         ) {
             Ok(_) => Ok(()),
+            // Not the CA's registered issuer certificate (0022).
+            Err(e) if e.code() == Some(&SqlState::UNDEFINED_OBJECT) => {
+                Err(CrlError::IssuerMismatch)
+            }
             // Not RESERVED any more, another operation, or entries / number /
             // times that differ from the reservation: replayed or ambiguous.
             Err(e) if e.code() == Some(&SqlState::CHECK_VIOLATION) => {

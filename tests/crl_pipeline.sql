@@ -52,12 +52,20 @@ LANGUAGE sql AS $f$
     FROM crl_snapshot_entries(p_ca, p_n) e
 $f$;
 
+-- The CA's registered issuer fingerprint (0022). Test CAs get a placeholder
+-- issuer registered on first use; the binding itself is tested separately.
+CREATE FUNCTION pg_temp.issuer(p_ca UUID) RETURNS BYTEA
+LANGUAGE sql AS $f$
+    SELECT register_ca_issuer(p_ca, convert_to('test issuer of ' || p_ca, 'UTF8'), 'test-admin')
+$f$;
+
 CREATE FUNCTION pg_temp.intent(p_ca UUID, p_n BIGINT, p_op TEXT, p_tbs BYTEA) RETURNS TEXT
 LANGUAGE sql AS $f$
     SELECT record_crl_intent(p_ca, p_n, p_op, p_tbs, pg_temp.snapshot_digest(p_ca, p_n),
                floor(extract(epoch FROM cp.this_update))::bigint,
                floor(extract(epoch FROM cp.next_update))::bigint,
-               floor(extract(epoch FROM cp.expired_certs_on_crl_since))::bigint)
+               floor(extract(epoch FROM cp.expired_certs_on_crl_since))::bigint,
+               pg_temp.issuer(p_ca))
     FROM crl_publication cp WHERE cp.ca_id = p_ca AND cp.crl_number = p_n
 $f$;
 
@@ -368,7 +376,8 @@ BEGIN
     FOREACH f IN ARRAY ARRAY[
         'reserve_crl(uuid,text,text)',
         'crl_snapshot_entries(uuid,bigint)',
-        'record_crl_intent(uuid,bigint,text,bytea,bytea,bigint,bigint,bigint)',
+        'record_crl_intent(uuid,bigint,text,bytea,bytea,bigint,bigint,bigint,bytea)',
+        'register_ca_issuer(uuid,bytea,text)',
         'mark_crl_uncertain(uuid,bigint,text)',
         'store_verified_crl(uuid,bigint,text,bytea,bytea,bytea)',
         'quarantine_stale_crl_intents(uuid,interval)',

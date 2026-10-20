@@ -53,12 +53,20 @@ LANGUAGE sql AS $f$
     FROM crl_snapshot_entries(p_ca, p_n) e
 $f$;
 
+-- The CA's registered issuer fingerprint (0022). Test CAs get a placeholder
+-- issuer registered on first use; the binding itself is tested separately.
+CREATE FUNCTION pg_temp.issuer(p_ca UUID) RETURNS BYTEA
+LANGUAGE sql AS $f$
+    SELECT register_ca_issuer(p_ca, convert_to('test issuer of ' || p_ca, 'UTF8'), 'test-admin')
+$f$;
+
 CREATE FUNCTION pg_temp.intent(p_ca UUID, p_n BIGINT, p_op TEXT, p_tbs BYTEA) RETURNS TEXT
 LANGUAGE sql AS $f$
     SELECT record_crl_intent(p_ca, p_n, p_op, p_tbs, pg_temp.snapshot_digest(p_ca, p_n),
                floor(extract(epoch FROM cp.this_update))::bigint,
                floor(extract(epoch FROM cp.next_update))::bigint,
-               floor(extract(epoch FROM cp.expired_certs_on_crl_since))::bigint)
+               floor(extract(epoch FROM cp.expired_certs_on_crl_since))::bigint,
+               pg_temp.issuer(p_ca))
     FROM crl_publication cp WHERE cp.ca_id = p_ca AND cp.crl_number = p_n
 $f$;
 
@@ -409,8 +417,13 @@ BEGIN
     PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
         2, 'rec-op-2', sha256('tbs-2'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, '')$$,
         '22023');
+    -- without the registered issuer fingerprint the CRL is not stored
+    PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
+        2, 'rec-op-2', sha256('tbs-2'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer')$$,
+        '42704');
     PERFORM pg_temp.must(store_reconciled_crl(ca, 2, 'rec-op-2', sha256('tbs-2'::bytea),
-        sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer') = 'STORED', 'reconciled');
+        sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer', pg_temp.issuer(ca)) = 'STORED',
+        'reconciled');
     PERFORM pg_temp.must((SELECT status = 'STORED' AND crl_der = 'der-2'::bytea FROM crl_publication
         WHERE ca_id = ca AND crl_number = 2), 'stored bytes');
     PERFORM pg_temp.must((SELECT count(*) FROM audit_event WHERE ca_id = ca
@@ -419,6 +432,48 @@ BEGIN
     PERFORM pg_temp.expect_err($$SELECT store_reconciled_crl('c0c0c0c0-0000-4000-8000-000000000022',
         2, 'rec-op-2', sha256('tbs-2'::bytea), sha256('der-2'::bytea), 'der-2'::bytea, 'reviewer')$$,
         '23514');
+END $t$;
+
+-- ------------------------------------------- CA issuer binding (0022)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000023', 'CRL Issuer Binding Lab CA', 'lab-1');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000023';
+    fp BYTEA;
+    args TEXT;
+BEGIN
+    PERFORM reserve_crl(ca, 'crl-worker', 'bind-op-1');
+    SELECT format('%L, 1, %L, %L, %L, %s, %s, NULL', ca, 'bind-op-1', sha256('tbs'::bytea),
+                  pg_temp.snapshot_digest(ca, 1),
+                  floor(extract(epoch FROM this_update))::bigint,
+                  floor(extract(epoch FROM next_update))::bigint)
+    INTO args FROM crl_publication WHERE ca_id = ca AND crl_number = 1;
+    -- no registered issuer: refused, even with some fingerprint
+    PERFORM pg_temp.expect_err_msg('SELECT record_crl_intent(' || args || ', sha256(''x''::bytea))',
+        '42704', 'CRL intent refused: issuer is not the CA''s registered issuer certificate');
+    PERFORM pg_temp.expect_err('SELECT record_crl_intent(' || args || ')', '42704');
+
+    fp := register_ca_issuer(ca, 'issuer-a'::bytea, 'ca-admin');
+    PERFORM pg_temp.must(fp = sha256('issuer-a'::bytea), 'fingerprint returned');
+    PERFORM pg_temp.must(register_ca_issuer(ca, 'issuer-a'::bytea, 'ca-admin') = fp, 'idempotent');
+    PERFORM pg_temp.expect_err($$SELECT register_ca_issuer('c0c0c0c0-0000-4000-8000-000000000023',
+        'issuer-b'::bytea, 'ca-admin')$$, '23514');
+    PERFORM pg_temp.expect_err($$UPDATE ca_issuer_certificate SET certificate_der = 'issuer-b'::bytea
+        WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000023'$$, '23514');
+    PERFORM pg_temp.expect_err($$DELETE FROM ca_issuer_certificate
+        WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000023'$$, '23514');
+    PERFORM pg_temp.must((SELECT count(*) FROM audit_event WHERE ca_id = ca
+        AND event_type = 'ca.issuer.registered' AND actor_id = 'ca-admin') = 1, 'one registration audit');
+
+    -- another issuer's fingerprint: refused; the registered one: accepted
+    PERFORM pg_temp.expect_err('SELECT record_crl_intent(' || args || ', sha256(''issuer-b''::bytea))',
+        '42704');
+    PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
+        = 'RESERVED', 'still reserved');
+    EXECUTE 'SELECT record_crl_intent(' || args || ', $1)' USING fp;
+    PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
+        = 'INTENT_RECORDED', 'intent with the registered issuer');
 END $t$;
 
 ROLLBACK;

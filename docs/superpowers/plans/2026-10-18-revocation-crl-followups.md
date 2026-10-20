@@ -16,11 +16,9 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
   signer keys (known deviation). ADR-0006 part B proposes signed claims.
 - Authentication of revocation officers stays with the identity adapter.
-- Nothing binds `CrlReservation::ca_id` to `CrlPlan::issuer`: there is no CA
-  certificate table to check it against, so a caller passing another CA's
-  issuer, key and verifier would store that CA's CRL under this ca_id.
-  `crl_once` refuses a verifier whose issuer differs from the plan's and a
-  signer whose key is not the issuer's (`SignerPublicKey`).
+- CA issuer binding (0022) has one immutable issuer certificate per CA; key
+  rollover (several issuer certificates over time, CRLs signed by the new key
+  for the old certificates) is not modelled.
 
 ## Test gaps
 - Integration test asserts no thisUpdate/nextUpdate values (OpenSSL now

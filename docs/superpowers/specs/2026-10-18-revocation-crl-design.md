@@ -204,7 +204,10 @@ and `CrlVerifier` traits.
    intent, `crl_once` also refuses an empty signer key reference and a
    verifier whose issuer certificate differs from the plan's, or a signer
    whose public key for `signer_key_ref` (`SignerPublicKey`) is not the
-   issuer's SPKI (`CrlError::IssuerMismatch`). The issuer must be a CA (exactly one
+   issuer's SPKI (`CrlError::IssuerMismatch`). The database then binds the
+   intent to the CA's registered issuer certificate (`ca_issuer_certificate`,
+   migration 0022): `record_crl_intent` receives its SHA-256 and refuses any
+   other (42704). The issuer must be a CA (exactly one
    basicConstraints with cA = TRUE) valid at thisUpdate, and
    carry exactly one keyUsage with cRLSign (an absent keyUsage is refused),
    exactly one non-empty subjectKeyIdentifier (copied into the AKI, never

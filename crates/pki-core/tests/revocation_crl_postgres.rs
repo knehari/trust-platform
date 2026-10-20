@@ -280,6 +280,7 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
     let s3 = issue_leaf(&mut issuance, &mut ca, &ca_id, 3);
 
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
     change(
         &mut store,
         &ca_id,
@@ -560,6 +561,7 @@ fn tampered_reservation_is_refused_before_signing() {
     let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
     let s1 = issue_leaf(&mut issuance, &mut ca, &ca_id, 101);
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
     change(
         &mut store,
         &ca_id,
@@ -785,6 +787,7 @@ fn expired_certs_on_crl_follows_the_conformance_target() {
         let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
         let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 1);
         let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+        store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
         change(
             &mut store,
             &ca_id,
@@ -855,6 +858,7 @@ fn abandoned_reservation_is_never_signed() {
     let root = ca.root_certificate().clone();
     let key_ref = ca.lab_signer_key_ref().to_owned();
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
     let late = store
         .reserve_crl(&ca_id, "crl-operator", "crl-late-op")
         .unwrap();
@@ -940,6 +944,7 @@ fn reservation_older_than_a_stored_crl_is_never_signed() {
     let root = ca.root_certificate().clone();
     let key_ref = ca.lab_signer_key_ref().to_owned();
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
     let late = store
         .reserve_crl(&ca_id, "crl-operator", "crl-slow-op")
         .unwrap();
@@ -1067,6 +1072,7 @@ fn verified_crl_whose_storage_failed_is_reconciled() {
     let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
     let serial = issue_leaf(&mut issuance, &mut ca, &ca_id, 401);
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
     change(
         &mut store,
         &ca_id,
@@ -1182,6 +1188,7 @@ fn housekeeping_reports_and_cleans_up() {
     let root = ca.root_certificate().clone();
     let key_ref = ca.lab_signer_key_ref().to_owned();
     let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
 
     store
         .reserve_crl(&ca_id, "crl-operator", "crl-dead-worker")
@@ -1211,4 +1218,76 @@ fn housekeeping_reports_and_cleans_up() {
     crl_once(&mut store, &mut ca, &LabCrlAssembler, &verifier, &plan).unwrap();
     let report = store.crl_housekeeping(&ca_id, 3600, 3600).unwrap();
     assert!(!report.needs_attention(), "{report:?}");
+}
+
+/// Issue found by review: nothing tied a reservation's CA to the issuer the
+/// CRL is built and signed with, so another CA's consistent issuer, key and
+/// verifier stored that CA's CRL under this ca_id. Refused before signing.
+#[test]
+fn crl_of_another_ca_is_refused_before_signing() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_a = fresh_ca(&url);
+    let mut other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let other_root = other.root_certificate().clone();
+    let other_key = other.lab_signer_key_ref().to_owned();
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    let ca_a_root = EphemeralLabCa::new("Sovereign Trust Lab Root")
+        .unwrap()
+        .root_certificate()
+        .clone();
+    store
+        .register_ca_issuer(&ca_a, &ca_a_root, "ca-admin")
+        .unwrap();
+    let reservation = store
+        .reserve_crl(&ca_a, "crl-operator", "crl-cross-op")
+        .unwrap();
+    let mut signer = CountingSigner {
+        ca: &mut other,
+        calls: 0,
+    };
+    let plan = CrlPlan {
+        reservation: &reservation,
+        issuer: &other_root,
+        signer_key_ref: &other_key,
+        operation_ref: "crl-cross-op",
+    };
+    let result = crl_once(
+        &mut store,
+        &mut signer,
+        &LabCrlAssembler,
+        &LabCrlVerifier::new(other_root.clone()),
+        &plan,
+    );
+    assert_eq!(result.map(|_| ()), Err(CrlError::IssuerMismatch));
+    assert_eq!(signer.calls, 0);
+
+    // Registration: idempotent for the same certificate, another one is
+    // refused by the database, and a certificate that cannot issue CRLs is
+    // refused before any SQL.
+    store
+        .register_ca_issuer(&ca_a, &ca_a_root, "ca-admin")
+        .unwrap();
+    let err = store
+        .register_ca_issuer(&ca_a, &other_root, "ca-admin")
+        .unwrap_err();
+    assert_eq!(sqlstate(&err).as_deref(), Some("23514"));
+    let mut not_a_ca = other_root.clone();
+    not_a_ca
+        .tbs_certificate
+        .extensions
+        .as_mut()
+        .unwrap()
+        .retain(|e| e.extn_id.to_string() != "2.5.29.19");
+    let fresh = fresh_ca(&url);
+    assert!(matches!(
+        store.register_ca_issuer(&fresh, &not_a_ca, "ca-admin"),
+        Err(RevocationStoreError::InvalidIssuer)
+    ));
 }

@@ -345,6 +345,14 @@ fn check_issuer(issuer: &Certificate, this_update_unix: i64) -> Result<(), CrlEr
     Ok(())
 }
 
+/// Everything `build_tbs_cert_list` requires of an issuer at `at_unix`
+/// (CA, valid, cRLSign, P-256, one non-empty SKI); used before registering
+/// it as a CA's issuer certificate.
+pub fn check_crl_issuer(issuer: &Certificate, at_unix: i64) -> Result<(), CrlError> {
+    check_issuer(issuer, at_unix)?;
+    issuer_key_identifier(issuer).map(|_| ())
+}
+
 /// RFC 5280 5.2.1: the CRL's AKI keyIdentifier is the issuer certificate's
 /// subjectKeyIdentifier, whatever method produced it. Fails closed when the
 /// issuer has no SKI, more than one, or an empty one: the key identifier is
