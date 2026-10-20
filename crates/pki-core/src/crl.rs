@@ -990,4 +990,98 @@ mod tests {
         }
         LabCrlVerifier::new(root.clone()).verify(&r, &good).unwrap();
     }
+
+    /// Issuer with a fixed subject and SKI; only those two fields, its P-256
+    /// key parameters and keyUsage reach the TBS builder.
+    fn golden_issuer() -> Certificate {
+        let mut issuer = issuer_with(
+            ca().root_certificate(),
+            "2.5.29.14",
+            Some(x509_extensions::subject_key_identifier(&[0x5a; 20]).unwrap()),
+        );
+        issuer.tbs_certificate.subject = Name::from_str("CN=Golden Lab Root").unwrap();
+        issuer
+    }
+
+    fn golden_reservation() -> CrlReservation {
+        let at = |s: &[u8], reason, revoked, invalidity| CrlEntry {
+            serial: serial(s),
+            revoked_at_unix: revoked,
+            reason,
+            invalidity_at_unix: invalidity,
+        };
+        CrlReservation::new(
+            "golden",
+            258,
+            THIS_UPDATE,
+            NEXT_UPDATE,
+            vec![
+                at(
+                    &[0x00, 0x80, 0x01],
+                    RevocationReason::CertificateHold,
+                    THIS_UPDATE - 60,
+                    None,
+                ),
+                at(
+                    &[0x01],
+                    RevocationReason::KeyCompromise,
+                    THIS_UPDATE - 120,
+                    Some(THIS_UPDATE - 3600),
+                ),
+                at(
+                    &[0x7f],
+                    RevocationReason::Unspecified,
+                    THIS_UPDATE - 180,
+                    None,
+                ),
+            ],
+            Some(1_700_000_000),
+        )
+        .unwrap()
+    }
+
+    /// TBSCertList for `golden_reservation`, decoded with `openssl asn1parse`
+    /// when frozen: v2, ecdsa-with-SHA256, CN=Golden Lab Root,
+    /// 270115080000Z / 270122080000Z, entries in serial-byte order
+    /// 00 80 01 (hold, reasonCode 6), 01 (keyCompromise + invalidityDate
+    /// 20270115070000Z), 7f (unspecified: no reasonCode); non-critical AKI
+    /// keyIdentifier 5a x 20, CRL Number 258, ExpiredCertsOnCRL
+    /// 20231114221320Z. Any byte change in the builder must be deliberate.
+    const GOLDEN_TBS_HEX: &str = concat!(
+        "3082010b020101300a06082a8648ce3d040302301a3118301606035504030c0f",
+        "476f6c64656e204c616220526f6f74170d3237303131353038303030305a170d",
+        "3237303132323038303030305a307430220203008001170d3237303131353037",
+        "353930305a300c300a0603551d1504030a0106303a020101170d323730313135",
+        "3037353830305a3026300a0603551d1504030a010130180603551d180411180f",
+        "32303237303131353037303030305a301202017f170d32373031313530373537",
+        "30305aa04a3048301f0603551d230418301680145a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a300b0603551d1404040202010230180603551d3c0411180f",
+        "32303233313131343232313332305a",
+    );
+
+    #[test]
+    fn tbs_matches_the_golden_vector() {
+        let tbs = build_tbs_cert_list(&golden_issuer(), &golden_reservation()).unwrap();
+        let hex: String = tbs.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, GOLDEN_TBS_HEX);
+    }
+
+    /// RFC 5280 4.1.2.2: a serial whose first content octet has the high bit
+    /// set is encoded with a leading 00 and stays positive in the CRL.
+    #[test]
+    fn high_bit_serial_is_encoded_positive_and_verifies() {
+        let mut ca = ca();
+        let r = reservation(vec![entry(
+            &[0x00, 0x80, 0x01],
+            RevocationReason::KeyCompromise,
+            None,
+        )]);
+        let der = issue(&mut ca, &r);
+        let list = CertificateList::from_der(&der).unwrap();
+        let revoked = list.tbs_cert_list.revoked_certificates.unwrap();
+        assert_eq!(revoked[0].serial_number.as_bytes(), &[0x00, 0x80, 0x01]);
+        LabCrlVerifier::new(ca.root_certificate().clone())
+            .verify(&r, &der)
+            .unwrap();
+    }
 }

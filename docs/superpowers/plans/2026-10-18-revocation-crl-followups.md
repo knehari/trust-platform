@@ -22,7 +22,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
   `tests/revocation_populated_upgrade.sh`).
-- No golden DER vector; no high-bit serial test; `crl_once` doubles ignore
+- `crl_once` doubles ignore
   `operation_ref`; best-effort `mark_uncertain` failure path untested.
 - Fuzz seeds are signed by another key, so `crl_verify` never reaches signature
   success; `seed-corpus.sh` hides OpenSSL errors.
