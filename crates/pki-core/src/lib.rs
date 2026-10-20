@@ -10,6 +10,8 @@
 //! They are not capabilities; see docs/architecture/unintegrated-contracts.md.
 pub mod agile_x509_identifier;
 pub mod audit_chain;
+#[cfg(feature = "postgres-store")]
+pub mod audit_chain_store;
 pub mod audit_manifest;
 pub mod capacity_policy;
 pub mod signer_capabilities;

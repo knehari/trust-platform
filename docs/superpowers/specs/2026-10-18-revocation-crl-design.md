@@ -288,7 +288,9 @@ handles intents left by a crash. No automatic re-sign.
   ends. This is a lab limit, not a design choice for production.
 - No publication: a stored CRL is not proof that relying parties can fetch it.
 - Database owners can bypass triggers; external append-only audit remains an
-  open item (D-04).
+  open item (D-04). Since 0027 a sealed hash chain is verified against
+  checkpoints exported outside the database; signing or timestamping them
+  remains open.
 - The SQL functions are `SECURITY INVOKER`, so any role able to call them needs
   DML on `revocation` and `certificate_status_change` and could bypass
   maker-checker with direct writes (the guard triggers and CHECKs still hold,

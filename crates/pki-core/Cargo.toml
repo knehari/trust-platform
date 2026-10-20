@@ -19,6 +19,10 @@ sha2 = "=0.10.9"
 postgres = { version = "=0.19.12", optional = true }
 
 [[example]]
+name = "audit_chain_anchor"
+required-features = ["postgres-store"]
+
+[[example]]
 name = "crash_recovery_lab"
 required-features = ["lab-software", "postgres-store"]
 

@@ -200,6 +200,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0024_ca_admin_dual_control.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0025_status_change_lock_order.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0026_schema_change_audit.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0027_audit_chain.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_lifecycle.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/crl_pipeline.sql
@@ -207,6 +208,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_privileges.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/ca_admin_dual_control.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_change_audit.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/audit_chain.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
@@ -252,6 +254,7 @@ jobs:
           # OpenSSL checks the CRLs and leaves exactly as persisted in PostgreSQL.
           bash tests/crl_openssl_lab.sh "$RUNNER_TEMP/stored-crl"
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test policy_decisions --features postgres-store,lab-software --locked
+          TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test audit_chain_postgres --features postgres-store --locked
           cargo build -p trust-pki-core --example crash_recovery_lab --features postgres-store,lab-software --locked
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crash_recovery_sigkill.sh "$CONTAINER"
       - name: Page scoped management history beyond 100 rows
@@ -280,6 +283,14 @@ jobs:
           docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade
           TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
             bash tests/management_populated_upgrade.sh
+      - name: Anchor the audit chain outside the database
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_audit_anchor
+          TRUST_ANCHOR_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_audit_anchor" \
+            bash tests/audit_chain_anchor.sh
       - name: Upgrade populated revocation database
         run: |
           set -euo pipefail

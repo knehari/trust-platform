@@ -1,7 +1,7 @@
 # ADR-0006 — Least-privilege write model for revocation, CRLs and CA administration
 
-**Status:** Proposed · 2026-10-20 · requires human security review. Implemented in the lab (migrations 0023–0026) at the repository owner's request; that implementation is not an acceptance of this ADR. Acceptance conditions are listed below.  
-**Scope:** Revocation lifecycle, CRL pipeline and CA administration (migrations 0014–0026) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
+**Status:** Proposed · 2026-10-20 · requires human security review. Implemented in the lab (migrations 0023–0027) at the repository owner's request; that implementation is not an acceptance of this ADR. Acceptance conditions are listed below.  
+**Scope:** Revocation lifecycle, CRL pipeline and CA administration (migrations 0014–0027) and any future status-change API. Laboratory only; no production approval, G0 clearance or CA qualification is implied.  
 **Related:** ADR-0007 (signed, key-distinct double control, split out of this ADR on 2026-10-20), ADR-0002 (signing and durable state), ADR-0003 (authenticated identity), ADR-0005 (Rust management control plane), `docs/security/threat-model.md` (revocation and CRL write path), spec `docs/superpowers/specs/2026-10-18-revocation-crl-design.md` §6.
 
 ## Context
@@ -52,6 +52,16 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 - Every reviewed migration ends with `acknowledge_schema_changes('<ref>')` (superuser only). `unreviewed_schema_changes()` (granted to `trust_crl_operator`) counts later changes, and `crl_housekeeping` exits with status 2 when it is above zero.
 - PostgreSQL fires no event trigger for roles, role membership, databases, `ALTER SYSTEM` or event triggers themselves, and a superuser can drop the triggers. Server logging (pgaudit) and external anchoring (condition 5) remain required, so condition 3 is only partly met.
 
+### F. Audit chain anchored outside the database (migration 0027, lab answer to condition 5)
+
+- `seal_audit_chain`, run by a scheduled job as `trust_audit_sealer`, links every `audit_event` and `schema_change_audit` row into `audit_chain_entry`. This is the SHA-256 chain of `audit_chain::next_audit_hash`, over a canonical, length-prefixed encoding of each row. The table is append-only and owned by the NOLOGIN `trust_audit_owner`.
+- The `audit_chain_anchor` job, running as `trust_audit_verifier` on another host, re-encodes every record in Rust and checks the links. It compares the result with the checkpoints it appended to a file outside the database, then appends the new head.
+- A superuser who rewrites, deletes or truncates history, or recomputes the whole chain, is detected at the next verification against the exported checkpoints (`docs/operations/lab-audit-chain.md`).
+- Open:
+  - records and entries newer than the last checkpoint are not protected;
+  - checkpoints are neither signed nor timestamped (RFC 3161);
+  - the anchor's storage is a deployment decision.
+
 ## Alternatives considered
 
 - **Per-officer PostgreSQL logins (`session_user` as identity):** strong in-database authentication, but it couples human identity lifecycle to database roles and does not fit OIDC step-up. It could be revisited for an air-gapped deployment.
@@ -69,5 +79,5 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 2. Runtime without superuser: deployment evidence that each service uses a dedicated non-superuser login with exactly one capability role, `NOINHERIT` where possible, no `CREATEROLE`, no owner membership, and `connect_lab_service` (or its production successor).
 3. Schema-change control: DDL and role changes on this database only through reviewed migrations, monitored (pgaudit or event triggers) and alerted. Lab: section E covers DDL and object grants; role changes still need server logging.
 4. Evidence kept up to date in CI: `tests/revocation_privileges.sql`, `tests/ca_admin_dual_control.sql`, `least_privilege_roles_run_the_whole_pipeline`, `service_connections_refuse_privileged_sessions`.
-5. Audit trail anchored outside the database (append-only external log or timestamped hash chain), so that a superuser cannot rewrite `audit_event` unnoticed (open item D-04).
+5. Audit trail anchored outside the database (append-only external log or timestamped hash chain), so that a superuser cannot rewrite `audit_event` unnoticed (open item D-04). Lab: section F; signed or timestamped checkpoints and the anchor's storage remain open.
 6. Authenticated time source (NTP with drift alerting) for the database, since deadlines, thisUpdate and intent ordering use its clock.
