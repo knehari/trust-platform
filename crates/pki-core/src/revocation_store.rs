@@ -22,6 +22,40 @@ pub enum RevocationStoreError {
     InconsistentResult,
     /// The certificate cannot issue CRLs (see `crl::check_crl_issuer`).
     InvalidIssuer,
+    /// The database login is a superuser, may create roles, bypasses row
+    /// security or is a member of the owner role: a service must not run
+    /// with it (ADR-0006).
+    PrivilegedSession,
+}
+
+/// Officer grant changes under CA-admin dual control (migration 0024).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficerGrantAction {
+    Grant,
+    Revoke,
+}
+
+impl OfficerGrantAction {
+    fn as_sql(self) -> &'static str {
+        match self {
+            Self::Grant => "GRANT_OFFICER",
+            Self::Revoke => "REVOKE_OFFICER",
+        }
+    }
+}
+
+/// Digest a CA admin approves for an officer grant change: SHA-256 over the
+/// length-prefixed kind, officer issuer and subject, exactly as
+/// `ca_admin_content_digest` (migration 0024).
+pub fn officer_grant_digest(action: OfficerGrantAction, officer: &OfficerIdentity<'_>) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    for part in [action.as_sql(), officer.issuer, officer.subject] {
+        // Parts are bounded (<= 1024 bytes) by the database, so they fit.
+        let len = i32::try_from(part.len()).unwrap_or(i32::MAX);
+        hasher.update(len.to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    hasher.finalize().into()
 }
 
 impl From<PgError> for RevocationStoreError {
@@ -69,6 +103,112 @@ impl PgRevocationStore {
     pub fn connect_lab(conn_str: &str) -> Result<Self, RevocationStoreError> {
         let client = Client::connect(conn_str, NoTls)?;
         Ok(Self { client })
+    }
+
+    /// Like `connect_lab`, for a service login: refuses (fail closed) a
+    /// session whose login is a superuser, may create roles, bypasses row
+    /// security or is a member of `trust_revocation_owner`, since any of
+    /// these bypasses the least-privilege model of migration 0023.
+    pub fn connect_lab_service(conn_str: &str) -> Result<Self, RevocationStoreError> {
+        let mut store = Self::connect_lab(conn_str)?;
+        let privileged: bool = column(
+            &store.client.query_one(
+                "SELECT r.rolsuper OR r.rolcreaterole OR r.rolbypassrls
+                        OR pg_has_role(session_user, 'trust_revocation_owner', 'MEMBER')
+                 FROM pg_roles r WHERE r.rolname = session_user",
+                &[],
+            )?,
+            0,
+        )?;
+        if privileged {
+            return Err(RevocationStoreError::PrivilegedSession);
+        }
+        Ok(store)
+    }
+
+    /// Proposes `issuer` as this CA's issuer certificate (CA admin, maker).
+    /// The certificate is checked as for `register_ca_issuer`; a second CA
+    /// admin must approve it with `approve_issuer_registration`.
+    pub fn propose_issuer_registration(
+        &mut self,
+        ca_id: &str,
+        issuer: &Certificate,
+        maker: &OfficerIdentity<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+            .ok_or(RevocationStoreError::InconsistentResult)?;
+        check_crl_issuer(issuer, now_unix).map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let der = issuer
+            .to_der()
+            .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let row = self.client.query_one(
+            "SELECT propose_ca_admin_change($1::text::uuid, 'REGISTER_ISSUER', $2, NULL, NULL,
+                                            $3, $4)::text",
+            &[&ca_id, &der, &maker.issuer, &maker.subject],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Approves an issuer registration (CA admin, checker): the database
+    /// registers it only if the pending certificate is exactly `issuer`,
+    /// the certificate the checker reviewed.
+    pub fn approve_issuer_registration(
+        &mut self,
+        change_id: &str,
+        issuer: &Certificate,
+        checker: &OfficerIdentity<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let der = issuer
+            .to_der()
+            .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let digest: [u8; 32] = Sha256::digest(&der).into();
+        self.client.query_one(
+            "SELECT approve_ca_admin_change($1::text::uuid, $2, $3, $4)",
+            &[&change_id, &checker.issuer, &checker.subject, &&digest[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Proposes granting or removing a revocation officer (CA admin, maker).
+    pub fn propose_officer_grant(
+        &mut self,
+        ca_id: &str,
+        action: OfficerGrantAction,
+        officer: &OfficerIdentity<'_>,
+        maker: &OfficerIdentity<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT propose_ca_admin_change($1::text::uuid, $2, NULL, $3, $4, $5, $6)::text",
+            &[
+                &ca_id,
+                &action.as_sql(),
+                &officer.issuer,
+                &officer.subject,
+                &maker.issuer,
+                &maker.subject,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Approves an officer grant change (CA admin, checker) for exactly the
+    /// action and officer the checker reviewed.
+    pub fn approve_officer_grant(
+        &mut self,
+        change_id: &str,
+        action: OfficerGrantAction,
+        officer: &OfficerIdentity<'_>,
+        checker: &OfficerIdentity<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let digest = officer_grant_digest(action, officer);
+        self.client.query_one(
+            "SELECT approve_ca_admin_change($1::text::uuid, $2, $3, $4)",
+            &[&change_id, &checker.issuer, &checker.subject, &&digest[..]],
+        )?;
+        Ok(())
     }
 
     /// Registers `issuer` as the certificate this CA signs CRLs with, after

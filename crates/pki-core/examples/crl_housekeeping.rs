@@ -7,7 +7,8 @@
 //!
 //! Exit status: 0 nothing to do, 2 attention needed (alert), 1 error.
 //! The database URL is read from TRUST_DATABASE_URL; the connection is the
-//! lab NoTls adapter, for a loopback or private lab database only.
+//! lab NoTls adapter, for a loopback or private lab database only, and must
+//! use a non-privileged login holding trust_crl_operator (migration 0023).
 //! Usage:
 //!   TRUST_DATABASE_URL=postgresql://... cargo run -p trust-pki-core \
 //!     --features postgres-store --example crl_housekeeping -- <ca-uuid> \
@@ -35,8 +36,10 @@ fn run() -> Result<bool, String> {
     let reserved = seconds(&args, "--reserved-older-than")?;
     let intent = seconds(&args, "--intent-older-than")?;
     let url = env::var("TRUST_DATABASE_URL").map_err(|_| "TRUST_DATABASE_URL is not set")?;
-    let mut store = PgRevocationStore::connect_lab(&url)
-        .map_err(|e| format!("database connection failed: {e:?}"))?;
+    // Refuses a privileged login (superuser, owner role member): run it with
+    // a login granted trust_crl_operator only.
+    let mut store = PgRevocationStore::connect_lab_service(&url)
+        .map_err(|e| format!("database connection refused: {e:?}"))?;
     let report = store
         .crl_housekeeping(ca_id, reserved, intent)
         .map_err(|e| format!("housekeeping failed: {e:?}"))?;

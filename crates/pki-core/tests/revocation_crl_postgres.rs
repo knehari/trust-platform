@@ -13,7 +13,9 @@ use trust_pki_core::{
     postgres_store::PgIssuanceStore,
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
     revocation_policy::StatusChangeError,
-    revocation_store::{PgRevocationStore, RevocationStoreError},
+    revocation_store::{
+        officer_grant_digest, OfficerGrantAction, PgRevocationStore, RevocationStoreError,
+    },
     serial::SerialNumber,
     x509_extensions::ApprovedPolicyBinding,
 };
@@ -1327,7 +1329,70 @@ fn least_privilege_roles_run_the_whole_pipeline() {
         PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_signer")).unwrap();
     let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
 
-    admin.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+    // Issuer registration needs two CA admins (0024); a single admin can no
+    // longer register directly.
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    owner
+        .execute(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id)
+             VALUES ($2, 'admin-a', $1::text::uuid), ($2, 'admin-b', $1::text::uuid)",
+            &[&ca_id, &ISSUER],
+        )
+        .unwrap();
+    let admin_a = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "admin-a",
+    };
+    let admin_b = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "admin-b",
+    };
+    assert_eq!(
+        sqlstate(
+            &admin
+                .register_ca_issuer(&ca_id, &root, "ca-admin")
+                .unwrap_err()
+        )
+        .as_deref(),
+        Some("42501")
+    );
+    let registration = admin
+        .propose_issuer_registration(&ca_id, &root, &admin_a)
+        .unwrap();
+    assert_eq!(
+        sqlstate(
+            &admin
+                .approve_issuer_registration(&registration, &root, &admin_a)
+                .unwrap_err()
+        )
+        .as_deref(),
+        Some("23514"),
+        "maker cannot approve"
+    );
+    admin
+        .approve_issuer_registration(&registration, &root, &admin_b)
+        .unwrap();
+
+    // An officer grant, also under dual control; the Rust digest is the SQL one.
+    let officer_3 = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "officer-3",
+    };
+    let digest = officer_grant_digest(OfficerGrantAction::Grant, &officer_3);
+    let sql_digest: Vec<u8> = owner
+        .query_one(
+            "SELECT ca_admin_content_digest('GRANT_OFFICER', NULL, $1, $2)",
+            &[&ISSUER, &"officer-3"],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(sql_digest, digest);
+    let grant = admin
+        .propose_officer_grant(&ca_id, OfficerGrantAction::Grant, &officer_3, &admin_b)
+        .unwrap();
+    admin
+        .approve_officer_grant(&grant, OfficerGrantAction::Grant, &officer_3, &admin_a)
+        .unwrap();
     change(
         &mut officer,
         &ca_id,
@@ -1408,4 +1473,92 @@ fn least_privilege_roles_run_the_whole_pipeline() {
             .register_ca_issuer(&ca_id, &root, "officer")
             .unwrap_err()
     ));
+}
+
+/// `url` with other credentials (lab test logins only).
+fn url_with_login(url: &str, user: &str, password: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap();
+    let (_, host_and_path) = rest.split_once('@').unwrap();
+    format!("{scheme}://{user}:{password}@{host_and_path}")
+}
+
+/// A service connection refuses a privileged login (superuser, or member of
+/// the owner role) and accepts a plain login holding one capability role.
+#[test]
+fn service_connections_refuse_privileged_sessions() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    // Cluster-wide test logins; test-only password, lab database only.
+    owner
+        .batch_execute(
+            "DO $$ BEGIN
+                 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_signer_login_test') THEN
+                     CREATE ROLE trust_signer_login_test LOGIN PASSWORD 'test-only-not-secret'
+                         IN ROLE trust_crl_signer;
+                 END IF;
+                 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_owner_login_test') THEN
+                     CREATE ROLE trust_owner_login_test LOGIN PASSWORD 'test-only-not-secret'
+                         IN ROLE trust_revocation_owner;
+                 END IF;
+             END $$;",
+        )
+        .unwrap();
+    assert!(matches!(
+        PgRevocationStore::connect_lab_service(&url),
+        Err(RevocationStoreError::PrivilegedSession)
+    ));
+    assert!(
+        matches!(
+            PgRevocationStore::connect_lab_service(&url_as(&url, "trust_crl_signer")),
+            Err(RevocationStoreError::PrivilegedSession)
+        ),
+        "a superuser login stays privileged whatever role it sets"
+    );
+    assert!(matches!(
+        PgRevocationStore::connect_lab_service(&url_with_login(
+            &url,
+            "trust_owner_login_test",
+            "test-only-not-secret"
+        )),
+        Err(RevocationStoreError::PrivilegedSession)
+    ));
+    let mut signer = PgRevocationStore::connect_lab_service(&url_with_login(
+        &url,
+        "trust_signer_login_test",
+        "test-only-not-secret",
+    ))
+    .unwrap();
+    // The plain login works for its capability and nothing else.
+    let ca_id = fresh_ca(&url);
+    signer
+        .reserve_crl(&ca_id, "crl-operator", "crl-login-op")
+        .unwrap();
+    let maker = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "maker",
+    };
+    let serial = SerialNumber::from_positive_der_content(&[0x01]).unwrap();
+    assert_eq!(
+        sqlstate(
+            &signer
+                .propose(
+                    &ca_id,
+                    &serial,
+                    StatusAction::Revoke,
+                    Some(RevocationReason::Superseded),
+                    None,
+                    &maker
+                )
+                .unwrap_err()
+        )
+        .as_deref(),
+        Some("42501")
+    );
 }

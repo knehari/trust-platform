@@ -33,7 +33,8 @@ For example, an hourly cron line can call a wrapper script that runs the
 command above and mails its output when it exits non-zero.
 
 The connection uses the lab `NoTls` adapter. Run it only against a loopback
-or private lab database. It authenticates nobody and holds no key. Under
-ADR-0006 part A it would run as the EXECUTE-only `trust_crl_operator` role.
+or private lab database. It authenticates nobody and holds no key. It
+refuses a privileged login (`connect_lab_service`): use a login granted only
+`trust_crl_operator` (migration 0023).
 Covered by `housekeeping_reports_and_cleans_up` in
 `crates/pki-core/tests/revocation_crl_postgres.rs`.

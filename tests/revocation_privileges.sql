@@ -160,13 +160,16 @@ DECLARE
     fp BYTEA;
     c UUID;
 BEGIN
-    -- CA admin registers the issuer; nobody else can
+    -- nobody registers the issuer directly
     PERFORM pg_temp.as_role('trust_revocation_officer_api',
         format($$SELECT register_ca_issuer(%L, 'issuer'::bytea, 'x')$$, ca), '42501');
     PERFORM pg_temp.as_role('trust_crl_signer',
         format($$SELECT register_ca_issuer(%L, 'issuer'::bytea, 'x')$$, ca), '42501');
+    -- (0024: registration needs two CA admins, see ca_admin_dual_control.sql;
+    -- bootstrap here as superuser)
     PERFORM pg_temp.as_role('trust_ca_admin',
-        format($$SELECT register_ca_issuer(%L, 'issuer'::bytea, 'ca-admin')$$, ca), NULL);
+        format($$SELECT register_ca_issuer(%L, 'issuer'::bytea, 'ca-admin')$$, ca), '42501');
+    PERFORM register_ca_issuer(ca::uuid, 'issuer'::bytea, 'dba-bootstrap');
     fp := sha256('issuer'::bytea);
 
     -- officer API: full maker-checker through the functions
