@@ -14,6 +14,7 @@ use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
 use crate::serial::SerialNumber as ValidatedSerial;
 use postgres::{Client, Error as PgError, NoTls};
+use x509_cert::{der::Decode, Certificate};
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -617,8 +618,24 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
         certificate_sha256: &[u8; 32],
         certificate_der: &[u8],
     ) -> Result<(), crate::orchestrator::IssueError> {
+        // The verifier has already accepted this DER. Persist only a subject made
+        // of one plain CN; other distinguished names remain unrecorded rather
+        // than being guessed from a formatted multi-attribute subject.
+        let subject_cn = Certificate::from_der(certificate_der)
+            .ok()
+            .and_then(|cert| {
+                let subject = cert.tbs_certificate.subject.to_string();
+                subject.strip_prefix("CN=").and_then(|cn| {
+                    (cn.len() <= 255
+                        && !cn.is_empty()
+                        && !cn.contains(',')
+                        && !cn.contains('\\')
+                        && !cn.chars().any(char::is_control))
+                    .then(|| cn.to_owned())
+                })
+            });
         let result = self.client.query_one(
-            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7)",
+            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7,$8)",
             &[
                 &plan.ca_id,
                 &plan.request_id,
@@ -627,6 +644,7 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
                 &&tbs_sha256[..],
                 &&certificate_sha256[..],
                 &certificate_der,
+                &subject_cn,
             ],
         );
         match result {

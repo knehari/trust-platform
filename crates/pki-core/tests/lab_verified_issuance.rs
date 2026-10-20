@@ -129,7 +129,7 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
     let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let row = reader
         .query_one(
-            "SELECT c.certificate_der, si.outcome
+            "SELECT c.certificate_der, si.outcome, c.subject_cn
          FROM certificate c JOIN signing_intent si
            ON si.ca_id=c.ca_id AND si.request_id=c.request_id
          WHERE c.request_id=$1::text::uuid",
@@ -138,8 +138,10 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
         .unwrap();
     let persisted: Vec<u8> = row.get(0);
     let outcome: String = row.get(1);
+    let subject_cn: Option<String> = row.get(2);
     assert_eq!(persisted, result);
     assert_eq!(outcome, "CERTIFICATE_STORED");
+    assert_eq!(subject_cn.as_deref(), Some("api.lab.invalid"));
 
     let replay = issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan);
     assert_eq!(replay, Err(IssueError::ReplayedOrAmbiguousIntent));
