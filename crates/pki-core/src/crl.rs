@@ -17,8 +17,8 @@ use x509_cert::{
     },
     ext::{
         pkix::{
-            crl::CrlNumber, AuthorityKeyIdentifier, CrlReason, KeyUsage, KeyUsages,
-            SubjectKeyIdentifier,
+            crl::CrlNumber, AuthorityKeyIdentifier, BasicConstraints, CrlReason, KeyUsage,
+            KeyUsages, SubjectKeyIdentifier,
         },
         Extension,
     },
@@ -38,6 +38,7 @@ const REASON_CODE_OID: &str = "2.5.29.21";
 const SUBJECT_KEY_IDENTIFIER_OID: &str = "2.5.29.14";
 const AUTHORITY_KEY_IDENTIFIER_OID: &str = "2.5.29.35";
 const KEY_USAGE_OID: &str = "2.5.29.15";
+const BASIC_CONSTRAINTS_OID: &str = "2.5.29.19";
 const EC_PUBLIC_KEY_OID: &str = "1.2.840.10045.2.1";
 const P256_CURVE_OID: &str = "1.2.840.10045.3.1.7";
 /// CRL numbers stay below 2^63 so they fit a signed 64-bit database column.
@@ -295,11 +296,27 @@ fn single_extension<'a>(issuer: &'a Certificate, oid: &str) -> Result<&'a Extens
     }
 }
 
-/// The issuer may sign CRLs with the only lab CRL algorithm: keyUsage present
-/// with cRLSign (RFC 5280 4.2.1.3; an absent keyUsage is not read as "any
-/// usage") and an id-ecPublicKey key on the named curve P-256. Nothing is
-/// inferred from the signature algorithm the TBS will carry.
-fn check_issuer(issuer: &Certificate) -> Result<(), CrlError> {
+/// The issuer may sign this CRL with the only lab CRL algorithm: it is a CA
+/// (exactly one basicConstraints with cA = TRUE), valid at thisUpdate
+/// (notBefore <= thisUpdate <= notAfter), has keyUsage with cRLSign (RFC 5280
+/// 4.2.1.3; an absent keyUsage is not read as "any usage") and an
+/// id-ecPublicKey key on the named curve P-256. Nothing is inferred from the
+/// signature algorithm the TBS will carry.
+fn check_issuer(issuer: &Certificate, this_update_unix: i64) -> Result<(), CrlError> {
+    let constraints = single_extension(issuer, BASIC_CONSTRAINTS_OID)?;
+    let constraints = BasicConstraints::from_der(constraints.extn_value.as_bytes())
+        .map_err(|_| CrlError::Encoding)?;
+    if !constraints.ca {
+        return Err(CrlError::Encoding);
+    }
+    let validity = &issuer.tbs_certificate.validity;
+    let unix =
+        |t: &Time| i64::try_from(t.to_unix_duration().as_secs()).map_err(|_| CrlError::Encoding);
+    if this_update_unix < unix(&validity.not_before)?
+        || this_update_unix > unix(&validity.not_after)?
+    {
+        return Err(CrlError::Encoding);
+    }
     let usage = single_extension(issuer, KEY_USAGE_OID)?;
     let KeyUsage(flags) =
         KeyUsage::from_der(usage.extn_value.as_bytes()).map_err(|_| CrlError::Encoding)?;
@@ -347,7 +364,7 @@ pub fn build_tbs_cert_list(
     {
         return Err(CrlError::Encoding);
     }
-    check_issuer(issuer)?;
+    check_issuer(issuer, reservation.this_update_unix)?;
     let aki = AuthorityKeyIdentifier {
         key_identifier: Some(issuer_key_identifier(issuer)?),
         authority_cert_issuer: None,
@@ -539,7 +556,7 @@ mod tests {
     }
 
     fn issue(ca: &mut EphemeralLabCa, r: &CrlReservation) -> Vec<u8> {
-        let tbs = build_tbs_cert_list(ca.root_certificate(), r).unwrap();
+        let tbs = build_tbs_cert_list(&root(ca), r).unwrap();
         let sig = sign(ca, &tbs);
         LabCrlAssembler.assemble(&tbs, &sig).unwrap()
     }
@@ -567,6 +584,17 @@ mod tests {
         EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap()
     }
 
+    /// The lab root with a validity widened to 2020..2049 so that the fixed
+    /// 2027 test dates fall inside it (the lab root itself is valid for
+    /// 7 days from now). Only the certificate fields change; the CA key, and
+    /// therefore every CRL signature, is the lab root's.
+    fn root(ca: &EphemeralLabCa) -> Certificate {
+        let mut cert = ca.root_certificate().clone();
+        cert.tbs_certificate.validity.not_before = rfc5280_time(1_577_836_800).unwrap();
+        cert.tbs_certificate.validity.not_after = rfc5280_time(2_524_607_999).unwrap();
+        cert
+    }
+
     #[test]
     fn rfc5280_time_switches_at_2050() {
         assert!(matches!(rfc5280_time(2_524_607_999), Ok(Time::UtcTime(_))));
@@ -590,9 +618,7 @@ mod tests {
         assert!(list.tbs_cert_list.revoked_certificates.is_none());
         assert_eq!(list.tbs_cert_list.version, Version::V2);
         assert!(matches!(list.tbs_cert_list.this_update, Time::UtcTime(_)));
-        LabCrlVerifier::new(ca.root_certificate().clone())
-            .verify(&r, &der)
-            .unwrap();
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
     }
 
     #[test]
@@ -604,9 +630,7 @@ mod tests {
             entry(&[0x01], RevocationReason::KeyCompromise, Some(invalidity)),
         ]);
         let der = issue(&mut ca, &r);
-        LabCrlVerifier::new(ca.root_certificate().clone())
-            .verify(&r, &der)
-            .unwrap();
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
         let list = CertificateList::from_der(&der).unwrap();
         let revoked = list.tbs_cert_list.revoked_certificates.unwrap();
         assert_eq!(revoked[0].serial_number.as_bytes(), &[0x01]);
@@ -681,9 +705,7 @@ mod tests {
             Some(THIS_UPDATE - 86_400),
         );
         let der = issue(&mut ca, &r);
-        LabCrlVerifier::new(ca.root_certificate().clone())
-            .verify(&r, &der)
-            .unwrap();
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
         let exts = CertificateList::from_der(&der)
             .unwrap()
             .tbs_cert_list
@@ -740,7 +762,7 @@ mod tests {
     #[test]
     fn builder_rejects_invalid_reservations() {
         let ca = ca();
-        let issuer = ca.root_certificate();
+        let issuer = &root(&ca);
         let raw = |crl_number: u64, next_update_unix: i64, entries: Vec<CrlEntry>| CrlReservation {
             ca_id: "lab-root".to_owned(),
             crl_number,
@@ -833,13 +855,13 @@ mod tests {
             entry(&[0x03], RevocationReason::Superseded, None),
         ]);
         let good = issue(&mut ca, &r);
-        let verifier = LabCrlVerifier::new(ca.root_certificate().clone());
+        let verifier = LabCrlVerifier::new(root(&ca));
         verifier.verify(&r, &good).unwrap();
         let reject = Err(CrlError::VerificationFailure);
 
         // signed by a different key
         let mut other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
-        let tbs = build_tbs_cert_list(ca.root_certificate(), &r).unwrap();
+        let tbs = build_tbs_cert_list(&root(&ca), &r).unwrap();
         let forged = LabCrlAssembler
             .assemble(&tbs, &sign(&mut other, &tbs))
             .unwrap();
@@ -938,7 +960,7 @@ mod tests {
         let r = reservation(vec![]);
         let ski = [0x5a; 20];
         let issuer = issuer_with(
-            ca.root_certificate(),
+            &root(&ca),
             "2.5.29.14",
             Some(x509_extensions::subject_key_identifier(&ski).unwrap()),
         );
@@ -948,7 +970,7 @@ mod tests {
     #[test]
     fn issuer_without_subject_key_identifier_is_refused() {
         let ca = ca();
-        let issuer = issuer_with(ca.root_certificate(), "2.5.29.14", None);
+        let issuer = issuer_with(&root(&ca), "2.5.29.14", None);
         assert_eq!(
             build_tbs_cert_list(&issuer, &reservation(vec![])),
             Err(CrlError::Encoding)
@@ -971,7 +993,7 @@ mod tests {
         let mut ca = ca();
         let r = reservation(vec![]);
         let good = issue(&mut ca, &r);
-        let root = ca.root_certificate();
+        let root = &root(&ca);
         let cert_sign_only = issuer_with(
             root,
             "2.5.29.15",
@@ -1005,7 +1027,7 @@ mod tests {
     /// key parameters and keyUsage reach the TBS builder.
     fn golden_issuer() -> Certificate {
         let mut issuer = issuer_with(
-            ca().root_certificate(),
+            &root(&ca()),
             "2.5.29.14",
             Some(x509_extensions::subject_key_identifier(&[0x5a; 20]).unwrap()),
         );
@@ -1090,8 +1112,50 @@ mod tests {
         let list = CertificateList::from_der(&der).unwrap();
         let revoked = list.tbs_cert_list.revoked_certificates.unwrap();
         assert_eq!(revoked[0].serial_number.as_bytes(), &[0x00, 0x80, 0x01]);
-        LabCrlVerifier::new(ca.root_certificate().clone())
-            .verify(&r, &der)
-            .unwrap();
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
+    }
+
+    /// Regression: an expired or not-yet-valid issuer, or one without
+    /// basicConstraints cA=TRUE, was accepted by the builder and the verifier.
+    #[test]
+    fn issuer_must_be_a_ca_valid_at_this_update() {
+        let mut ca = ca();
+        let r = reservation(vec![]);
+        let good = issue(&mut ca, &r);
+        let valid = root(&ca);
+        let mut expired = valid.clone();
+        expired.tbs_certificate.validity.not_after = rfc5280_time(THIS_UPDATE - 1).unwrap();
+        let mut not_yet = valid.clone();
+        not_yet.tbs_certificate.validity.not_before = rfc5280_time(THIS_UPDATE + 1).unwrap();
+        let no_constraints = issuer_with(&valid, "2.5.29.19", None);
+        let not_ca = issuer_with(
+            &valid,
+            "2.5.29.19",
+            Some(Extension {
+                extn_id: ObjectIdentifier::new("2.5.29.19").unwrap(),
+                critical: true,
+                extn_value: OctetString::new(
+                    x509_cert::ext::pkix::BasicConstraints {
+                        ca: false,
+                        path_len_constraint: None,
+                    }
+                    .to_der()
+                    .unwrap(),
+                )
+                .unwrap(),
+            }),
+        );
+        for issuer in [expired, not_yet, no_constraints, not_ca] {
+            assert_eq!(build_tbs_cert_list(&issuer, &r), Err(CrlError::Encoding));
+            assert_eq!(
+                LabCrlVerifier::new(issuer).verify(&r, &good),
+                Err(CrlError::VerificationFailure)
+            );
+        }
+        // boundaries: thisUpdate equal to notBefore or notAfter is accepted
+        let mut edge = valid.clone();
+        edge.tbs_certificate.validity.not_before = rfc5280_time(THIS_UPDATE).unwrap();
+        edge.tbs_certificate.validity.not_after = rfc5280_time(THIS_UPDATE).unwrap();
+        assert!(build_tbs_cert_list(&edge, &r).is_ok());
     }
 }

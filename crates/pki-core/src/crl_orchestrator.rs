@@ -227,14 +227,14 @@ mod tests {
     /// Structurally valid issuer for the TBS builder; its key and signature
     /// are placeholders and are never verified by these tests.
     fn issuer() -> Certificate {
-        use std::{str::FromStr, time::Duration};
+        use std::str::FromStr;
         use x509_cert::{
             der::{
                 asn1::{BitString, ObjectIdentifier, OctetString},
                 Any, Encode,
             },
             ext::{
-                pkix::{KeyUsage, KeyUsages},
+                pkix::{BasicConstraints, KeyUsage, KeyUsages},
                 Extension,
             },
             name::Name,
@@ -257,7 +257,11 @@ mod tests {
                 serial_number: SerialNumber::new(&[1]).unwrap(),
                 signature: ecdsa_sha256.clone(),
                 issuer: name.clone(),
-                validity: Validity::from_now(Duration::from_secs(3600)).unwrap(),
+                // 2020-01-01 .. 2049-12-31: covers the fixed reservation dates
+                validity: Validity {
+                    not_before: crate::crl::rfc5280_time(1_577_836_800).unwrap(),
+                    not_after: crate::crl::rfc5280_time(2_524_607_999).unwrap(),
+                },
                 subject: name,
                 subject_public_key_info: SubjectPublicKeyInfoOwned {
                     algorithm: AlgorithmIdentifierOwned {
@@ -270,6 +274,19 @@ mod tests {
                 subject_unique_id: None,
                 extensions: Some(vec![
                     crate::x509_extensions::subject_key_identifier(&[7; 20]).unwrap(),
+                    Extension {
+                        extn_id: oid("2.5.29.19"),
+                        critical: true,
+                        extn_value: OctetString::new(
+                            BasicConstraints {
+                                ca: true,
+                                path_len_constraint: None,
+                            }
+                            .to_der()
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                    },
                     Extension {
                         extn_id: oid("2.5.29.15"),
                         critical: true,

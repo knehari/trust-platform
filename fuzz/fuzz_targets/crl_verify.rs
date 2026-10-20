@@ -35,17 +35,26 @@ fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
         let mut ca =
             EphemeralLabCa::new("Sovereign Trust Lab Root").expect("lab CA for fuzz harness");
+        // The lab root is valid from now for a few days and the builder
+        // requires the issuer to be valid at thisUpdate, so use the clock.
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after 1970")
+                .as_secs(),
+        )
+        .expect("clock in range");
         let entry = |serial: &[u8], reason| CrlEntry {
             serial: SerialNumber::from_positive_der_content(serial).expect("fixed serial"),
-            revoked_at_unix: 1_800_000_000 - 60,
+            revoked_at_unix: now - 60,
             reason,
             invalidity_at_unix: None,
         };
         let reservation = CrlReservation::new(
             "lab-root",
             1,
-            1_800_000_000,
-            1_800_000_000 + 7 * 24 * 3600,
+            now,
+            now + 7 * 24 * 3600,
             vec![
                 entry(&[0x01], RevocationReason::KeyCompromise),
                 entry(&[0x00, 0x80], RevocationReason::CertificateHold),
