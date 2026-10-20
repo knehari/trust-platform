@@ -126,14 +126,14 @@ paths:
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates/by-serial/{serial_hex}:
     get:
-      summary: Find one certificate metadata record by exact issuer-scoped serial
-      description: Accepts canonical DER-content hex, case-insensitively. The signed CA scope and current server-owned reader grant are checked before the restricted metadata view is queried. Certificate DER is not exposed.
+      summary: Find one certificate metadata record by issuer-scoped hexadecimal serial
+      description: Accepts positive hexadecimal serials as plain digits, optionally prefixed with 0x or written as colon-separated byte pairs, case-insensitively. The input is normalized to minimal positive DER-content hex before lookup; the response serial_hex is canonical. Decimal notation is not accepted. The signed CA scope and current server-owned reader grant are checked before the restricted metadata view is queried. Certificate DER is not exposed.
       parameters:
         - $ref: '#/components/parameters/CaId'
         - in: path
           name: serial_hex
           required: true
-          schema: { type: string, pattern: '^(?:[0-9A-Fa-f]{2}){1,20}$', maxLength: 40 }
+          schema: { type: string, pattern: '^(?:0[xX])?(?:[0-9A-Fa-f]{1,40}|[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){1,19})$', maxLength: 61 }
       responses:
         '200':
           description: Certificate metadata

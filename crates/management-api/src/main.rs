@@ -356,24 +356,45 @@ fn scoped_ca_id(raw: &str, claims: &Claims) -> Result<String, StatusCode> {
 }
 
 fn canonical_serial_hex(raw: &str) -> Result<String, StatusCode> {
-    if !(2..=40).contains(&raw.len())
-        || raw.len() % 2 != 0
-        || !raw.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
+    if raw.len() > 61 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let bytes: Vec<u8> = raw
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-        .collect();
-    if bytes[0] >= 0x80
-        || bytes.iter().all(|byte| *byte == 0)
-        || (bytes[0] == 0 && (bytes.len() == 1 || bytes[1] < 0x80))
-    {
+    let digits = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
+    let hex = if digits.contains(':') {
+        let pairs: Vec<&str> = digits.split(':').collect();
+        if pairs.is_empty()
+            || pairs
+                .iter()
+                .any(|pair| pair.len() != 2 || !pair.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        pairs.concat()
+    } else {
+        digits.to_owned()
+    };
+    if hex.is_empty() || hex.len() > 40 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    Ok(raw.to_ascii_lowercase())
+    let magnitude = hex.trim_start_matches('0');
+    if magnitude.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let mut canonical = if magnitude.len() % 2 == 0 {
+        magnitude.to_ascii_lowercase()
+    } else {
+        format!("0{}", magnitude.to_ascii_lowercase())
+    };
+    if u8::from_str_radix(&canonical[..2], 16).unwrap() >= 0x80 {
+        canonical.insert_str(0, "00");
+    }
+    if canonical.len() > 40 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(canonical)
 }
 
 async fn query_db<T: Send + 'static>(
@@ -845,17 +866,47 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(by_serial["request_id"], certificate["request_id"]);
         assert_eq!(by_serial["subject_cn"], "paged-0001.lab.invalid");
+        for serial in [
+            "10001",
+            "0x10001",
+            "0X10001",
+            "01:00:01",
+            "0x01:00:01",
+            "00010001",
+        ] {
+            let (status, alias) =
+                detail_response(&app, &token, &format!("{serial_base}/{serial}")).await;
+            assert_eq!(status, StatusCode::OK, "serial {serial}");
+            assert_eq!(alias["request_id"], certificate["request_id"]);
+            assert_eq!(alias["serial_hex"], "010001");
+        }
         let (status, uppercase) =
             detail_response(&app, &token, &format!("{serial_base}/01000A")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(uppercase["serial_hex"], "01000a");
-        for serial in ["0", "00", "80", "0001", "zz", "ff"] {
+        for serial in [
+            "0",
+            "00",
+            "0x",
+            "zz",
+            "1::2",
+            "1:00",
+            "01:",
+            "0xGG",
+            "00000000000000000000000000000000000000000",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        ] {
             let (status, _) =
                 detail_response(&app, &token, &format!("{serial_base}/{serial}")).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "serial {serial}");
         }
         let (status, _) = detail_response(&app, &token, &format!("{serial_base}/010067")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        for serial in ["80", "ff", "0001"] {
+            let (status, _) =
+                detail_response(&app, &token, &format!("{serial_base}/{serial}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "serial {serial}");
+        }
         let (status, _) = detail_response(
             &app,
             &token,
