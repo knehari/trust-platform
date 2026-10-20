@@ -32,7 +32,15 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   `quarantine_stale_crl_intents`; since 0017 a stale reservation can no longer
   be signed, but it stays `RESERVED` until the sweep runs; ADR-0006 part C
   proposes a scheduled operator job.
-- `crl_due` is O(history) per call; read-only queries do not check isolation.
+- `crl_due` / `overdue_status_changes` are O(history) per call (a
+  `crl_change_covered` call and supersession probe per approved change, no
+  supporting index); read-only queries do not check isolation.
+- Lock order: `propose_` locks the grant before the certificate, `approve_`,
+  `reject_` and `withdraw_` the certificate first; with concurrent bulk grant
+  deletion this can deadlock (PostgreSQL aborts one transaction, fail closed).
+- Migrations copy whole function bodies to change one line (0016-0020), and the
+  entries digest expression is repeated in `reserve_crl` and
+  `store_verified_crl`; shared helpers would reduce drift.
 - The lifecycle audit decision format is built in four function bodies
   (0018/0019); a shared SQL helper would keep it in one place.
 - Reject path and approve's generic message still fold maker=checker wording;

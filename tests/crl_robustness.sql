@@ -84,13 +84,14 @@ DECLARE
 BEGIN
     PERFORM pg_temp.old_reservation(1, INTERVAL '3 days', 'stale-op');
     PERFORM pg_temp.old_reservation(2, INTERVAL '3 hours', 'old-intent-op');
-    PERFORM pg_temp.old_reservation(3, INTERVAL '0 seconds', 'fresh-op');
 
     -- the intent time is the moment of the intent, not the reservation
     v_before := clock_timestamp();
     PERFORM pg_temp.intent(ca, 2, 'old-intent-op', sha256('tbs-2'::bytea));
     PERFORM pg_temp.must((SELECT intent_recorded_at >= v_before FROM crl_publication
         WHERE ca_id = ca AND crl_number = 2), 'intent_recorded_at stamped at the intent');
+    -- (0020: only the highest number may record an intent, so 3 comes after)
+    PERFORM pg_temp.old_reservation(3, INTERVAL '0 seconds', 'fresh-op');
 
     -- an intent recorded just now is not stale although its reservation is
     PERFORM pg_temp.must(quarantine_stale_crl_intents(ca, INTERVAL '1 hour') = 0,
@@ -206,7 +207,7 @@ BEGIN
     -- CRL 1 would now be older than a stored CRL: never signed
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000018',
         1, 'order-op-1', sha256('tbs-1'::bytea))$$, '23514',
-        'CRL intent refused: a higher CRL number may already be signed');
+        'CRL intent refused: a higher CRL number has been reserved');
     PERFORM pg_temp.must((SELECT status FROM crl_publication WHERE ca_id = ca AND crl_number = 1)
         = 'RESERVED', 'refused intent leaves the reservation untouched');
 
@@ -299,12 +300,12 @@ BEGIN
     PERFORM pg_temp.intent(ca, 3, 'review-op-3', sha256('tbs-3'::bytea));
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
         2, 'review-op-2', sha256('tbs-2'::bytea))$$, '23514',
-        'CRL intent refused: a higher CRL number may already be signed');
+        'CRL intent refused: a higher CRL number has been reserved');
     -- ... and so does a quarantined higher number (possibly signed)
     PERFORM mark_crl_uncertain(ca, 3, 'review-op-3');
     PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000020',
         1, 'review-op-1', sha256('tbs-1'::bytea))$$, '23514',
-        'CRL intent refused: a higher CRL number may already be signed');
+        'CRL intent refused: a higher CRL number has been reserved');
 
     -- a reservation whose nextUpdate has passed is refused even when the
     -- current policy interval (changed after the reservation) is longer
@@ -326,6 +327,58 @@ BEGIN
         WHERE ca_id = 'c0c0c0c0-0000-4000-8000-000000000020'$$, '23514');
     UPDATE ca_revocation_policy SET suspension_cps_ref = 'CPS §4.9.13'
     WHERE ca_id = ca;
+END $t$;
+
+-- ---------------------------- second review: coverage and ordering (0020)
+INSERT INTO ca(ca_id, display_name, policy_version) VALUES
+    ('c0c0c0c0-0000-4000-8000-000000000021', 'CRL Coverage Lab CA', 'lab-1');
+INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                                requester_id, policy_version, state)
+VALUES ('d1d1d1d1-0000-4000-8000-000000000031', 'c0c0c0c0-0000-4000-8000-000000000021',
+        'idem-cover', sha256('csr-cover'::bytea), 'requester', 'lab-1', 'PUBLISHED');
+INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000021', '\x31', 'd1d1d1d1-0000-4000-8000-000000000031');
+INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                        certificate_der, signed_at)
+VALUES ('c0c0c0c0-0000-4000-8000-000000000021', '\x31', 'd1d1d1d1-0000-4000-8000-000000000031',
+        sha256('der-cover'::bytea), decode('3003020101', 'hex'), now());
+INSERT INTO revocation_officer_grant(issuer, subject, ca_id) VALUES
+ ('https://idp.lab.invalid', 'maker',   'c0c0c0c0-0000-4000-8000-000000000021'),
+ ('https://idp.lab.invalid', 'checker', 'c0c0c0c0-0000-4000-8000-000000000021');
+DO $t$
+DECLARE
+    ca CONSTANT UUID := 'c0c0c0c0-0000-4000-8000-000000000021';
+    iss CONSTANT TEXT := 'https://idp.lab.invalid';
+    c UUID;
+    n BIGINT;
+BEGIN
+    -- approve early in a second, reserve later in the same second: thisUpdate
+    -- (truncated) precedes decided_at, yet the snapshot holds the revocation
+    WHILE extract(milliseconds FROM clock_timestamp())::int % 1000 > 150 LOOP
+        PERFORM pg_sleep(0.01);
+    END LOOP;
+    c := propose_certificate_status_change(ca, '\x31', 'REVOKE', 1::smallint, NULL, iss, 'maker');
+    PERFORM approve_certificate_status_change(c, iss, 'checker', 'REVOKE', 1::smallint);
+    PERFORM pg_sleep(0.3);
+    SELECT crl_number INTO n FROM reserve_crl(ca, 'crl-worker', 'cover-op-1');
+    PERFORM pg_temp.must((SELECT this_update < (SELECT decided_at FROM certificate_status_change
+        WHERE change_id = c) FROM crl_publication WHERE ca_id = ca AND crl_number = n),
+        'fixture: thisUpdate truncated below decided_at');
+    PERFORM pg_temp.must((SELECT count(*) FROM crl_snapshot_entries(ca, n)) = 1, 'snapshot has it');
+    PERFORM pg_temp.intent(ca, n, 'cover-op-1', sha256('tbs-cover'::bytea));
+    PERFORM store_verified_crl(ca, n, 'cover-op-1', sha256('tbs-cover'::bytea),
+                               sha256('der-cover-crl'::bytea), 'der-cover-crl'::bytea);
+    PERFORM pg_temp.must(crl_change_covered(c, true), 'stored CRL covers the change');
+    PERFORM pg_temp.must(NOT crl_due(ca), 'no CRL due after it is stored');
+
+    -- only the highest reserved number may record an intent
+    PERFORM reserve_crl(ca, 'crl-worker', 'cover-op-2');
+    PERFORM reserve_crl(ca, 'crl-worker', 'cover-op-3');
+    PERFORM pg_temp.expect_err_msg($$SELECT pg_temp.intent('c0c0c0c0-0000-4000-8000-000000000021',
+        2, 'cover-op-2', sha256('tbs-2'::bytea))$$, '23514',
+        'CRL intent refused: a higher CRL number has been reserved');
+    PERFORM pg_temp.must(pg_temp.intent(ca, 3, 'cover-op-3', sha256('tbs-3'::bytea))
+        = 'INTENT_RECORDED', 'the highest number records its intent');
 END $t$;
 
 ROLLBACK;

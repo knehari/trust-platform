@@ -56,7 +56,7 @@ Moving functions to `SECURITY DEFINER` alone does not solve (2): whoever may `EX
 - The revocation API (not yet built) must call through the Rust core so that signatures are verified before the database call.
 - Required evidence before implementation is accepted:
   - a threat model update in `docs/security/threat-model.md`;
-  - RED/GREEN tests for each privilege and signature rule, including the same key under two ids, compressed versus uncompressed, a replayed challenge, a swapped maker/checker, a revoked grant mid-flow and direct DML as each login;
+  - RED/GREEN tests for each privilege and signature rule, including the same key under two ids, compressed versus uncompressed, a replayed challenge, a swapped maker/checker, a revoked grant mid-flow and direct DML as each login. The direct writes found by review that must be impossible from every service login are: `INSERT` into `revocation` (revoke without a change), `DELETE` of a hold (release without a change), `INSERT` into `crl_entry_snapshot` for an existing CRL (fake coverage), and `INSERT` of a `STORED` row into `crl_publication` (skips intent and verification);
   - concurrency tests for challenge consumption;
   - an independent review of the `SECURITY DEFINER` functions (search_path, dynamic SQL, error leakage).
 - Until this ADR is accepted and implemented, the lab slice's maker-checker must be described as **textual two-actor control with a single trusted service**, not as cryptographic double control.
