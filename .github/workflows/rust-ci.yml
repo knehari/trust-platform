@@ -238,6 +238,7 @@ jobs:
           # tests need their own seeded/TLS databases and run in later steps.
           TRUST_REQUIRE_DATABASE=1 \
           TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+          TRUST_REVOCATION_API_TEST_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo test -p trust-management-api --locked -- \
             --skip pagination_reads_all_scoped_rows --skip verify_full_connects_only_to_a_trusted_matching_server
           if env -u TRUST_API_TEST_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-management-api --locked database_capacity_rejects_excess_work_before_connecting; then

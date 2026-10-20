@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform revocation write API
+  version: 0.1.0-lab
+  description: >-
+    Laboratory signed status-change API (crates/management-api/src/bin/revocation_api.rs;
+    ADR-0005 and ADR-0007, both Proposed). Only the signed maker-checker flow is
+    offered. The acting officer is the verified access token's issuer and
+    subject, never a request field. The token must carry the
+    trust-revocation-officer role and the CA in ca_ids; the database still
+    requires the officer grant and an enrolled WebAuthn credential. No
+    production readiness is implied.
+servers:
+  - url: http://127.0.0.1:8083
+security:
+  - oidcAccessToken: []
+paths:
+  /v1/cas/{ca_id}/status-change-challenges:
+    post:
+      summary: Maker asks for a single-use challenge to propose a status change
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [serial_hex, action]
+              properties:
+                serial_hex:
+                  type: string
+                  description: Positive DER INTEGER content of the serial, lowercase or uppercase hex.
+                action:
+                  enum: [SUSPEND, RELEASE, REVOKE]
+                reason:
+                  type: integer
+                  description: CRL reason code (0-6, 9, 10); omitted for RELEASE, 6 for SUSPEND.
+                invalidity_unix:
+                  type: integer
+                  description: Optional invalidity date, seconds since the Unix epoch, not in the future.
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '400': {description: Malformed serial, action, reason or body}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not an officer, CA out of token scope, or no officer grant}
+        '404': {description: Non-canonical CA identifier}
+        '409': {description: Refused by policy (status, open change, suspension, issuer not registered)}
+        '422': {description: Unknown request field}
+        '503': {description: Database unavailable or busy}
+  /v1/status-changes/{change_id}/approval-challenges:
+    post:
+      summary: Checker asks for a single-use challenge to approve a proposed change
+      parameters:
+        - name: change_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not an officer, CA out of token scope, or no officer grant}
+        '404': {description: Non-canonical change identifier}
+        '409': {description: Closed change, or the checker is the maker}
+        '503': {description: Database unavailable or busy}
+  /v1/status-change-challenges/{challenge_id}/assertion:
+    post:
+      summary: Submit the WebAuthn assertion that signs the challenge's claim
+      description: >-
+        The Rust core verifies the ES256 assertion (RP id, user presence and
+        verification, origin, ceremony type, challenge, counter, signature
+        with the enrolled key) against the claim rebuilt from the database
+        before anything is written. Only the officer the challenge was
+        issued to may answer it.
+      parameters:
+        - name: challenge_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential_id, authenticator_data, client_data_json, signature]
+              properties:
+                credential_id: {type: string, description: base64url, no padding}
+                authenticator_data: {type: string, description: base64url, no padding}
+                client_data_json: {type: string, description: base64url, no padding}
+                signature: {type: string, description: DER ECDSA signature, base64url, no padding}
+      responses:
+        '200':
+          description: Signed proposal recorded, or change approved and applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [change_id]
+                properties:
+                  change_id: {type: string, format: uuid}
+        '400': {description: Malformed encoding or an assertion that does not verify}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Challenge issued to another officer, or CA out of token scope}
+        '409': {description: Challenge spent or expired, credential removed or not the officer's, distinctness or counter rule refused}
+        '503': {description: Database unavailable or busy}
+components:
+  securitySchemes:
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT (typ at+jwt, RS256)
+  parameters:
+    CaId:
+      name: ca_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    Challenge:
+      description: Single-use challenge (five minutes)
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [challenge_id, change_id, webauthn_challenge, expires_at_us]
+            properties:
+              challenge_id: {type: string, format: uuid}
+              change_id: {type: string, format: uuid}
+              webauthn_challenge:
+                type: string
+                description: base64url SHA-256 of the canonical claim; pass to navigator.credentials.get.
+              expires_at_us: {type: integer}

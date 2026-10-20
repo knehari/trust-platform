@@ -106,7 +106,9 @@ VALUES ('5eedc0de-0000-4000-8000-000000000029', '\x3000', 'test');
 CREATE TEMP TABLE t AS SELECT issue_status_change_challenge('PROPOSE',
     '5eedc0de-0000-4000-8000-000000000029', NULL, '\x01', 'REVOKE', 1::smallint, NULL,
     'https://idp.lab.invalid', 'maker', 60) AS challenge;
-SELECT pg_temp.must((SELECT expires_at - issued_at <= interval '60 seconds'
+-- issued_at (column default) and expires_at (clock_timestamp() + TTL in the
+-- INSERT) are two clock readings, so allow their gap a little slack.
+SELECT pg_temp.must((SELECT expires_at - issued_at <= interval '61 seconds'
                             AND octet_length(challenge_sha256) = 32 AND consumed_at IS NULL
                      FROM status_change_challenge WHERE challenge_id = (SELECT challenge FROM t)),
                     'challenge stored with expiry, digest only');

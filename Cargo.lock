@@ -2007,6 +2007,7 @@ dependencies = [
  "tokio-postgres-rustls",
  "tower",
  "trust-pki-core",
+ "trust-pki-crypto",
  "uuid",
  "x509-cert",
 ]
