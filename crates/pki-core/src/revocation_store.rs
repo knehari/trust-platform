@@ -33,6 +33,27 @@ fn column<T: FromSqlOwned>(row: &Row, idx: usize) -> Result<T, RevocationStoreEr
         .map_err(|_| RevocationStoreError::InconsistentResult)
 }
 
+/// Result of one `crl_housekeeping` pass for a CA.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrlHousekeepingReport {
+    /// RESERVED rows retired as ABANDONED (never signed).
+    pub abandoned: i32,
+    /// INTENT_RECORDED rows quarantined as RECONCILIATION_REQUIRED.
+    pub quarantined: i32,
+    /// `crl_due`: no stored CRL, the latest is older than the issue interval,
+    /// or an approved change is not reflected by it.
+    pub crl_due: bool,
+    /// `overdue_status_changes`: changes past their publication deadline.
+    pub overdue_changes: i64,
+}
+
+impl CrlHousekeepingReport {
+    /// True when an operator or the CRL issuer must act.
+    pub fn needs_attention(&self) -> bool {
+        self.abandoned > 0 || self.quarantined > 0 || self.crl_due || self.overdue_changes > 0
+    }
+}
+
 pub struct PgRevocationStore {
     client: Client,
 }
@@ -272,6 +293,30 @@ impl PgRevocationStore {
             &[&ca_id, &older_than_seconds],
         )?;
         column(&row, 0)
+    }
+
+    /// One scheduled housekeeping pass (ADR-0006 part C): retire stale
+    /// reservations, quarantine stale intents, then report whether a CRL is
+    /// due and how many changes are past their publication deadline.
+    pub fn crl_housekeeping(
+        &mut self,
+        ca_id: &str,
+        reserved_older_than_seconds: i64,
+        intent_older_than_seconds: i64,
+    ) -> Result<CrlHousekeepingReport, RevocationStoreError> {
+        let abandoned = self.abandon_stale_crl_reservations(ca_id, reserved_older_than_seconds)?;
+        let quarantined = self.quarantine_stale_crl_intents(ca_id, intent_older_than_seconds)?;
+        let row = self.client.query_one(
+            "SELECT crl_due($1::text::uuid),
+                    (SELECT count(*) FROM overdue_status_changes($1::text::uuid))",
+            &[&ca_id],
+        )?;
+        Ok(CrlHousekeepingReport {
+            abandoned,
+            quarantined,
+            crl_due: column(&row, 0)?,
+            overdue_changes: column(&row, 1)?,
+        })
     }
 
     pub fn quarantine_stale_crl_intents(

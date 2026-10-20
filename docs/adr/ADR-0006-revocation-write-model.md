@@ -42,7 +42,7 @@ Moving functions to `SECURITY DEFINER` alone does not solve (2): whoever may `EX
 
 ### C. Housekeeping
 
-`abandon_stale_crl_reservations` and `quarantine_stale_crl_intents` (0016) run from a scheduled job under `trust_crl_operator`, with an alert when either returns a non-zero count. Since 0017 a stale reservation cannot be signed, so the sweep is hygiene and evidence, not a safety control.
+`abandon_stale_crl_reservations` and `quarantine_stale_crl_intents` (0016) run from a scheduled job under `trust_crl_operator`, with an alert when either returns a non-zero count. A lab version of the job exists (`crl_housekeeping` example, `docs/operations/lab-crl-housekeeping.md`); it does not yet run under that role. Since 0017 a stale reservation cannot be signed, so the sweep is hygiene and evidence, not a safety control.
 
 ## Alternatives considered
 

@@ -1117,3 +1117,51 @@ fn verified_crl_whose_storage_failed_is_reconciled() {
         Err(CrlError::ReplayedOrAmbiguousIntent)
     );
 }
+
+/// Scheduled housekeeping: a CA without a CRL is due; a reservation left by
+/// a dead worker is retired; once a CRL is stored nothing needs attention.
+#[test]
+fn housekeeping_reports_and_cleans_up() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+
+    store
+        .reserve_crl(&ca_id, "crl-operator", "crl-dead-worker")
+        .unwrap();
+    let report = store.crl_housekeeping(&ca_id, 0, 3600).unwrap();
+    assert_eq!(
+        (
+            report.abandoned,
+            report.quarantined,
+            report.crl_due,
+            report.overdue_changes
+        ),
+        (1, 0, true, 0)
+    );
+    assert!(report.needs_attention());
+
+    let reservation = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-housekeeping-op")
+        .unwrap();
+    let plan = CrlPlan {
+        reservation: &reservation,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-housekeeping-op",
+    };
+    let verifier = LabCrlVerifier::new(root.clone());
+    crl_once(&mut store, &mut ca, &LabCrlAssembler, &verifier, &plan).unwrap();
+    let report = store.crl_housekeeping(&ca_id, 3600, 3600).unwrap();
+    assert!(!report.needs_attention(), "{report:?}");
+}

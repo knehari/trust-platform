@@ -23,6 +23,10 @@ name = "crash_recovery_lab"
 required-features = ["lab-software", "postgres-store"]
 
 [[example]]
+name = "crl_housekeeping"
+required-features = ["postgres-store"]
+
+[[example]]
 name = "issue_crl_lab"
 required-features = ["lab-software"]
 

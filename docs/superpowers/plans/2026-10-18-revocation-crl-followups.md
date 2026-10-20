@@ -34,10 +34,9 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   idempotent on a reused database (pre-existing).
 
 ## Robustness and hygiene
-- Nothing schedules `abandon_stale_crl_reservations` /
-  `quarantine_stale_crl_intents`; since 0017 a stale reservation can no longer
-  be signed, but it stays `RESERVED` until the sweep runs; ADR-0006 part C
-  proposes a scheduled operator job.
+- `crl_housekeeping` (lab example, `docs/operations/lab-crl-housekeeping.md`)
+  runs the sweeps and alerts through its exit status; deploying it on a
+  schedule, and under the ADR-0006 operator role, remains open.
 - `crl_due` / `overdue_status_changes` are O(history) per call (a
   `crl_change_covered` call and supersession probe per approved change, no
   supporting index); read-only queries do not check isolation.
