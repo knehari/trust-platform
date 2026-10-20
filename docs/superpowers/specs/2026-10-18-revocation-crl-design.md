@@ -286,7 +286,7 @@ handles intents left by a crash. No automatic re-sign.
   and grants, not authentication.
 - Lab CA keys are ephemeral; CRLs cannot be produced after the issuing process
   ends. This is a lab limit, not a design choice for production.
-- Publication (0030): a lab-only, read-only HTTP distribution point serves the latest stored CRL after re-verifying it; issued certificates carry no CDP extension yet, and there is no production publication service.
+- Publication (0030): a lab-only, read-only HTTP distribution point serves the latest stored CRL after re-verifying it; lab leaves carry its URL in a cRLDistributionPoints extension when the CA is configured with one (OpenSSL `-crl_download` follows it end to end); there is no production publication service.
 - Database owners can bypass triggers; external append-only audit remains an
   open item (D-04). Since 0027 a sealed hash chain is verified against
   checkpoints exported outside the database; signing or timestamping them

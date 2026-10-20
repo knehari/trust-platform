@@ -3,7 +3,10 @@
 //! policy provenance, key custody, certificate transparency or QTSP status.
 
 use crate::orchestrator::{CertificateAssembler, CertificateVerifier, IssuancePlan, IssueError};
-use crate::x509_extensions::{certificate_policies, ApprovedPolicyBinding};
+use crate::x509_extensions::{
+    certificate_policies, crl_distribution_points, ApprovedPolicyBinding,
+    CRL_DISTRIBUTION_POINTS_OID,
+};
 use trust_pki_crypto::verify_p256_ecdsa_sha256;
 use x509_cert::{
     der::{asn1::BitString, Decode, Encode},
@@ -44,6 +47,7 @@ pub struct LabX509Verifier {
     issuer: Certificate,
     policy: ApprovedPolicyBinding,
     authorized_dns: String,
+    crl_distribution_point: Option<String>,
 }
 
 impl LabX509Verifier {
@@ -52,7 +56,16 @@ impl LabX509Verifier {
             issuer,
             policy,
             authorized_dns,
+            crl_distribution_point: None,
         }
+    }
+
+    /// Require exactly this CRL distribution point. Without it, a
+    /// certificate carrying any distribution point is refused: the URL
+    /// relying parties will fetch must come from approved configuration.
+    pub fn with_crl_distribution_point(mut self, url: &str) -> Self {
+        self.crl_distribution_point = Some(url.to_owned());
+        self
     }
 }
 
@@ -101,6 +114,20 @@ impl CertificateVerifier for LabX509Verifier {
             .collect();
         if actual.len() != 1 || actual[0] != &expected {
             return Err(fail);
+        }
+        let points: Vec<_> = extensions
+            .iter()
+            .filter(|ext| ext.extn_id.to_string() == CRL_DISTRIBUTION_POINTS_OID)
+            .collect();
+        match &self.crl_distribution_point {
+            None if points.is_empty() => {}
+            Some(url) => {
+                let expected = crl_distribution_points(url).map_err(|_| fail.clone())?;
+                if points.len() != 1 || points[0] != &expected {
+                    return Err(fail);
+                }
+            }
+            None => return Err(fail),
         }
         for id in [
             SAN_OID,

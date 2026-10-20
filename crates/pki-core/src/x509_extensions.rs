@@ -20,6 +20,9 @@ pub enum ExtensionError {
     MissingApprovedPolicy,
     InvalidPolicyOid,
     InvalidEncoding,
+    /// Not an acceptable CRL distribution point URL (see
+    /// `crl_distribution_points`).
+    InvalidDistributionPoint,
 }
 
 /// Tested explicit policy configuration, never taken from CSR attributes.
@@ -126,6 +129,54 @@ pub fn certificate_policies(binding: &ApprovedPolicyBinding) -> Result<Extension
     extension("2.5.29.32", false, policies)
 }
 
+pub const CRL_DISTRIBUTION_POINTS_OID: &str = "2.5.29.31";
+
+/// The lab distribution point URL of a CA (`crl_distribution` binary,
+/// migration 0030): `<base>/crl/<ca-uuid>.crl`.
+pub fn crl_distribution_url(base: &str, ca_id: &str) -> String {
+    format!("{}/crl/{ca_id}.crl", base.trim_end_matches('/'))
+}
+
+/// RFC 5280 4.2.1.13 cRLDistributionPoints with exactly one distribution
+/// point whose fullName is one URI, no reasons, no cRLIssuer; non-critical.
+/// Only plain `http://` is accepted: RFC 5280 relying parties fetch CRLs
+/// over HTTP, and HTTPS would make revocation checking depend on another
+/// certificate's revocation status. The URL must name a host, be printable
+/// ASCII without spaces, user information or fragment, and stay under 2 KiB.
+pub fn crl_distribution_points(url: &str) -> Result<Extension, ExtensionError> {
+    use x509_cert::{
+        der::asn1::Ia5String,
+        ext::pkix::{
+            crl::dp::DistributionPoint,
+            name::{DistributionPointName, GeneralName},
+            CrlDistributionPoints,
+        },
+    };
+    let invalid = ExtensionError::InvalidDistributionPoint;
+    let rest = url.strip_prefix("http://").ok_or(invalid.clone())?;
+    let host = rest.split(['/', '?']).next().unwrap_or_default();
+    if url.len() > 2048
+        || host.is_empty()
+        || !url.bytes().all(|b| b.is_ascii_graphic())
+        || url.contains(['@', '#', '\\'])
+    {
+        return Err(invalid);
+    }
+    let name = Ia5String::new(url).map_err(|_| invalid.clone())?;
+    let points = CrlDistributionPoints(vec![DistributionPoint {
+        distribution_point: Some(DistributionPointName::FullName(vec![
+            GeneralName::UniformResourceIdentifier(name),
+        ])),
+        reasons: None,
+        crl_issuer: None,
+    }]);
+    extension(
+        CRL_DISTRIBUTION_POINTS_OID,
+        false,
+        points.to_der().map_err(|_| invalid)?,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +225,56 @@ mod tests {
         let aki = authority_key_identifier(&value).unwrap();
         assert_eq!(&aki.extn_value.as_bytes()[..4], &[0x30, 0x16, 0x80, 0x14]);
         assert_eq!(&aki.extn_value.as_bytes()[4..], &value);
+    }
+
+    #[test]
+    fn crl_distribution_point_is_one_http_uri() {
+        let url = crl_distribution_url(
+            "http://crl.lab.invalid:8082/",
+            "5eedc0de-0000-4000-8000-000000000031",
+        );
+        assert_eq!(
+            url,
+            "http://crl.lab.invalid:8082/crl/5eedc0de-0000-4000-8000-000000000031.crl"
+        );
+        let ext = crl_distribution_points(&url).unwrap();
+        assert_eq!(ext.extn_id.to_string(), CRL_DISTRIBUTION_POINTS_OID);
+        assert!(!ext.critical);
+        // SEQUENCE { SEQUENCE { [0] { [0] { [6] url } } } }
+        let der = ext.extn_value.as_bytes();
+        let n = url.len();
+        assert_eq!(
+            &der[..10],
+            &[
+                0x30,
+                (n + 8) as u8,
+                0x30,
+                (n + 6) as u8,
+                0xa0,
+                (n + 4) as u8,
+                0xa0,
+                (n + 2) as u8,
+                0x86,
+                n as u8
+            ]
+        );
+        assert_eq!(&der[10..], url.as_bytes());
+        for bad in [
+            "https://crl.lab.invalid/crl/x.crl",
+            "ldap://crl.lab.invalid/x",
+            "http:///crl/x.crl",
+            "http://user@crl.lab.invalid/x.crl",
+            "http://crl.lab.invalid/x.crl#frag",
+            "http://crl.lab.invalid/a b.crl",
+            "http://crl.lab.invalid/\u{e9}.crl",
+        ] {
+            assert_eq!(
+                crl_distribution_points(bad),
+                Err(ExtensionError::InvalidDistributionPoint),
+                "{bad}"
+            );
+        }
+        let long = format!("http://crl.lab.invalid/{}", "a".repeat(2100));
+        assert!(crl_distribution_points(&long).is_err());
     }
 }

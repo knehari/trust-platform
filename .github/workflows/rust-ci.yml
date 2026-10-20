@@ -254,12 +254,14 @@ jobs:
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test lab_policy_gate --features postgres-store,lab-software --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
-            TRUST_CRL_EXPORT_DIR="$RUNNER_TEMP/stored-crl" \
+            TRUST_CRL_EXPORT_DIR="$RUNNER_TEMP/stored-crl" TRUST_CDP_EXPORT_DIR="$RUNNER_TEMP/cdp" \
             cargo test -p trust-pki-core --test revocation_crl_postgres --features postgres-store,lab-software --locked
           # OpenSSL checks the CRLs and leaves exactly as persisted in PostgreSQL.
           bash tests/crl_openssl_lab.sh "$RUNNER_TEMP/stored-crl"
           # The distribution point serves those CRLs and refuses an altered one.
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_distribution.sh
+          # OpenSSL follows the CDP in issued certificates to that distribution point.
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_distribution_point_e2e.sh "$RUNNER_TEMP/cdp"
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test policy_decisions --features postgres-store,lab-software --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test audit_chain_postgres --features postgres-store --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test signed_status_change_postgres --features postgres-store,lab-software --locked

@@ -19,7 +19,7 @@ use trust_pki_core::{
         RevocationStoreError,
     },
     serial::SerialNumber,
-    x509_extensions::ApprovedPolicyBinding,
+    x509_extensions::{crl_distribution_points, crl_distribution_url, ApprovedPolicyBinding},
 };
 use trust_pki_crypto::SignatureAlgorithm;
 use trust_pki_policy::{AuthenticatedPrincipal, IssuanceRequest, PolicyEngine, StaticPolicy};
@@ -120,6 +120,18 @@ fn issue_leaf(
     ca_id: &str,
     n: u32,
 ) -> SerialNumber {
+    issue_leaf_with(db, ca, ca_id, n, None)
+}
+
+/// Like `issue_leaf`; the verifier requires `crl_distribution_point` when
+/// the CA was configured with one.
+fn issue_leaf_with(
+    db: &mut PgIssuanceStore,
+    ca: &mut EphemeralLabCa,
+    ca_id: &str,
+    n: u32,
+    crl_distribution_point: Option<&str>,
+) -> SerialNumber {
     let (csr, authorization, binding) = context();
     let request = db
         .create_request(
@@ -162,6 +174,10 @@ fn issue_leaf(
         binding,
         "api.lab.invalid".into(),
     );
+    let verifier = match crl_distribution_point {
+        Some(url) => verifier.with_crl_distribution_point(url),
+        None => verifier,
+    };
     let der = issue_once(db, ca, &LabCertificateAssembler, &verifier, &plan).unwrap();
     assert_eq!(
         Certificate::from_der(&der)
@@ -1752,4 +1768,90 @@ fn officer_credentials_compare_keys_as_curve_points() {
         .unwrap()
         .get(0);
     assert_eq!(status, "REMOVED");
+}
+
+/// Issued certificates carry the CA's CRL distribution point (RFC 5280
+/// 4.2.1.13): one revoked and one valid leaf, a stored CRL covering the
+/// revocation. With TRUST_CDP_EXPORT_DIR set, root.der, revoked.der,
+/// valid.der and ca_id are written for tests/crl_distribution_point_e2e.sh,
+/// where OpenSSL follows the URL to the crl_distribution binary.
+#[test]
+fn issued_certificates_point_relying_parties_to_the_crl() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let base = env::var("TRUST_CDP_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:18083".into());
+    let ca_id = fresh_ca(&url);
+    let cdp = crl_distribution_url(&base, &ca_id);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    ca.set_crl_distribution_point(&cdp).unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let revoked = issue_leaf_with(&mut issuance, &mut ca, &ca_id, 1, Some(&cdp));
+    let valid = issue_leaf_with(&mut issuance, &mut ca, &ca_id, 2, Some(&cdp));
+
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &revoked,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+    let reservation = store
+        .reserve_crl(&ca_id, "crl-operator", "crl-cdp-op")
+        .unwrap();
+    let plan = CrlPlan {
+        reservation: &reservation,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "crl-cdp-op",
+    };
+    crl_once(
+        &mut store,
+        &mut ca,
+        &LabCrlAssembler,
+        &LabCrlVerifier::new(root.clone()),
+        &plan,
+    )
+    .unwrap();
+
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let expected = crl_distribution_points(&cdp).unwrap();
+    let mut stored = Vec::new();
+    for serial in [&revoked, &valid] {
+        let der: Vec<u8> = reader
+            .query_one(
+                "SELECT certificate_der FROM certificate
+                 WHERE ca_id = $1::text::uuid AND serial_der_content = $2",
+                &[&ca_id, &serial.as_der_content()],
+            )
+            .unwrap()
+            .get(0);
+        let cert = Certificate::from_der(&der).unwrap();
+        let points: Vec<_> = cert
+            .tbs_certificate
+            .extensions
+            .iter()
+            .flatten()
+            .filter(|e| e.extn_id.to_string() == "2.5.29.31")
+            .collect();
+        assert_eq!(points, vec![&expected], "stored leaf carries the CDP");
+        stored.push(der);
+    }
+    if let Ok(dir) = env::var("TRUST_CDP_EXPORT_DIR") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("root.der"), root.to_der().unwrap()).unwrap();
+        std::fs::write(dir.join("revoked.der"), &stored[0]).unwrap();
+        std::fs::write(dir.join("valid.der"), &stored[1]).unwrap();
+        std::fs::write(dir.join("ca_id"), &ca_id).unwrap();
+    }
 }

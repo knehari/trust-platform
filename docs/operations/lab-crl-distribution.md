@@ -42,7 +42,22 @@ TRUST_CRL_BIND=127.0.0.1:8082 \
 The database connection uses the lab `NoTls` adapter; run it only against a
 loopback or private lab database.
 
-Issued certificates do not carry a CRL distribution points extension yet.
+Issued certificates name it in a cRLDistributionPoints extension (RFC 5280
+4.2.1.13) when the lab CA is configured with
+`EphemeralLabCa::set_crl_distribution_point(&x509_extensions::crl_distribution_url(base, ca_id))`.
+The extension is non-critical and holds one distribution point whose fullName
+is one plain `http://` URI. HTTPS is refused: it would make revocation
+checking depend on another certificate's revocation status. The independent
+`LabX509Verifier` requires exactly the approved URL
+(`with_crl_distribution_point`) and refuses a certificate carrying a
+distribution point it was not told to expect. The configuration is
+per-process (lab CA); persisting it per CA is open.
+
+`tests/crl_distribution_point_e2e.sh` lets OpenSSL (`verify -crl_check
+-crl_download`) follow the URL in issued certificates to this binary: the
+revoked leaf is refused and the valid one accepted. OpenSSL 3.0 can spin when
+a distribution point refuses connections, so the script runs it under a
+timeout.
 Covered by the unit tests in the binary and by `tests/crl_distribution.sh`,
 which checks the served bytes against the database, verifies them with
 OpenSSL and tampers with the stored CRL.

@@ -117,6 +117,8 @@ pub struct EphemeralLabCa {
     root_certificate: Certificate,
     serials: InMemorySerialReservations,
     issuer_key_id: [u8; 20],
+    /// cRLDistributionPoints added to every leaf, when configured.
+    crl_distribution_point: Option<Extension>,
 }
 
 impl EphemeralLabCa {
@@ -171,7 +173,19 @@ impl EphemeralLabCa {
             root_certificate,
             serials: InMemorySerialReservations::default(),
             issuer_key_id,
+            crl_distribution_point: None,
         })
+    }
+
+    /// Leaves issued from now on carry this CRL distribution point
+    /// (`x509_extensions::crl_distribution_points`: one plain `http://` URI).
+    /// Without it, leaves carry none, as before.
+    pub fn set_crl_distribution_point(&mut self, url: &str) -> Result<(), LabCaError> {
+        self.crl_distribution_point = Some(
+            x509_extensions::crl_distribution_points(url)
+                .map_err(|_| LabCaError::InvalidProfile)?,
+        );
+        Ok(())
     }
 
     pub fn root_certificate(&self) -> &Certificate {
@@ -253,18 +267,23 @@ impl EphemeralLabCa {
             subject_public_key_info: csr.subject_public_key().clone(),
             issuer_unique_id: None,
             subject_unique_id: None,
-            extensions: Some(vec![
-                extension(BASIC_CONSTRAINTS_OID, true, &bc)?,
-                extension(KEY_USAGE_OID, true, &ku)?,
-                extension(EXTENDED_KEY_USAGE_OID, false, &eku)?,
-                extension(SUBJECT_ALT_NAME_OID, false, &san)?,
-                x509_extensions::subject_key_identifier(&subject_key_id)
-                    .map_err(|_| LabCaError::InvalidCertificate)?,
-                x509_extensions::authority_key_identifier(&self.issuer_key_id)
-                    .map_err(|_| LabCaError::InvalidCertificate)?,
-                x509_extensions::certificate_policies(approved_policy)
-                    .map_err(|_| LabCaError::InvalidProfile)?,
-            ]),
+            extensions: Some(
+                vec![
+                    extension(BASIC_CONSTRAINTS_OID, true, &bc)?,
+                    extension(KEY_USAGE_OID, true, &ku)?,
+                    extension(EXTENDED_KEY_USAGE_OID, false, &eku)?,
+                    extension(SUBJECT_ALT_NAME_OID, false, &san)?,
+                    x509_extensions::subject_key_identifier(&subject_key_id)
+                        .map_err(|_| LabCaError::InvalidCertificate)?,
+                    x509_extensions::authority_key_identifier(&self.issuer_key_id)
+                        .map_err(|_| LabCaError::InvalidCertificate)?,
+                    x509_extensions::certificate_policies(approved_policy)
+                        .map_err(|_| LabCaError::InvalidProfile)?,
+                ]
+                .into_iter()
+                .chain(self.crl_distribution_point.clone())
+                .collect(),
+            ),
         };
 
         Ok(tbs)
@@ -403,6 +422,74 @@ mod tests {
         let from_binding = x509_extensions::certificate_policies(&binding).unwrap();
         assert_eq!(policy_extension, &from_binding);
         assert!(!policy_extension.critical);
+    }
+
+    /// Leaves carry the configured CRL distribution point; the independent
+    /// verifier accepts exactly the approved one and refuses a leaf with a
+    /// distribution point it was not told to expect, or without one.
+    #[test]
+    fn crl_distribution_point_is_issued_and_verified_exactly() {
+        use crate::lab_x509_verifier::LabX509Verifier;
+        use crate::orchestrator::{CertificateVerifier, IssuancePlan};
+        let (csr, approval) = authorized();
+        let binding = approved_test_policy();
+        let url = "http://127.0.0.1:18083/crl/5eedc0de-0000-4000-8000-000000000031.crl";
+        let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        assert!(matches!(
+            ca.set_crl_distribution_point("https://crl.lab.invalid/x.crl"),
+            Err(LabCaError::InvalidProfile)
+        ));
+        let plain_serial = SerialBytes::from_positive_der_content(&[0x07]).unwrap();
+        let plain = ca
+            .issue_leaf(&csr, &approval, &plain_serial, &binding)
+            .unwrap();
+        ca.set_crl_distribution_point(url).unwrap();
+        let serial = SerialBytes::from_positive_der_content(&[0x08]).unwrap();
+        let leaf = ca.issue_leaf(&csr, &approval, &serial, &binding).unwrap();
+        let extensions = leaf.tbs_certificate.extensions.as_ref().unwrap();
+        assert_eq!(extensions.len(), 8);
+        assert_eq!(
+            extensions.last().unwrap(),
+            &x509_extensions::crl_distribution_points(url).unwrap()
+        );
+        let check = |cert: &Certificate, expected: Option<&str>| {
+            let der = cert.to_der().unwrap();
+            let tbs = cert.tbs_certificate.to_der().unwrap();
+            let plan = IssuancePlan {
+                ca_id: "ca",
+                request_id: "request",
+                actor_id: "actor",
+                signer_key_ref: "ephemeral-lab-root",
+                policy_revision: "v1",
+                operation_ref: "op",
+                serial_der: cert.tbs_certificate.serial_number.as_bytes(),
+                tbs_der: &tbs,
+            };
+            let verifier = LabX509Verifier::new(
+                ca.root_certificate().clone(),
+                binding.clone(),
+                "api.lab.invalid".to_owned(),
+            );
+            let verifier = match expected {
+                Some(url) => verifier.with_crl_distribution_point(url),
+                None => verifier,
+            };
+            verifier.verify(&plan, &der).is_ok()
+        };
+        assert!(check(&leaf, Some(url)));
+        assert!(check(&plain, None));
+        assert!(
+            !check(&leaf, None),
+            "unexpected distribution point accepted"
+        );
+        assert!(
+            !check(&plain, Some(url)),
+            "missing distribution point accepted"
+        );
+        assert!(
+            !check(&leaf, Some("http://127.0.0.1:18083/crl/other.crl")),
+            "another distribution point accepted"
+        );
     }
 
     #[test]
