@@ -115,10 +115,19 @@ mod tests {
         persisted: Option<([u8; 32], [u8; 32], Vec<u8>)>,
         intent_calls: u32,
         intent_tbs: Option<[u8; 32]>,
+        fail_uncertain: bool,
+        operations: Vec<&'static str>,
+    }
+
+    /// Records which journal step saw which operation reference.
+    fn seen(journal: &mut FakeJournal, step: &'static str, plan: &CrlPlan<'_>) {
+        journal.operations.push(step);
+        assert_eq!(plan.operation_ref, "op", "{step} got another operation_ref");
     }
 
     impl CrlJournal for FakeJournal {
-        fn record_intent(&mut self, _p: &CrlPlan<'_>, d: &[u8; 32]) -> Result<(), CrlError> {
+        fn record_intent(&mut self, p: &CrlPlan<'_>, d: &[u8; 32]) -> Result<(), CrlError> {
+            seen(self, "intent", p);
             self.intent_calls += 1;
             self.intent_tbs = Some(*d);
             if self.fail_intent {
@@ -126,17 +135,22 @@ mod tests {
             }
             Ok(())
         }
-        fn mark_uncertain(&mut self, _p: &CrlPlan<'_>) -> Result<(), CrlError> {
+        fn mark_uncertain(&mut self, p: &CrlPlan<'_>) -> Result<(), CrlError> {
+            seen(self, "uncertain", p);
             self.uncertain_calls += 1;
+            if self.fail_uncertain {
+                return Err(CrlError::JournalFailure);
+            }
             Ok(())
         }
         fn persist_verified(
             &mut self,
-            _p: &CrlPlan<'_>,
+            p: &CrlPlan<'_>,
             tbs: &[u8; 32],
             crl_hash: &[u8; 32],
             der: &[u8],
         ) -> Result<(), CrlError> {
+            seen(self, "persist", p);
             if self.fail_persist {
                 return Err(CrlError::PersistenceFailure);
             }
@@ -150,10 +164,12 @@ mod tests {
         calls: u32,
         fail: bool,
         signed: Vec<u8>,
+        operation_ref: String,
     }
     impl ExternalSigner for FakeSigner {
-        fn sign_once(&mut self, _k: &str, _o: &str, t: &[u8]) -> Result<Vec<u8>, IssueError> {
+        fn sign_once(&mut self, _k: &str, o: &str, t: &[u8]) -> Result<Vec<u8>, IssueError> {
             self.calls += 1;
+            self.operation_ref = o.to_owned();
             self.signed = t.to_vec();
             if self.fail {
                 Err(IssueError::SigningFailure)
@@ -401,5 +417,57 @@ mod tests {
         assert_eq!(result, Err(CrlError::Encoding));
         assert_eq!(journal.intent_calls, 0);
         assert_eq!(signer.calls, 0);
+    }
+
+    /// The plan's operation reference reaches every journal step and the
+    /// signer (the store binds intent, uncertainty and storage to it).
+    #[test]
+    fn operation_ref_reaches_journal_and_signer() {
+        let r = reservation();
+        let issuer = issuer();
+        let mut journal = FakeJournal::default();
+        let mut signer = FakeSigner::default();
+        crl_once(
+            &mut journal,
+            &mut signer,
+            &Assembler(true),
+            &Verifier(true),
+            &plan(&r, &issuer, "op"),
+        )
+        .unwrap();
+        assert_eq!(journal.operations, ["intent", "persist"]);
+        assert_eq!(signer.operation_ref, "op");
+    }
+
+    /// mark_uncertain is best effort: when it fails too, the original error
+    /// is returned and nothing is persisted (recovery scans durable intents).
+    #[test]
+    fn failing_mark_uncertain_keeps_the_original_error() {
+        let r = reservation();
+        let issuer = issuer();
+        for (sign_fail, ver_fail, expected) in [
+            (true, false, CrlError::SigningFailure),
+            (false, true, CrlError::VerificationFailure),
+        ] {
+            let mut journal = FakeJournal {
+                fail_uncertain: true,
+                ..Default::default()
+            };
+            let mut signer = FakeSigner {
+                fail: sign_fail,
+                ..Default::default()
+            };
+            let result = crl_once(
+                &mut journal,
+                &mut signer,
+                &Assembler(true),
+                &Verifier(!ver_fail),
+                &plan(&r, &issuer, "op"),
+            );
+            assert_eq!(result, Err(expected.clone()));
+            assert_eq!(journal.operations, ["intent", "uncertain"], "{expected:?}");
+            assert!(journal.persisted.is_none(), "{expected:?}");
+            assert_eq!(signer.calls, 1, "{expected:?}");
+        }
     }
 }
