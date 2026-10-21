@@ -109,6 +109,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
     - the "sealed" credential is a WebAuthn key whose custody is procedural, not enforced;
     - the custodian was a free label in 0045; since 0046 it is a person (`holder_person_id`) who may hold no active officer or admin credential on the CA, in either order of enrolment, so the emergency key cannot enrol an admin key for its custodian. The person identifier is still caller-supplied until the IAM decision;
     - "lost" means the DBA removed the keys (`remove_ca_admin_credential`), since the database cannot tell a lost key from an idle one.
+- **Concurrent challenge consumption (evidence item below):** `concurrent_answers_consume_a_status_challenge_once` and `concurrent_answers_consume_an_admin_challenge_once` answer one approval challenge twice at once, from two sessions with two valid assertions. The second answer passes the Rust checks, because the first is not committed yet. It waits on the database locks and is refused, and one CHECKER signature is stored. Mutation analysis shows three independent layers: the functions' row locks ("already used"); with them removed, the challenge guard trigger ("consumed once"); with that also disabled, the change-status check ("closed change"). `concurrent_breakglass_uses_cannot_exceed_two_admin_keys` covers the break-glass CA lock.
 - **Not yet:**
   - the on-call rota (section 6);
   - attestation policy.

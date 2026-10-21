@@ -2004,20 +2004,7 @@ fn concurrent_breakglass_uses_cannot_exceed_two_admin_keys() {
             )
         }
     });
-    let waiting = (0..100).any(|_| {
-        let waiting: i64 = owner
-            .query_one(
-                "SELECT count(*) FROM pg_stat_activity
-                 WHERE application_name = $1 AND wait_event_type = 'Lock'",
-                &[&format!("breakglass-racer-{ca}")],
-            )
-            .unwrap()
-            .get(0);
-        if waiting == 0 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        waiting > 0
-    });
+    let waiting = waits_for_lock(&mut owner, &format!("breakglass-racer-{ca}"));
     transaction.commit().unwrap();
     let outcome = racer.join().unwrap();
     assert!(
@@ -2034,4 +2021,219 @@ fn concurrent_breakglass_uses_cannot_exceed_two_admin_keys() {
         .unwrap()
         .get(0);
     assert_eq!(active, 2);
+}
+
+/// True once a session named `application_name` waits on a lock (polled
+/// for up to 10 seconds).
+fn waits_for_lock(owner: &mut Client, application_name: &str) -> bool {
+    (0..100).any(|_| {
+        let waiting: i64 = owner
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE application_name = $1 AND wait_event_type = 'Lock'",
+                &[&application_name],
+            )
+            .unwrap()
+            .get(0);
+        if waiting == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        waiting > 0
+    })
+}
+
+/// ADR-0007 evidence "concurrency tests for challenge consumption": a
+/// checker's approval challenge answered twice at once (two valid
+/// assertions, two sessions) is consumed once. The second answer passes the
+/// Rust core's checks (the first is not committed yet), waits for the
+/// database locks, then is refused; one CHECKER signature is stored.
+#[test]
+fn concurrent_answers_consume_a_status_challenge_once() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let change = lab.signed_proposal();
+    let challenge = challenge_for(&mut lab, &change);
+    let digest = lab
+        .officer
+        .signed_challenge(&challenge)
+        .unwrap()
+        .digest()
+        .unwrap();
+    let (data, client, signature) = lab.checker.sign(&digest);
+    let second = lab.checker.sign(&digest);
+    let officer_url = url_as(&url, "trust_revocation_officer_api");
+    let mut open = Client::connect(&officer_url, NoTls).unwrap();
+    let mut transaction = open.transaction().unwrap();
+    transaction
+        .query_one(
+            "SELECT approve_signed_status_change($1::text::uuid, $2, $3, $4, $5)::text",
+            &[
+                &challenge,
+                &lab.checker_credential,
+                &data,
+                &client,
+                &signature,
+            ],
+        )
+        .unwrap();
+    let name = format!("status-racer-{change}");
+    let racer = std::thread::spawn({
+        let url = format!("{officer_url}&application_name={name}");
+        let (challenge, credential) = (challenge.clone(), lab.checker_credential.clone());
+        move || {
+            let (data, client, signature) = second;
+            PgRevocationStore::connect_lab(&url).unwrap().submit_signed(
+                &challenge,
+                &credential,
+                &Assertion {
+                    authenticator_data: &data,
+                    client_data_json: &client,
+                    signature_der: &signature,
+                },
+                &RP,
+            )
+        }
+    });
+    let waiting = waits_for_lock(&mut owner, &name);
+    transaction.commit().unwrap();
+    let outcome = racer.join().unwrap();
+    assert!(waiting, "the second answer did not wait: {outcome:?}");
+    assert!(
+        matches!(outcome, Err(RevocationStoreError::Database(_))),
+        "{outcome:?}"
+    );
+    let row = owner
+        .query_one(
+            "SELECT (SELECT count(*) FROM status_change_signature
+                     WHERE change_id = $1::text::uuid AND role = 'CHECKER'),
+                    (SELECT status FROM certificate_status_change
+                     WHERE change_id = $1::text::uuid)",
+            &[&change],
+        )
+        .unwrap();
+    assert_eq!(
+        (row.get::<_, i64>(0), row.get::<_, String>(1)),
+        (1, "APPROVED".to_owned())
+    );
+    lab.officer.reverify_signed_change(&change, &RP).unwrap();
+}
+
+/// The same for a CA-admin approval challenge (migration 0037).
+#[test]
+fn concurrent_answers_consume_an_admin_challenge_once() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (mut admin_a, mut admin_b) = (Authenticator::new(), Authenticator::new());
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id) = (credential(3), credential(4));
+    boot.enroll_admin_credential(
+        &ca,
+        &a_id,
+        &ADMIN_A,
+        "person-admin-a",
+        &admin_a.public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&grant),
+    )
+    .unwrap();
+    let challenge = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap();
+    let digest = lab
+        .admin
+        .admin_challenge(&challenge)
+        .unwrap()
+        .claim
+        .digest();
+    let (data, client, signature) = admin_b.sign(&digest);
+    let second = admin_b.sign(&digest);
+    let admin_url = url_as(&url, "trust_ca_admin");
+    let mut open = Client::connect(&admin_url, NoTls).unwrap();
+    let mut transaction = open.transaction().unwrap();
+    transaction
+        .execute(
+            "SELECT approve_signed_admin_change($1::text::uuid, $2, $3, $4, $5)",
+            &[&challenge, &b_id, &data, &client, &signature],
+        )
+        .unwrap();
+    let name = format!("admin-racer-{change}");
+    let racer = std::thread::spawn({
+        let url = format!("{admin_url}&application_name={name}");
+        let (challenge, b_id) = (challenge.clone(), b_id.clone());
+        move || {
+            let (data, client, signature) = second;
+            PgRevocationStore::connect_lab(&url)
+                .unwrap()
+                .submit_signed_admin(
+                    &challenge,
+                    &b_id,
+                    &Assertion {
+                        authenticator_data: &data,
+                        client_data_json: &client,
+                        signature_der: &signature,
+                    },
+                    &RP,
+                    None,
+                )
+        }
+    });
+    let waiting = waits_for_lock(&mut owner, &name);
+    transaction.commit().unwrap();
+    let outcome = racer.join().unwrap();
+    assert!(waiting, "the second answer did not wait: {outcome:?}");
+    assert!(
+        matches!(outcome, Err(RevocationStoreError::Database(_))),
+        "{outcome:?}"
+    );
+    let row = owner
+        .query_one(
+            "SELECT (SELECT count(*) FROM ca_admin_signature
+                     WHERE family = 'CA_ADMIN' AND change_id = $1::text::uuid
+                       AND role = 'CHECKER'),
+                    (SELECT status FROM ca_admin_change WHERE change_id = $1::text::uuid)",
+            &[&change],
+        )
+        .unwrap();
+    assert_eq!(
+        (row.get::<_, i64>(0), row.get::<_, String>(1)),
+        (1, "APPROVED".to_owned())
+    );
+    lab.admin
+        .reverify_admin_change(AdminFamily::CaAdmin, &change, &RP)
+        .unwrap();
 }
