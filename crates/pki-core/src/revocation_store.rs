@@ -71,6 +71,10 @@ pub enum SignedStep {
     Reject,
     /// The maker withdraws a proposal (signed, migration 0039).
     Withdraw,
+    /// The CA's emergency key enrols one admin key (migration 0045).
+    BreakGlass,
+    /// A CA admin's signed review of a break-glass use (migration 0045).
+    Review,
 }
 
 /// The two families of CA-administration changes (0024, 0028).
@@ -199,6 +203,8 @@ impl AdminChange<'_> {
 pub enum EvidenceFamily {
     StatusChange,
     Admin(AdminFamily),
+    /// A break-glass use and its reviews (0045); `change_id` is the use.
+    BreakGlass,
 }
 
 /// The result of re-verifying one signed change offline (0041).
@@ -239,6 +245,21 @@ pub struct AdminChallenge {
     pub actor_issuer: String,
     pub actor_subject: String,
     pub consumed: bool,
+}
+
+/// A break-glass enrolment of a CA-admin key (migration 0045). It stays
+/// open, and housekeeping alerts, until two other admins have reviewed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakGlassUse {
+    pub use_id: String,
+    pub admin_credential_id: Vec<u8>,
+    pub admin_issuer: String,
+    pub admin_subject: String,
+    pub used_at_unix: i64,
+    pub review_by_unix: i64,
+    pub reviews: i64,
+    pub reviewed: bool,
+    pub overdue: bool,
 }
 
 /// A precautionary hold still awaiting its dual-controlled revocation or
@@ -484,6 +505,10 @@ pub struct CrlHousekeepingReport {
     /// Precautionary holds past their confirmation deadline (0036) without
     /// a dual-controlled revocation or release.
     pub overdue_precautionary_holds: i64,
+    /// Break-glass uses (0045) not yet reviewed by two other admins, and
+    /// those of them past their review deadline.
+    pub open_breakglass_uses: i64,
+    pub overdue_breakglass_uses: i64,
     /// Database clock against the Rust core's clock (ADR-0006 condition 6).
     pub clock: ClockReading,
     pub clock_within_bound: bool,
@@ -497,6 +522,7 @@ impl CrlHousekeepingReport {
             || self.crl_due
             || self.overdue_changes > 0
             || self.overdue_precautionary_holds > 0
+            || self.open_breakglass_uses > 0
             || !self.clock_within_bound
     }
 }
@@ -945,6 +971,10 @@ impl PgRevocationStore {
             SignedStep::Approve => "approve_signed_status_change",
             SignedStep::Precaution => "apply_precautionary_hold",
             SignedStep::Reject | SignedStep::Withdraw => "close_signed_status_change",
+            // Break-glass steps are CA-admin claims, never status changes.
+            SignedStep::BreakGlass | SignedStep::Review => {
+                return Err(RevocationStoreError::InconsistentResult)
+            }
         };
         self.client.query_one(
             &format!("SELECT {function}($1::text::uuid, $2, $3, $4, $5)::text"),
@@ -1075,12 +1105,36 @@ impl PgRevocationStore {
                 EvidenceFamily::Admin(admin) => {
                     self.reverify_admin_evidence(admin, &change_id, rp, pending)
                 }
+                EvidenceFamily::BreakGlass => return Err(RevocationStoreError::InconsistentResult),
             };
             findings.push(EvidenceFinding {
                 family,
                 change_id,
                 result,
             });
+        }
+        let rows = self.client.query(
+            "SELECT use_id::text, role, challenge_id::text, public_key_sec1, person_id,
+                    claim_sha256, authenticator_data, client_data_json, signature_der,
+                    admin_credential_id, admin_issuer, admin_subject, admin_person_id,
+                    admin_public_key_sec1, use_claim_sha256, reviewed
+             FROM breakglass_evidence($1::text::uuid)",
+            &[&ca_id],
+        )?;
+        let mut start = 0;
+        while start < rows.len() {
+            let use_id: String = column(&rows[start], 0)?;
+            let mut end = start;
+            while end < rows.len() && column::<String>(&rows[end], 0)? == use_id {
+                end += 1;
+            }
+            let result = self.reverify_breakglass_use(&use_id, &rows[start..end], rp);
+            findings.push(EvidenceFinding {
+                family: EvidenceFamily::BreakGlass,
+                change_id: use_id,
+                result,
+            });
+            start = end;
         }
         Ok(findings)
     }
@@ -1251,6 +1305,8 @@ impl PgRevocationStore {
             "PROPOSE" => (SignedStep::Propose, "PROPOSE"),
             "APPROVE" => (SignedStep::Approve, "APPROVE"),
             "REJECT" => (SignedStep::Reject, "REJECT"),
+            "BREAK_GLASS" => (SignedStep::BreakGlass, "BREAK_GLASS"),
+            "REVIEW" => (SignedStep::Review, "REVIEW"),
             _ => return Err(RevocationStoreError::InconsistentResult),
         };
         let family = match column::<String>(row, 2)?.as_str() {
@@ -1306,32 +1362,7 @@ impl PgRevocationStore {
         change: Option<&AdminChange<'_>>,
     ) -> Result<String, RevocationStoreError> {
         let challenge = self.admin_challenge(challenge_id)?;
-        let ca_text = hex_uuid(&challenge.claim.ca_id);
-        let rows = self.client.query(
-            "SELECT issuer, subject, public_key_sec1, sign_count, active
-             FROM ca_admin_credential_for($1::text::uuid, $2)",
-            &[&ca_text, &credential_id],
-        )?;
-        let row = rows
-            .first()
-            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
-        let credential = StoredCredential {
-            issuer: column(row, 0)?,
-            subject: column(row, 1)?,
-            public_key_sec1: column(row, 2)?,
-            sign_count: column(row, 3)?,
-            active: column(row, 4)?,
-        };
-        if challenge.consumed
-            || !credential.active
-            || (credential.issuer.as_str(), credential.subject.as_str())
-                != (
-                    challenge.actor_issuer.as_str(),
-                    challenge.actor_subject.as_str(),
-                )
-        {
-            return Err(RevocationStoreError::SignedApprovalRefused);
-        }
+        let credential = self.admin_signer(&challenge, credential_id)?;
         // A proposal must carry exactly the content that was signed.
         let params = match (challenge.purpose, change) {
             (SignedStep::Propose, Some(change)) => {
@@ -1402,6 +1433,319 @@ impl PgRevocationStore {
                     .ok_or(RevocationStoreError::InconsistentResult)
             }
         }
+    }
+
+    /// The active admin key `credential_id` of the challenge's actor, for an
+    /// unconsumed challenge; anything else is refused before verifying.
+    fn admin_signer(
+        &mut self,
+        challenge: &AdminChallenge,
+        credential_id: &[u8],
+    ) -> Result<StoredCredential, RevocationStoreError> {
+        let ca_text = hex_uuid(&challenge.claim.ca_id);
+        let rows = self.client.query(
+            "SELECT issuer, subject, public_key_sec1, sign_count, active
+             FROM ca_admin_credential_for($1::text::uuid, $2)",
+            &[&ca_text, &credential_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        let credential = StoredCredential {
+            issuer: column(row, 0)?,
+            subject: column(row, 1)?,
+            public_key_sec1: column(row, 2)?,
+            sign_count: column(row, 3)?,
+            active: column(row, 4)?,
+        };
+        if challenge.consumed
+            || !credential.active
+            || (credential.issuer.as_str(), credential.subject.as_str())
+                != (
+                    challenge.actor_issuer.as_str(),
+                    challenge.actor_subject.as_str(),
+                )
+        {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        Ok(credential)
+    }
+
+    /// DBA bootstrap of the CA's break-glass key (migration 0045): needs a
+    /// superuser login, never a service. The key is curve-checked and
+    /// canonicalised; the database refuses an officer or admin key.
+    pub fn enroll_breakglass_credential(
+        &mut self,
+        ca_id: &str,
+        credential_id: &[u8],
+        holder_label: &str,
+        public_key_sec1: &[u8],
+    ) -> Result<(), RevocationStoreError> {
+        let key = canonical_officer_key(public_key_sec1)
+            .map_err(RevocationStoreError::InvalidCredential)?;
+        self.client.execute(
+            "SELECT enroll_breakglass_credential($1::text::uuid, $2, $3, $4)",
+            &[&ca_id, &credential_id, &holder_label, &&key[..]],
+        )?;
+        Ok(())
+    }
+
+    /// Asks for a single-use challenge for the break-glass key to enrol the
+    /// admin key in `content` (migration 0045). Refused unless the CA
+    /// requires signed administration and has fewer than two admin keys.
+    pub fn issue_breakglass_challenge(
+        &mut self,
+        breakglass_credential_id: &[u8],
+        content: &CredentialContent<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let (_, digest) =
+            content.reviewed_as(CredentialChangeKind::Enroll, "ENROLL_ADMIN_CREDENTIAL")?;
+        let row = self.client.query_one(
+            "SELECT issue_breakglass_challenge($1::text::uuid, $2, $3, $4)::text",
+            &[
+                &content.ca_id,
+                &breakglass_credential_id,
+                &&digest[..],
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Submits the break-glass enrolment of `content` (the admin key the
+    /// holder reviewed, which must be the signed one). The assertion is
+    /// verified against the claim rebuilt from the stored challenge and the
+    /// enrolled break-glass key before anything is written; the database
+    /// re-checks the rest (migration 0045). Returns the use id.
+    pub fn submit_breakglass(
+        &mut self,
+        challenge_id: &str,
+        breakglass_credential_id: &[u8],
+        assertion: &Assertion<'_>,
+        rp: &RelyingParty<'_>,
+        content: &CredentialContent<'_>,
+    ) -> Result<String, RevocationStoreError> {
+        let challenge = self.admin_challenge(challenge_id)?;
+        let ca_text = hex_uuid(&challenge.claim.ca_id);
+        let rows = self.client.query(
+            "SELECT holder_label, public_key_sec1, sign_count, active
+             FROM breakglass_credential_for($1::text::uuid, $2)",
+            &[&ca_text, &breakglass_credential_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        let holder: String = column(row, 0)?;
+        let key: Vec<u8> = column(row, 1)?;
+        let sign_count: i64 = column(row, 2)?;
+        let active: bool = column(row, 3)?;
+        let (admin_key, digest) =
+            content.reviewed_as(CredentialChangeKind::Enroll, "ENROLL_ADMIN_CREDENTIAL")?;
+        if challenge.purpose != SignedStep::BreakGlass
+            || challenge.consumed
+            || !active
+            || challenge.actor_subject != holder
+            || content.ca_id != ca_text
+            || digest != challenge.claim.content_sha256
+        {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        let stored_count =
+            u32::try_from(sign_count).map_err(|_| RevocationStoreError::InconsistentResult)?;
+        verify_assertion(assertion, rp, &key, &challenge.claim.digest(), stored_count)
+            .map_err(RevocationStoreError::InvalidAssertion)?;
+        let row = self.client.query_one(
+            "SELECT breakglass_enroll_admin_credential($1::text::uuid, $2, $3, $4, $5,
+                                                      $6, $7, $8, $9, $10)::text",
+            &[
+                &challenge_id,
+                &breakglass_credential_id,
+                &assertion.authenticator_data,
+                &assertion.client_data_json,
+                &assertion.signature_der,
+                &content.credential_id,
+                &content.officer.issuer,
+                &content.officer.subject,
+                &content.person_id,
+                &&admin_key[..],
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Asks for a single-use challenge for `reviewer` (a CA admin other than
+    /// the one enrolled) to review a break-glass use (migration 0045).
+    pub fn issue_breakglass_review_challenge(
+        &mut self,
+        use_id: &str,
+        reviewer: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT issue_breakglass_review_challenge($1::text::uuid, $2, $3, $4)::text",
+            &[&use_id, &reviewer.issuer, &reviewer.subject, &ttl_seconds],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Submits a signed review of a break-glass use, verified in the Rust
+    /// core first like any CA-admin signature. Returns true once the use
+    /// has its two reviews.
+    pub fn submit_breakglass_review(
+        &mut self,
+        challenge_id: &str,
+        credential_id: &[u8],
+        assertion: &Assertion<'_>,
+        rp: &RelyingParty<'_>,
+    ) -> Result<bool, RevocationStoreError> {
+        let challenge = self.admin_challenge(challenge_id)?;
+        if challenge.purpose != SignedStep::Review {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        let credential = self.admin_signer(&challenge, credential_id)?;
+        let stored_count = u32::try_from(credential.sign_count)
+            .map_err(|_| RevocationStoreError::InconsistentResult)?;
+        verify_assertion(
+            assertion,
+            rp,
+            &credential.public_key_sec1,
+            &challenge.claim.digest(),
+            stored_count,
+        )
+        .map_err(RevocationStoreError::InvalidAssertion)?;
+        let row = self.client.query_one(
+            "SELECT review_breakglass_use($1::text::uuid, $2, $3, $4, $5)",
+            &[
+                &challenge_id,
+                &credential_id,
+                &assertion.authenticator_data,
+                &assertion.client_data_json,
+                &assertion.signature_der,
+            ],
+        )?;
+        match column::<String>(&row, 0)?.as_str() {
+            "REVIEWED" => Ok(true),
+            "PENDING_SECOND_REVIEW" => Ok(false),
+            _ => Err(RevocationStoreError::InconsistentResult),
+        }
+    }
+
+    /// The CA's break-glass uses, oldest first (migration 0045).
+    pub fn breakglass_uses(
+        &mut self,
+        ca_id: &str,
+    ) -> Result<Vec<BreakGlassUse>, RevocationStoreError> {
+        self.client
+            .query(
+                "SELECT use_id::text, admin_credential_id, admin_issuer, admin_subject,
+                        extract(epoch FROM used_at)::bigint,
+                        extract(epoch FROM review_by)::bigint, reviews, reviewed, overdue
+                 FROM breakglass_uses($1::text::uuid)",
+                &[&ca_id],
+            )?
+            .iter()
+            .map(|row| {
+                Ok(BreakGlassUse {
+                    use_id: column(row, 0)?,
+                    admin_credential_id: column(row, 1)?,
+                    admin_issuer: column(row, 2)?,
+                    admin_subject: column(row, 3)?,
+                    used_at_unix: column(row, 4)?,
+                    review_by_unix: column(row, 5)?,
+                    reviews: column(row, 6)?,
+                    reviewed: column(row, 7)?,
+                    overdue: column(row, 8)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Re-verifies a break-glass use offline (migration 0045): the
+    /// break-glass signature over the claim naming the enrolled admin key,
+    /// and each review over the claim naming the use and its claim, by
+    /// admins other than the enrolled one with distinct keys and persons;
+    /// a reviewed use has exactly two reviews.
+    fn reverify_breakglass_use(
+        &mut self,
+        use_id: &str,
+        rows: &[Row],
+        rp: &RelyingParty<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let mut reviewers: Vec<(Vec<u8>, String)> = Vec::new();
+        let mut uses = 0;
+        let mut reviewed = false;
+        for row in rows {
+            let challenge = self.admin_challenge(&column::<String>(row, 2)?)?;
+            let claim = &challenge.claim;
+            let digest = claim.digest();
+            let key: Vec<u8> = column(row, 3)?;
+            let admin_person: String = column(row, 12)?;
+            let use_claim = hash_column(row, 14)?;
+            reviewed = column(row, 15)?;
+            let content_ok = match (column::<String>(row, 1)?.as_str(), challenge.purpose) {
+                ("BREAK_GLASS", SignedStep::BreakGlass) => {
+                    uses += 1;
+                    let admin_key: Vec<u8> = column(row, 13)?;
+                    let credential_id: Vec<u8> = column(row, 9)?;
+                    let issuer: String = column(row, 10)?;
+                    let subject: String = column(row, 11)?;
+                    let ca_text = hex_uuid(&claim.ca_id);
+                    let content = CredentialContent {
+                        ca_id: &ca_text,
+                        credential_id: &credential_id,
+                        officer: &OfficerIdentity {
+                            issuer: &issuer,
+                            subject: &subject,
+                        },
+                        person_id: &admin_person,
+                        public_key_sec1: &admin_key,
+                    };
+                    let (_, content_digest) = content
+                        .reviewed_as(CredentialChangeKind::Enroll, "ENROLL_ADMIN_CREDENTIAL")?;
+                    claim.change_id.is_none()
+                        && content_digest == claim.content_sha256
+                        && digest == use_claim
+                }
+                ("REVIEW", SignedStep::Review) => {
+                    let person: String = column(row, 4)?;
+                    let distinct = person != admin_person
+                        && reviewers.iter().all(|(k, p)| *k != key && *p != person);
+                    reviewers.push((key.clone(), person));
+                    distinct
+                        && claim.change_id.as_ref().map(hex_uuid).as_deref() == Some(use_id)
+                        && claim.content_sha256 == use_claim
+                }
+                _ => false,
+            };
+            if !content_ok || hash_column(row, 5)? != digest {
+                return Err(RevocationStoreError::SignedApprovalRefused);
+            }
+            let authenticator_data: Vec<u8> = column(row, 6)?;
+            let client_data_json: Vec<u8> = column(row, 7)?;
+            let signature_der: Vec<u8> = column(row, 8)?;
+            verify_assertion(
+                &Assertion {
+                    authenticator_data: &authenticator_data,
+                    client_data_json: &client_data_json,
+                    signature_der: &signature_der,
+                },
+                rp,
+                &key,
+                &digest,
+                0,
+            )
+            .map_err(RevocationStoreError::InvalidAssertion)?;
+        }
+        let complete = uses == 1
+            && if reviewed {
+                reviewers.len() == 2
+            } else {
+                reviewers.len() < 2
+            };
+        complete
+            .then_some(())
+            .ok_or(RevocationStoreError::SignedApprovalRefused)
     }
 
     /// Re-verifies a signed CA-admin change offline: a proposal and an
@@ -1838,7 +2182,9 @@ impl PgRevocationStore {
         let row = self.client.query_one(
             "SELECT crl_due($1::text::uuid),
                     (SELECT count(*) FROM overdue_status_changes($1::text::uuid)),
-                    (SELECT count(*) FROM precautionary_holds($1::text::uuid) WHERE overdue)",
+                    (SELECT count(*) FROM precautionary_holds($1::text::uuid) WHERE overdue),
+                    (SELECT count(*) FROM breakglass_uses($1::text::uuid) WHERE NOT reviewed),
+                    (SELECT count(*) FROM breakglass_uses($1::text::uuid) WHERE overdue)",
             &[&ca_id],
         )?;
         let clock = self.database_clock()?;
@@ -1848,6 +2194,8 @@ impl PgRevocationStore {
             crl_due: column(&row, 0)?,
             overdue_changes: column(&row, 1)?,
             overdue_precautionary_holds: column(&row, 2)?,
+            open_breakglass_uses: column(&row, 3)?,
+            overdue_breakglass_uses: column(&row, 4)?,
             clock,
             clock_within_bound: clock.within(self.max_clock_skew_us),
         })

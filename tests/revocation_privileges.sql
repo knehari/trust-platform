@@ -116,11 +116,40 @@ BEGIN
           'reject_admin_credential_change', 'signed_evidence_index',
           'reject_signed_admin_change', 'ca_admin_reject_unchecked',
           'credential_reject_unchecked', 'admin_credential_reject_unchecked',
-          'pending_admin_changes')
+          'pending_admin_changes', 'enroll_breakglass_credential',
+          'remove_breakglass_credential', 'breakglass_credential_for',
+          'issue_breakglass_challenge', 'breakglass_enroll_admin_credential',
+          'issue_breakglass_review_challenge', 'review_breakglass_use', 'breakglass_uses',
+          'breakglass_evidence')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
     PERFORM pg_temp.must(bad IS NULL, 'service functions without definer settings: ' || coalesce(bad, ''));
+END $t$;
+
+-- -------------------- break-glass (0045): the emergency key is enrolled and
+-- removed by the DBA only; only CA admins use it; readers only read.
+DO $t$
+DECLARE
+    r TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['trust_revocation_officer_api', 'trust_ca_admin',
+                             'trust_crl_operator', 'trust_crl_signer', 'trust_audit_verifier',
+                             'trust_issuance_service', 'trust_policy_admin',
+                             'trust_reconciliation_operator'] LOOP
+        PERFORM pg_temp.must(NOT has_function_privilege(r,
+            'enroll_breakglass_credential(uuid,bytea,text,bytea)', 'EXECUTE')
+            AND NOT has_function_privilege(r, 'remove_breakglass_credential(bytea)', 'EXECUTE')
+            AND NOT has_table_privilege(r, 'ca_breakglass_credential', 'SELECT,INSERT,UPDATE')
+            AND NOT has_table_privilege(r, 'breakglass_use', 'SELECT,INSERT,UPDATE')
+            AND NOT has_table_privilege(r, 'breakglass_review', 'SELECT,INSERT,UPDATE'),
+            r || ' reaches the break-glass registry directly');
+        PERFORM pg_temp.must(has_function_privilege(r,
+            'breakglass_enroll_admin_credential(uuid,bytea,bytea,bytea,bytea,bytea,text,text,text,bytea)',
+            'EXECUTE') = (r = 'trust_ca_admin'), r || ': break-glass use is for CA admins only');
+        PERFORM pg_temp.must(has_function_privilege(r, 'breakglass_evidence(uuid)', 'EXECUTE')
+            = (r = 'trust_audit_verifier'), r || ': break-glass evidence is the auditor''s');
+    END LOOP;
 END $t$;
 
 -- Any function explicitly granted to a capability role runs with definer

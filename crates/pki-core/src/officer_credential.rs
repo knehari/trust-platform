@@ -194,7 +194,7 @@ const STATUS_CHANGE_CLOSE_TAG: &[u8] = b"trust-platform/status-change-close/v1\0
 /// names the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaAdminClaim {
-    /// PROPOSE, APPROVE or REJECT (0042).
+    /// PROPOSE, APPROVE, REJECT (0042), BREAK_GLASS or REVIEW (0045).
     pub step: &'static str,
     pub ca_id: [u8; 16],
     /// None before the CA's first issuer registration.
@@ -217,9 +217,15 @@ const CA_ADMIN_TAG: &[u8] = b"trust-platform/ca-admin/v1\0";
 impl CaAdminClaim {
     /// Fail closed on anything the database would not accept either.
     pub fn validate(&self) -> Result<(), CredentialError> {
+        let breakglass_content =
+            self.family == "ADMIN_CREDENTIAL" && self.kind == "ENROLL_ADMIN_CREDENTIAL";
         let step_ok = match self.step {
             "PROPOSE" => self.change_id.is_none(),
             "APPROVE" | "REJECT" => self.change_id.is_some(),
+            // Break-glass (0045): the emergency key enrols one admin key;
+            // REVIEW is an admin's signed review of that use (change = use).
+            "BREAK_GLASS" => self.change_id.is_none() && breakglass_content,
+            "REVIEW" => self.change_id.is_some() && breakglass_content,
             _ => false,
         };
         let kind_ok = match self.family {
@@ -534,5 +540,47 @@ mod tests {
             without_change.validate(),
             Err(CredentialError::InvalidInput)
         );
+    }
+
+    /// Break-glass claims (0045) only ever enrol an admin key, and a review
+    /// names the use it reviews; neither verifies as another step.
+    #[test]
+    fn breakglass_claims_are_narrow() {
+        let use_claim = CaAdminClaim {
+            step: "BREAK_GLASS",
+            family: "ADMIN_CREDENTIAL",
+            kind: "ENROLL_ADMIN_CREDENTIAL",
+            change_id: None,
+            ..admin_claim()
+        };
+        assert_eq!(use_claim.validate(), Ok(()));
+        let propose = CaAdminClaim {
+            step: "PROPOSE",
+            ..use_claim.clone()
+        };
+        assert_ne!(use_claim.digest(), propose.digest());
+        let review = CaAdminClaim {
+            step: "REVIEW",
+            change_id: Some([9; 16]),
+            ..use_claim.clone()
+        };
+        assert_eq!(review.validate(), Ok(()));
+        for invalid in [
+            CaAdminClaim {
+                kind: "REMOVE_ADMIN_CREDENTIAL",
+                ..use_claim.clone()
+            },
+            CaAdminClaim {
+                family: "CA_ADMIN",
+                kind: "GRANT_OFFICER",
+                ..use_claim.clone()
+            },
+            CaAdminClaim {
+                change_id: None,
+                ..review
+            },
+        ] {
+            assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));
+        }
     }
 }

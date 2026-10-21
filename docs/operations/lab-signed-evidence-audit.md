@@ -12,12 +12,13 @@ TRUST_WEBAUTHN_RP_ID=officer.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://officer.l
 
 - **Connection:** verified TLS 1.3 by default (`TRUST_DATABASE_CA_FILE`). `TRUST_DATABASE_TLS=disable-lab` is the explicit, reported lab opt-out.
 - **Login:** non-privileged, holding only `trust_audit_verifier` (migration 0041). A superuser or owner-member login is refused.
-- **Coverage:** every change of the CA that carries signatures (`signed_evidence_index`). This includes status changes, precautionary holds, signed rejections and withdrawals, CA administration, officer credentials and admin credentials.
+- **Coverage:** every change of the CA that carries signatures (`signed_evidence_index`). This includes status changes, precautionary holds, signed rejections and withdrawals, CA administration, officer credentials and admin credentials. Since 0045 it also covers break-glass uses and their reviews (`breakglass_evidence`, family `break_glass`).
 - **What is checked:** each signature against the enrolled key and the claim rebuilt from its challenge. Complete evidence is required:
   - maker and checker (distinct keys and persons);
   - maker and rejecting checker;
   - maker and own withdrawal;
   - or a single precautionary signature.
+  - for a break-glass use, the emergency signature over the enrolled admin key, plus its reviews by admins other than the enrolled one (distinct keys and persons; exactly two once reviewed).
   
   An open proposal is checked on its maker signature alone.
 - **Output:** one line per change, then `changes=N all_verified=…`.

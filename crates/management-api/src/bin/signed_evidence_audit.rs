@@ -74,6 +74,7 @@ fn run() -> Result<bool, String> {
             EvidenceFamily::Admin(AdminFamily::CaAdmin) => "ca_admin",
             EvidenceFamily::Admin(AdminFamily::Credential) => "officer_credential",
             EvidenceFamily::Admin(AdminFamily::AdminCredential) => "admin_credential",
+            EvidenceFamily::BreakGlass => "break_glass",
         };
         match &finding.result {
             Ok(()) => println!("family={family} change={} verified", finding.change_id),

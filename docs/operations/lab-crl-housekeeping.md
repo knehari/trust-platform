@@ -11,7 +11,10 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    (`quarantine_stale_crl_intents`) as `RECONCILIATION_REQUIRED`. A signature
    may exist for them; see `reconcile_crl` (migration 0021) when the DER is
    still held.
-3. reports `crl_due` and the number of `overdue_status_changes`.
+3. reports `crl_due` and the number of `overdue_status_changes`, overdue
+   precautionary holds, and break-glass uses not yet reviewed by two admins
+   (`open_breakglass_uses`, `overdue_breakglass_uses`, migration 0045). Any
+   of them sets the attention exit status.
 
 It also reads the database clock between two readings of the host clock
 (`clock_skew_us`, `clock_uncertainty_us`, `clock_ok`) and alerts when

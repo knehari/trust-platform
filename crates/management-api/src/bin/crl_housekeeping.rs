@@ -92,13 +92,16 @@ fn run() -> Result<Outcome, String> {
             Ok(report) => {
                 println!(
                     "ca={ca_id} abandoned={} quarantined={} crl_due={} overdue_changes={} \
-                     overdue_precautionary_holds={} clock_skew_us={} clock_uncertainty_us={} \
+                     overdue_precautionary_holds={} open_breakglass_uses={} \
+                     overdue_breakglass_uses={} clock_skew_us={} clock_uncertainty_us={} \
                      clock_ok={}",
                     report.abandoned,
                     report.quarantined,
                     report.crl_due,
                     report.overdue_changes,
                     report.overdue_precautionary_holds,
+                    report.open_breakglass_uses,
+                    report.overdue_breakglass_uses,
                     report.clock.skew_us,
                     report.clock.uncertainty_us,
                     report.clock_within_bound

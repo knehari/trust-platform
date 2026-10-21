@@ -1456,3 +1456,331 @@ fn pending_admin_changes_show_the_signed_content() {
     let denied = lab.officer.pending_admin_changes(&ca).unwrap_err();
     assert_eq!(sqlstate(&denied).as_deref(), Some("42501"));
 }
+
+fn breakglass_submit(
+    store: &mut PgRevocationStore,
+    authenticator: &mut Authenticator,
+    credential_id: &[u8],
+    challenge: &str,
+    content: &CredentialContent<'_>,
+) -> Result<String, RevocationStoreError> {
+    let digest = store.admin_challenge(challenge).unwrap().claim.digest();
+    let (data, client, signature) = authenticator.sign(&digest);
+    store.submit_breakglass(
+        challenge,
+        credential_id,
+        &Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        },
+        &RP,
+        content,
+    )
+}
+
+fn breakglass_review(
+    store: &mut PgRevocationStore,
+    authenticator: &mut Authenticator,
+    credential_id: &[u8],
+    use_id: &str,
+    reviewer: &OfficerIdentity<'_>,
+) -> Result<bool, RevocationStoreError> {
+    let challenge = store
+        .issue_breakglass_review_challenge(use_id, reviewer, 120)
+        .unwrap();
+    let digest = store.admin_challenge(&challenge).unwrap().claim.digest();
+    let (data, client, signature) = authenticator.sign(&digest);
+    store.submit_breakglass_review(
+        &challenge,
+        credential_id,
+        &Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        },
+        &RP,
+    )
+}
+
+/// Migration 0045 (minimal lab break-glass): when a signed-administration
+/// CA has lost its admin keys, a separate DBA-enrolled emergency key may
+/// enrol admin keys again, and nothing else; only while fewer than two
+/// admin keys are active; each use is audited, alerted by housekeeping
+/// until two other admins (distinct keys and persons) have signed a
+/// review, and re-verifies offline.
+#[test]
+fn break_glass_restores_admin_keys_under_review() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (lost_a, lost_b, mut emergency) = (
+        Authenticator::new(),
+        Authenticator::new(),
+        Authenticator::new(),
+    );
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (old_a, old_b, bg_id) = (credential(3), credential(4), credential(20));
+    let old_a_key = lost_a.public_key();
+    boot.enroll_admin_credential(&ca, &old_a, &ADMIN_A, "person-admin-a", &old_a_key)
+        .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &old_b,
+        &ADMIN_B,
+        "person-admin-b",
+        &lost_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id) VALUES ('{ISSUER}', 'admin-c', '{ca}');
+             UPDATE ca_revocation_policy SET signed_admin_required = true WHERE ca_id = '{ca}'"
+        ))
+        .unwrap();
+
+    // The DBA enrols the emergency key; an admin key cannot be one.
+    let reused = boot
+        .enroll_breakglass_credential(&ca, &credential(21), "custodian", &old_a_key)
+        .unwrap_err();
+    assert_eq!(sqlstate(&reused).as_deref(), Some("23514"));
+    boot.enroll_breakglass_credential(&ca, &bg_id, "custodian", &emergency.public_key())
+        .unwrap();
+
+    let (mut admin_a, mut admin_b, mut admin_c) = (
+        Authenticator::new(),
+        Authenticator::new(),
+        Authenticator::new(),
+    );
+    let (a_id, b_id, c_id) = (credential(11), credential(12), credential(13));
+    let (a_key, b_key, c_key) = (
+        admin_a.public_key(),
+        admin_b.public_key(),
+        admin_c.public_key(),
+    );
+    let a_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_id,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &a_key,
+    };
+    let b_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &b_id,
+        officer: &ADMIN_B,
+        person_id: "person-admin-b",
+        public_key_sec1: &b_key,
+    };
+    // Not an emergency while two admin keys are active.
+    let refused = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &a_content, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+
+    // Both admins lose their authenticators; the DBA retires the keys.
+    for id in [&old_a, &old_b] {
+        owner
+            .execute("SELECT remove_ca_admin_credential($1)", &[id])
+            .unwrap();
+    }
+
+    // The emergency key enrols A's new key; substituted content is refused.
+    let challenge = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &a_content, 120)
+        .unwrap();
+    assert!(matches!(
+        breakglass_submit(
+            &mut lab.admin,
+            &mut emergency,
+            &bg_id,
+            &challenge,
+            &b_content
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let use_a = breakglass_submit(
+        &mut lab.admin,
+        &mut emergency,
+        &bg_id,
+        &challenge,
+        &a_content,
+    )
+    .unwrap();
+    // A consumed challenge does not sign twice.
+    assert!(matches!(
+        breakglass_submit(
+            &mut lab.admin,
+            &mut emergency,
+            &bg_id,
+            &challenge,
+            &a_content
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let challenge = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &b_content, 120)
+        .unwrap();
+    // An admin key is not an emergency key.
+    assert!(matches!(
+        breakglass_submit(&mut lab.admin, &mut admin_a, &a_id, &challenge, &b_content).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let use_b = breakglass_submit(
+        &mut lab.admin,
+        &mut emergency,
+        &bg_id,
+        &challenge,
+        &b_content,
+    )
+    .unwrap();
+
+    // Two admin keys again: no further break-glass.
+    let c_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &c_id,
+        officer: &ADMIN_C,
+        person_id: "person-admin-c",
+        public_key_sec1: &c_key,
+    };
+    let refused = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &c_content, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+    // The emergency key signs nothing else: it is no admin credential.
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    assert!(matches!(
+        admin_submit(
+            &mut lab.admin,
+            &mut emergency,
+            &bg_id,
+            &challenge,
+            Some(&grant)
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let used: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM audit_event
+             WHERE ca_id = $1::text::uuid AND event_type = 'ca_admin.breakglass.used'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(used, 2);
+
+    // Housekeeping alerts while the uses are unreviewed; one is overdue
+    // (its deadline moved back by a superuser).
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE breakglass_use DISABLE TRIGGER breakglass_use_guard;
+             UPDATE breakglass_use SET review_by = used_at + interval '1 microsecond'
+             WHERE use_id = '{use_b}';
+             ALTER TABLE breakglass_use ENABLE TRIGGER breakglass_use_guard"
+        ))
+        .unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    let report = operator.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    assert_eq!(
+        (report.open_breakglass_uses, report.overdue_breakglass_uses),
+        (2, 1)
+    );
+    assert!(report.needs_attention());
+
+    // Ordinary dual control works again: A proposes C's key, B approves.
+    let enroll = AdminChange::AdminCredential(CredentialChangeKind::Enroll, &c_content);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &enroll, &ADMIN_A, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&enroll),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::AdminCredential, &change, &ADMIN_B, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
+
+    // Reviews: never by the enrolled admin, never twice by one reviewer.
+    let own = lab
+        .admin
+        .issue_breakglass_review_challenge(&use_a, &ADMIN_A, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&own).as_deref(), Some("23514"));
+    assert!(!breakglass_review(&mut lab.admin, &mut admin_b, &b_id, &use_a, &ADMIN_B).unwrap());
+    let twice = lab
+        .admin
+        .issue_breakglass_review_challenge(&use_a, &ADMIN_B, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&twice).as_deref(), Some("23514"));
+    assert!(breakglass_review(&mut lab.admin, &mut admin_c, &c_id, &use_a, &ADMIN_C).unwrap());
+    assert!(!breakglass_review(&mut lab.admin, &mut admin_a, &a_id, &use_b, &ADMIN_A).unwrap());
+    assert!(breakglass_review(&mut lab.admin, &mut admin_c, &c_id, &use_b, &ADMIN_C).unwrap());
+    let uses = lab.admin.breakglass_uses(&ca).unwrap();
+    assert_eq!(uses.len(), 2);
+    assert!(uses
+        .iter()
+        .all(|u| u.reviewed && u.reviews == 2 && !u.overdue));
+    let report = operator.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    assert_eq!(
+        (report.open_breakglass_uses, report.overdue_breakglass_uses),
+        (0, 0)
+    );
+
+    // The auditor re-verifies both uses; an altered signature is exposed.
+    let mut auditor =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_audit_verifier")).unwrap();
+    let breakglass = |findings: Vec<trust_pki_core::revocation_store::EvidenceFinding>| {
+        findings
+            .into_iter()
+            .filter(|f| f.family == EvidenceFamily::BreakGlass)
+            .map(|f| (f.change_id, f.result))
+            .collect::<Vec<_>>()
+    };
+    let findings = breakglass(auditor.audit_signed_evidence(&ca, &RP).unwrap());
+    assert_eq!(findings.len(), 2);
+    assert!(findings.iter().all(|(_, r)| r.is_ok()), "{findings:?}");
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE breakglass_review DISABLE TRIGGER breakglass_review_append_only;
+             UPDATE breakglass_review
+                SET signature_der = set_byte(signature_der, octet_length(signature_der) - 1,
+                        get_byte(signature_der, octet_length(signature_der) - 1) # 1)
+              WHERE use_id = '{use_b}' AND reviewer_subject = 'admin-c';
+             ALTER TABLE breakglass_review ENABLE TRIGGER breakglass_review_append_only"
+        ))
+        .unwrap();
+    for (use_id, result) in breakglass(auditor.audit_signed_evidence(&ca, &RP).unwrap()) {
+        if use_id == use_b {
+            assert!(matches!(
+                result,
+                Err(RevocationStoreError::InvalidAssertion(_))
+            ));
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+}

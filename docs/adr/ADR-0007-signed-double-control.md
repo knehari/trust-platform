@@ -98,9 +98,19 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
 - **Signed CA-admin rejection (migration 0042):** on a CA with `signed_admin_required`, a pending CA-admin change of any family is rejected only by another admin signing the `ca-admin/v1` claim with step `REJECT` (distinct key and person from the maker). The unsigned rejections are refused, and their bodies are kept as `*_reject_unchecked`.
 - **CA-admin HTTP API (`ca_admin_api`, section 7):** the signed CA-administration flow over HTTP, in its own process with a login holding only `trust_ca_admin` (contract `openapi/ca-admin-v1.yaml`).
 - **Offline audit (migration 0041, section 7):** `trust_audit_verifier` may read every change carrying signatures (`signed_evidence_index`) and the signatures and claims, and nothing that acts. `PgRevocationStore::audit_signed_evidence` and the `signed_evidence_audit` job (management-api binary, verified TLS; exit 3 on any failure) re-verify every change of a CA, an open proposal on its maker signature alone, and report each failure without hiding the others.
+- **Break-glass (migration 0045, section 6; minimal lab version chosen by the owner):**
+  - A separate emergency WebAuthn key per CA (`ca_breakglass_credential`), enrolled and removed by the DBA only and held by a named custodian (`holder_label`). Its key is never an officer or admin key.
+  - Its only power is to enrol one CA-admin key: it signs the `ca-admin/v1` claim with step `BREAK_GLASS` over the 0040 content digest (`ENROLL_ADMIN_CREDENTIAL`). It cannot revoke, issue, grant officers or remove anything, and its claims never verify as another step.
+  - It works only on a CA with `signed_admin_required` and only while fewer than two admin keys are active (checked under the CA lock). The enrolled identity must hold `ca_admin_grant`, and the one-person rule applies.
+  - Each use is recorded with its signature (`breakglass_use`), writes a `ca_admin.breakglass.used` audit event and gets a review deadline (`breakglass_review_hours`, 1-168, default 24).
+  - Two admins other than the enrolled identity, with distinct keys and persons, must each sign a `REVIEW` claim over the use's claim digest. Until then `crl_housekeeping` alerts (`open_breakglass_uses`, `overdue_breakglass_uses`).
+  - `audit_signed_evidence` re-verifies the break-glass and review signatures offline (`breakglass_evidence`, `trust_audit_verifier`).
+  - Deviations from section 6:
+    - the "sealed" credential is a WebAuthn key whose custody is procedural, not enforced;
+    - the custodian is a label, not a person bound to the registry, so the database cannot stop a custodian who is also an admin from enrolling their own key (the two reviews are the control);
+    - "lost" means the DBA removed the keys (`remove_ca_admin_credential`), since the database cannot tell a lost key from an idle one.
 - **Not yet:**
-  - a recovery path when admin keys are lost on a CA with signed administration (break-glass, section 6);
-  - break-glass and the on-call rota (section 6);
+  - the on-call rota (section 6);
   - attestation policy.
 
   The person identifier is whatever the caller supplies until the IAM decision.

@@ -81,7 +81,7 @@ Other endpoints:
 
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
-- break-glass (ADR-0007 section 6);
+- break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side;
 - a browser client.
