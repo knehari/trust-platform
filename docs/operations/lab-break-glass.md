@@ -78,7 +78,10 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
   The offline audit exposes it.
 - There is no on-call rota and no CPS text yet.
 
-Tested by `break_glass_restores_admin_keys_under_review` and
-`breakglass_custodian_is_never_a_signer` in
+Tested by `break_glass_restores_admin_keys_under_review`,
+`breakglass_custodian_is_never_a_signer` and
+`concurrent_breakglass_uses_cannot_exceed_two_admin_keys` (two custodians:
+a second use waits for the CA lock held by an open first use, then is
+refused; removing the lock lets it enrol a third key) in
 `crates/pki-core/tests/signed_status_change_postgres.rs` and by the grant
 invariants in `tests/revocation_privileges.sql`.

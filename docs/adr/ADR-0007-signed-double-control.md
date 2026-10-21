@@ -101,7 +101,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
 - **Break-glass (migration 0045, section 6; minimal lab version chosen by the owner):**
   - A separate emergency WebAuthn key per CA (`ca_breakglass_credential`), enrolled and removed by the DBA only and held by a named custodian (`holder_label`). Its key is never an officer or admin key.
   - Its only power is to enrol one CA-admin key: it signs the `ca-admin/v1` claim with step `BREAK_GLASS` over the 0040 content digest (`ENROLL_ADMIN_CREDENTIAL`). It cannot revoke, issue, grant officers or remove anything, and its claims never verify as another step.
-  - It works only on a CA with `signed_admin_required` and only while fewer than two admin keys are active (checked under the CA lock). The enrolled identity must hold `ca_admin_grant`, and the one-person rule applies.
+  - It works only on a CA with `signed_admin_required` and only while fewer than two admin keys are active (checked under the CA lock); a concurrency test with two custodians shows a second use waiting for the lock and refused). The enrolled identity must hold `ca_admin_grant`, and the one-person rule applies.
   - Each use is recorded with its signature (`breakglass_use`), writes a `ca_admin.breakglass.used` audit event and gets a review deadline (`breakglass_review_hours`, 1-168, default 24).
   - Two admins other than the enrolled identity, with distinct keys and persons, must each sign a `REVIEW` claim over the use's claim digest. Until then `crl_housekeeping` alerts (`open_breakglass_uses`, `overdue_breakglass_uses`).
   - `audit_signed_evidence` re-verifies the break-glass and review signatures offline (`breakglass_evidence`, `trust_audit_verifier`).

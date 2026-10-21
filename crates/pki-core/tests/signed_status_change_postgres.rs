@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::env;
 use trust_pki_core::{
     lab_ca::EphemeralLabCa,
-    officer_credential::CredentialChangeKind,
+    officer_credential::{canonical_officer_key, CredentialChangeKind},
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
     revocation_store::{
         AdminChange, AdminFamily, CredentialContent, EvidenceFamily, OfficerGrantAction,
@@ -1874,4 +1874,164 @@ fn breakglass_custodian_is_never_a_signer() {
         .issue_breakglass_challenge(&bg_id, &content, 120)
         .unwrap();
     breakglass_submit(&mut admin, &mut emergency, &bg_id, &challenge, &content).unwrap();
+}
+
+/// Migration 0045's "fewer than two admin keys" rule holds under
+/// concurrency: with two custodians (two emergency keys), a second use
+/// waits for the CA lock held by a first, still-open use, then is refused.
+/// Without the lock both would read one active key and enrol a third.
+#[test]
+fn concurrent_breakglass_uses_cannot_exceed_two_admin_keys() {
+    let Some(url) = database_url() else { return };
+    let lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    boot.enroll_admin_credential(
+        &ca,
+        &credential(3),
+        &ADMIN_A,
+        "person-admin-a",
+        &Authenticator::new().public_key(),
+    )
+    .unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id) VALUES ('{ISSUER}', 'admin-c', '{ca}');
+             UPDATE ca_revocation_policy SET signed_admin_required = true WHERE ca_id = '{ca}'"
+        ))
+        .unwrap();
+    let (mut first, mut second) = (Authenticator::new(), Authenticator::new());
+    let (first_id, second_id) = (credential(20), credential(21));
+    boot.enroll_breakglass_credential(
+        &ca,
+        &first_id,
+        "custodian-1",
+        "person-custodian-1",
+        &first.public_key(),
+    )
+    .unwrap();
+    boot.enroll_breakglass_credential(
+        &ca,
+        &second_id,
+        "custodian-2",
+        "person-custodian-2",
+        &second.public_key(),
+    )
+    .unwrap();
+
+    let admin_url = url_as(&url, "trust_ca_admin");
+    let mut admin = PgRevocationStore::connect_lab(&admin_url).unwrap();
+    let (b_key, c_key) = (
+        canonical_officer_key(&Authenticator::new().public_key()).unwrap(),
+        canonical_officer_key(&Authenticator::new().public_key()).unwrap(),
+    );
+    let (b_id, c_id) = (credential(12), credential(13));
+    let b_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &b_id,
+        officer: &ADMIN_B,
+        person_id: "person-admin-b",
+        public_key_sec1: &b_key,
+    };
+    let c_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &c_id,
+        officer: &ADMIN_C,
+        person_id: "person-admin-c",
+        public_key_sec1: &c_key,
+    };
+    // Both challenges are admissible: one admin key is active.
+    let first_challenge = admin
+        .issue_breakglass_challenge(&first_id, &b_content, 120)
+        .unwrap();
+    let second_challenge = admin
+        .issue_breakglass_challenge(&second_id, &c_content, 120)
+        .unwrap();
+
+    // The first use runs inside a transaction that stays open.
+    let digest = admin
+        .admin_challenge(&first_challenge)
+        .unwrap()
+        .claim
+        .digest();
+    let (data, client, signature) = first.sign(&digest);
+    let mut open = Client::connect(&admin_url, NoTls).unwrap();
+    let mut transaction = open.transaction().unwrap();
+    transaction
+        .query_one(
+            "SELECT breakglass_enroll_admin_credential($1::text::uuid, $2, $3, $4, $5,
+                                                      $6, $7, $8, $9, $10)::text",
+            &[
+                &first_challenge,
+                &first_id,
+                &data,
+                &client,
+                &signature,
+                &b_id,
+                &ADMIN_B.issuer,
+                &ADMIN_B.subject,
+                &"person-admin-b",
+                &&b_key[..],
+            ],
+        )
+        .unwrap();
+
+    // The second use, from another session, must wait for the CA lock.
+    let racer_url = format!("{admin_url}&application_name=breakglass-racer-{ca}");
+    let racer = std::thread::spawn({
+        let ca = ca.clone();
+        move || {
+            let mut store = PgRevocationStore::connect_lab(&racer_url).unwrap();
+            let content = CredentialContent {
+                ca_id: &ca,
+                credential_id: &c_id,
+                officer: &ADMIN_C,
+                person_id: "person-admin-c",
+                public_key_sec1: &c_key,
+            };
+            breakglass_submit(
+                &mut store,
+                &mut second,
+                &second_id,
+                &second_challenge,
+                &content,
+            )
+        }
+    });
+    let waiting = (0..100).any(|_| {
+        let waiting: i64 = owner
+            .query_one(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE application_name = $1 AND wait_event_type = 'Lock'",
+                &[&format!("breakglass-racer-{ca}")],
+            )
+            .unwrap()
+            .get(0);
+        if waiting == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        waiting > 0
+    });
+    transaction.commit().unwrap();
+    let outcome = racer.join().unwrap();
+    assert!(
+        waiting,
+        "the second use did not wait for the CA lock: {outcome:?}"
+    );
+    assert_eq!(sqlstate(&outcome.unwrap_err()).as_deref(), Some("23514"));
+    let active: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM ca_admin_credential
+             WHERE ca_id = $1::text::uuid AND status = 'ACTIVE'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(active, 2);
 }
