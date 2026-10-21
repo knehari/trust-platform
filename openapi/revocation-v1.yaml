@@ -8,8 +8,9 @@ info:
     offered. The acting officer is the verified access token's issuer and
     subject, never a request field. The token must carry the
     trust-revocation-officer role and the CA in ca_ids; the database still
-    requires the officer grant and an enrolled WebAuthn credential. No
-    production readiness is implied.
+    requires the officer grant and an enrolled WebAuthn credential. Each
+    verified identity may make 60 requests per minute; beyond that every route
+    answers 429 before any database access. No production readiness is implied.
 servers:
   - url: http://127.0.0.1:8083
 security:

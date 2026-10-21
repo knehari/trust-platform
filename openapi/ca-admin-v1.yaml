@@ -9,7 +9,7 @@ info:
     an enrolled WebAuthn key. The acting admin is the verified access token's issuer and
     subject, never a request field. The token must carry the trust-ca-admin role and the
     CA in ca_ids; the database still requires the CA admin grant and an enrolled admin
-    key. No production readiness is implied.
+    key. Each verified identity may make 60 requests per minute; beyond that every route answers 429 before any database access. No production readiness is implied.
 servers:
   - url: http://127.0.0.1:8084
 security:

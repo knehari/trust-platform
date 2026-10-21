@@ -45,6 +45,8 @@ mod auth;
 #[allow(dead_code)]
 #[path = "../database.rs"]
 mod database;
+#[path = "../rate_limit.rs"]
+mod rate_limit;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -83,6 +85,7 @@ struct AppState {
     rp_id: Arc<String>,
     origin: Arc<String>,
     slots: Arc<Semaphore>,
+    limiter: Arc<rate_limit::RateLimiter>,
 }
 
 #[derive(Deserialize)]
@@ -194,18 +197,24 @@ fn hex_uuid(bytes: &[u8; 16]) -> String {
     uuid::Uuid::from_bytes(*bytes).hyphenated().to_string()
 }
 
-async fn officer(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+async fn officer(headers: &HeaderMap, state: &AppState) -> Result<Claims, StatusCode> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let claims = verifier
+    let claims = state
+        .verifier
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     if !claims.roles.iter().any(|role| role == OFFICER_ROLE) {
         return Err(StatusCode::FORBIDDEN);
+    }
+    // Per-identity budget, before any database access.
+    if !state.limiter.allow(&claims.iss, &claims.sub) {
+        write_log(serde_json::json!({"event":"rate_limited"}));
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     Ok(claims)
 }
@@ -329,7 +338,7 @@ async fn precaution_challenge(
     headers: HeaderMap,
     Json(request): Json<PrecautionRequest>,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
@@ -360,7 +369,7 @@ async fn precautionary_holds(
     Path(ca_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
@@ -387,7 +396,7 @@ async fn proposal_challenge(
     headers: HeaderMap,
     Json(request): Json<ProposalRequest>,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
@@ -436,7 +445,7 @@ async fn approval_challenge(
     Path(change_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
@@ -497,7 +506,7 @@ async fn pending_changes(
     Path(ca_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
@@ -532,7 +541,7 @@ async fn close_change(
     headers: HeaderMap,
     reject: bool,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
@@ -566,7 +575,7 @@ async fn close_challenge(
     headers: HeaderMap,
     step: SignedStep,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
@@ -633,7 +642,7 @@ async fn submit_assertion(
     headers: HeaderMap,
     Json(request): Json<AssertionRequest>,
 ) -> Result<Response, StatusCode> {
-    let claims = officer(&headers, &state.verifier).await?;
+    let claims = officer(&headers, &state).await?;
     let challenge_id = canonical_uuid(&challenge_id).ok_or(StatusCode::NOT_FOUND)?;
     let decode = |field: &str| {
         URL_SAFE_NO_PAD
@@ -734,6 +743,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rp_id: Arc::new(rp_id),
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+        limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
     };
     let bind = env::var("TRUST_REVOCATION_BIND").unwrap_or_else(|_| "127.0.0.1:8083".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -820,6 +830,7 @@ mod tests {
             rp_id: Arc::new(RP_ID.into()),
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
         });
         (router, session)
     }
@@ -833,6 +844,7 @@ mod tests {
             rp_id: Arc::new(RP_ID.into()),
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
         })
     }
 
@@ -1537,5 +1549,52 @@ mod tests {
         tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
             .await
             .unwrap();
+    }
+
+    /// One verified identity gets at most REQUESTS_PER_MINUTE requests per
+    /// minute (429 beyond); other identities are unaffected. Counted before
+    /// any database access, so the refusals below never reach it.
+    #[tokio::test]
+    async fn requests_are_rate_limited_per_identity() {
+        let oidc = oidc();
+        let app = app(oidc.verifier.clone(), "postgresql://unused.invalid/none");
+        let path = format!("/v1/cas/{CA}/status-change-challenges");
+        let token = oidc.token("maker", &[OFFICER_ROLE], &[CA]);
+        for _ in 0..60 {
+            assert_eq!(
+                post(
+                    &app,
+                    &path,
+                    Some(&token),
+                    json!({"serial_hex":"zz","action":"REVOKE","reason":1})
+                )
+                .await
+                .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        assert_eq!(
+            post(
+                &app,
+                &path,
+                Some(&token),
+                json!({"serial_hex":"zz","action":"REVOKE","reason":1})
+            )
+            .await
+            .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let other = oidc.token("someone-else", &[OFFICER_ROLE], &[CA]);
+        assert_eq!(
+            post(
+                &app,
+                &path,
+                Some(&other),
+                json!({"serial_hex":"zz","action":"REVOKE","reason":1})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

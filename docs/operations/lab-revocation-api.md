@@ -84,10 +84,12 @@ Other endpoints:
 
 Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
 
+Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);
-- rate limiting beyond 8 concurrent requests;
+- rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
 - TLS termination for the HTTP side;
 - a browser client.
 

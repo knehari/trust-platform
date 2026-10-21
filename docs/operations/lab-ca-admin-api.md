@@ -31,10 +31,12 @@ TRUST_WEBAUTHN_RP_ID=admin.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://admin.lab.i
 
 Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
 
+Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);
-- rate limiting beyond 8 concurrent requests;
+- rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
 - TLS termination for the HTTP side.
 
 For an approval, rejection or review challenge, the change's or use's CA is checked against the token's scope before anything is written (migration 0050): unknown is 404, out of scope 403. The database then checks the admin grant, and the issued challenge's CA is checked again.
