@@ -87,6 +87,7 @@ paths:
         - $ref: '#/components/parameters/CaId'
         - $ref: '#/components/parameters/HistoryCursor'
         - $ref: '#/components/parameters/CertificateCnPrefix'
+        - $ref: '#/components/parameters/CertificateSanDns'
         - $ref: '#/components/parameters/HistoryOrder'
       responses:
         '200':
@@ -158,6 +159,8 @@ paths:
         - $ref: '#/components/parameters/AuditFrom'
         - $ref: '#/components/parameters/AuditUntil'
         - $ref: '#/components/parameters/AuditEventType'
+        - $ref: '#/components/parameters/AuditDecision'
+        - $ref: '#/components/parameters/AuditPolicyVersion'
         - $ref: '#/components/parameters/HistoryOrder'
       responses:
         '200':
@@ -229,6 +232,12 @@ components:
       required: false
       description: Case-insensitive literal CN prefix over the selected CA's full history. Percent, underscore and backslash are escaped as literals. Keep the same prefix on every page.
       schema: { type: string, minLength: 2, maxLength: 255 }
+    CertificateSanDns:
+      in: query
+      name: san_dns
+      required: false
+      description: Exact, case-insensitive ASCII DNS SAN over metadata recorded after independent certificate verification. Historical null SANs do not match. May be combined with cn; keep both filters on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 253, pattern: '^[A-Za-z0-9.*_-]+$' }
     AuditFrom:
       in: query
       name: from
@@ -246,6 +255,18 @@ components:
       name: event_type
       required: false
       description: Exact event type in the selected CA's full audit history.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    AuditDecision:
+      in: query
+      name: decision
+      required: false
+      description: Exact decision in the selected CA's full audit history; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    AuditPolicyVersion:
+      in: query
+      name: policy_version
+      required: false
+      description: Exact non-null policy version in the selected CA's full audit history; keep on each cursor page.
       schema: { type: string, minLength: 1, maxLength: 128 }
     CaCursor:
       in: query
