@@ -271,7 +271,7 @@ components:
         created_at: { type: string, format: date-time }
     Certificate:
       type: object
-      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn]
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
       properties:
         ca_id: { type: string, format: uuid }
         serial_hex: { type: string }
@@ -281,6 +281,9 @@ components:
         signed_at: { type: string, format: date-time }
         published_at: { type: [string, 'null'], format: date-time }
         subject_cn: { type: [string, 'null'], description: Recorded subject CN when available; null for historical or unsupported subjects. Disposable lab fixtures may use synthetic values. }
+        not_before: { type: [string, 'null'], format: date-time, description: Validity start parsed from independently verified certificate DER; null for historical records. }
+        not_after: { type: [string, 'null'], format: date-time, description: Validity end parsed from independently verified certificate DER; null for historical records. }
+        san_dns: { type: [array, 'null'], items: { type: string }, description: DNS SANs parsed from independently verified certificate DER; empty when no DNS SAN exists, null for historical records. }
     AuditEvent:
       type: object
       required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]

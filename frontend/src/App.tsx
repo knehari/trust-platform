@@ -723,8 +723,8 @@ function MetadataDialog({ titleId, title, eyebrow, fields, copyJson, note, onClo
 function CertificateDialog({ certificate, onClose }: { certificate: Certificate; onClose: () => void }) {
   return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
     copyJson={certificateMetadataJson(certificate)}
-    fields={[{ label: 'CN', value: certificate.subject_cn || 'Not recorded' }, { label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
-    note="Database metadata only. Certificate contents and cryptographic validity are not shown or verified here." />;
+    fields={[{ label: 'CN', value: certificate.subject_cn || 'Not recorded' }, { label: 'DNS SAN', value: certificate.san_dns?.length ? certificate.san_dns.join(', ') : certificate.san_dns ? 'None' : 'Not recorded' }, { label: 'VALID FROM', value: displayDate(certificate.not_before) }, { label: 'VALID UNTIL', value: displayDate(certificate.not_after) }, { label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
+    note="Database metadata extracted after certificate verification for new records. Historical records may lack validity and SAN. This view is not a live certificate-path validation." />;
 }
 
 function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {

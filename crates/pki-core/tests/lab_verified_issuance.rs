@@ -129,7 +129,8 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
     let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let row = reader
         .query_one(
-            "SELECT c.certificate_der, si.outcome, c.subject_cn
+            "SELECT c.certificate_der, si.outcome, c.subject_cn,
+                    c.not_before_utc::text, c.not_after_utc::text, c.san_dns
          FROM certificate c JOIN signing_intent si
            ON si.ca_id=c.ca_id AND si.request_id=c.request_id
          WHERE c.request_id=$1::text::uuid",
@@ -142,6 +143,12 @@ fn real_x509_certificate_is_verified_then_persisted_once() {
     assert_eq!(persisted, result);
     assert_eq!(outcome, "CERTIFICATE_STORED");
     assert_eq!(subject_cn.as_deref(), Some("api.lab.invalid"));
+    let not_before: Option<String> = row.get(3);
+    let not_after: Option<String> = row.get(4);
+    let san_dns: Option<Vec<String>> = row.get(5);
+    assert!(not_before.is_some_and(|value| value.starts_with("20")));
+    assert!(not_after.is_some_and(|value| value.starts_with("20")));
+    assert_eq!(san_dns, Some(vec!["api.lab.invalid".to_owned()]));
 
     let replay = issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan);
     assert_eq!(replay, Err(IssueError::ReplayedOrAmbiguousIntent));
