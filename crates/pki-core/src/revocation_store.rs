@@ -67,6 +67,10 @@ pub enum SignedStep {
     Approve,
     /// A single-officer precautionary hold (migration 0036).
     Precaution,
+    /// A checker rejects a proposal (signed, migration 0039).
+    Reject,
+    /// The maker withdraws a proposal (signed, migration 0039).
+    Withdraw,
 }
 
 /// The two families of CA-administration changes (0024, 0028).
@@ -202,6 +206,19 @@ pub struct PrecautionaryHold {
     pub held_at_unix: i64,
     pub confirm_by_unix: i64,
     pub overdue: bool,
+}
+
+impl SignedChallenge {
+    /// The WebAuthn challenge to sign: the claim's digest, or its closing
+    /// digest for a rejection or withdrawal (domain-separated, 0039).
+    pub fn digest(&self) -> Result<[u8; 32], RevocationStoreError> {
+        match self.purpose {
+            SignedStep::Reject => self.claim.closing_digest("REJECT"),
+            SignedStep::Withdraw => self.claim.closing_digest("WITHDRAW"),
+            _ => Ok(self.claim.digest()),
+        }
+        .map_err(|_| RevocationStoreError::InconsistentResult)
+    }
 }
 
 /// A proposed status change waiting for a checker (migration 0034).
@@ -686,6 +703,34 @@ impl PgRevocationStore {
             .collect()
     }
 
+    /// Asks for a single-use challenge to reject (a checker other than the
+    /// maker) or withdraw (the maker) a proposal with a signature
+    /// (migration 0039). `step` is `SignedStep::Reject` or `Withdraw`.
+    pub fn issue_close_challenge(
+        &mut self,
+        change_id: &str,
+        actor: &OfficerIdentity<'_>,
+        step: SignedStep,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let purpose = match step {
+            SignedStep::Reject => "REJECT",
+            SignedStep::Withdraw => "WITHDRAW",
+            _ => return Err(RevocationStoreError::SignedApprovalRefused),
+        };
+        let row = self.client.query_one(
+            "SELECT issue_close_challenge($1, $2::text::uuid, $3, $4, $5)::text",
+            &[
+                &purpose,
+                &change_id,
+                &actor.issuer,
+                &actor.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
     /// The stored challenge and the claim rebuilt from it: what the officer
     /// signs, and what a submission is verified against.
     pub fn signed_challenge(
@@ -706,6 +751,8 @@ impl PgRevocationStore {
             "PROPOSE" => SignedStep::Propose,
             "APPROVE" => SignedStep::Approve,
             "PRECAUTION" => SignedStep::Precaution,
+            "REJECT" => SignedStep::Reject,
+            "WITHDRAW" => SignedStep::Withdraw,
             _ => return Err(RevocationStoreError::InconsistentResult),
         };
         let reason: Option<i16> = column(row, 6)?;
@@ -787,7 +834,7 @@ impl PgRevocationStore {
             assertion,
             rp,
             &credential.public_key_sec1,
-            &challenge.claim.digest(),
+            &challenge.digest()?,
             stored_count,
         )
         .map_err(RevocationStoreError::InvalidAssertion)?;
@@ -795,6 +842,7 @@ impl PgRevocationStore {
             SignedStep::Propose => "propose_signed_status_change",
             SignedStep::Approve => "approve_signed_status_change",
             SignedStep::Precaution => "apply_precautionary_hold",
+            SignedStep::Reject | SignedStep::Withdraw => "close_signed_status_change",
         };
         self.client.query_one(
             &format!("SELECT {function}($1::text::uuid, $2, $3, $4, $5)::text"),
@@ -809,11 +857,13 @@ impl PgRevocationStore {
         Ok(hex_uuid(&challenge.claim.change_id))
     }
 
-    /// Re-verifies the stored evidence of a signed change offline: both
-    /// assertions against the enrolled keys and the claims rebuilt from
-    /// their challenges, with distinct keys and persons (or the single
-    /// signature of a precautionary hold, 0036). Exposes an
-    /// assertion that reached the database without the Rust core.
+    /// Re-verifies the stored evidence of a signed change offline: every
+    /// assertion against its enrolled key and the claim rebuilt from its
+    /// challenge. Complete evidence is a maker and a checker with distinct
+    /// keys and persons, a maker and a rejecting checker (distinct too), a
+    /// maker and their own withdrawal (0039), or the single signature of a
+    /// precautionary hold (0036). Exposes an assertion that reached the
+    /// database without the Rust core.
     pub fn reverify_signed_change(
         &mut self,
         change_id: &str,
@@ -825,8 +875,6 @@ impl PgRevocationStore {
              FROM status_change_signatures($1::text::uuid)",
             &[&change_id],
         )?;
-        // A maker and a checker signature (ordinary change), or a single
-        // precautionary-hold signature (0036); nothing else is evidence.
         if !(1..=2).contains(&rows.len()) {
             return Err(RevocationStoreError::SignedApprovalRefused);
         }
@@ -836,7 +884,7 @@ impl PgRevocationStore {
         for row in &rows {
             let challenge = self.signed_challenge(&column::<String>(row, 1)?)?;
             steps.push(challenge.purpose);
-            let digest = challenge.claim.digest();
+            let digest = challenge.digest()?;
             if hash_column(row, 4)? != digest || hex_uuid(&challenge.claim.change_id) != change_id {
                 return Err(RevocationStoreError::SignedApprovalRefused);
             }
@@ -863,9 +911,10 @@ impl PgRevocationStore {
         }
         let complete = match steps.as_slice() {
             [SignedStep::Precaution] => true,
-            [SignedStep::Propose, SignedStep::Approve] => {
+            [SignedStep::Propose, SignedStep::Approve | SignedStep::Reject] => {
                 keys[0] != keys[1] && persons[0] != persons[1]
             }
+            [SignedStep::Propose, SignedStep::Withdraw] => persons[0] == persons[1],
             _ => false,
         };
         complete

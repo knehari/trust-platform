@@ -14,6 +14,11 @@
 //!   0036), applied when its assertion is submitted; logged as
 //!   `precautionary_hold_applied`. `GET /v1/cas/{ca_id}/precautionary-holds`
 //!   lists holds awaiting a dual-controlled revocation or release.
+//! * `POST /v1/status-changes/{change_id}/rejection-challenges` (a checker)
+//!   and `.../withdrawal-challenges` (the maker) return the challenge for a
+//!   signed closing (migration 0039), submitted to the assertion endpoint;
+//!   the unsigned `.../rejection` and `.../withdrawal` are refused (403) on
+//!   a CA that requires signatures.
 //!
 //! The acting officer is the verified OIDC token's (issuer, subject), never
 //! a request field (ADR-0003). The token must carry the
@@ -161,6 +166,14 @@ fn router(state: AppState) -> Router {
             post(withdraw_change),
         )
         .route(
+            "/v1/status-changes/{change_id}/rejection-challenges",
+            post(rejection_challenge),
+        )
+        .route(
+            "/v1/status-changes/{change_id}/withdrawal-challenges",
+            post(withdrawal_challenge),
+        )
+        .route(
             "/v1/cas/{ca_id}/precautionary-hold-challenges",
             post(precaution_challenge),
         )
@@ -275,12 +288,15 @@ async fn with_store<T: Send + 'static>(
 }
 
 fn challenge_response(challenge_id: String, challenge: &SignedChallenge) -> Response {
+    let Ok(digest) = challenge.digest() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     (
         StatusCode::CREATED,
         Json(ChallengeResponse {
             challenge_id,
             change_id: hex_uuid(&challenge.claim.change_id),
-            webauthn_challenge: challenge_text(&challenge.claim.digest()),
+            webauthn_challenge: challenge_text(&digest),
             expires_at_us: challenge.claim.expires_at_us,
         }),
     )
@@ -539,6 +555,60 @@ async fn close_change(
         "change_id": change_id
     }));
     Ok((StatusCode::OK, Json(SubmittedResponse { change_id })).into_response())
+}
+
+/// A signed rejection (a checker) or withdrawal (the maker), required once
+/// the CA requires signatures (migration 0039): the challenge to sign; the
+/// assertion goes to the usual assertion endpoint, which closes the change.
+async fn close_challenge(
+    state: AppState,
+    change_id: String,
+    headers: HeaderMap,
+    step: SignedStep,
+) -> Result<Response, StatusCode> {
+    let claims = officer(&headers, &state.verifier).await?;
+    let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
+    change_in_scope(&state, &claims, &change_id).await?;
+    let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let (challenge_id, challenge) = with_store(&state, move |store| {
+        let actor = OfficerIdentity {
+            issuer: &issuer,
+            subject: &subject,
+        };
+        let id = store.issue_close_challenge(&change_id, &actor, step, CHALLENGE_TTL_SECONDS)?;
+        let challenge = store.signed_challenge(&id)?;
+        Ok((id, challenge))
+    })
+    .await?;
+    if !in_scope(&claims, &challenge.claim.ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let step = if step == SignedStep::Reject {
+        "reject"
+    } else {
+        "withdraw"
+    };
+    write_log(
+        serde_json::json!({"event":"status_change_challenge_issued","step":step,
+                                 "challenge_id":challenge_id}),
+    );
+    Ok(challenge_response(challenge_id, &challenge))
+}
+
+async fn rejection_challenge(
+    State(state): State<AppState>,
+    Path(change_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    close_challenge(state, change_id, headers, SignedStep::Reject).await
+}
+
+async fn withdrawal_challenge(
+    State(state): State<AppState>,
+    Path(change_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    close_challenge(state, change_id, headers, SignedStep::Withdraw).await
 }
 
 async fn reject_change(
@@ -1229,6 +1299,99 @@ mod tests {
                     .unwrap(),
                 CertificateStatus::Suspended
             );
+            reader
+                .reverify_signed_change(
+                    &change,
+                    &RelyingParty {
+                        rp_id: RP_ID,
+                        origin: ORIGIN,
+                    },
+                )
+                .unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    /// On a CA requiring signatures, closing a proposal needs a signed
+    /// rejection (checker) or withdrawal (maker) through HTTP (0039); the
+    /// unsigned endpoints are refused.
+    #[tokio::test]
+    async fn signed_rejection_through_the_api() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, maker_id, checker_id, mut maker, mut checker) =
+            tokio::task::spawn_blocking(move || {
+                let lab = setup(&setup_url);
+                postgres::Client::connect(&setup_url, postgres::NoTls)
+                    .unwrap()
+                    .execute(
+                        "UPDATE ca_revocation_policy SET signed_approvals_required = true
+                         WHERE ca_id = $1::text::uuid",
+                        &[&lab.0],
+                    )
+                    .unwrap();
+                lab
+            })
+            .await
+            .unwrap();
+        let oidc = oidc();
+        let api_url = url_with_login(&url, "trust_revocation_api_ci", "test-only-not-secret");
+        let (app, session) = app_with_session(oidc.verifier.clone(), &api_url);
+        let maker_token = oidc.token("maker", &[OFFICER_ROLE], &[&ca]);
+        let checker_token = oidc.token("checker", &[OFFICER_ROLE], &[&ca]);
+
+        let (status, issued) = post(
+            &app,
+            &format!("/v1/cas/{ca}/status-change-challenges"),
+            Some(&maker_token),
+            json!({"serial_hex":"01","action":"REVOKE","reason":1}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        let signed = maker.assertion(&maker_id, issued["webauthn_challenge"].as_str().unwrap());
+        let path = format!(
+            "/v1/status-change-challenges/{}/assertion",
+            issued["challenge_id"].as_str().unwrap()
+        );
+        let (status, submitted) = post(&app, &path, Some(&maker_token), signed).await;
+        assert_eq!(status, StatusCode::OK, "{submitted}");
+        let change = submitted["change_id"].as_str().unwrap().to_owned();
+
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/status-changes/{change}/rejection"),
+                Some(&checker_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let challenges = format!("/v1/status-changes/{change}/rejection-challenges");
+        assert_eq!(
+            post(&app, &challenges, Some(&maker_token), Value::Null)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let (status, issued) = post(&app, &challenges, Some(&checker_token), Value::Null).await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        let signed = checker.assertion(&checker_id, issued["webauthn_challenge"].as_str().unwrap());
+        let path = format!(
+            "/v1/status-change-challenges/{}/assertion",
+            issued["challenge_id"].as_str().unwrap()
+        );
+        let (status, _) = post(&app, &path, Some(&checker_token), signed).await;
+        assert_eq!(status, StatusCode::OK);
+
+        drop(app);
+        tokio::task::spawn_blocking(move || {
+            drop(session.lock().unwrap().take());
+            let mut reader = PgRevocationStore::connect_lab(&url).unwrap();
             reader
                 .reverify_signed_change(
                     &change,

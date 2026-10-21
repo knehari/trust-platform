@@ -54,9 +54,12 @@ Other endpoints:
 - `GET /v1/cas/{ca}/pending-status-changes` lists the CA's proposed changes,
   oldest first, with whether the maker signed (migration 0034).
 - `POST /v1/status-changes/{change}/rejection` (a checker other than the
-  maker) and `.../withdrawal` (the maker only) close a change. They change no
-  certificate status and are not signed yet, like the database functions.
-  The actor is still the token's.
+  maker) and `.../withdrawal` (the maker only) close a change unsigned, on CAs
+  that do not require signatures. On a CA with `signed_approvals_required`
+  they are refused (403); use `.../rejection-challenges` or
+  `.../withdrawal-challenges` instead (migration 0039). These return a
+  challenge for the closing claim, and the assertion goes to the usual
+  assertion endpoint. The actor is always the token's.
 - `POST /v1/cas/{ca}/precautionary-hold-challenges` with `{"serial_hex"}`:
   one officer asks for a challenge to put a valid certificate on hold as a
   precaution (ADR-0007 section 6, migration 0036). The CA must allow
@@ -77,7 +80,6 @@ Other endpoints:
   includes approval challenges.
 
 Not covered:
-- signed rejection and withdrawal;
 - CA-admin endpoints (credential enrolment, grants);
 - break-glass (ADR-0007 section 6);
 - rate limiting beyond 8 concurrent requests;

@@ -161,7 +161,23 @@ impl StatusChangeClaim {
     pub fn digest(&self) -> [u8; 32] {
         Sha256::digest(self.canonical_bytes()).into()
     }
+
+    /// The WebAuthn challenge for closing this change without applying it
+    /// (`step` REJECT by a checker, WITHDRAW by the maker; migration 0039):
+    /// its own tag and the step, so it never verifies as a maker or
+    /// checker claim.
+    pub fn closing_digest(&self, step: &str) -> Result<[u8; 32], CredentialError> {
+        if !matches!(step, "REJECT" | "WITHDRAW") {
+            return Err(CredentialError::InvalidInput);
+        }
+        let mut out = STATUS_CHANGE_CLOSE_TAG.to_vec();
+        claim_field(&mut out, Some(step.as_bytes()));
+        out.extend_from_slice(&self.canonical_bytes()[STATUS_CHANGE_TAG.len()..]);
+        Ok(Sha256::digest(out).into())
+    }
 }
+
+const STATUS_CHANGE_CLOSE_TAG: &[u8] = b"trust-platform/status-change-close/v1\0";
 
 /// The canonical claim a CA admin signs for a CA-administration change
 /// (ADR-0007 §2, `trust-platform/ca-admin/v1`, migration 0037): issuer
@@ -471,5 +487,21 @@ mod tests {
         ] {
             assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));
         }
+    }
+
+    /// Rejection and withdrawal claims differ from each other and from the
+    /// maker/checker claim of the same change; other steps are refused.
+    #[test]
+    fn closing_claims_are_domain_separated() {
+        let claim = claim();
+        let reject = claim.closing_digest("REJECT").unwrap();
+        let withdraw = claim.closing_digest("WITHDRAW").unwrap();
+        assert_ne!(reject, withdraw);
+        assert_ne!(reject, claim.digest());
+        assert_ne!(withdraw, claim.digest());
+        assert_eq!(
+            claim.closing_digest("APPROVE"),
+            Err(CredentialError::InvalidInput)
+        );
     }
 }

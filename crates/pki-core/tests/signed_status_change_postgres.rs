@@ -13,7 +13,7 @@ use trust_pki_core::{
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
     revocation_store::{
         AdminChange, AdminFamily, CredentialContent, OfficerGrantAction, PgRevocationStore,
-        RevocationStoreError,
+        RevocationStoreError, SignedStep,
     },
     serial::SerialNumber,
     webauthn::{challenge_text, Assertion, RelyingParty, WebAuthnError},
@@ -263,8 +263,8 @@ impl Lab {
             .officer
             .signed_challenge(claim_challenge)
             .unwrap()
-            .claim
-            .digest();
+            .digest()
+            .unwrap();
         let (authenticator, credential) = if signer_is_maker {
             (&mut self.maker, self.maker_credential.clone())
         } else {
@@ -977,4 +977,80 @@ fn precautionary_holds_are_capped_per_officer() {
         )
         .unwrap_err();
     assert_eq!(limit.code().map(|c| c.code()), Some("23514"));
+}
+
+/// Once a CA requires signatures, a proposal is closed only with a signed
+/// rejection (a checker, distinct key and person) or a signed withdrawal
+/// (the maker), each with its own domain-separated claim (migration 0039);
+/// the unsigned paths are refused and the evidence re-verifies offline.
+#[test]
+fn signed_rejection_and_withdrawal() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+
+    let change = lab.signed_proposal();
+    let unsigned = lab.officer.reject(&change, &CHECKER).unwrap_err();
+    assert_eq!(sqlstate(&unsigned).as_deref(), Some("42501"));
+    // The maker cannot reject their own proposal; the checker cannot
+    // withdraw it.
+    let own = lab
+        .officer
+        .issue_close_challenge(&change, &MAKER, SignedStep::Reject, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&own).as_deref(), Some("23514"));
+    let other = lab
+        .officer
+        .issue_close_challenge(&change, &CHECKER, SignedStep::Withdraw, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&other).as_deref(), Some("23514"));
+    let reject = lab
+        .officer
+        .issue_close_challenge(&change, &CHECKER, SignedStep::Reject, 120)
+        .unwrap();
+    // An approval-style signature over the plain claim does not verify.
+    let approval = lab
+        .officer
+        .issue_approval_challenge(&change, &CHECKER, 120)
+        .unwrap();
+    assert!(matches!(
+        lab.submit(&reject, false, Some(&approval)).unwrap_err(),
+        RevocationStoreError::InvalidAssertion(WebAuthnError::Challenge)
+    ));
+    assert_eq!(lab.submit(&reject, false, None).unwrap(), change);
+    assert!(matches!(
+        lab.submit(&reject, false, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    assert_eq!(
+        lab.officer.status(&lab.ca_id, &lab.serial).unwrap(),
+        CertificateStatus::Valid
+    );
+    lab.officer.reverify_signed_change(&change, &RP).unwrap();
+    // The approval challenge issued before the rejection is now useless.
+    assert_eq!(
+        sqlstate(&lab.submit(&approval, false, None).unwrap_err()).as_deref(),
+        Some("23514")
+    );
+
+    let change = lab.signed_proposal();
+    let unsigned = lab.officer.withdraw(&change, &MAKER).unwrap_err();
+    assert_eq!(sqlstate(&unsigned).as_deref(), Some("42501"));
+    let withdraw = lab
+        .officer
+        .issue_close_challenge(&change, &MAKER, SignedStep::Withdraw, 120)
+        .unwrap();
+    assert_eq!(lab.submit(&withdraw, true, None).unwrap(), change);
+    lab.officer.reverify_signed_change(&change, &RP).unwrap();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let statuses: Vec<String> = owner
+        .query(
+            "SELECT status FROM certificate_status_change
+             WHERE ca_id = $1::text::uuid ORDER BY proposed_at",
+            &[&lab.ca_id],
+        )
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(statuses, ["REJECTED", "WITHDRAWN"]);
 }
