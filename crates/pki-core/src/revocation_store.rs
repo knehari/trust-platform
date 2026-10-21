@@ -67,6 +67,20 @@ pub enum SignedStep {
     Approve,
 }
 
+/// A proposed status change waiting for a checker (migration 0034).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingStatusChange {
+    pub change_id: String,
+    pub serial_der_content: Vec<u8>,
+    pub action: String,
+    pub reason_code: Option<i16>,
+    pub invalidity_at_unix: Option<i64>,
+    pub maker_issuer: String,
+    pub maker_subject: String,
+    pub proposed_at_unix: i64,
+    pub maker_signed: bool,
+}
+
 /// An enrolled credential as stored (migration 0028).
 struct StoredCredential {
     issuer: String,
@@ -749,6 +763,49 @@ impl PgRevocationStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// The CA's proposed changes, oldest first (at most 500; migration 0034).
+    pub fn pending_status_changes(
+        &mut self,
+        ca_id: &str,
+    ) -> Result<Vec<PendingStatusChange>, RevocationStoreError> {
+        self.client
+            .query(
+                "SELECT change_id::text, serial_der_content, action, reason_code,
+                        floor(extract(epoch FROM invalidity_at))::bigint, maker_issuer,
+                        maker_subject, floor(extract(epoch FROM proposed_at))::bigint,
+                        maker_signed
+                 FROM pending_status_changes($1::text::uuid)",
+                &[&ca_id],
+            )?
+            .iter()
+            .map(|row| {
+                Ok(PendingStatusChange {
+                    change_id: column(row, 0)?,
+                    serial_der_content: column(row, 1)?,
+                    action: column(row, 2)?,
+                    reason_code: column(row, 3)?,
+                    invalidity_at_unix: column(row, 4)?,
+                    maker_issuer: column(row, 5)?,
+                    maker_subject: column(row, 6)?,
+                    proposed_at_unix: column(row, 7)?,
+                    maker_signed: column(row, 8)?,
+                })
+            })
+            .collect()
+    }
+
+    /// The CA a change belongs to, if it exists (migration 0034).
+    pub fn status_change_ca(
+        &mut self,
+        change_id: &str,
+    ) -> Result<Option<String>, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT status_change_ca($1::text::uuid)::text",
+            &[&change_id],
+        )?;
+        column(&row, 0)
     }
 
     pub fn reject(

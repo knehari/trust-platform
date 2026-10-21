@@ -46,8 +46,19 @@ TRUST_WEBAUTHN_RP_ID=officer.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://officer.l
   cargo run -p trust-management-api --bin revocation_api
 ```
 
+Other endpoints:
+- `GET /v1/cas/{ca}/pending-status-changes` lists the CA's proposed changes,
+  oldest first, with whether the maker signed (migration 0034).
+- `POST /v1/status-changes/{change}/rejection` (a checker other than the
+  maker) and `.../withdrawal` (the maker only) close a change. They change no
+  certificate status and are not signed yet, like the database functions.
+  The actor is still the token's.
+- For any change identifier, the change's CA is checked against the token's
+  scope before anything is written (unknown 404, out of scope 403). This
+  includes approval challenges.
+
 Not covered:
-- reject and withdraw endpoints;
+- signed rejection and withdrawal;
 - CA-admin endpoints (credential enrolment, grants);
 - listing pending changes;
 - rate limiting beyond 8 concurrent requests;

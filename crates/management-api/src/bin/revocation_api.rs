@@ -35,7 +35,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -117,6 +117,18 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/status-change-challenges/{challenge_id}/assertion",
             post(submit_assertion),
+        )
+        .route(
+            "/v1/cas/{ca_id}/pending-status-changes",
+            get(pending_changes),
+        )
+        .route(
+            "/v1/status-changes/{change_id}/rejection",
+            post(reject_change),
+        )
+        .route(
+            "/v1/status-changes/{change_id}/withdrawal",
+            post(withdraw_change),
         )
         .with_state(state)
 }
@@ -301,6 +313,7 @@ async fn approval_challenge(
 ) -> Result<Response, StatusCode> {
     let claims = officer(&headers, &state.verifier).await?;
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
+    change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let (challenge_id, challenge) = with_store(&state, move |store| {
         let checker = OfficerIdentity {
@@ -312,7 +325,7 @@ async fn approval_challenge(
         Ok((id, challenge))
     })
     .await?;
-    // The database's officer grant decided; the token's CA scope must agree.
+    // Defence in depth: the challenge names the same CA.
     if !in_scope(&claims, &challenge.claim.ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -321,6 +334,122 @@ async fn approval_challenge(
                                  "challenge_id":challenge_id}),
     );
     Ok(challenge_response(challenge_id, &challenge))
+}
+
+/// 404 for an unknown change, 403 outside the token's CA scope; checked
+/// before anything is written.
+async fn change_in_scope(
+    state: &AppState,
+    claims: &Claims,
+    change_id: &str,
+) -> Result<(), StatusCode> {
+    let change = change_id.to_owned();
+    let ca = with_store(state, move |store| Ok(store.status_change_ca(&change)?))
+        .await?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if claims.ca_ids.contains(&ca) {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
+#[derive(Serialize)]
+struct PendingChange {
+    change_id: String,
+    serial_hex: String,
+    action: String,
+    reason: Option<i16>,
+    invalidity_unix: Option<i64>,
+    maker_issuer: String,
+    maker_subject: String,
+    proposed_at_unix: i64,
+    maker_signed: bool,
+}
+
+async fn pending_changes(
+    State(state): State<AppState>,
+    Path(ca_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = officer(&headers, &state.verifier).await?;
+    let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
+    if !claims.ca_ids.contains(&ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let pending = with_store(&state, move |store| {
+        Ok(store.pending_status_changes(&ca_id)?)
+    })
+    .await?;
+    let body: Vec<PendingChange> = pending
+        .into_iter()
+        .map(|change| PendingChange {
+            change_id: change.change_id,
+            serial_hex: change
+                .serial_der_content
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            action: change.action,
+            reason: change.reason_code,
+            invalidity_unix: change.invalidity_at_unix,
+            maker_issuer: change.maker_issuer,
+            maker_subject: change.maker_subject,
+            proposed_at_unix: change.proposed_at_unix,
+            maker_signed: change.maker_signed,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(body)).into_response())
+}
+
+/// Rejection (a checker) and withdrawal (the maker) change no certificate
+/// status; like the database functions they are not signed (ADR-0007 open
+/// item), but the actor is still the token's.
+async fn close_change(
+    state: AppState,
+    change_id: String,
+    headers: HeaderMap,
+    reject: bool,
+) -> Result<Response, StatusCode> {
+    let claims = officer(&headers, &state.verifier).await?;
+    let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
+    change_in_scope(&state, &claims, &change_id).await?;
+    let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let change = change_id.clone();
+    with_store(&state, move |store| {
+        let actor = OfficerIdentity {
+            issuer: &issuer,
+            subject: &subject,
+        };
+        if reject {
+            store.reject(&change, &actor)?;
+        } else {
+            store.withdraw(&change, &actor)?;
+        }
+        Ok(())
+    })
+    .await?;
+    write_log(serde_json::json!({
+        "event": if reject { "status_change_rejected" } else { "status_change_withdrawn" },
+        "change_id": change_id
+    }));
+    Ok((StatusCode::OK, Json(SubmittedResponse { change_id })).into_response())
+}
+
+async fn reject_change(
+    State(state): State<AppState>,
+    Path(change_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    close_change(state, change_id, headers, true).await
+}
+
+async fn withdraw_change(
+    State(state): State<AppState>,
+    Path(change_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    close_change(state, change_id, headers, false).await
 }
 
 async fn submit_assertion(
@@ -880,5 +1009,138 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    async fn get(app: &Router, path: &str, token: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// Pending list, withdrawal by the maker and rejection by a checker,
+    /// with the actor taken from the token and the CA scope checked first.
+    #[tokio::test]
+    async fn pending_withdraw_and_reject_through_the_api() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, maker_id, _, mut maker, _) =
+            tokio::task::spawn_blocking(move || setup(&setup_url))
+                .await
+                .unwrap();
+        let oidc = oidc();
+        let api_url = url_with_login(&url, "trust_revocation_api_ci", "test-only-not-secret");
+        let (app, session) = app_with_session(oidc.verifier.clone(), &api_url);
+        let maker_token = oidc.token("maker", &[OFFICER_ROLE], &[&ca]);
+        let checker_token = oidc.token("checker", &[OFFICER_ROLE], &[&ca]);
+        let outsider = oidc.token(
+            "checker",
+            &[OFFICER_ROLE],
+            &["5eedc0de-0000-4000-8000-000000000099"],
+        );
+
+        let issued_path = format!("/v1/cas/{ca}/status-change-challenges");
+        let mut assertion = |challenge: &str| maker.assertion(&maker_id, challenge);
+        let mut signed_proposal = async |app: &Router| {
+            let (status, issued) = post(
+                app,
+                &issued_path,
+                Some(&maker_token),
+                json!({"serial_hex":"01","action":"REVOKE","reason":4}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{issued}");
+            let path = format!(
+                "/v1/status-change-challenges/{}/assertion",
+                issued["challenge_id"].as_str().unwrap()
+            );
+            let body = assertion(issued["webauthn_challenge"].as_str().unwrap());
+            let (status, submitted) = post(app, &path, Some(&maker_token), body).await;
+            assert_eq!(status, StatusCode::OK, "{submitted}");
+            submitted["change_id"].as_str().unwrap().to_owned()
+        };
+
+        let change = signed_proposal(&app).await;
+        let pending_path = format!("/v1/cas/{ca}/pending-status-changes");
+        let (status, pending) = get(&app, &pending_path, &checker_token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pending.as_array().unwrap().len(), 1);
+        assert_eq!(pending[0]["change_id"], change.as_str());
+        assert_eq!(pending[0]["serial_hex"], "01");
+        assert_eq!(pending[0]["maker_signed"], true);
+        assert_eq!(
+            get(&app, &pending_path, &outsider).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        let withdraw = format!("/v1/status-changes/{change}/withdrawal");
+        // Out of scope, then not the maker: refused; the maker withdraws.
+        assert_eq!(
+            post(&app, &withdraw, Some(&outsider), Value::Null).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(&app, &withdraw, Some(&checker_token), Value::Null)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(&app, &withdraw, Some(&maker_token), Value::Null)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(get(&app, &pending_path, &checker_token).await.1, json!([]));
+
+        let change = signed_proposal(&app).await;
+        let reject = format!("/v1/status-changes/{change}/rejection");
+        // The maker cannot reject their own proposal; a checker can, once.
+        assert_eq!(
+            post(&app, &reject, Some(&maker_token), Value::Null).await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(&app, &reject, Some(&checker_token), Value::Null)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post(&app, &reject, Some(&checker_token), Value::Null)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        // An unknown change is 404 before anything else.
+        assert_eq!(
+            post(
+                &app,
+                "/v1/status-changes/5eedc0de-0000-4000-8000-0000000000aa/rejection",
+                Some(&checker_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
     }
 }
