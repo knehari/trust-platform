@@ -2491,3 +2491,177 @@ fn open_challenges_are_capped_per_actor() {
         .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_B, 120)
         .unwrap();
 }
+
+/// ADR-0007 evidence "a credential removed mid-flow" and "the counter of a
+/// removed credential", for all three registries: a challenge issued before
+/// the key's removal cannot be answered with it afterwards (in the Rust
+/// core, and for officers also straight at the database), and a removed
+/// key's counter is frozen even for a superuser's UPDATE.
+#[test]
+fn removed_credentials_never_sign_again() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let frozen = |owner: &mut Client, table: &str, id: &[u8]| {
+        let before: i64 = owner
+            .query_one(
+                &format!("SELECT sign_count FROM {table} WHERE credential_id = $1"),
+                &[&id],
+            )
+            .unwrap()
+            .get(0);
+        let refused = owner
+            .execute(
+                &format!("UPDATE {table} SET sign_count = sign_count + 1 WHERE credential_id = $1"),
+                &[&id],
+            )
+            .unwrap_err();
+        assert_eq!(refused.code().map(|c| c.code()), Some("23514"), "{table}");
+        before
+    };
+
+    // Officer: the checker's key is removed between challenge and answer.
+    let change = lab.signed_proposal();
+    let challenge = challenge_for(&mut lab, &change);
+    let checker_key = lab.checker.public_key();
+    let checker_id = lab.checker_credential.clone();
+    let removal = lab
+        .admin
+        .propose_credential_removal(&ca, &checker_id, &CHECKER, &ADMIN_A)
+        .unwrap();
+    lab.admin
+        .approve_credential_change(
+            &removal,
+            CredentialChangeKind::Remove,
+            &CredentialContent {
+                ca_id: &ca,
+                credential_id: &checker_id,
+                officer: &CHECKER,
+                person_id: "person-checker",
+                public_key_sec1: &checker_key,
+            },
+            &ADMIN_B,
+        )
+        .unwrap();
+    let count = frozen(&mut owner, "officer_credential", &checker_id);
+    assert!(matches!(
+        lab.submit(&challenge, false, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let digest = lab
+        .officer
+        .signed_challenge(&challenge)
+        .unwrap()
+        .digest()
+        .unwrap();
+    let (data, client, signature) = lab.checker.sign(&digest);
+    let mut officer_db =
+        Client::connect(&url_as(&url, "trust_revocation_officer_api"), NoTls).unwrap();
+    let direct = officer_db
+        .query_one(
+            "SELECT approve_signed_status_change($1::text::uuid, $2, $3, $4, $5)::text",
+            &[&challenge, &checker_id, &data, &client, &signature],
+        )
+        .unwrap_err();
+    assert_eq!(direct.code().map(|c| c.code()), Some("42501"));
+    assert_eq!(frozen(&mut owner, "officer_credential", &checker_id), count);
+
+    // CA admin: the DBA removes A's key between challenge and answer.
+    let (mut admin_a, admin_b) = (Authenticator::new(), Authenticator::new());
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id) = (credential(3), credential(4));
+    boot.enroll_admin_credential(
+        &ca,
+        &a_id,
+        &ADMIN_A,
+        "person-admin-a",
+        &admin_a.public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    owner
+        .execute("SELECT remove_ca_admin_credential($1)", &[&a_id])
+        .unwrap();
+    let count = frozen(&mut owner, "ca_admin_credential", &a_id);
+    assert!(matches!(
+        admin_submit(
+            &mut lab.admin,
+            &mut admin_a,
+            &a_id,
+            &challenge,
+            Some(&grant)
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    assert_eq!(frozen(&mut owner, "ca_admin_credential", &a_id), count);
+
+    // Break-glass: the DBA removes the emergency key between challenge and
+    // answer; no new challenge is issued for it.
+    let mut emergency = Authenticator::new();
+    let bg_id = credential(20);
+    boot.enroll_breakglass_credential(
+        &ca,
+        &bg_id,
+        "custodian",
+        "person-custodian",
+        &emergency.public_key(),
+    )
+    .unwrap();
+    let a_key = Authenticator::new().public_key();
+    let a_new = credential(11);
+    let content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_new,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &a_key,
+    };
+    let challenge = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &content, 120)
+        .unwrap();
+    owner
+        .execute("SELECT remove_breakglass_credential($1)", &[&bg_id])
+        .unwrap();
+    let count = frozen(&mut owner, "ca_breakglass_credential", &bg_id);
+    assert!(matches!(
+        breakglass_submit(&mut lab.admin, &mut emergency, &bg_id, &challenge, &content)
+            .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let refused = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &content, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("42501"));
+    assert_eq!(
+        frozen(&mut owner, "ca_breakglass_credential", &bg_id),
+        count
+    );
+}
