@@ -163,6 +163,79 @@ impl StatusChangeClaim {
     }
 }
 
+/// The canonical claim a CA admin signs for a CA-administration change
+/// (ADR-0007 §2, `trust-platform/ca-admin/v1`, migration 0037): issuer
+/// registration and officer grants (0024), officer credential enrolment and
+/// removal (0028). Its SHA-256 is the WebAuthn challenge. A proposal claim
+/// has no change id (the database allocates it; the signed content digest
+/// and kind are checked against the created change), an approval claim
+/// names the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaAdminClaim {
+    /// PROPOSE or APPROVE.
+    pub step: &'static str,
+    pub ca_id: [u8; 16],
+    /// None before the CA's first issuer registration.
+    pub issuer_certificate_sha256: Option<[u8; 32]>,
+    /// CA_ADMIN or CREDENTIAL.
+    pub family: &'static str,
+    pub kind: &'static str,
+    pub change_id: Option<[u8; 16]>,
+    /// The digest the checker approves (0024 / 0028 content digests).
+    pub content_sha256: [u8; 32],
+    pub policy_edition: String,
+    /// SHA-256 of the single-use challenge nonce.
+    pub challenge_sha256: [u8; 32],
+    /// Microseconds since the Unix epoch.
+    pub expires_at_us: i64,
+}
+
+const CA_ADMIN_TAG: &[u8] = b"trust-platform/ca-admin/v1\0";
+
+impl CaAdminClaim {
+    /// Fail closed on anything the database would not accept either.
+    pub fn validate(&self) -> Result<(), CredentialError> {
+        let step_ok = match self.step {
+            "PROPOSE" => self.change_id.is_none(),
+            "APPROVE" => self.change_id.is_some(),
+            _ => false,
+        };
+        let kind_ok = match self.family {
+            "CA_ADMIN" => matches!(
+                self.kind,
+                "REGISTER_ISSUER" | "GRANT_OFFICER" | "REVOKE_OFFICER"
+            ),
+            "CREDENTIAL" => matches!(self.kind, "ENROLL_CREDENTIAL" | "REMOVE_CREDENTIAL"),
+            _ => false,
+        };
+        let ok = step_ok && kind_ok && (1..=128).contains(&self.policy_edition.chars().count());
+        ok.then_some(()).ok_or(CredentialError::InvalidInput)
+    }
+
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = CA_ADMIN_TAG.to_vec();
+        claim_field(&mut out, Some(self.step.as_bytes()));
+        claim_field(&mut out, Some(&self.ca_id));
+        claim_field(
+            &mut out,
+            self.issuer_certificate_sha256.as_ref().map(|d| &d[..]),
+        );
+        claim_field(&mut out, Some(self.family.as_bytes()));
+        claim_field(&mut out, Some(self.kind.as_bytes()));
+        claim_field(&mut out, self.change_id.as_ref().map(|c| &c[..]));
+        claim_field(&mut out, Some(&self.content_sha256));
+        claim_field(&mut out, Some(self.policy_edition.as_bytes()));
+        claim_field(&mut out, Some(&self.challenge_sha256));
+        claim_field(&mut out, Some(&self.expires_at_us.to_be_bytes()));
+        out
+    }
+
+    /// The WebAuthn challenge for this claim.
+    pub fn digest(&self) -> [u8; 32] {
+        Sha256::digest(self.canonical_bytes()).into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +398,75 @@ mod tests {
             StatusChangeClaim {
                 invalidity_date_us: Some(1),
                 ..precaution.clone()
+            },
+        ] {
+            assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));
+        }
+    }
+
+    fn admin_claim() -> CaAdminClaim {
+        CaAdminClaim {
+            step: "APPROVE",
+            ca_id: [2; 16],
+            issuer_certificate_sha256: Some([3; 32]),
+            family: "CREDENTIAL",
+            kind: "ENROLL_CREDENTIAL",
+            change_id: Some([1; 16]),
+            content_sha256: [5; 32],
+            policy_edition: "v1".into(),
+            challenge_sha256: [4; 32],
+            expires_at_us: 1_792_533_719_000_000,
+        }
+    }
+
+    /// Admin claims are domain-separated from status-change claims, bind
+    /// every field, and only valid step/family/kind combinations pass.
+    #[test]
+    fn ca_admin_claims_bind_their_fields() {
+        let claim = admin_claim();
+        assert_eq!(claim.validate(), Ok(()));
+        assert!(claim
+            .canonical_bytes()
+            .starts_with(b"trust-platform/ca-admin/v1\0"));
+        let variants = [
+            CaAdminClaim {
+                issuer_certificate_sha256: None,
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                kind: "REMOVE_CREDENTIAL",
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                content_sha256: [6; 32],
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                step: "PROPOSE",
+                change_id: None,
+                ..claim.clone()
+            },
+        ];
+        for variant in &variants {
+            assert_eq!(variant.validate(), Ok(()));
+            assert_ne!(variant.digest(), claim.digest());
+        }
+        for invalid in [
+            CaAdminClaim {
+                change_id: None,
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                step: "PROPOSE",
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                family: "CA_ADMIN",
+                ..claim.clone()
+            },
+            CaAdminClaim {
+                policy_edition: String::new(),
+                ..claim.clone()
             },
         ] {
             assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));

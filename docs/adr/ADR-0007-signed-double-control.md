@@ -86,9 +86,15 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - The hold is applied at once, with a fixed `confirm_by` deadline and one stored signature, which `reverify_signed_change` accepts only for a precaution.
   - Confirmation is the ordinary signed double control: hold to revoked, or release. The deadline never lifts the hold. Past it, `precautionary_holds` reports it as overdue and `crl_housekeeping` alerts.
   - Each use writes an audit event and a `precautionary_hold_applied` log line.
+- **Signed CA administration (migration 0037, `trust-platform/ca-admin/v1`):**
+  - Admin WebAuthn keys in `ca_admin_credential`, bound to an identity holding `ca_admin_grant` and to a person. They are bootstrapped by the DBA, like `ca_admin_grant` (`enroll_ca_admin_credential`, granted to no service). A key or person is never both officer and admin on a CA.
+  - A per-CA, one-way `signed_admin_required` setting. Once set, the unsigned propose and approve of issuer registration, officer grants and credential changes are refused. The original bodies are kept as `*_unchecked`, granted to no service.
+  - `CaAdminClaim`: step, CA, issuer certificate digest (absent before the first registration), family, kind, change id (approval only), content digest (0024 / 0028), policy edition, single-use challenge and expiry.
+  - Deviation from section 2: a proposal claim has no change id, because the 0024/0028 functions allocate it. The database checks the signed kind and content digest against the change it creates in the same transaction, and the signature row links the two.
+  - Distinct keys and persons for maker and checker; removing the maker's admin credential voids the approval. Offline re-verification: `reverify_admin_change`.
 - **Not yet:**
-  - CA-admin signed claims (`trust-platform/ca-admin/v1`);
-  - signed reject and withdraw;
+  - admin credential enrolment and removal under dual control (section 5; DBA bootstrap today);
+  - signed reject and withdraw (status changes and CA administration);
   - break-glass and the on-call rota (section 6); per-officer limits on precautionary holds;
   - attestation policy.
 

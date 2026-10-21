@@ -13,7 +13,7 @@ use crate::clock::{
 use crate::crl::{check_crl_issuer, check_pruned_entry, CrlEntry, CrlError, CrlReservation};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::officer_credential::{
-    canonical_officer_key, CredentialChange, CredentialChangeKind, CredentialError,
+    canonical_officer_key, CaAdminClaim, CredentialChange, CredentialChangeKind, CredentialError,
     StatusChangeClaim,
 };
 use crate::revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction};
@@ -69,6 +69,128 @@ pub enum SignedStep {
     Precaution,
 }
 
+/// The two families of CA-administration changes (0024, 0028).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminFamily {
+    /// Issuer registration and officer grants (`ca_admin_change`).
+    CaAdmin,
+    /// Officer credential enrolment and removal (`officer_credential_change`).
+    Credential,
+}
+
+impl AdminFamily {
+    fn as_sql(self) -> &'static str {
+        match self {
+            Self::CaAdmin => "CA_ADMIN",
+            Self::Credential => "CREDENTIAL",
+        }
+    }
+}
+
+/// A CA-administration change as the maker reviews and signs it.
+pub enum AdminChange<'a> {
+    RegisterIssuer(&'a Certificate),
+    Officer(OfficerGrantAction, &'a OfficerIdentity<'a>),
+    /// For a removal, the person and key of the credential being removed.
+    Credential(CredentialChangeKind, &'a CredentialContent<'a>),
+}
+
+/// What `propose_signed_admin_change` takes besides the assertion.
+struct AdminContentParams {
+    certificate_der: Option<Vec<u8>>,
+    credential_id: Option<Vec<u8>>,
+    officer_issuer: Option<String>,
+    officer_subject: Option<String>,
+    person_id: Option<String>,
+    public_key_sec1: Option<Vec<u8>>,
+}
+
+impl AdminChange<'_> {
+    pub fn family(&self) -> AdminFamily {
+        match self {
+            Self::RegisterIssuer(_) | Self::Officer(..) => AdminFamily::CaAdmin,
+            Self::Credential(..) => AdminFamily::Credential,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::RegisterIssuer(_) => "REGISTER_ISSUER",
+            Self::Officer(action, _) => action.as_sql(),
+            Self::Credential(kind, _) => kind.as_sql(),
+        }
+    }
+
+    /// The content digest the maker and the checker sign (the 0024 / 0028
+    /// digests); an issuer certificate is checked as for registration.
+    fn reviewed(&self) -> Result<([u8; 32], AdminContentParams), RevocationStoreError> {
+        let none = AdminContentParams {
+            certificate_der: None,
+            credential_id: None,
+            officer_issuer: None,
+            officer_subject: None,
+            person_id: None,
+            public_key_sec1: None,
+        };
+        match self {
+            Self::RegisterIssuer(issuer) => {
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|d| i64::try_from(d.as_secs()).ok())
+                    .ok_or(RevocationStoreError::InconsistentResult)?;
+                check_crl_issuer(issuer, now_unix)
+                    .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+                let der = issuer
+                    .to_der()
+                    .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+                Ok((
+                    Sha256::digest(&der).into(),
+                    AdminContentParams {
+                        certificate_der: Some(der),
+                        ..none
+                    },
+                ))
+            }
+            Self::Officer(action, officer) => Ok((
+                officer_grant_digest(*action, officer),
+                AdminContentParams {
+                    officer_issuer: Some(officer.issuer.to_owned()),
+                    officer_subject: Some(officer.subject.to_owned()),
+                    ..none
+                },
+            )),
+            Self::Credential(kind, content) => {
+                let (key, digest) = content.reviewed(*kind)?;
+                // A removal names the credential; the database takes person
+                // and key from the stored credential (and signs them here).
+                let enroll = *kind == CredentialChangeKind::Enroll;
+                Ok((
+                    digest,
+                    AdminContentParams {
+                        credential_id: Some(content.credential_id.to_vec()),
+                        officer_issuer: Some(content.officer.issuer.to_owned()),
+                        officer_subject: Some(content.officer.subject.to_owned()),
+                        person_id: enroll.then(|| content.person_id.to_owned()),
+                        public_key_sec1: enroll.then(|| key.to_vec()),
+                        ..none
+                    },
+                ))
+            }
+        }
+    }
+}
+
+/// A CA-admin challenge as stored (migration 0037).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminChallenge {
+    pub purpose: SignedStep,
+    pub claim: CaAdminClaim,
+    pub actor_issuer: String,
+    pub actor_subject: String,
+    pub consumed: bool,
+}
+
 /// A precautionary hold still awaiting its dual-controlled revocation or
 /// release (migration 0036).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +233,17 @@ fn claim_action(action: &str) -> Result<&'static str, RevocationStoreError> {
         "RELEASE" => Ok("RELEASE"),
         "REVOKE" => Ok("REVOKE"),
         "PRECAUTIONARY_SUSPEND" => Ok("PRECAUTIONARY_SUSPEND"),
+        _ => Err(RevocationStoreError::InconsistentResult),
+    }
+}
+
+fn admin_kind(kind: &str) -> Result<&'static str, RevocationStoreError> {
+    match kind {
+        "REGISTER_ISSUER" => Ok("REGISTER_ISSUER"),
+        "GRANT_OFFICER" => Ok("GRANT_OFFICER"),
+        "REVOKE_OFFICER" => Ok("REVOKE_OFFICER"),
+        "ENROLL_CREDENTIAL" => Ok("ENROLL_CREDENTIAL"),
+        "REMOVE_CREDENTIAL" => Ok("REMOVE_CREDENTIAL"),
         _ => Err(RevocationStoreError::InconsistentResult),
     }
 }
@@ -735,6 +868,318 @@ impl PgRevocationStore {
             }
             _ => false,
         };
+        complete
+            .then_some(())
+            .ok_or(RevocationStoreError::SignedApprovalRefused)
+    }
+
+    /// DBA bootstrap of a CA admin's WebAuthn key (migration 0037), like
+    /// `ca_admin_grant`: needs a superuser login; no service may call it.
+    /// The key is curve-checked and canonicalised first.
+    pub fn enroll_admin_credential(
+        &mut self,
+        ca_id: &str,
+        credential_id: &[u8],
+        admin: &OfficerIdentity<'_>,
+        person_id: &str,
+        public_key_sec1: &[u8],
+    ) -> Result<(), RevocationStoreError> {
+        let key = canonical_officer_key(public_key_sec1)
+            .map_err(RevocationStoreError::InvalidCredential)?;
+        self.client.execute(
+            "SELECT enroll_ca_admin_credential($1::text::uuid, $2, $3, $4, $5, $6)",
+            &[
+                &ca_id,
+                &credential_id,
+                &admin.issuer,
+                &admin.subject,
+                &person_id,
+                &&key[..],
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Asks for a single-use challenge to sign a CA-admin proposal
+    /// (ADR-0007, `trust-platform/ca-admin/v1`, migration 0037).
+    pub fn issue_admin_proposal_challenge(
+        &mut self,
+        ca_id: &str,
+        change: &AdminChange<'_>,
+        maker: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let (digest, _) = change.reviewed()?;
+        let row = self.client.query_one(
+            "SELECT issue_ca_admin_challenge('PROPOSE', $1::text::uuid, $2, $3, $4, NULL,
+                                             $5, $6, $7)::text",
+            &[
+                &ca_id,
+                &change.family().as_sql(),
+                &change.kind(),
+                &&digest[..],
+                &maker.issuer,
+                &maker.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// Asks for a single-use challenge to sign the approval of a CA-admin
+    /// change; kind and content come from the pending change.
+    pub fn issue_admin_approval_challenge(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+        checker: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT issue_ca_admin_challenge('APPROVE', NULL, $1, NULL, NULL, $2::text::uuid,
+                                             $3, $4, $5)::text",
+            &[
+                &family.as_sql(),
+                &change_id,
+                &checker.issuer,
+                &checker.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// The stored CA-admin challenge and the claim rebuilt from it.
+    pub fn admin_challenge(
+        &mut self,
+        challenge_id: &str,
+    ) -> Result<AdminChallenge, RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT purpose, ca_id::text, family, kind, change_id::text,
+                    issuer_certificate_sha256, content_sha256, policy_edition,
+                    challenge_sha256, expires_us, actor_issuer, actor_subject, consumed
+             FROM ca_admin_challenge_claim($1::text::uuid)",
+            &[&challenge_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        let (purpose, step) = match column::<String>(row, 0)?.as_str() {
+            "PROPOSE" => (SignedStep::Propose, "PROPOSE"),
+            "APPROVE" => (SignedStep::Approve, "APPROVE"),
+            _ => return Err(RevocationStoreError::InconsistentResult),
+        };
+        let family = match column::<String>(row, 2)?.as_str() {
+            "CA_ADMIN" => "CA_ADMIN",
+            "CREDENTIAL" => "CREDENTIAL",
+            _ => return Err(RevocationStoreError::InconsistentResult),
+        };
+        let change_id = column::<Option<String>>(row, 4)?
+            .map(|text| parse_uuid(&text).ok_or(RevocationStoreError::InconsistentResult))
+            .transpose()?;
+        let issuer = column::<Option<Vec<u8>>>(row, 5)?
+            .map(|bytes| {
+                <[u8; 32]>::try_from(bytes).map_err(|_| RevocationStoreError::InconsistentResult)
+            })
+            .transpose()?;
+        let claim = CaAdminClaim {
+            step,
+            ca_id: uuid_column(row, 1)?,
+            issuer_certificate_sha256: issuer,
+            family,
+            kind: admin_kind(&column::<String>(row, 3)?)?,
+            change_id,
+            content_sha256: hash_column(row, 6)?,
+            policy_edition: column(row, 7)?,
+            challenge_sha256: hash_column(row, 8)?,
+            expires_at_us: column(row, 9)?,
+        };
+        claim
+            .validate()
+            .map_err(|_| RevocationStoreError::InconsistentResult)?;
+        Ok(AdminChallenge {
+            purpose,
+            claim,
+            actor_issuer: column(row, 10)?,
+            actor_subject: column(row, 11)?,
+            consumed: column(row, 12)?,
+        })
+    }
+
+    /// Submits a signed CA-admin proposal (with the `change` the maker
+    /// reviewed, which must be the signed one) or approval (`change` None).
+    /// The WebAuthn assertion is verified against the claim rebuilt from the
+    /// stored challenge and the enrolled admin key before anything is
+    /// written; the database re-checks the rest (migration 0037). Returns
+    /// the change id.
+    pub fn submit_signed_admin(
+        &mut self,
+        challenge_id: &str,
+        credential_id: &[u8],
+        assertion: &Assertion<'_>,
+        rp: &RelyingParty<'_>,
+        change: Option<&AdminChange<'_>>,
+    ) -> Result<String, RevocationStoreError> {
+        let challenge = self.admin_challenge(challenge_id)?;
+        let ca_text = hex_uuid(&challenge.claim.ca_id);
+        let rows = self.client.query(
+            "SELECT issuer, subject, public_key_sec1, sign_count, active
+             FROM ca_admin_credential_for($1::text::uuid, $2)",
+            &[&ca_text, &credential_id],
+        )?;
+        let row = rows
+            .first()
+            .ok_or(RevocationStoreError::SignedApprovalRefused)?;
+        let credential = StoredCredential {
+            issuer: column(row, 0)?,
+            subject: column(row, 1)?,
+            public_key_sec1: column(row, 2)?,
+            sign_count: column(row, 3)?,
+            active: column(row, 4)?,
+        };
+        if challenge.consumed
+            || !credential.active
+            || (credential.issuer.as_str(), credential.subject.as_str())
+                != (
+                    challenge.actor_issuer.as_str(),
+                    challenge.actor_subject.as_str(),
+                )
+        {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        // A proposal must carry exactly the content that was signed.
+        let params = match (challenge.purpose, change) {
+            (SignedStep::Propose, Some(change)) => {
+                let (digest, params) = change.reviewed()?;
+                if change.family().as_sql() != challenge.claim.family
+                    || change.kind() != challenge.claim.kind
+                    || digest != challenge.claim.content_sha256
+                {
+                    return Err(RevocationStoreError::SignedApprovalRefused);
+                }
+                Some(params)
+            }
+            (SignedStep::Approve, None) => None,
+            _ => return Err(RevocationStoreError::SignedApprovalRefused),
+        };
+        let stored_count = u32::try_from(credential.sign_count)
+            .map_err(|_| RevocationStoreError::InconsistentResult)?;
+        verify_assertion(
+            assertion,
+            rp,
+            &credential.public_key_sec1,
+            &challenge.claim.digest(),
+            stored_count,
+        )
+        .map_err(RevocationStoreError::InvalidAssertion)?;
+        match params {
+            Some(p) => {
+                let row = self.client.query_one(
+                    "SELECT propose_signed_admin_change($1::text::uuid, $2, $3, $4, $5,
+                                                        $6, $7, $8, $9, $10, $11)::text",
+                    &[
+                        &challenge_id,
+                        &credential_id,
+                        &assertion.authenticator_data,
+                        &assertion.client_data_json,
+                        &assertion.signature_der,
+                        &p.certificate_der,
+                        &p.credential_id,
+                        &p.officer_issuer,
+                        &p.officer_subject,
+                        &p.person_id,
+                        &p.public_key_sec1,
+                    ],
+                )?;
+                column(&row, 0)
+            }
+            None => {
+                self.client.query_one(
+                    "SELECT approve_signed_admin_change($1::text::uuid, $2, $3, $4, $5)",
+                    &[
+                        &challenge_id,
+                        &credential_id,
+                        &assertion.authenticator_data,
+                        &assertion.client_data_json,
+                        &assertion.signature_der,
+                    ],
+                )?;
+                challenge
+                    .claim
+                    .change_id
+                    .as_ref()
+                    .map(hex_uuid)
+                    .ok_or(RevocationStoreError::InconsistentResult)
+            }
+        }
+    }
+
+    /// Re-verifies a signed CA-admin change offline: a proposal and an
+    /// approval signature, each against the enrolled admin key and the
+    /// claim rebuilt from its challenge; both claims name the change's CA,
+    /// kind and content, the approval names the change; keys and persons
+    /// differ.
+    pub fn reverify_admin_change(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT role, challenge_id::text, public_key_sec1, person_id, claim_sha256,
+                    authenticator_data, client_data_json, signature_der, change_ca::text,
+                    change_kind, change_content_sha256
+             FROM ca_admin_signatures($1, $2::text::uuid)",
+            &[&family.as_sql(), &change_id],
+        )?;
+        if rows.len() != 2 {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
+        let mut keys = Vec::new();
+        let mut persons = Vec::new();
+        let mut steps = Vec::new();
+        for row in &rows {
+            let challenge = self.admin_challenge(&column::<String>(row, 1)?)?;
+            let claim = &challenge.claim;
+            let digest = claim.digest();
+            let names_change = match challenge.purpose {
+                SignedStep::Approve => {
+                    claim.change_id.as_ref().map(hex_uuid).as_deref() == Some(change_id)
+                }
+                _ => claim.change_id.is_none(),
+            };
+            if hash_column(row, 4)? != digest
+                || !names_change
+                || claim.family != family.as_sql()
+                || claim.ca_id != uuid_column(row, 8)?
+                || claim.kind != column::<String>(row, 9)?
+                || claim.content_sha256 != hash_column(row, 10)?
+            {
+                return Err(RevocationStoreError::SignedApprovalRefused);
+            }
+            let key: Vec<u8> = column(row, 2)?;
+            let authenticator_data: Vec<u8> = column(row, 5)?;
+            let client_data_json: Vec<u8> = column(row, 6)?;
+            let signature_der: Vec<u8> = column(row, 7)?;
+            verify_assertion(
+                &Assertion {
+                    authenticator_data: &authenticator_data,
+                    client_data_json: &client_data_json,
+                    signature_der: &signature_der,
+                },
+                rp,
+                &key,
+                &digest,
+                0,
+            )
+            .map_err(RevocationStoreError::InvalidAssertion)?;
+            steps.push(challenge.purpose);
+            keys.push(key);
+            persons.push(column::<String>(row, 3)?);
+        }
+        let complete = steps == [SignedStep::Propose, SignedStep::Approve]
+            && keys[0] != keys[1]
+            && persons[0] != persons[1];
         complete
             .then_some(())
             .ok_or(RevocationStoreError::SignedApprovalRefused)

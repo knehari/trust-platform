@@ -105,7 +105,11 @@ BEGIN
           'reject_ca_admin_change', 'propose_credential_change',
           'approve_credential_change', 'reject_credential_change',
           'issue_precautionary_hold_challenge', 'apply_precautionary_hold',
-          'precautionary_holds')
+          'precautionary_holds', 'enroll_ca_admin_credential', 'remove_ca_admin_credential',
+          'issue_ca_admin_challenge', 'ca_admin_challenge_claim', 'ca_admin_credential_for',
+          'propose_signed_admin_change', 'approve_signed_admin_change', 'ca_admin_signatures',
+          'ca_admin_propose_unchecked', 'ca_admin_approve_unchecked',
+          'credential_propose_unchecked', 'credential_approve_unchecked')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
@@ -198,7 +202,16 @@ BEGIN
               VALUES ('c0c0c0c0-0000-4000-8000-000000000a23', 'x'::bytea, 'x')$$,
             $$TRUNCATE revocation$$,
             $$SELECT count(*) FROM revocation$$,
-            $$SELECT count(*) FROM certificate_status_change$$] LOOP
+            $$SELECT count(*) FROM certificate_status_change$$,
+            -- signed CA administration (0037): registries, evidence and the
+            -- unsigned or bootstrap paths
+            $$UPDATE ca_admin_credential SET sign_count = 0$$,
+            $$SELECT count(*) FROM ca_admin_challenge$$,
+            $$SELECT count(*) FROM ca_admin_signature$$,
+            $$SELECT enroll_ca_admin_credential(NULL, NULL, NULL, NULL, NULL, NULL)$$,
+            $$SELECT ca_admin_approve_unchecked(NULL, NULL, NULL, NULL)$$,
+            $$SELECT credential_propose_unchecked(NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, NULL)$$] LOOP
             PERFORM pg_temp.as_role(r, s, '42501');
         END LOOP;
     END LOOP;

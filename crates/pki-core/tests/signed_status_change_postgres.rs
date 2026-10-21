@@ -11,7 +11,10 @@ use trust_pki_core::{
     lab_ca::EphemeralLabCa,
     officer_credential::CredentialChangeKind,
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
-    revocation_store::{CredentialContent, PgRevocationStore, RevocationStoreError},
+    revocation_store::{
+        AdminChange, AdminFamily, CredentialContent, OfficerGrantAction, PgRevocationStore,
+        RevocationStoreError,
+    },
     serial::SerialNumber,
     webauthn::{challenge_text, Assertion, RelyingParty, WebAuthnError},
 };
@@ -641,4 +644,269 @@ fn precautionary_hold_by_one_signed_officer() {
         .unwrap()
         .get(0);
     assert_eq!(audit, 1);
+}
+
+const THIRD: OfficerIdentity<'static> = OfficerIdentity {
+    issuer: ISSUER,
+    subject: "third",
+};
+
+fn admin_submit(
+    store: &mut PgRevocationStore,
+    authenticator: &mut Authenticator,
+    credential_id: &[u8],
+    challenge: &str,
+    change: Option<&AdminChange<'_>>,
+) -> Result<String, RevocationStoreError> {
+    let digest = store.admin_challenge(challenge).unwrap().claim.digest();
+    let (data, client, signature) = authenticator.sign(&digest);
+    store.submit_signed_admin(
+        challenge,
+        credential_id,
+        &Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        },
+        &RP,
+        change,
+    )
+}
+
+/// ADR-0007 `trust-platform/ca-admin/v1` (migration 0037): once a CA
+/// requires signed administration, officer grants and credential
+/// enrolment need a maker and a checker CA admin signing the canonical
+/// claim with distinct enrolled keys and persons; unsigned paths, content
+/// substitution, another admin's key and self-approval are refused; the
+/// evidence re-verifies offline.
+#[test]
+fn signed_ca_admin_changes() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (mut admin_a, mut admin_b) = (Authenticator::new(), Authenticator::new());
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id) = (credential(3), credential(4));
+
+    // DBA bootstrap; an officer's key or person cannot become an admin's.
+    let reused_key = boot
+        .enroll_admin_credential(
+            &ca,
+            &b_id,
+            &ADMIN_B,
+            "person-admin-b",
+            &lab.maker.public_key(),
+        )
+        .unwrap_err();
+    assert_eq!(sqlstate(&reused_key).as_deref(), Some("23514"));
+    let reused_person = boot
+        .enroll_admin_credential(&ca, &b_id, &ADMIN_B, "person-maker", &admin_b.public_key())
+        .unwrap_err();
+    assert_eq!(sqlstate(&reused_person).as_deref(), Some("23514"));
+    boot.enroll_admin_credential(
+        &ca,
+        &a_id,
+        &ADMIN_A,
+        "person-admin-a",
+        &admin_a.public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    // A service holding trust_ca_admin cannot bootstrap admin keys.
+    let rogue = Authenticator::new();
+    let denied = lab
+        .admin
+        .enroll_admin_credential(
+            &ca,
+            &credential(9),
+            &ADMIN_A,
+            "person-admin-a",
+            &rogue.public_key(),
+        )
+        .unwrap_err();
+    assert_eq!(sqlstate(&denied).as_deref(), Some("42501"));
+
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let unsigned = lab
+        .admin
+        .propose_officer_grant(&ca, OfficerGrantAction::Grant, &THIRD, &ADMIN_A)
+        .unwrap_err();
+    assert_eq!(sqlstate(&unsigned).as_deref(), Some("42501"));
+
+    // Signed officer grant: A proposes, B approves.
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    // The content handed over must be the content signed.
+    let other = OfficerIdentity {
+        issuer: ISSUER,
+        subject: "someone-else",
+    };
+    let substituted = AdminChange::Officer(OfficerGrantAction::Grant, &other);
+    assert!(matches!(
+        admin_submit(
+            &mut lab.admin,
+            &mut admin_a,
+            &a_id,
+            &challenge,
+            Some(&substituted)
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    // Bypassing the Rust check: the database compares the change it creates.
+    {
+        let digest = lab
+            .admin
+            .admin_challenge(&challenge)
+            .unwrap()
+            .claim
+            .digest();
+        let (data, client, signature) = admin_a.sign(&digest);
+        let mut direct = Client::connect(&url_as(&url, "trust_ca_admin"), NoTls).unwrap();
+        let error = direct
+            .query_one(
+                "SELECT propose_signed_admin_change($1::text::uuid, $2, $3, $4, $5,
+                     NULL, NULL, $6, $7, NULL, NULL)",
+                &[
+                    &challenge,
+                    &a_id,
+                    &data,
+                    &client,
+                    &signature,
+                    &ISSUER,
+                    &"someone-else",
+                ],
+            )
+            .unwrap_err();
+        assert_eq!(error.code().map(|c| c.code()), Some("23514"));
+        assert!(error
+            .as_db_error()
+            .is_some_and(|e| e.message().contains("differs from the signed content")));
+    }
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&grant),
+    )
+    .unwrap();
+    // The maker cannot ask to approve; B's challenge refuses A's key.
+    let own = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_A, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&own).as_deref(), Some("23514"));
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap();
+    assert!(matches!(
+        admin_submit(&mut lab.admin, &mut admin_a, &a_id, &approval, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    // Unsigned approval of the signed proposal is refused too.
+    let unsigned = lab
+        .admin
+        .approve_officer_grant(&change, OfficerGrantAction::Grant, &THIRD, &ADMIN_B)
+        .unwrap_err();
+    assert_eq!(sqlstate(&unsigned).as_deref(), Some("42501"));
+    assert_eq!(
+        admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap(),
+        change
+    );
+    assert!(matches!(
+        admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let granted: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM revocation_officer_grant
+             WHERE ca_id = $1::text::uuid AND subject = 'third'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(granted, 1);
+    lab.admin
+        .reverify_admin_change(AdminFamily::CaAdmin, &change, &RP)
+        .unwrap();
+
+    // Signed credential enrolment for the new officer.
+    let third = Authenticator::new();
+    let third_key = third.public_key();
+    let third_id = credential(5);
+    let content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &third_id,
+        officer: &THIRD,
+        person_id: "person-third",
+        public_key_sec1: &third_key,
+    };
+    let enroll = AdminChange::Credential(CredentialChangeKind::Enroll, &content);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &enroll, &ADMIN_B, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_b,
+        &b_id,
+        &challenge,
+        Some(&enroll),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::Credential, &change, &ADMIN_A, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_a, &a_id, &approval, None).unwrap();
+    let active: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM officer_credential
+             WHERE credential_id = $1 AND status = 'ACTIVE'",
+            &[&third_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(active, 1);
+    lab.admin
+        .reverify_admin_change(AdminFamily::Credential, &change, &RP)
+        .unwrap();
+    // Evidence for one family is not evidence for the other.
+    assert!(lab
+        .admin
+        .reverify_admin_change(AdminFamily::CaAdmin, &change, &RP)
+        .is_err());
+
+    let off = owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = false
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap_err();
+    assert_eq!(off.code().map(|c| c.code()), Some("23514"));
 }
