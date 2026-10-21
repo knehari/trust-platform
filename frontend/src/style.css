@@ -51,3 +51,16 @@ body{font-size:var(--type-body);line-height:1.5}
 .mono{font-size:var(--type-control)}
 .timeline-item .record-link{font-size:var(--type-body)}
 @media(max-width:760px){.page-heading h1,.login-card h1{font-size:26px}.detail-header{flex-direction:column;gap:12px}}
+
+/* Keyboard visibility and secondary-text contrast for data consultation. */
+button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #126e68;outline-offset:3px}
+.sidebar button:focus-visible{outline-color:#8de0cf}
+.ca-text small,.panel-heading,.breadcrumb,.page-heading p,.table-heading span,.timeline-item small,.info-cell span,.subtle-panel p,.filter-field,.filter-empty,.page-date,.dialog-note{color:#52677a}
+@media(max-width:760px){
+  .nav{scrollbar-width:thin;scrollbar-color:#8de0cf #173348;scroll-padding-inline:12px}
+  .nav button{flex:none;min-height:44px}
+  .exact-lookup>div{flex-wrap:wrap}
+  .exact-lookup input[type=date]{flex:1 1 140px}
+  .table-wrap{overflow-x:auto;overscroll-behavior-inline:contain}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
