@@ -20,6 +20,8 @@ pub enum StoreError {
     Database(PgError),
     InconsistentResult,
     ReplayedSigningIntent,
+    /// The login could bypass the definer functions (migration 0035).
+    PrivilegedSession,
 }
 
 impl From<PgError> for StoreError {
@@ -99,6 +101,32 @@ impl PgIssuanceStore {
     /// NoTls is suitable ONLY for CI's loopback test database.
     pub fn connect_lab(conn_str: &str) -> Result<Self, StoreError> {
         let client = Client::connect(conn_str, NoTls)?;
+        Ok(Self { client })
+    }
+
+    /// Lab issuance service session: like `connect_lab`, but refuses a login
+    /// that could bypass the SECURITY DEFINER issuance functions (0035):
+    /// superuser, CREATEROLE, BYPASSRLS, or a member of an owner role. Use a
+    /// login granted only `trust_issuance_service`.
+    pub fn connect_lab_service(conn_str: &str) -> Result<Self, StoreError> {
+        Self::from_service_client(Client::connect(conn_str, NoTls)?)
+    }
+
+    /// The same check on a client connected under the caller's TLS policy.
+    pub fn from_service_client(mut client: Client) -> Result<Self, StoreError> {
+        let row = client.query_one(
+            "SELECT r.rolsuper OR r.rolcreaterole OR r.rolbypassrls
+                    OR EXISTS (SELECT 1 FROM pg_roles o
+                               WHERE o.rolname IN ('trust_issuance_owner',
+                                                   'trust_revocation_owner')
+                                 AND pg_has_role(session_user, o.oid, 'MEMBER'))
+             FROM pg_roles r WHERE r.rolname = session_user",
+            &[],
+        )?;
+        let privileged: bool = row.try_get(0).map_err(|_| StoreError::InconsistentResult)?;
+        if privileged {
+            return Err(StoreError::PrivilegedSession);
+        }
         Ok(Self { client })
     }
 

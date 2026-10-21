@@ -11,7 +11,7 @@ use trust_pki_core::{
         issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuancePlan,
         IssueError,
     },
-    postgres_store::PgIssuanceStore,
+    postgres_store::{PgIssuanceStore, StoreError},
     serial::SerialNumber,
     x509_extensions::ApprovedPolicyBinding,
 };
@@ -917,4 +917,59 @@ fn issuance_service_role_issues_through_functions_only() {
         .unwrap()
         .get(0);
     assert_eq!(stored, issued);
+}
+
+/// The issuance store refuses a session that could bypass the definer
+/// functions (superuser, CREATEROLE, BYPASSRLS, or a member of an owner
+/// role), and accepts a login holding only trust_issuance_service.
+#[test]
+fn issuance_service_session_refuses_privileged_logins() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    assert!(matches!(
+        PgIssuanceStore::connect_lab_service(&url),
+        Err(StoreError::PrivilegedSession)
+    ));
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    owner
+        .batch_execute(
+            "DO $$BEGIN
+               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_issuance_ci') THEN
+                 CREATE ROLE trust_issuance_ci LOGIN PASSWORD 'test-only-not-secret';
+               END IF;
+               IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_issuance_owner_ci') THEN
+                 CREATE ROLE trust_issuance_owner_ci LOGIN PASSWORD 'test-only-not-secret';
+               END IF;
+             END$$;
+             GRANT trust_issuance_service TO trust_issuance_ci;
+             GRANT trust_issuance_owner TO trust_issuance_owner_ci;",
+        )
+        .unwrap();
+    let login = |user: &str| {
+        let (scheme, rest) = url.split_once("://").unwrap();
+        let (_, host) = rest.split_once('@').unwrap();
+        format!("{scheme}://{user}:test-only-not-secret@{host}")
+    };
+    assert!(matches!(
+        PgIssuanceStore::connect_lab_service(&login("trust_issuance_owner_ci")),
+        Err(StoreError::PrivilegedSession)
+    ));
+    let mut service = PgIssuanceStore::connect_lab_service(&login("trust_issuance_ci")).unwrap();
+    let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let (csr, _, _) = context();
+    service
+        .create_request(
+            ca_id,
+            "service-session-1",
+            csr.fingerprint_sha256(),
+            "lab-actor",
+            "v1",
+        )
+        .unwrap();
 }
