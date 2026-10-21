@@ -21,3 +21,5 @@ Open `http://127.0.0.1:5173`, sign in, and verify that only the allowed CA appea
 Browser smoke evidence on 2026-10-17: Authorization Code + PKCE exchanged once; dashboard displayed the single authorized `Allowed CA` from a populated two-CA PostgreSQL database; detail, certificate empty state, audit empty state, logout and fresh login were exercised. This does not prove production IAM or an HTTP issuance path.
 
 The console can restore a scoped view and a certificate/audit detail from a URL after the API rechecks access. Browser Back/Forward restores the view and authority. Certificate CN prefix and audit date/type forms query the entire selected authority history through the API, with the same 100-row cursor pages; local text filters and sorts still affect only loaded rows. An older API binary may ignore the new query parameters, so refresh the local API before relying on these filters.
+
+A separate authority search calls the API across the full signed-and-granted CA scope by name or policy prefix. The existing authority filter continues to act only on currently loaded rows.
