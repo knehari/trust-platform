@@ -65,6 +65,9 @@ struct Certificate {
     signed_at: String,
     published_at: Option<String>,
     subject_cn: Option<String>,
+    not_before: Option<String>,
+    not_after: Option<String>,
+    san_dns: Option<Vec<String>>,
 }
 #[derive(Serialize)]
 struct Audit {
@@ -601,12 +604,12 @@ async fn list_certificates(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+        let query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
              ORDER BY signed_at {direction}, request_id {direction} LIMIT 101");
-        let search_query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+        let search_query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
@@ -640,6 +643,9 @@ fn certificate_from_row(row: Row) -> Certificate {
         signed_at: row.get(5),
         published_at: row.get(6),
         subject_cn: row.get(7),
+        not_before: row.get(8),
+        not_after: row.get(9),
+        san_dns: row.get(10),
     }
 }
 
@@ -662,7 +668,7 @@ async fn get_certificate(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query_opt(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND request_id=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &request_id, &issuer, &subject],
@@ -689,7 +695,7 @@ async fn get_certificate_by_serial(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query_opt(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND serial_hex=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &serial_hex, &issuer, &subject],
@@ -983,6 +989,9 @@ mod tests {
         );
         assert_eq!(certificate["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
         assert_eq!(certificate["subject_cn"], "paged-0001.lab.invalid");
+        assert!(certificate["not_before"].is_null());
+        assert!(certificate["not_after"].is_null());
+        assert!(certificate["san_dns"].is_null());
         let search = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates?cn=PAGED-006";
         let (status, cursor, matches) = history_page(&app, &token, search).await;
         assert_eq!(status, StatusCode::OK);

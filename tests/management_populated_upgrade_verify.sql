@@ -23,6 +23,7 @@ DO $test$ BEGIN
           AND serial_hex = '01' AND fingerprint_sha256 = repeat('02', 32)
           AND request_id = '11111111-1111-4111-8111-111111111111'
           AND state = 'SIGNED' AND subject_cn IS NULL
+          AND not_before IS NULL AND not_after IS NULL AND san_dns IS NULL
     ) OR (SELECT count(*) FROM management_certificate) <> 1 OR
        (SELECT certificate_der FROM certificate) <> decode('3000', 'hex') THEN
         RAISE EXCEPTION 'existing certificate or management projection changed';

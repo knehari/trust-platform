@@ -31,3 +31,5 @@ Certificate pages accept an optional literal, case-insensitive `cn` prefix (2–
 CA inventory pages also accept a literal case-insensitive `q` prefix over display name or policy version. The query is applied only after signed CA scope and server-owned grant intersection, and must accompany every subsequent cursor. The view remains bounded to 100 rows per page; query-plan and large-scope performance evidence remain open.
 
 Certificate and audit pages support `order=newest|oldest` over the complete scoped history. Cursor comparison changes with direction, while timestamp plus unique ID remains the stable tie-breaker. The console labels CN, serial, event-type and decision sorts as loaded-row operations; those are not server-wide sorts.
+
+New verified lab issuance records expose certificate validity and DNS subject alternative names extracted from the signed DER after independent verification. Historical rows retain null values; the console does not infer these fields from request or CSR data. The management view remains security-barrier protected and returns metadata only, never certificate DER or private keys.

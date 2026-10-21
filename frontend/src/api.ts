@@ -15,6 +15,9 @@ export interface Certificate {
   signed_at: string;
   published_at: string | null;
   subject_cn: string | null;
+  not_before: string | null;
+  not_after: string | null;
+  san_dns: string[] | null;
 }
 
 export interface AuditEvent {

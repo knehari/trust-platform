@@ -14,7 +14,25 @@ use crate::policy_trace::VerifiedDraftCertificateTrace;
 use crate::provider_evidence::{EvidenceKind, VerifiedCollectorEvidence};
 use crate::serial::SerialNumber as ValidatedSerial;
 use postgres::{Client, Error as PgError, NoTls};
-use x509_cert::{der::Decode, Certificate};
+use x509_cert::{
+    der::Decode,
+    ext::pkix::{name::GeneralName, SubjectAltName},
+    time::Time,
+    Certificate,
+};
+
+fn verified_time_utc(time: Time) -> String {
+    let value = time.to_date_time();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        value.year(),
+        value.month(),
+        value.day(),
+        value.hour(),
+        value.minutes(),
+        value.seconds()
+    )
+}
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -621,21 +639,43 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
         // The verifier has already accepted this DER. Persist only a subject made
         // of one plain CN; other distinguished names remain unrecorded rather
         // than being guessed from a formatted multi-attribute subject.
-        let subject_cn = Certificate::from_der(certificate_der)
-            .ok()
-            .and_then(|cert| {
-                let subject = cert.tbs_certificate.subject.to_string();
-                subject.strip_prefix("CN=").and_then(|cn| {
-                    (cn.len() <= 255
-                        && !cn.is_empty()
-                        && !cn.contains(',')
-                        && !cn.contains('\\')
-                        && !cn.chars().any(char::is_control))
-                    .then(|| cn.to_owned())
-                })
-            });
+        let cert = Certificate::from_der(certificate_der)
+            .map_err(|_| crate::orchestrator::IssueError::PersistenceFailure)?;
+        let subject = cert.tbs_certificate.subject.to_string();
+        let subject_cn = subject.strip_prefix("CN=").and_then(|cn| {
+            (cn.len() <= 255
+                && !cn.is_empty()
+                && !cn.contains(',')
+                && !cn.contains('\\')
+                && !cn.chars().any(char::is_control))
+            .then(|| cn.to_owned())
+        });
+        let validity = cert.tbs_certificate.validity;
+        let not_before = verified_time_utc(validity.not_before);
+        let not_after = verified_time_utc(validity.not_after);
+        let san_dns: Vec<String> = cert
+            .tbs_certificate
+            .get::<SubjectAltName>()
+            .map_err(|_| crate::orchestrator::IssueError::PersistenceFailure)?
+            .map(|(_, san)| {
+                san.0
+                    .into_iter()
+                    .filter_map(|name| match name {
+                        GeneralName::DnsName(dns) => Some(dns.as_str().to_owned()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if san_dns.len() > 100
+            || san_dns
+                .iter()
+                .any(|name| name.is_empty() || name.len() > 253)
+        {
+            return Err(crate::orchestrator::IssueError::PersistenceFailure);
+        }
         let result = self.client.query_one(
-            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7,$8)",
+            "SELECT store_signed_certificate($1::text::uuid,$2::text::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
             &[
                 &plan.ca_id,
                 &plan.request_id,
@@ -645,6 +685,9 @@ impl crate::orchestrator::IssuanceJournal for PgIssuanceStore {
                 &&certificate_sha256[..],
                 &certificate_der,
                 &subject_cn,
+                &not_before,
+                &not_after,
+                &san_dns,
             ],
         );
         match result {

@@ -5,10 +5,11 @@ import { auditMetadataJson, certificateMetadataJson } from '../src/metadata-copy
 test('certificate JSON copies only approved metadata and preserves null CN', () => {
   const copied = JSON.parse(certificateMetadataJson({
     ca_id: 'ca', request_id: 'request', serial_hex: '010001', subject_cn: null,
+    not_before: null, not_after: null, san_dns: null,
     fingerprint_sha256: 'a'.repeat(64), state: 'SIGNED', signed_at: '2026-10-01T00:00:00Z', published_at: null,
     certificate_der: 'must-not-copy', private_key: 'must-not-copy',
   }));
-  assert.deepEqual(Object.keys(copied), ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'fingerprint_sha256', 'state', 'signed_at', 'published_at']);
+  assert.deepEqual(Object.keys(copied), ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'not_before', 'not_after', 'san_dns', 'fingerprint_sha256', 'state', 'signed_at', 'published_at']);
   assert.equal(copied.subject_cn, null);
   assert.equal(JSON.stringify(copied).includes('must-not-copy'), false);
 });
