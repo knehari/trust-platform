@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-34a8bd3788c1505d069c7a8cd70c8941283fc0935a3c556c51123bdafa086d95",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-51d6da95eef96eef97d7b114897d0036d6eb95f37c7b0f0699f9968b865d5782",
   "creationInfo": {
-    "created": "2026-10-18T14:21:56Z",
+    "created": "2026-10-21T17:05:52Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -1421,6 +1421,22 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-npm-e649b79d908d0ec26643",
+      "name": "fsevents",
+      "versionInfo": "2.3.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "c62a8c411e3101e1d3b81f6e5a6f9f1517083a02813223813fe7978b24fb8ec8150aad5b915ca0b74d28012a3007b11db6938769a3e02adf35d8ff5a6fe0c328"
+        }
+      ]
+    },
+    {
       "SPDXID": "SPDXRef-npm-85127abd4e8b2a420beb",
       "name": "fsevents",
       "versionInfo": "2.3.3",
@@ -2793,6 +2809,38 @@
         {
           "algorithm": "SHA256",
           "checksumValue": "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-npm-39e2d61c3a496f235b75",
+      "name": "playwright",
+      "versionInfo": "1.56.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "6858b90745a8bc11d312fa4cdc3cd74d469e37a78dd2a5a74e42b1e0d41a1f85af726735e773dd698d9405d49829a198c3e532597495cb10d48390e83c4b6d8f"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-npm-0e429c35682a15ca3d07",
+      "name": "playwright-core",
+      "versionInfo": "1.56.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "86eb6b6b29f29f7d45f8189f99ef8fb3d56ae7d84ab940b3ec7d640ce701b3eda81a0b8a9164d4e746c15abb73df83945a6230a414d60f16913d7ac85e482f99"
         }
       ]
     },
@@ -5515,6 +5563,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-npm-e649b79d908d0ec26643"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-npm-85127abd4e8b2a420beb"
     },
     {
@@ -5941,6 +5994,16 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-8a3da2fd00a0ee2e353f"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-npm-39e2d61c3a496f235b75"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-npm-0e429c35682a15ca3d07"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
