@@ -194,7 +194,7 @@ const STATUS_CHANGE_CLOSE_TAG: &[u8] = b"trust-platform/status-change-close/v1\0
 /// names the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaAdminClaim {
-    /// PROPOSE or APPROVE.
+    /// PROPOSE, APPROVE or REJECT (0042).
     pub step: &'static str,
     pub ca_id: [u8; 16],
     /// None before the CA's first issuer registration.
@@ -219,7 +219,7 @@ impl CaAdminClaim {
     pub fn validate(&self) -> Result<(), CredentialError> {
         let step_ok = match self.step {
             "PROPOSE" => self.change_id.is_none(),
-            "APPROVE" => self.change_id.is_some(),
+            "APPROVE" | "REJECT" => self.change_id.is_some(),
             _ => false,
         };
         let kind_ok = match self.family {
@@ -511,6 +511,27 @@ mod tests {
         assert_ne!(withdraw, claim.digest());
         assert_eq!(
             claim.closing_digest("APPROVE"),
+            Err(CredentialError::InvalidInput)
+        );
+    }
+
+    /// A rejection claim names the same change but never verifies as its
+    /// approval.
+    #[test]
+    fn ca_admin_rejection_is_its_own_step() {
+        let approve = admin_claim();
+        let reject = CaAdminClaim {
+            step: "REJECT",
+            ..approve.clone()
+        };
+        assert_eq!(reject.validate(), Ok(()));
+        assert_ne!(reject.digest(), approve.digest());
+        let without_change = CaAdminClaim {
+            change_id: None,
+            ..reject
+        };
+        assert_eq!(
+            without_change.validate(),
             Err(CredentialError::InvalidInput)
         );
     }

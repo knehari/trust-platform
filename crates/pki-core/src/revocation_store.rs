@@ -1095,6 +1095,29 @@ impl PgRevocationStore {
         column(&row, 0)
     }
 
+    /// Asks for a single-use challenge to reject a CA-admin change with a
+    /// signature (a CA admin other than the maker; migration 0042).
+    pub fn issue_admin_rejection_challenge(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+        checker: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT issue_ca_admin_challenge('REJECT', NULL, $1, NULL, NULL, $2::text::uuid,
+                                             $3, $4, $5)::text",
+            &[
+                &family.as_sql(),
+                &change_id,
+                &checker.issuer,
+                &checker.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
     /// The stored CA-admin challenge and the claim rebuilt from it.
     pub fn admin_challenge(
         &mut self,
@@ -1113,6 +1136,7 @@ impl PgRevocationStore {
         let (purpose, step) = match column::<String>(row, 0)?.as_str() {
             "PROPOSE" => (SignedStep::Propose, "PROPOSE"),
             "APPROVE" => (SignedStep::Approve, "APPROVE"),
+            "REJECT" => (SignedStep::Reject, "REJECT"),
             _ => return Err(RevocationStoreError::InconsistentResult),
         };
         let family = match column::<String>(row, 2)?.as_str() {
@@ -1206,7 +1230,7 @@ impl PgRevocationStore {
                 }
                 Some(params)
             }
-            (SignedStep::Approve, None) => None,
+            (SignedStep::Approve | SignedStep::Reject, None) => None,
             _ => return Err(RevocationStoreError::SignedApprovalRefused),
         };
         let stored_count = u32::try_from(credential.sign_count)
@@ -1241,8 +1265,13 @@ impl PgRevocationStore {
                 column(&row, 0)
             }
             None => {
+                let function = if challenge.purpose == SignedStep::Reject {
+                    "reject_signed_admin_change"
+                } else {
+                    "approve_signed_admin_change"
+                };
                 self.client.query_one(
-                    "SELECT approve_signed_admin_change($1::text::uuid, $2, $3, $4, $5)",
+                    &format!("SELECT {function}($1::text::uuid, $2, $3, $4, $5)"),
                     &[
                         &challenge_id,
                         &credential_id,
@@ -1302,7 +1331,7 @@ impl PgRevocationStore {
             let claim = &challenge.claim;
             let digest = claim.digest();
             let names_change = match challenge.purpose {
-                SignedStep::Approve => {
+                SignedStep::Approve | SignedStep::Reject => {
                     claim.change_id.as_ref().map(hex_uuid).as_deref() == Some(change_id)
                 }
                 _ => claim.change_id.is_none(),
@@ -1339,7 +1368,8 @@ impl PgRevocationStore {
         let complete = if pending {
             steps == [SignedStep::Propose]
         } else {
-            steps == [SignedStep::Propose, SignedStep::Approve]
+            (steps == [SignedStep::Propose, SignedStep::Approve]
+                || steps == [SignedStep::Propose, SignedStep::Reject])
                 && keys[0] != keys[1]
                 && persons[0] != persons[1]
         };

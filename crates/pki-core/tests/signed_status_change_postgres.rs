@@ -1303,3 +1303,98 @@ fn auditor_reverifies_every_signed_change() {
         }
     }
 }
+
+/// Migration 0042: once a CA requires signed administration, a pending
+/// CA-admin change is rejected only with a signed REJECT claim by another
+/// admin (distinct key and person); the unsigned rejection is refused and
+/// the evidence re-verifies.
+#[test]
+fn signed_ca_admin_rejection() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (mut admin_a, mut admin_b) = (Authenticator::new(), Authenticator::new());
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id) = (credential(3), credential(4));
+    boot.enroll_admin_credential(
+        &ca,
+        &a_id,
+        &ADMIN_A,
+        "person-admin-a",
+        &admin_a.public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&grant),
+    )
+    .unwrap();
+
+    let mut direct = Client::connect(&url_as(&url, "trust_ca_admin"), NoTls).unwrap();
+    let unsigned = direct
+        .query_one(
+            "SELECT reject_ca_admin_change($1::text::uuid, $2, 'admin-b')",
+            &[&change, &ISSUER],
+        )
+        .unwrap_err();
+    assert_eq!(unsigned.code().map(|c| c.code()), Some("42501"));
+    let own = lab
+        .admin
+        .issue_admin_rejection_challenge(AdminFamily::CaAdmin, &change, &ADMIN_A, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&own).as_deref(), Some("23514"));
+    let reject = lab
+        .admin
+        .issue_admin_rejection_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap();
+    assert_eq!(
+        admin_submit(&mut lab.admin, &mut admin_b, &b_id, &reject, None).unwrap(),
+        change
+    );
+    let status: String = owner
+        .query_one(
+            "SELECT status FROM ca_admin_change WHERE change_id = $1::text::uuid",
+            &[&change],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "REJECTED");
+    lab.admin
+        .reverify_admin_change(AdminFamily::CaAdmin, &change, &RP)
+        .unwrap();
+    // The rejected grant was not applied, and approving is no longer possible.
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&approval).as_deref(), Some("23514"));
+}
