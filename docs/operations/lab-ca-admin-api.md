@@ -33,6 +33,8 @@ Challenge issuance answers 409 once the acting identity already holds 16 open (u
 
 Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies.
 
+An approval of a proposal older than the CA's `admin_proposal_max_age_hours` (default 168 hours, migration 0052) is refused (409); reject it and propose it again.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);

@@ -2665,3 +2665,61 @@ fn removed_credentials_never_sign_again() {
         count
     );
 }
+
+/// A CA-admin proposal older than the CA's `admin_proposal_max_age_hours`
+/// (default 168, migration 0052) can no longer be approved; a younger one
+/// can. Rejection stays possible, so stale proposals are closed, not lost.
+#[test]
+fn stale_admin_proposals_cannot_be_approved() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let age = |owner: &mut Client, change: &str, days: i32| {
+        owner
+            .batch_execute(&format!(
+                "ALTER TABLE ca_admin_change DISABLE TRIGGER ca_admin_change_guard;
+                 UPDATE ca_admin_change SET proposed_at = proposed_at - interval '{days} days'
+                 WHERE change_id = '{change}';
+                 ALTER TABLE ca_admin_change ENABLE TRIGGER ca_admin_change_guard"
+            ))
+            .unwrap();
+    };
+    let stale = lab
+        .admin
+        .propose_officer_grant(&ca, OfficerGrantAction::Grant, &THIRD, &ADMIN_A)
+        .unwrap();
+    age(&mut owner, &stale, 8);
+    let refused = lab
+        .admin
+        .approve_officer_grant(&stale, OfficerGrantAction::Grant, &THIRD, &ADMIN_B)
+        .unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+    let status: String = owner
+        .query_one(
+            "SELECT status FROM ca_admin_change WHERE change_id = $1::text::uuid",
+            &[&stale],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(status, "PROPOSED");
+    // Within the limit it is approved as before.
+    let recent = lab
+        .admin
+        .propose_officer_grant(&ca, OfficerGrantAction::Revoke, &MAKER, &ADMIN_A)
+        .unwrap();
+    age(&mut owner, &recent, 2);
+    lab.admin
+        .approve_officer_grant(&recent, OfficerGrantAction::Revoke, &MAKER, &ADMIN_B)
+        .unwrap();
+    for bad in [0_i16, 2161] {
+        let refused = owner
+            .execute(
+                "UPDATE ca_revocation_policy SET admin_proposal_max_age_hours = $2
+                 WHERE ca_id = $1::text::uuid",
+                &[&ca, &bad],
+            )
+            .unwrap_err();
+        assert_eq!(refused.code().map(|c| c.code()), Some("23514"));
+    }
+}
