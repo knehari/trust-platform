@@ -1,6 +1,6 @@
 # Laboratory CRL housekeeping
 
-Lab only. `crates/pki-core/examples/crl_housekeeping.rs` runs one housekeeping
+Lab only. `crates/management-api/src/bin/crl_housekeeping.rs` runs one housekeeping
 pass for one CA (ADR-0006 section D, proposed). It calls
 `PgRevocationStore::crl_housekeeping`, which:
 
@@ -23,7 +23,7 @@ makes `PgRevocationStore::reserve_crl` refuse a reservation whose thisUpdate
 disagrees with the host clock (`ClockSkew`, nothing signed). Both hosts
 still need authenticated time (NTS) of their own.
 
-The example then reports `unreviewed_schema_changes` (migration 0026,
+The job then reports `unreviewed_schema_changes` (migration 0026,
 database-wide): DDL and object grants recorded by the schema-change event
 triggers after the last `acknowledge_schema_changes` call. Each reviewed
 migration ends with that call, so any other count means someone changed the
