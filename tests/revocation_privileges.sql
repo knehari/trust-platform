@@ -113,7 +113,7 @@ BEGIN
           'issue_close_challenge', 'close_signed_status_change',
           'status_change_reject_unchecked', 'status_change_withdraw_unchecked',
           'admin_credential_propose_unchecked', 'admin_credential_approve_unchecked',
-          'reject_admin_credential_change')
+          'reject_admin_credential_change', 'signed_evidence_index')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);

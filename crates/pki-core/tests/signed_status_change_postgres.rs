@@ -12,8 +12,8 @@ use trust_pki_core::{
     officer_credential::CredentialChangeKind,
     revocation::{CertificateStatus, OfficerIdentity, RevocationReason, StatusAction},
     revocation_store::{
-        AdminChange, AdminFamily, CredentialContent, OfficerGrantAction, PgRevocationStore,
-        RevocationStoreError, SignedStep,
+        AdminChange, AdminFamily, CredentialContent, EvidenceFamily, OfficerGrantAction,
+        PgRevocationStore, RevocationStoreError, SignedStep,
     },
     serial::SerialNumber,
     webauthn::{challenge_text, Assertion, RelyingParty, WebAuthnError},
@@ -911,15 +911,8 @@ fn signed_ca_admin_changes() {
     assert_eq!(off.code().map(|c| c.code()), Some("23514"));
 }
 
-/// One officer cannot hold more certificates as a precaution than the CA's
-/// limit while those holds await confirmation (migration 0038); another
-/// officer still can, and a confirmed hold frees the slot.
-#[test]
-fn precautionary_holds_are_capped_per_officer() {
-    let Some(url) = database_url() else { return };
-    let mut lab = lab(&url);
-    let ca = lab.ca_id.clone();
-    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+/// A second issued certificate (serial 0x02) on the lab CA.
+fn second_certificate(owner: &mut Client, ca: &str) {
     owner
         .batch_execute(&format!(
             "INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
@@ -933,8 +926,24 @@ fn precautionary_holds_are_capped_per_officer() {
                  certificate_der, signed_at)
                  SELECT ca_id, serial_der_content, request_id, sha256('der2'::bytea),
                         '\\x3003020102', now()
-                 FROM serial_reservation WHERE ca_id = '{ca}' AND serial_der_content = '\\x02';
-             UPDATE ca_revocation_policy
+                 FROM serial_reservation WHERE ca_id = '{ca}' AND serial_der_content = '\\x02';"
+        ))
+        .unwrap();
+}
+
+/// One officer cannot hold more certificates as a precaution than the CA's
+/// limit while those holds await confirmation (migration 0038); another
+/// officer still can, and a confirmed hold frees the slot.
+#[test]
+fn precautionary_holds_are_capped_per_officer() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    second_certificate(&mut owner, &ca);
+    owner
+        .batch_execute(&format!(
+            "UPDATE ca_revocation_policy
                  SET suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 24,
                      precautionary_hold_limit = 1
                  WHERE ca_id = '{ca}';"
@@ -1216,4 +1225,81 @@ fn admin_keys_enrolled_and_removed_under_dual_control() {
         .unwrap_err(),
         RevocationStoreError::SignedApprovalRefused
     ));
+}
+
+/// Migration 0041: the audit role re-verifies every signed change of a CA
+/// offline, without officer or admin rights, and a signature altered in the
+/// database is reported for that change alone.
+#[test]
+fn auditor_reverifies_every_signed_change() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let rejected = lab.signed_proposal();
+    let reject = lab
+        .officer
+        .issue_close_challenge(&rejected, &CHECKER, SignedStep::Reject, 120)
+        .unwrap();
+    lab.submit(&reject, false, None).unwrap();
+    let approved = lab.signed_proposal();
+    let approval = lab
+        .officer
+        .issue_approval_challenge(&approved, &CHECKER, 120)
+        .unwrap();
+    lab.submit(&approval, false, None).unwrap();
+
+    // An open proposal (maker signature only) on a second certificate.
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    second_certificate(&mut owner, &lab.ca_id);
+    let challenge = lab
+        .officer
+        .issue_proposal_challenge(
+            &lab.ca_id,
+            &SerialNumber::from_positive_der_content(&[0x02]).unwrap(),
+            StatusAction::Revoke,
+            Some(RevocationReason::KeyCompromise),
+            None,
+            &MAKER,
+            120,
+        )
+        .unwrap();
+    let pending = lab.submit(&challenge, true, None).unwrap();
+
+    let mut auditor =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_audit_verifier")).unwrap();
+    let findings = auditor.audit_signed_evidence(&lab.ca_id, &RP).unwrap();
+    let mut ids: Vec<&str> = findings.iter().map(|f| f.change_id.as_str()).collect();
+    ids.sort_unstable();
+    let mut expected = [rejected.as_str(), approved.as_str(), pending.as_str()];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
+    assert!(findings.iter().all(|f| f.result.is_ok()), "{findings:?}");
+    // The auditor cannot act.
+    let denied = auditor
+        .issue_approval_challenge(&approved, &CHECKER, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&denied).as_deref(), Some("42501"));
+
+    // A superuser alters the checker's stored signature of one change.
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE status_change_signature DISABLE TRIGGER status_change_signature_append_only;
+             UPDATE status_change_signature
+                SET signature_der = set_byte(signature_der, octet_length(signature_der) - 1,
+                        get_byte(signature_der, octet_length(signature_der) - 1) # 1)
+              WHERE change_id = '{approved}' AND role = 'CHECKER';
+             ALTER TABLE status_change_signature ENABLE TRIGGER status_change_signature_append_only"
+        ))
+        .unwrap();
+    let findings = auditor.audit_signed_evidence(&lab.ca_id, &RP).unwrap();
+    for finding in &findings {
+        assert_eq!(finding.family, EvidenceFamily::StatusChange);
+        if finding.change_id == approved {
+            assert!(matches!(
+                finding.result,
+                Err(RevocationStoreError::InvalidAssertion(_))
+            ));
+        } else {
+            assert!(finding.result.is_ok());
+        }
+    }
 }

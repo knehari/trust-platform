@@ -194,6 +194,21 @@ impl AdminChange<'_> {
     }
 }
 
+/// Which kind of signed change a piece of evidence belongs to (0041).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceFamily {
+    StatusChange,
+    Admin(AdminFamily),
+}
+
+/// The result of re-verifying one signed change offline (0041).
+#[derive(Debug)]
+pub struct EvidenceFinding {
+    pub family: EvidenceFamily,
+    pub change_id: String,
+    pub result: Result<(), RevocationStoreError>,
+}
+
 /// A CA-admin challenge as stored (migration 0037).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminChallenge {
@@ -890,6 +905,17 @@ impl PgRevocationStore {
         change_id: &str,
         rp: &RelyingParty<'_>,
     ) -> Result<(), RevocationStoreError> {
+        self.reverify_status_evidence(change_id, rp, false)
+    }
+
+    /// `reverify_signed_change`, or for a still-open proposal (`pending`)
+    /// its maker signature alone.
+    fn reverify_status_evidence(
+        &mut self,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+        pending: bool,
+    ) -> Result<(), RevocationStoreError> {
         let rows = self.client.query(
             "SELECT role, challenge_id::text, public_key_sec1, person_id, claim_sha256,
                     authenticator_data, client_data_json, signature_der
@@ -931,7 +957,8 @@ impl PgRevocationStore {
             persons.push(column::<String>(row, 3)?);
         }
         let complete = match steps.as_slice() {
-            [SignedStep::Precaution] => true,
+            [SignedStep::Propose] => pending,
+            [SignedStep::Precaution] => !pending,
             [SignedStep::Propose, SignedStep::Approve | SignedStep::Reject] => {
                 keys[0] != keys[1] && persons[0] != persons[1]
             }
@@ -941,6 +968,55 @@ impl PgRevocationStore {
         complete
             .then_some(())
             .ok_or(RevocationStoreError::SignedApprovalRefused)
+    }
+
+    /// Every change of `ca_id` that carries signatures (status changes and
+    /// CA administration), each re-verified offline like
+    /// `reverify_signed_change` / `reverify_admin_change` (migration 0041:
+    /// `trust_audit_verifier` may run this read-only). A failure on one
+    /// change is reported, not raised, so one forged record cannot hide
+    /// the others; only reading the index itself fails the call. An open
+    /// proposal is checked on its maker signature alone.
+    pub fn audit_signed_evidence(
+        &mut self,
+        ca_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<Vec<EvidenceFinding>, RevocationStoreError> {
+        let index: Vec<(String, String, String)> = self
+            .client
+            .query(
+                "SELECT family, change_id::text, status
+                 FROM signed_evidence_index($1::text::uuid)",
+                &[&ca_id],
+            )?
+            .iter()
+            .map(|row| Ok((column(row, 0)?, column(row, 1)?, column(row, 2)?)))
+            .collect::<Result<_, RevocationStoreError>>()?;
+        let mut findings = Vec::with_capacity(index.len());
+        for (family, change_id, status) in index {
+            let pending = status == "PROPOSED";
+            let family = match family.as_str() {
+                "STATUS_CHANGE" => EvidenceFamily::StatusChange,
+                "CA_ADMIN" => EvidenceFamily::Admin(AdminFamily::CaAdmin),
+                "CREDENTIAL" => EvidenceFamily::Admin(AdminFamily::Credential),
+                "ADMIN_CREDENTIAL" => EvidenceFamily::Admin(AdminFamily::AdminCredential),
+                _ => return Err(RevocationStoreError::InconsistentResult),
+            };
+            let result = match family {
+                EvidenceFamily::StatusChange => {
+                    self.reverify_status_evidence(&change_id, rp, pending)
+                }
+                EvidenceFamily::Admin(admin) => {
+                    self.reverify_admin_evidence(admin, &change_id, rp, pending)
+                }
+            };
+            findings.push(EvidenceFinding {
+                family,
+                change_id,
+                result,
+            });
+        }
+        Ok(findings)
     }
 
     /// DBA bootstrap of a CA admin's WebAuthn key (migration 0037), like
@@ -1196,6 +1272,18 @@ impl PgRevocationStore {
         change_id: &str,
         rp: &RelyingParty<'_>,
     ) -> Result<(), RevocationStoreError> {
+        self.reverify_admin_evidence(family, change_id, rp, false)
+    }
+
+    /// `reverify_admin_change`, or for a still-open proposal (`pending`)
+    /// its maker signature alone.
+    fn reverify_admin_evidence(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+        pending: bool,
+    ) -> Result<(), RevocationStoreError> {
         let rows = self.client.query(
             "SELECT role, challenge_id::text, public_key_sec1, person_id, claim_sha256,
                     authenticator_data, client_data_json, signature_der, change_ca::text,
@@ -1203,7 +1291,7 @@ impl PgRevocationStore {
              FROM ca_admin_signatures($1, $2::text::uuid)",
             &[&family.as_sql(), &change_id],
         )?;
-        if rows.len() != 2 {
+        if rows.len() != if pending { 1 } else { 2 } {
             return Err(RevocationStoreError::SignedApprovalRefused);
         }
         let mut keys = Vec::new();
@@ -1248,9 +1336,13 @@ impl PgRevocationStore {
             keys.push(key);
             persons.push(column::<String>(row, 3)?);
         }
-        let complete = steps == [SignedStep::Propose, SignedStep::Approve]
-            && keys[0] != keys[1]
-            && persons[0] != persons[1];
+        let complete = if pending {
+            steps == [SignedStep::Propose]
+        } else {
+            steps == [SignedStep::Propose, SignedStep::Approve]
+                && keys[0] != keys[1]
+                && persons[0] != persons[1]
+        };
         complete
             .then_some(())
             .ok_or(RevocationStoreError::SignedApprovalRefused)
