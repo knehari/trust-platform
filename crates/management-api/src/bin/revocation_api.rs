@@ -50,7 +50,7 @@ mod rate_limit;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -74,6 +74,8 @@ use trust_pki_core::{
 const OFFICER_ROLE: &str = "trust-revocation-officer";
 const CHALLENGE_TTL_SECONDS: i32 = 300;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
+/// Largest request body read (a registered issuer certificate is a few KiB).
+const MAX_BODY_BYTES: usize = 64 * 1024;
 const STATEMENT_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Clone)]
@@ -184,6 +186,7 @@ fn router(state: AppState) -> Router {
             "/v1/cas/{ca_id}/precautionary-holds",
             get(precautionary_holds),
         )
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
@@ -1595,6 +1598,26 @@ mod tests {
             .await
             .0,
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// Request bodies are bounded (64 KiB, 413) before they are parsed or
+    /// authenticated; a legitimate request is far smaller.
+    #[tokio::test]
+    async fn oversized_bodies_are_refused() {
+        let oidc = oidc();
+        let app = app(oidc.verifier.clone(), "postgresql://unused.invalid/none");
+        let path = format!("/v1/cas/{CA}/status-change-challenges");
+        let token = oidc.token("bulky", &[OFFICER_ROLE], &[CA]);
+        let body = json!({"serial_hex": "01".repeat(50_000), "action":"REVOKE", "reason":1});
+        assert!(body.to_string().len() > 64 * 1024);
+        assert_eq!(
+            post(&app, &path, Some(&token), body.clone()).await.0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            post(&app, &path, None, body).await.0,
+            StatusCode::PAYLOAD_TOO_LARGE
         );
     }
 }

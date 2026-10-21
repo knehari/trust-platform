@@ -10,7 +10,7 @@ info:
     trust-revocation-officer role and the CA in ca_ids; the database still
     requires the officer grant and an enrolled WebAuthn credential. Each
     verified identity may make 60 requests per minute; beyond that every route
-    answers 429 before any database access. No production readiness is implied.
+    answers 429 before any database access; request bodies over 64 KiB get 413. No production readiness is implied.
 servers:
   - url: http://127.0.0.1:8083
 security:
