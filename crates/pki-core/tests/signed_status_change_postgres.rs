@@ -1547,11 +1547,23 @@ fn break_glass_restores_admin_keys_under_review() {
 
     // The DBA enrols the emergency key; an admin key cannot be one.
     let reused = boot
-        .enroll_breakglass_credential(&ca, &credential(21), "custodian", &old_a_key)
+        .enroll_breakglass_credential(
+            &ca,
+            &credential(21),
+            "custodian",
+            "person-custodian",
+            &old_a_key,
+        )
         .unwrap_err();
     assert_eq!(sqlstate(&reused).as_deref(), Some("23514"));
-    boot.enroll_breakglass_credential(&ca, &bg_id, "custodian", &emergency.public_key())
-        .unwrap();
+    boot.enroll_breakglass_credential(
+        &ca,
+        &bg_id,
+        "custodian",
+        "person-custodian",
+        &emergency.public_key(),
+    )
+    .unwrap();
 
     let (mut admin_a, mut admin_b, mut admin_c) = (
         Authenticator::new(),
@@ -1783,4 +1795,83 @@ fn break_glass_restores_admin_keys_under_review() {
             assert!(result.is_ok());
         }
     }
+}
+
+/// Migration 0046: the break-glass custodian is a person who never signs on
+/// the CA. A custodian cannot be an officer or admin of it, and the
+/// emergency key cannot enrol an admin key for the custodian.
+#[test]
+fn breakglass_custodian_is_never_a_signer() {
+    let Some(url) = database_url() else { return };
+    let lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let mut admin = PgRevocationStore::connect_lab(&url_as(&url, "trust_ca_admin")).unwrap();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (old_a, old_b, bg_id) = (credential(3), credential(4), credential(20));
+    boot.enroll_admin_credential(
+        &ca,
+        &old_a,
+        &ADMIN_A,
+        "person-admin-a",
+        &Authenticator::new().public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &old_b,
+        &ADMIN_B,
+        "person-admin-b",
+        &Authenticator::new().public_key(),
+    )
+    .unwrap();
+    owner
+        .batch_execute(&format!(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true WHERE ca_id = '{ca}'"
+        ))
+        .unwrap();
+    let mut emergency = Authenticator::new();
+    let key = emergency.public_key();
+    // An admin's or an officer's person cannot hold the emergency key.
+    for person in ["person-admin-a", "person-maker"] {
+        let refused = boot
+            .enroll_breakglass_credential(&ca, &bg_id, "custodian", person, &key)
+            .unwrap_err();
+        assert_eq!(sqlstate(&refused).as_deref(), Some("23514"), "{person}");
+    }
+    boot.enroll_breakglass_credential(&ca, &bg_id, "custodian", "person-custodian", &key)
+        .unwrap();
+    for id in [&old_a, &old_b] {
+        owner
+            .execute("SELECT remove_ca_admin_credential($1)", &[id])
+            .unwrap();
+    }
+    // The custodian cannot enrol an admin key for themselves.
+    let a_key = Authenticator::new().public_key();
+    let a_id = credential(11);
+    let own = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_id,
+        officer: &ADMIN_A,
+        person_id: "person-custodian",
+        public_key_sec1: &a_key,
+    };
+    let challenge = admin.issue_breakglass_challenge(&bg_id, &own, 120).unwrap();
+    let refused =
+        breakglass_submit(&mut admin, &mut emergency, &bg_id, &challenge, &own).unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+    // The admin's own person is accepted.
+    let content = CredentialContent {
+        person_id: "person-admin-a",
+        ..own
+    };
+    let challenge = admin
+        .issue_breakglass_challenge(&bg_id, &content, 120)
+        .unwrap();
+    breakglass_submit(&mut admin, &mut emergency, &bg_id, &challenge, &content).unwrap();
 }

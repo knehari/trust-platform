@@ -26,11 +26,14 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
    Use a superuser login; no service role may call this.
    ```sql
    SELECT enroll_breakglass_credential('<ca>', '\x<credential id>', 'custodian-name',
-                                       '\x<P-256 SEC1 key>');
+                                       '<custodian person id>', '\x<P-256 SEC1 key>');
    ```
    In Rust: `PgRevocationStore::enroll_breakglass_credential`, which also
    checks and canonicalises the key. The database refuses a key already used
-   as an officer or admin key. Keep the authenticator sealed and in custody.
+   as an officer or admin key, and (0046) a custodian person who holds an
+   active officer or admin credential on the CA. Once the custodian is
+   enrolled, that person can no longer receive such a credential there.
+   Keep the authenticator sealed and in custody.
    `remove_breakglass_credential` retires it.
 2. **DBA, on loss:** retire the lost admin keys
    (`SELECT remove_ca_admin_credential('\x<credential id>')`). This only takes
@@ -65,14 +68,17 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
 ## Limits
 
 - Custody of the emergency key is procedural.
-- The custodian is a label, not a registered person. A custodian who is
-  also an admin can enrol their own key; only the two reviews catch this,
-  after the fact.
+- The custodian's person identifier is caller-supplied, like every person
+  identifier until the IAM decision: one human under two identifiers is
+  not detected.
+- Keys enrolled under 0045 without a custodian person were retired by
+  0046 (audit event `MIGRATION_0046:no_custodian_person`); re-enrol them.
 - The database cannot verify ECDSA. A holder of `trust_ca_admin` could store
   a forged break-glass assertion while the CA has fewer than two admin keys.
   The offline audit exposes it.
 - There is no on-call rota and no CPS text yet.
 
-Tested by `break_glass_restores_admin_keys_under_review` in
+Tested by `break_glass_restores_admin_keys_under_review` and
+`breakglass_custodian_is_never_a_signer` in
 `crates/pki-core/tests/signed_status_change_postgres.rs` and by the grant
 invariants in `tests/revocation_privileges.sql`.

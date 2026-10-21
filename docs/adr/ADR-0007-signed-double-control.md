@@ -107,7 +107,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - `audit_signed_evidence` re-verifies the break-glass and review signatures offline (`breakglass_evidence`, `trust_audit_verifier`).
   - Deviations from section 6:
     - the "sealed" credential is a WebAuthn key whose custody is procedural, not enforced;
-    - the custodian is a label, not a person bound to the registry, so the database cannot stop a custodian who is also an admin from enrolling their own key (the two reviews are the control);
+    - the custodian was a free label in 0045; since 0046 it is a person (`holder_person_id`) who may hold no active officer or admin credential on the CA, in either order of enrolment, so the emergency key cannot enrol an admin key for its custodian. The person identifier is still caller-supplied until the IAM decision;
     - "lost" means the DBA removed the keys (`remove_ca_admin_credential`), since the database cannot tell a lost key from an idle one.
 - **Not yet:**
   - the on-call rota (section 6);

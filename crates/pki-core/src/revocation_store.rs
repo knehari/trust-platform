@@ -1473,19 +1473,27 @@ impl PgRevocationStore {
 
     /// DBA bootstrap of the CA's break-glass key (migration 0045): needs a
     /// superuser login, never a service. The key is curve-checked and
-    /// canonicalised; the database refuses an officer or admin key.
+    /// canonicalised; the database refuses an officer or admin key, and
+    /// (0046) a custodian person who is an officer or admin of the CA.
     pub fn enroll_breakglass_credential(
         &mut self,
         ca_id: &str,
         credential_id: &[u8],
         holder_label: &str,
+        holder_person_id: &str,
         public_key_sec1: &[u8],
     ) -> Result<(), RevocationStoreError> {
         let key = canonical_officer_key(public_key_sec1)
             .map_err(RevocationStoreError::InvalidCredential)?;
         self.client.execute(
-            "SELECT enroll_breakglass_credential($1::text::uuid, $2, $3, $4)",
-            &[&ca_id, &credential_id, &holder_label, &&key[..]],
+            "SELECT enroll_breakglass_credential($1::text::uuid, $2, $3, $4, $5)",
+            &[
+                &ca_id,
+                &credential_id,
+                &holder_label,
+                &holder_person_id,
+                &&key[..],
+            ],
         )?;
         Ok(())
     }

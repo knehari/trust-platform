@@ -138,7 +138,7 @@ BEGIN
                              'trust_issuance_service', 'trust_policy_admin',
                              'trust_reconciliation_operator'] LOOP
         PERFORM pg_temp.must(NOT has_function_privilege(r,
-            'enroll_breakglass_credential(uuid,bytea,text,bytea)', 'EXECUTE')
+            'enroll_breakglass_credential(uuid,bytea,text,text,bytea)', 'EXECUTE')
             AND NOT has_function_privilege(r, 'remove_breakglass_credential(bytea)', 'EXECUTE')
             AND NOT has_table_privilege(r, 'ca_breakglass_credential', 'SELECT,INSERT,UPDATE')
             AND NOT has_table_privilege(r, 'breakglass_use', 'SELECT,INSERT,UPDATE')
