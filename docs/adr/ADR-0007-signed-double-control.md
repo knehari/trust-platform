@@ -86,7 +86,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - The hold is applied at once, with a fixed `confirm_by` deadline and one stored signature, which `reverify_signed_change` accepts only for a precaution.
   - Confirmation is the ordinary signed double control: hold to revoked, or release. The deadline never lifts the hold. Past it, `precautionary_holds` reports it as overdue and `crl_housekeeping` alerts.
   - Each use writes an audit event and a `precautionary_hold_applied` log line.
-  - Migration 0038 caps the open holds of one officer on a CA (`precautionary_hold_limit`, 1-100, default 3), serialised per officer.
+  - Migration 0038 caps the open holds of one officer on a CA (`precautionary_hold_limit`, 1-100, default 3). Migration 0047 adds a cap for all officers of the CA together (`precautionary_hold_ca_limit`, 1-1000, default 10). Both are checked under one per-CA lock; a concurrency test shows a second officer's hold waiting and refused, and passing under 0038's per-officer lock.
 - **Signed CA administration (migration 0037, `trust-platform/ca-admin/v1`):**
   - Admin WebAuthn keys in `ca_admin_credential`, bound to an identity holding `ca_admin_grant` and to a person. They are bootstrapped by the DBA, like `ca_admin_grant` (`enroll_ca_admin_credential`, granted to no service). A key or person is never both officer and admin on a CA.
   - A per-CA, one-way `signed_admin_required` setting. Once set, the unsigned propose and approve of issuer registration, officer grants and credential changes are refused. The original bodies are kept as `*_unchecked`, granted to no service.

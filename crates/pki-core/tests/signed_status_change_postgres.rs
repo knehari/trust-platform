@@ -2237,3 +2237,137 @@ fn concurrent_answers_consume_an_admin_challenge_once() {
         .reverify_admin_change(AdminFamily::CaAdmin, &change, &RP)
         .unwrap();
 }
+
+/// Several officers together cannot hold more certificates as a precaution
+/// than the CA's own limit (migration 0047); a confirmed hold frees a slot.
+#[test]
+fn precautionary_holds_are_capped_per_ca() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    second_certificate(&mut owner, &ca);
+    owner
+        .batch_execute(&format!(
+            "UPDATE ca_revocation_policy
+                 SET suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 24,
+                     precautionary_hold_limit = 3, precautionary_hold_ca_limit = 1
+                 WHERE ca_id = '{ca}';"
+        ))
+        .unwrap();
+    let first = SerialNumber::from_positive_der_content(&[0x01]).unwrap();
+    let second = SerialNumber::from_positive_der_content(&[0x02]).unwrap();
+    let hold = |lab: &mut Lab, serial: &SerialNumber, maker: bool| {
+        let officer = if maker { &MAKER } else { &CHECKER };
+        let challenge = lab
+            .officer
+            .issue_precaution_challenge(&ca, serial, officer, 120)
+            .unwrap();
+        lab.submit(&challenge, maker, None)
+    };
+    hold(&mut lab, &first, true).unwrap();
+    // Another officer, well under their own limit, is stopped by the CA's.
+    let capped = hold(&mut lab, &second, false).unwrap_err();
+    assert_eq!(sqlstate(&capped).as_deref(), Some("23514"));
+    assert_eq!(
+        lab.officer.status(&ca, &second).unwrap(),
+        CertificateStatus::Valid
+    );
+    // Confirming the first hold (dual-controlled revocation) frees the slot.
+    let definitive = lab.signed_proposal();
+    let approval = lab
+        .officer
+        .issue_approval_challenge(&definitive, &CHECKER, 120)
+        .unwrap();
+    lab.submit(&approval, false, None).unwrap();
+    hold(&mut lab, &second, false).unwrap();
+    assert_eq!(
+        lab.officer.status(&ca, &second).unwrap(),
+        CertificateStatus::Suspended
+    );
+    for bad in [0, 1001] {
+        let refused = owner
+            .execute(
+                "UPDATE ca_revocation_policy SET precautionary_hold_ca_limit = $2
+                 WHERE ca_id = $1::text::uuid",
+                &[&ca, &(bad as i16)],
+            )
+            .unwrap_err();
+        assert_eq!(refused.code().map(|c| c.code()), Some("23514"));
+    }
+}
+
+/// The CA cap holds under concurrency (migration 0047): while one officer's
+/// hold is still uncommitted, another officer's hold waits for the per-CA
+/// lock, then is refused. With 0038's per-officer lock both would pass.
+#[test]
+fn concurrent_holds_by_two_officers_respect_the_ca_cap() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    second_certificate(&mut owner, &ca);
+    owner
+        .batch_execute(&format!(
+            "UPDATE ca_revocation_policy
+                 SET suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 24,
+                     precautionary_hold_limit = 3, precautionary_hold_ca_limit = 1
+                 WHERE ca_id = '{ca}';"
+        ))
+        .unwrap();
+    let first = SerialNumber::from_positive_der_content(&[0x01]).unwrap();
+    let second = SerialNumber::from_positive_der_content(&[0x02]).unwrap();
+    let maker_challenge = lab
+        .officer
+        .issue_precaution_challenge(&ca, &first, &MAKER, 120)
+        .unwrap();
+    let checker_challenge = lab
+        .officer
+        .issue_precaution_challenge(&ca, &second, &CHECKER, 120)
+        .unwrap();
+    let digest =
+        |lab: &mut Lab, id: &str| lab.officer.signed_challenge(id).unwrap().digest().unwrap();
+    let maker_digest = digest(&mut lab, &maker_challenge);
+    let (data, client, signature) = lab.maker.sign(&maker_digest);
+    let checker_digest = digest(&mut lab, &checker_challenge);
+    let checker_assertion = lab.checker.sign(&checker_digest);
+    let officer_url = url_as(&url, "trust_revocation_officer_api");
+    let mut open = Client::connect(&officer_url, NoTls).unwrap();
+    let mut transaction = open.transaction().unwrap();
+    transaction
+        .query_one(
+            "SELECT apply_precautionary_hold($1::text::uuid, $2, $3, $4, $5)::text",
+            &[
+                &maker_challenge,
+                &lab.maker_credential,
+                &data,
+                &client,
+                &signature,
+            ],
+        )
+        .unwrap();
+    let name = format!("hold-racer-{ca}");
+    let racer = std::thread::spawn({
+        let url = format!("{officer_url}&application_name={name}");
+        let credential = lab.checker_credential.clone();
+        move || {
+            let (data, client, signature) = checker_assertion;
+            PgRevocationStore::connect_lab(&url).unwrap().submit_signed(
+                &checker_challenge,
+                &credential,
+                &Assertion {
+                    authenticator_data: &data,
+                    client_data_json: &client,
+                    signature_der: &signature,
+                },
+                &RP,
+            )
+        }
+    });
+    let waiting = waits_for_lock(&mut owner, &name);
+    transaction.commit().unwrap();
+    let outcome = racer.join().unwrap();
+    assert!(waiting, "the second hold did not wait: {outcome:?}");
+    assert_eq!(sqlstate(&outcome.unwrap_err()).as_deref(), Some("23514"));
+    assert_eq!(lab.officer.precautionary_holds(&ca).unwrap().len(), 1);
+}

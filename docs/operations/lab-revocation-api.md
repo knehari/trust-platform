@@ -66,7 +66,10 @@ Other endpoints:
   suspension under a CPS reference and set `precautionary_hold_hours`
   (1-72), otherwise 409. One officer may have at most
   `precautionary_hold_limit` (default 3, migration 0038) holds awaiting
-  confirmation on a CA; past that the assertion is refused (409). The claim's action is `PRECAUTIONARY_SUSPEND`, so
+  confirmation on a CA, and all officers together at most
+  `precautionary_hold_ca_limit` (default 10, migration 0047); past either
+  the assertion is refused (409). The claim's action is
+  `PRECAUTIONARY_SUSPEND`, so
   the signature cannot serve as an ordinary maker signature. The assertion
   goes to the usual assertion endpoint, which applies the hold at once and
   logs `precautionary_hold_applied`.
