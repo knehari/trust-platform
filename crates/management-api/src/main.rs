@@ -83,6 +83,15 @@ struct PaginationQuery {
     from: Option<String>,
     until: Option<String>,
     event_type: Option<String>,
+    order: Option<String>,
+}
+
+fn history_order(raw: Option<&str>) -> Result<(&'static str, &'static str), StatusCode> {
+    match raw.unwrap_or("newest") {
+        "newest" => Ok(("<", "DESC")),
+        "oldest" => Ok((">", "ASC")),
+        _ => Err(StatusCode::BAD_REQUEST),
+    }
 }
 
 fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
@@ -580,6 +589,7 @@ async fn list_certificates(
 ) -> Result<(HeaderMap, Json<Vec<Certificate>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let (comparison, direction) = history_order(page.order.as_deref())?;
     let cursor = parse_history_cursor(page.before)?;
     let cn_prefix = literal_prefix(page.cn)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
@@ -591,20 +601,20 @@ async fn list_certificates(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let query = "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+        let query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
-             ORDER BY signed_at DESC, request_id DESC LIMIT 101";
-        let search_query = "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+             AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
+             ORDER BY signed_at {direction}, request_id {direction} LIMIT 101");
+        let search_query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
+             AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
              AND lower(subject_cn) LIKE $6 ESCAPE '\\' \
-             ORDER BY signed_at DESC, request_id DESC LIMIT 101";
+             ORDER BY signed_at {direction}, request_id {direction} LIMIT 101");
         match cn_prefix {
-            Some(prefix) => db.query(search_query, &[&ca_id, &issuer, &subject, &before_time, &before_id, &prefix]),
-            None => db.query(query, &[&ca_id, &issuer, &subject, &before_time, &before_id]),
+            Some(prefix) => db.query(&search_query, &[&ca_id, &issuer, &subject, &before_time, &before_id, &prefix]),
+            None => db.query(&query, &[&ca_id, &issuer, &subject, &before_time, &before_id]),
         }.map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -697,6 +707,7 @@ async fn list_audit(
 ) -> Result<(HeaderMap, Json<Vec<Audit>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let (comparison, direction) = history_order(page.order.as_deref())?;
     let filters = audit_filters(&page)?;
     let cursor = parse_history_cursor(page.before)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
@@ -708,15 +719,16 @@ async fn list_audit(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        db.query(
-            "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
+        let query = format!("SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
              FROM management_audit WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (recorded_at, event_id) < ($4, $5)) \
+             AND ($4::text IS NULL OR (recorded_at, event_id) {comparison} ($4, $5)) \
              AND ($6::text IS NULL OR recorded_at >= $6) \
              AND ($7::text IS NULL OR recorded_at < $7) \
              AND ($8::text IS NULL OR event_type = $8) \
-             ORDER BY recorded_at DESC, event_id DESC LIMIT 101",
+             ORDER BY recorded_at {direction}, event_id {direction} LIMIT 101");
+        db.query(
+            &query,
             &[&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type]
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
@@ -920,6 +932,34 @@ mod tests {
                 .map(|item| item[id_field].as_str().unwrap())
                 .collect();
             assert_eq!(ids.len(), 102);
+            let (status, oldest_cursor, oldest_first) =
+                history_page(&app, &token, &format!("{base}?order=oldest")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(oldest_first.len(), 100);
+            assert!(oldest_first[0][id_field]
+                .as_str()
+                .unwrap()
+                .ends_with("000000000001"));
+            let (status, next, oldest_second) = history_page(
+                &app,
+                &token,
+                &format!(
+                    "{base}?order=oldest&before={}",
+                    oldest_cursor.unwrap().replace('|', "%7C")
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(oldest_second.len(), 2);
+            assert!(next.is_none());
+            let ids: HashSet<&str> = oldest_first
+                .iter()
+                .chain(&oldest_second)
+                .map(|item| item[id_field].as_str().unwrap())
+                .collect();
+            assert_eq!(ids.len(), 102);
+            let (status, _, _) = history_page(&app, &token, &format!("{base}?order=invalid")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
             let (status, _, _) =
                 history_page(&app, &token, &format!("{base}?before=invalid")).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);

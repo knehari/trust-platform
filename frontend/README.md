@@ -23,3 +23,5 @@ Browser smoke evidence on 2026-10-17: Authorization Code + PKCE exchanged once; 
 The console can restore a scoped view and a certificate/audit detail from a URL after the API rechecks access. Browser Back/Forward restores the view and authority. Certificate CN prefix and audit date/type forms query the entire selected authority history through the API, with the same 100-row cursor pages; local text filters and sorts still affect only loaded rows. An older API binary may ignore the new query parameters, so refresh the local API before relying on these filters.
 
 A separate authority search calls the API across the full signed-and-granted CA scope by name or policy prefix. The existing authority filter continues to act only on currently loaded rows.
+
+Newest/oldest choices request the API's complete-history order and reset pagination. CN, serial, event type and decision choices still sort only the rows already loaded and are labeled as such.

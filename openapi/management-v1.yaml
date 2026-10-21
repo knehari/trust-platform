@@ -87,6 +87,7 @@ paths:
         - $ref: '#/components/parameters/CaId'
         - $ref: '#/components/parameters/HistoryCursor'
         - $ref: '#/components/parameters/CertificateCnPrefix'
+        - $ref: '#/components/parameters/HistoryOrder'
       responses:
         '200':
           description: Metadata only; certificate DER is not exposed. Repeat with X-Next-Cursor until the header is absent.
@@ -157,6 +158,7 @@ paths:
         - $ref: '#/components/parameters/AuditFrom'
         - $ref: '#/components/parameters/AuditUntil'
         - $ref: '#/components/parameters/AuditEventType'
+        - $ref: '#/components/parameters/HistoryOrder'
       responses:
         '200':
           description: Audit metadata without actor identifiers. Repeat with X-Next-Cursor until the header is absent.
@@ -215,6 +217,12 @@ components:
       required: false
       description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
       schema: { type: string, maxLength: 61 }
+    HistoryOrder:
+      in: query
+      name: order
+      required: false
+      description: Newest (default) or oldest timestamp and ID order over the full scoped history. Keep the same order on every cursor page.
+      schema: { type: string, enum: [newest, oldest] }
     CertificateCnPrefix:
       in: query
       name: cn
