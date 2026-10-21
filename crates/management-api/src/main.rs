@@ -86,6 +86,7 @@ struct PaginationQuery {
     from: Option<String>,
     until: Option<String>,
     event_type: Option<String>,
+    decision: Option<String>,
     order: Option<String>,
 }
 
@@ -115,6 +116,7 @@ struct AuditFilters {
     from: Option<String>,
     until: Option<String>,
     event_type: Option<String>,
+    decision: Option<String>,
 }
 
 fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
@@ -131,7 +133,10 @@ fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
         .event_type
         .as_ref()
         .map(|value| value.trim().to_owned());
+    let decision = page.decision.as_ref().map(|value| value.trim().to_owned());
     if event_type.as_ref().is_some_and(|value| {
+        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+    }) || decision.as_ref().is_some_and(|value| {
         value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(StatusCode::BAD_REQUEST);
@@ -140,6 +145,7 @@ fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
         from,
         until,
         event_type,
+        decision,
     })
 }
 
@@ -732,10 +738,11 @@ async fn list_audit(
              AND ($6::text IS NULL OR recorded_at >= $6) \
              AND ($7::text IS NULL OR recorded_at < $7) \
              AND ($8::text IS NULL OR event_type = $8) \
+             AND ($9::text IS NULL OR decision = $9) \
              ORDER BY recorded_at {direction}, event_id {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type]
+            &[&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type, &filters.decision]
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1047,6 +1054,17 @@ mod tests {
             history_page(&app, &token, &format!("{audit_base}?event_type=other")).await;
         assert_eq!(status, StatusCode::OK);
         assert!(events.is_empty());
+        let (status, _, events) =
+            history_page(&app, &token, &format!("{audit_base}?decision=allow")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(events.len(), 100);
+        let (status, _, events) =
+            history_page(&app, &token, &format!("{audit_base}?decision=deny")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(events.is_empty());
+        let (status, _, _) =
+            history_page(&app, &token, &format!("{audit_base}?decision=%0A")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _, _) = history_page(
             &app,
             &token,
