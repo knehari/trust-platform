@@ -83,6 +83,7 @@ struct Audit {
 struct PaginationQuery {
     before: Option<String>,
     cn: Option<String>,
+    san_dns: Option<String>,
     from: Option<String>,
     until: Option<String>,
     event_type: Option<String>,
@@ -111,6 +112,20 @@ fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
         .replace('%', "\\%")
         .replace('_', "\\_");
     Ok(Some(format!("{escaped}%")))
+}
+
+fn exact_san_dns(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+    let Some(raw) = raw else { return Ok(None) };
+    let dns = raw.trim();
+    if dns.is_empty()
+        || dns.len() > 253
+        || !dns
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'*'))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some(dns.to_ascii_lowercase()))
 }
 
 struct AuditFilters {
@@ -610,6 +625,7 @@ async fn list_certificates(
     let (comparison, direction) = history_order(page.order.as_deref())?;
     let cursor = parse_history_cursor(page.before)?;
     let cn_prefix = literal_prefix(page.cn)?;
+    let san_dns = exact_san_dns(page.san_dns)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -619,21 +635,22 @@ async fn list_certificates(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
+        let mut query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
-             ORDER BY signed_at {direction}, request_id {direction} LIMIT 101");
-        let search_query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
-             FROM management_certificate WHERE ca_id=$1 AND EXISTS \
-             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5)) \
-             AND lower(subject_cn) LIKE $6 ESCAPE '\\' \
-             ORDER BY signed_at {direction}, request_id {direction} LIMIT 101");
-        match cn_prefix {
-            Some(prefix) => db.query(&search_query, &[&ca_id, &issuer, &subject, &before_time, &before_id, &prefix]),
-            None => db.query(&query, &[&ca_id, &issuer, &subject, &before_time, &before_id]),
-        }.map(Some)
+             AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5))");
+        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+            vec![&ca_id, &issuer, &subject, &before_time, &before_id];
+        if let Some(prefix) = cn_prefix.as_ref() {
+            query.push_str(&format!(" AND lower(subject_cn) LIKE ${} ESCAPE '\\'", params.len() + 1));
+            params.push(prefix);
+        }
+        if let Some(dns) = san_dns.as_ref() {
+            query.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = ${})", params.len() + 1));
+            params.push(dns);
+        }
+        query.push_str(&format!(" ORDER BY signed_at {direction}, request_id {direction} LIMIT 101"));
+        db.query(&query, &params).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
     let items: Vec<Certificate> = rows
@@ -1040,6 +1057,44 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+        let cert_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates";
+        let (status, _, san_matches) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?san_dns=PAGED-0102.LAB.INVALID"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(san_matches.len(), 1);
+        assert_eq!(
+            san_matches[0]["request_id"],
+            "11111111-1111-4111-8111-000000000066"
+        );
+        let (status, _, combined) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?cn=PAGED-010&san_dns=paged-0102.lab.invalid"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(combined.len(), 1);
+        let (status, _, no_san) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?san_dns=paged-0001.lab.invalid"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(no_san.is_empty());
+        let (status, _, _) =
+            history_page(&app, &token, &format!("{cert_base}?san_dns=%.lab.invalid")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates?san_dns=paged-0102.lab.invalid",
+        ).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(certificate.get("certificate_der").is_none());
         let audit_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit";
         let (status, _, events) = history_page(

@@ -27,6 +27,14 @@ SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'::uuid,
        'paged-' || lpad(i::text,4,'0') || '.lab.invalid'
 FROM generate_series(3,102) AS i;
 
+-- Synthetic metadata exercises the read-only SAN search only. The DER sentinel
+-- above is deliberately invalid and this fixture is never an issuance proof.
+UPDATE certificate SET
+  not_before_utc='2026-10-01T00:00:00Z',
+  not_after_utc='2027-10-01T00:00:00Z',
+  san_dns=ARRAY['paged-0102.lab.invalid']
+WHERE request_id='11111111-1111-4111-8111-000000000066';
+
 INSERT INTO audit_event(event_id,ca_id,actor_id,event_type,decision,policy_version,recorded_at)
 SELECT ('33333333-3333-4333-8333-' || lpad(to_hex(i),12,'0'))::uuid,
        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'::uuid,
