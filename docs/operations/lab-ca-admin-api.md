@@ -27,8 +27,10 @@ TRUST_WEBAUTHN_RP_ID=admin.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://admin.lab.i
 
 - `GET /v1/cas/{ca}/pending-admin-changes` lists pending changes with their content and the digest a checker signs (migration 0044). The Rust core recomputes each digest from the content and refuses the whole list if one does not match.
 
+- `GET /v1/cas/{ca}/breakglass-uses` lists the CA's break-glass uses with their review state, and `POST /v1/breakglass-uses/{use}/review-challenges` issues a challenge for a signed review by an admin other than the enrolled one (migration 0045). The assertion route answers it and returns `reviewed: true` at the second review.
+
 Not covered:
-- break-glass (0045): deliberately not over HTTP; see `lab-break-glass.md`;
+- the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side.

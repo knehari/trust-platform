@@ -18,6 +18,11 @@
 //!   (migrations 0037, 0040, 0042).
 //! * `GET /v1/cas/{ca_id}/pending-admin-changes` lists pending changes with
 //!   their content and the digest a checker signs (migration 0044).
+//! * `GET /v1/cas/{ca_id}/breakglass-uses` lists the CA's break-glass uses,
+//!   and `POST /v1/breakglass-uses/{use_id}/review-challenges` issues a
+//!   challenge for an admin's signed review of one (migration 0045), answered
+//!   through the same assertion route. The emergency enrolment itself is
+//!   not exposed over HTTP.
 //!
 //! The acting admin is the verified OIDC token's (issuer, subject), never a
 //! request field (ADR-0003). The token must carry the `trust-ca-admin` role
@@ -141,6 +146,23 @@ struct PendingResponse {
 #[derive(Serialize)]
 struct SubmittedResponse {
     change_id: String,
+    /// For a break-glass review: whether the use now has its two reviews.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reviewed: Option<bool>,
+}
+
+/// A break-glass use as admins review it (migration 0045).
+#[derive(Serialize)]
+struct BreakGlassUseResponse {
+    use_id: String,
+    admin_credential_id: String,
+    admin_issuer: String,
+    admin_subject: String,
+    used_at_unix: i64,
+    review_by_unix: i64,
+    reviews: i64,
+    reviewed: bool,
+    overdue: bool,
 }
 
 /// A validated `ChangeRequest`: owned data an `AdminChange` borrows from.
@@ -276,6 +298,11 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/pending-admin-changes",
             get(pending_admin_changes),
+        )
+        .route("/v1/cas/{ca_id}/breakglass-uses", get(breakglass_uses))
+        .route(
+            "/v1/breakglass-uses/{use_id}/review-challenges",
+            post(breakglass_review_challenge),
         )
         .with_state(state)
 }
@@ -546,6 +573,68 @@ async fn pending_admin_changes(
     Ok((StatusCode::OK, Json(body)).into_response())
 }
 
+/// The CA's break-glass uses, oldest first (migration 0045).
+async fn breakglass_uses(
+    State(state): State<AppState>,
+    Path(ca_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = admin(&headers, &state.verifier).await?;
+    let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
+    if !claims.ca_ids.contains(&ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let uses = with_store(&state, move |store| Ok(store.breakglass_uses(&ca_id)?)).await?;
+    let body: Vec<BreakGlassUseResponse> = uses
+        .into_iter()
+        .map(|used| BreakGlassUseResponse {
+            use_id: used.use_id,
+            admin_credential_id: URL_SAFE_NO_PAD.encode(&used.admin_credential_id),
+            admin_issuer: used.admin_issuer,
+            admin_subject: used.admin_subject,
+            used_at_unix: used.used_at_unix,
+            review_by_unix: used.review_by_unix,
+            reviews: used.reviews,
+            reviewed: used.reviewed,
+            overdue: used.overdue,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(body)).into_response())
+}
+
+/// A review challenge for a break-glass use, for an admin other than the
+/// one it enrolled. As for approvals, the database checks the admin grant
+/// on the use's CA before issuing and the token's CA scope is checked on
+/// the issued challenge.
+async fn breakglass_review_challenge(
+    State(state): State<AppState>,
+    Path(use_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = admin(&headers, &state.verifier).await?;
+    let use_id = canonical_uuid(&use_id).ok_or(StatusCode::NOT_FOUND)?;
+    let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let (challenge_id, challenge) = with_store(&state, move |store| {
+        let reviewer = OfficerIdentity {
+            issuer: &issuer,
+            subject: &subject,
+        };
+        let id =
+            store.issue_breakglass_review_challenge(&use_id, &reviewer, CHALLENGE_TTL_SECONDS)?;
+        let challenge = store.admin_challenge(&id)?;
+        Ok((id, challenge))
+    })
+    .await?;
+    if !claims.ca_ids.contains(&hex_uuid(&challenge.claim.ca_id)) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    write_log(
+        serde_json::json!({"event":"admin_change_challenge_issued","step":"review",
+                                 "challenge_id":challenge_id}),
+    );
+    Ok(challenge_response(challenge_id, &challenge))
+}
+
 async fn submit_assertion(
     State(state): State<AppState>,
     Path(challenge_id): Path<String>,
@@ -598,6 +687,17 @@ async fn submit_assertion(
             rp_id: &rp_id,
             origin: &origin,
         };
+        if challenge.purpose == SignedStep::Review {
+            let reviewed =
+                store.submit_breakglass_review(&challenge_id, &credential_id, &assertion, &rp)?;
+            let use_id = challenge
+                .claim
+                .change_id
+                .as_ref()
+                .map(hex_uuid)
+                .ok_or(Failure::Refused(StatusCode::SERVICE_UNAVAILABLE))?;
+            return Ok((use_id, challenge.purpose, Some(reviewed)));
+        }
         let id = match &change {
             Some(change) => change
                 .with(|change| {
@@ -614,10 +714,10 @@ async fn submit_assertion(
                 store.submit_signed_admin(&challenge_id, &credential_id, &assertion, &rp, None)?
             }
         };
-        Ok((id, challenge.purpose))
+        Ok((id, challenge.purpose, None))
     })
     .await;
-    let (change_id, step) = match result {
+    let (change_id, step, reviewed) = match result {
         Ok(done) => done,
         Err(status) => {
             write_log(serde_json::json!({"event":"admin_assertion_refused",
@@ -628,10 +728,18 @@ async fn submit_assertion(
     let event = match step {
         SignedStep::Propose => "admin_change_proposed",
         SignedStep::Reject => "admin_change_rejected",
+        SignedStep::Review => "breakglass_use_reviewed",
         _ => "admin_change_approved",
     };
     write_log(serde_json::json!({"event":event,"change_id":change_id}));
-    Ok((StatusCode::OK, Json(SubmittedResponse { change_id })).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(SubmittedResponse {
+            change_id,
+            reviewed,
+        }),
+    )
+        .into_response())
 }
 
 #[tokio::main]
@@ -1181,5 +1289,268 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// The raw parts of an `Authenticator::assertion` body.
+    fn raw(body: &Value) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let field = |name: &str| {
+            URL_SAFE_NO_PAD
+                .decode(body[name].as_str().unwrap())
+                .unwrap()
+        };
+        (
+            field("authenticator_data"),
+            field("client_data_json"),
+            field("signature"),
+        )
+    }
+
+    /// Signs the challenge `id` through the store (setup steps only).
+    fn store_sign(
+        store: &mut PgRevocationStore,
+        authenticator: &mut Authenticator,
+        credential_id: &[u8],
+        id: &str,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let digest = store.admin_challenge(id).unwrap().claim.digest();
+        raw(&authenticator.assertion(credential_id, &challenge_text(&digest), None))
+    }
+
+    /// A lost admin key A, a break-glass use enrolling C's key, and A's new
+    /// key enrolled by B and C under dual control; the use is unreviewed.
+    /// What `breakglass_setup` leaves: the CA, the unreviewed use, and the
+    /// keys of the two admins (A, B) who will review it.
+    struct BreakGlassFixture {
+        ca: String,
+        use_id: String,
+        a_id: Vec<u8>,
+        b_id: Vec<u8>,
+        a: Authenticator,
+        b: Authenticator,
+    }
+
+    fn breakglass_setup(url: &str) -> BreakGlassFixture {
+        let (ca, a_id, b_id, _, mut b) = setup(url);
+        let mut owner = postgres::Client::connect(url, postgres::NoTls).unwrap();
+        owner
+            .batch_execute(&format!(
+                "INSERT INTO ca_admin_grant(issuer, subject, ca_id) VALUES ('{ISSUER}', 'admin-c', '{ca}')"
+            ))
+            .unwrap();
+        owner
+            .execute("SELECT remove_ca_admin_credential($1)", &[&a_id])
+            .unwrap();
+        let credential = |tag: u8| {
+            let mut id = ca.replace('-', "").into_bytes();
+            id.push(tag);
+            id
+        };
+        let (bg_id, c_id, a2_id) = (credential(20), credential(3), credential(4));
+        let (mut bg, mut c, a2) = (
+            Authenticator::new(),
+            Authenticator::new(),
+            Authenticator::new(),
+        );
+        let mut store = PgRevocationStore::connect_lab(url).unwrap();
+        store
+            .enroll_breakglass_credential(
+                &ca,
+                &bg_id,
+                "custodian",
+                "person-custodian",
+                &bg.public_key(),
+            )
+            .unwrap();
+        let rp = RelyingParty {
+            rp_id: RP_ID,
+            origin: ORIGIN,
+        };
+        let admin_c = OfficerIdentity {
+            issuer: ISSUER,
+            subject: "admin-c",
+        };
+        let c_key = c.public_key();
+        let c_content = CredentialContent {
+            ca_id: &ca,
+            credential_id: &c_id,
+            officer: &admin_c,
+            person_id: "person-admin-c",
+            public_key_sec1: &c_key,
+        };
+        let id = store
+            .issue_breakglass_challenge(&bg_id, &c_content, 120)
+            .unwrap();
+        let (data, client, signature) = store_sign(&mut store, &mut bg, &bg_id, &id);
+        let assertion = Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        };
+        let use_id = store
+            .submit_breakglass(&id, &bg_id, &assertion, &rp, &c_content)
+            .unwrap();
+        let (admin_a, admin_b) = (
+            OfficerIdentity {
+                issuer: ISSUER,
+                subject: "admin-a",
+            },
+            OfficerIdentity {
+                issuer: ISSUER,
+                subject: "admin-b",
+            },
+        );
+        let a2_key = a2.public_key();
+        let a2_content = CredentialContent {
+            ca_id: &ca,
+            credential_id: &a2_id,
+            officer: &admin_a,
+            person_id: "person-admin-a",
+            public_key_sec1: &a2_key,
+        };
+        let enroll = AdminChange::AdminCredential(CredentialChangeKind::Enroll, &a2_content);
+        let id = store
+            .issue_admin_proposal_challenge(&ca, &enroll, &admin_b, 120)
+            .unwrap();
+        let (data, client, signature) = store_sign(&mut store, &mut b, &b_id, &id);
+        let assertion = Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        };
+        let change = store
+            .submit_signed_admin(&id, &b_id, &assertion, &rp, Some(&enroll))
+            .unwrap();
+        let id = store
+            .issue_admin_approval_challenge(AdminFamily::AdminCredential, &change, &admin_c, 120)
+            .unwrap();
+        let (data, client, signature) = store_sign(&mut store, &mut c, &c_id, &id);
+        let assertion = Assertion {
+            authenticator_data: &data,
+            client_data_json: &client,
+            signature_der: &signature,
+        };
+        store
+            .submit_signed_admin(&id, &c_id, &assertion, &rp, None)
+            .unwrap();
+        BreakGlassFixture {
+            ca,
+            use_id,
+            a_id: a2_id,
+            b_id,
+            a: a2,
+            b,
+        }
+    }
+
+    /// Migration 0045 over HTTP: admins list the CA's break-glass uses and
+    /// review them with signed claims; the enrolled admin cannot review
+    /// their own enrolment, another admin cannot answer a reviewer's
+    /// challenge, and the use closes at the second review.
+    #[tokio::test]
+    async fn breakglass_uses_are_listed_and_reviewed_through_the_api() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let BreakGlassFixture {
+            ca,
+            use_id,
+            a_id,
+            b_id,
+            mut a,
+            mut b,
+        } = tokio::task::spawn_blocking(move || breakglass_setup(&setup_url))
+            .await
+            .unwrap();
+        let oidc = oidc();
+        let (app, session) = app_with_session(
+            oidc.verifier.clone(),
+            &url_with_login(&url, "trust_ca_admin_api_ci"),
+        );
+        let a_token = oidc.token("admin-a", &[ADMIN_ROLE], &[&ca]);
+        let b_token = oidc.token("admin-b", &[ADMIN_ROLE], &[&ca]);
+        let c_token = oidc.token("admin-c", &[ADMIN_ROLE], &[&ca]);
+
+        let uses_path = format!("/v1/cas/{ca}/breakglass-uses");
+        let (status, uses) = get(&app, &uses_path, &b_token).await;
+        assert_eq!(status, StatusCode::OK, "{uses}");
+        assert_eq!(uses.as_array().unwrap().len(), 1);
+        assert_eq!(uses[0]["use_id"], use_id.as_str());
+        assert_eq!(uses[0]["admin_subject"], "admin-c");
+        assert_eq!(uses[0]["reviews"], 0);
+        assert_eq!(uses[0]["reviewed"], false);
+        let outsider = oidc.token(
+            "admin-b",
+            &[ADMIN_ROLE],
+            &["5eedc0de-0000-4000-8000-000000000099"],
+        );
+        assert_eq!(
+            get(&app, &uses_path, &outsider).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        let review = format!("/v1/breakglass-uses/{use_id}/review-challenges");
+        // Not by the admin it enrolled.
+        assert_eq!(
+            post(&app, &review, Some(&c_token), Value::Null).await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(
+                &app,
+                "/v1/breakglass-uses/not-a-uuid/review-challenges",
+                Some(&a_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post(&app, &review, Some(&outsider), Value::Null).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, issued) = post(&app, &review, Some(&a_token), Value::Null).await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        assert_eq!(issued["change_id"], use_id.as_str());
+        let path = format!(
+            "/v1/admin-change-challenges/{}/assertion",
+            issued["challenge_id"].as_str().unwrap()
+        );
+        let webauthn = issued["webauthn_challenge"].as_str().unwrap().to_owned();
+        let foreign = b.assertion(&b_id, &webauthn, None);
+        assert_eq!(
+            post(&app, &path, Some(&b_token), foreign).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, reviewed) = post(
+            &app,
+            &path,
+            Some(&a_token),
+            a.assertion(&a_id, &webauthn, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reviewed}");
+        assert_eq!(reviewed, json!({"change_id": use_id, "reviewed": false}));
+
+        let (status, issued) = post(&app, &review, Some(&b_token), Value::Null).await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        let path = format!(
+            "/v1/admin-change-challenges/{}/assertion",
+            issued["challenge_id"].as_str().unwrap()
+        );
+        let signed = b.assertion(&b_id, issued["webauthn_challenge"].as_str().unwrap(), None);
+        let (status, reviewed) = post(&app, &path, Some(&b_token), signed).await;
+        assert_eq!(status, StatusCode::OK, "{reviewed}");
+        assert_eq!(reviewed["reviewed"], true);
+        let (_, uses) = get(&app, &uses_path, &b_token).await;
+        assert_eq!(uses[0]["reviews"], 2);
+        assert_eq!(uses[0]["reviewed"], true);
+        assert_eq!(uses[0]["overdue"], false);
+
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
     }
 }

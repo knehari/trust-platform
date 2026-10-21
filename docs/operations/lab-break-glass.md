@@ -48,7 +48,10 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
       before anything is written. Repeat for the second admin.
 4. **Review:** two admins other than the enrolled one, with distinct keys and
    persons, each call `issue_breakglass_review_challenge` and
-   `submit_breakglass_review`. Their `REVIEW` claim names the use and its
+   `submit_breakglass_review`, or use the CA-admin API
+   (`GET /v1/cas/{ca}/breakglass-uses`,
+   `POST /v1/breakglass-uses/{use}/review-challenges`, then the assertion
+   route). Their `REVIEW` claim names the use and its
    claim digest. The use is closed at the second review.
 
 ## Alerts and audit

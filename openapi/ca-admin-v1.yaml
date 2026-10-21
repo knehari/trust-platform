@@ -67,6 +67,56 @@ paths:
         '403': {description: Not a CA admin or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
         '503': {description: Database unavailable, busy, or stored content inconsistent with its digest}
+  /v1/cas/{ca_id}/breakglass-uses:
+    get:
+      summary: The CA's break-glass uses and their review state (migration 0045)
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Uses, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [use_id, admin_credential_id, admin_issuer, admin_subject,
+                             used_at_unix, review_by_unix, reviews, reviewed, overdue]
+                  properties:
+                    use_id: {type: string, format: uuid}
+                    admin_credential_id: {type: string, description: base64url}
+                    admin_issuer: {type: string}
+                    admin_subject: {type: string}
+                    used_at_unix: {type: integer}
+                    review_by_unix: {type: integer}
+                    reviews: {type: integer}
+                    reviewed: {type: boolean, description: true once two admins reviewed it}
+                    overdue: {type: boolean, description: unreviewed past review_by}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin or CA out of token scope}
+        '404': {description: Non-canonical CA identifier}
+        '503': {description: Database unavailable or busy}
+  /v1/breakglass-uses/{use_id}/review-challenges:
+    post:
+      summary: A CA admin other than the enrolled one asks for a challenge to review a break-glass use (migration 0045)
+      description: >
+        Answered through the assertion route. The use closes once two admins with distinct
+        keys and persons have reviewed it. The emergency enrolment itself is not exposed
+        over HTTP.
+      parameters:
+        - name: use_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '400': {description: Unknown use}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
+        '404': {description: Non-canonical use identifier}
+        '409': {description: Already reviewed, the actor is the enrolled admin, or already reviewed by the actor}
+        '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/approval-challenges:
     post:
       summary: Another CA admin asks for a challenge to approve a pending change
@@ -121,14 +171,15 @@ paths:
                 change: {$ref: '#/components/schemas/Change'}
       responses:
         '200':
-          description: The change was proposed, approved or rejected
+          description: The change was proposed, approved or rejected, or the break-glass use reviewed
           content:
             application/json:
               schema:
                 type: object
                 required: [change_id]
                 properties:
-                  change_id: {type: string, format: uuid}
+                  change_id: {type: string, format: uuid, description: the use for a review}
+                  reviewed: {type: boolean, description: reviews only; true once the use has two reviews}
         '400': {description: Malformed body, invalid assertion, or a proposal without its change}
         '401': {description: Missing or invalid access token}
         '403': {description: Not the admin the challenge was issued to, or CA out of scope}
