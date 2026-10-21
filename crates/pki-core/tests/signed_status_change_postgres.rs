@@ -2371,3 +2371,60 @@ fn concurrent_holds_by_two_officers_respect_the_ca_cap() {
     assert_eq!(sqlstate(&outcome.unwrap_err()).as_deref(), Some("23514"));
     assert_eq!(lab.officer.precautionary_holds(&ca).unwrap().len(), 1);
 }
+
+/// The person and key separation between the officer, admin and
+/// break-glass registries holds under concurrency (migration 0048): while
+/// a custodian's enrolment is uncommitted, enrolling an admin key for the
+/// same person waits, then is refused. Before 0048 both committed.
+#[test]
+fn concurrent_custodian_and_admin_enrolment_stay_disjoint() {
+    let Some(url) = database_url() else { return };
+    let lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let custodian_key = canonical_officer_key(&Authenticator::new().public_key()).unwrap();
+    let mut open = Client::connect(&url, NoTls).unwrap();
+    let mut transaction = open.transaction().unwrap();
+    transaction
+        .execute(
+            "SELECT enroll_breakglass_credential($1::text::uuid, $2, 'custodian', 'person-x', $3)",
+            &[&ca, &credential(20), &&custodian_key[..]],
+        )
+        .unwrap();
+    let name = format!("registry-racer-{ca}");
+    let racer = std::thread::spawn({
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let url = format!("{url}{separator}application_name={name}");
+        let (ca, id) = (ca.clone(), credential(3));
+        move || {
+            PgRevocationStore::connect_lab(&url)
+                .unwrap()
+                .enroll_admin_credential(
+                    &ca,
+                    &id,
+                    &ADMIN_A,
+                    "person-x",
+                    &Authenticator::new().public_key(),
+                )
+        }
+    });
+    let waiting = waits_for_lock(&mut owner, &name);
+    transaction.commit().unwrap();
+    let outcome = racer.join().unwrap();
+    assert!(waiting, "the admin enrolment did not wait: {outcome:?}");
+    assert_eq!(sqlstate(&outcome.unwrap_err()).as_deref(), Some("23514"));
+    let admins: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM ca_admin_credential
+             WHERE ca_id = $1::text::uuid AND person_id = 'person-x'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(admins, 0);
+}

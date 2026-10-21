@@ -127,6 +127,27 @@ BEGIN
     PERFORM pg_temp.must(bad IS NULL, 'service functions without definer settings: ' || coalesce(bad, ''));
 END $t$;
 
+-- -------------------- credential registries (0048): on each registry the
+-- first BEFORE INSERT row trigger takes the shared registry lock, so the
+-- disjointness checks after it see concurrent enrolments.
+DO $t$
+DECLARE
+    t TEXT;
+    first_fn TEXT;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['officer_credential', 'ca_admin_credential',
+                             'ca_breakglass_credential'] LOOP
+        SELECT g.tgfoid::regproc::text INTO first_fn
+        FROM pg_trigger g
+        WHERE g.tgrelid = t::regclass AND NOT g.tgisinternal
+          AND g.tgenabled <> 'D' AND (g.tgtype & 7) = 7
+        ORDER BY g.tgname
+        LIMIT 1;
+        PERFORM pg_temp.must(first_fn = 'lock_credential_registries',
+            t || ': first insert trigger is ' || coalesce(first_fn, 'none'));
+    END LOOP;
+END $t$;
+
 -- -------------------- break-glass (0045): the emergency key is enrolled and
 -- removed by the DBA only; only CA admins use it; readers only read.
 DO $t$
