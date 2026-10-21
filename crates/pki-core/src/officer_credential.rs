@@ -63,9 +63,15 @@ impl CredentialChange<'_> {
     }
 
     pub fn digest(&self) -> [u8; 32] {
+        self.digest_with_kind(self.kind.as_sql())
+    }
+
+    /// The same digest under another change kind: CA-admin credential
+    /// changes (migration 0040) use ENROLL_ / REMOVE_ADMIN_CREDENTIAL.
+    pub fn digest_with_kind(&self, kind_sql: &str) -> [u8; 32] {
         let mut hasher = Sha256::new();
         for part in [
-            self.kind.as_sql().as_bytes(),
+            kind_sql.as_bytes(),
             &self.ca_id,
             self.credential_id,
             self.officer_issuer.as_bytes(),
@@ -193,7 +199,7 @@ pub struct CaAdminClaim {
     pub ca_id: [u8; 16],
     /// None before the CA's first issuer registration.
     pub issuer_certificate_sha256: Option<[u8; 32]>,
-    /// CA_ADMIN or CREDENTIAL.
+    /// CA_ADMIN, CREDENTIAL or ADMIN_CREDENTIAL (0040).
     pub family: &'static str,
     pub kind: &'static str,
     pub change_id: Option<[u8; 16]>,
@@ -222,6 +228,10 @@ impl CaAdminClaim {
                 "REGISTER_ISSUER" | "GRANT_OFFICER" | "REVOKE_OFFICER"
             ),
             "CREDENTIAL" => matches!(self.kind, "ENROLL_CREDENTIAL" | "REMOVE_CREDENTIAL"),
+            "ADMIN_CREDENTIAL" => matches!(
+                self.kind,
+                "ENROLL_ADMIN_CREDENTIAL" | "REMOVE_ADMIN_CREDENTIAL"
+            ),
             _ => false,
         };
         let ok = step_ok && kind_ok && (1..=128).contains(&self.policy_edition.chars().count());

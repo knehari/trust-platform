@@ -80,6 +80,9 @@ pub enum AdminFamily {
     CaAdmin,
     /// Officer credential enrolment and removal (`officer_credential_change`).
     Credential,
+    /// CA-admin credential enrolment and removal (0040,
+    /// `ca_admin_credential_change`).
+    AdminCredential,
 }
 
 impl AdminFamily {
@@ -87,6 +90,7 @@ impl AdminFamily {
         match self {
             Self::CaAdmin => "CA_ADMIN",
             Self::Credential => "CREDENTIAL",
+            Self::AdminCredential => "ADMIN_CREDENTIAL",
         }
     }
 }
@@ -97,6 +101,8 @@ pub enum AdminChange<'a> {
     Officer(OfficerGrantAction, &'a OfficerIdentity<'a>),
     /// For a removal, the person and key of the credential being removed.
     Credential(CredentialChangeKind, &'a CredentialContent<'a>),
+    /// A CA admin's own WebAuthn key (0040); `officer` names the admin.
+    AdminCredential(CredentialChangeKind, &'a CredentialContent<'a>),
 }
 
 /// What `propose_signed_admin_change` takes besides the assertion.
@@ -114,6 +120,7 @@ impl AdminChange<'_> {
         match self {
             Self::RegisterIssuer(_) | Self::Officer(..) => AdminFamily::CaAdmin,
             Self::Credential(..) => AdminFamily::Credential,
+            Self::AdminCredential(..) => AdminFamily::AdminCredential,
         }
     }
 
@@ -122,6 +129,8 @@ impl AdminChange<'_> {
             Self::RegisterIssuer(_) => "REGISTER_ISSUER",
             Self::Officer(action, _) => action.as_sql(),
             Self::Credential(kind, _) => kind.as_sql(),
+            Self::AdminCredential(CredentialChangeKind::Enroll, _) => "ENROLL_ADMIN_CREDENTIAL",
+            Self::AdminCredential(CredentialChangeKind::Remove, _) => "REMOVE_ADMIN_CREDENTIAL",
         }
     }
 
@@ -164,8 +173,8 @@ impl AdminChange<'_> {
                     ..none
                 },
             )),
-            Self::Credential(kind, content) => {
-                let (key, digest) = content.reviewed(*kind)?;
+            Self::Credential(kind, content) | Self::AdminCredential(kind, content) => {
+                let (key, digest) = content.reviewed_as(*kind, self.kind())?;
                 // A removal names the credential; the database takes person
                 // and key from the stored credential (and signs them here).
                 let enroll = *kind == CredentialChangeKind::Enroll;
@@ -261,6 +270,8 @@ fn admin_kind(kind: &str) -> Result<&'static str, RevocationStoreError> {
         "REVOKE_OFFICER" => Ok("REVOKE_OFFICER"),
         "ENROLL_CREDENTIAL" => Ok("ENROLL_CREDENTIAL"),
         "REMOVE_CREDENTIAL" => Ok("REMOVE_CREDENTIAL"),
+        "ENROLL_ADMIN_CREDENTIAL" => Ok("ENROLL_ADMIN_CREDENTIAL"),
+        "REMOVE_ADMIN_CREDENTIAL" => Ok("REMOVE_ADMIN_CREDENTIAL"),
         _ => Err(RevocationStoreError::InconsistentResult),
     }
 }
@@ -304,6 +315,16 @@ impl CredentialContent<'_> {
         &self,
         kind: CredentialChangeKind,
     ) -> Result<([u8; 33], [u8; 32]), RevocationStoreError> {
+        self.reviewed_as(kind, kind.as_sql())
+    }
+
+    /// As `reviewed`, with the digest computed under `kind_sql` (the
+    /// CA-admin credential kinds of migration 0040).
+    fn reviewed_as(
+        &self,
+        kind: CredentialChangeKind,
+        kind_sql: &str,
+    ) -> Result<([u8; 33], [u8; 32]), RevocationStoreError> {
         let key = canonical_officer_key(self.public_key_sec1)
             .map_err(RevocationStoreError::InvalidCredential)?;
         let change = CredentialChange {
@@ -320,7 +341,7 @@ impl CredentialContent<'_> {
         change
             .validate()
             .map_err(RevocationStoreError::InvalidCredential)?;
-        Ok((key, change.digest()))
+        Ok((key, change.digest_with_kind(kind_sql)))
     }
 }
 
@@ -1021,6 +1042,7 @@ impl PgRevocationStore {
         let family = match column::<String>(row, 2)?.as_str() {
             "CA_ADMIN" => "CA_ADMIN",
             "CREDENTIAL" => "CREDENTIAL",
+            "ADMIN_CREDENTIAL" => "ADMIN_CREDENTIAL",
             _ => return Err(RevocationStoreError::InconsistentResult),
         };
         let change_id = column::<Option<String>>(row, 4)?

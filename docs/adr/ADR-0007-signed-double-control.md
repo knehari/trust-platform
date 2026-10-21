@@ -93,9 +93,10 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - `CaAdminClaim`: step, CA, issuer certificate digest (absent before the first registration), family, kind, change id (approval only), content digest (0024 / 0028), policy edition, single-use challenge and expiry.
   - Deviation from section 2: a proposal claim has no change id, because the 0024/0028 functions allocate it. The database checks the signed kind and content digest against the change it creates in the same transaction, and the signature row links the two.
   - Distinct keys and persons for maker and checker; removing the maker's admin credential voids the approval. Offline re-verification: `reverify_admin_change`.
+- **Admin keys under dual control (migration 0040, section 5):** enrolling or removing a CA admin's WebAuthn key is a signed maker-checker change between two other admins (family `ADMIN_CREDENTIAL`), with no unsigned path. Nobody changes their own key, and the enrolled identity must hold `ca_admin_grant`. Once `signed_admin_required` is set, the DBA bootstrap is closed. DBA removal stays open, because it only takes signing power away (emergency removal of a stolen key).
 - **Signed rejection and withdrawal (migration 0039):** on a CA with `signed_approvals_required`, a proposal is closed only by a checker's signed rejection (distinct key and person from the maker) or the maker's signed withdrawal. Each signs a closing claim with its own tag (`trust-platform/status-change-close/v1`) and step, so it never verifies as a maker or checker claim. The unsigned paths are refused; their bodies are kept as `*_unchecked`. The closer's signature is re-verified offline with the maker's.
 - **Not yet:**
-  - admin credential enrolment and removal under dual control (section 5; DBA bootstrap today);
+  - a recovery path when admin keys are lost on a CA with signed administration (break-glass, section 6);
   - signed rejection of CA-administration changes (status changes: migration 0039);
   - break-glass and the on-call rota (section 6);
   - attestation policy.

@@ -1054,3 +1054,166 @@ fn signed_rejection_and_withdrawal() {
         .collect();
     assert_eq!(statuses, ["REJECTED", "WITHDRAWN"]);
 }
+
+const ADMIN_C: OfficerIdentity<'static> = OfficerIdentity {
+    issuer: ISSUER,
+    subject: "admin-c",
+};
+
+/// ADR-0007 §5 for CA admins (migration 0040): once a CA requires signed
+/// administration, admin keys are enrolled and removed only by a signed
+/// maker-checker change between two other admins; the DBA bootstrap is
+/// closed; nobody changes their own key; a removed key no longer signs.
+#[test]
+fn admin_keys_enrolled_and_removed_under_dual_control() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (mut admin_a, mut admin_b, mut admin_c) = (
+        Authenticator::new(),
+        Authenticator::new(),
+        Authenticator::new(),
+    );
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id, c_id) = (credential(3), credential(4), credential(6));
+    let a_key = admin_a.public_key();
+    let c_key = admin_c.public_key();
+    boot.enroll_admin_credential(&ca, &a_id, &ADMIN_A, "person-admin-a", &a_key)
+        .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id) VALUES ('{ISSUER}', 'admin-c', '{ca}');
+             UPDATE ca_revocation_policy SET signed_admin_required = true WHERE ca_id = '{ca}'"
+        ))
+        .unwrap();
+    // The DBA bootstrap is closed once signed administration is required.
+    let closed = boot
+        .enroll_admin_credential(&ca, &c_id, &ADMIN_C, "person-admin-c", &c_key)
+        .unwrap_err();
+    assert_eq!(sqlstate(&closed).as_deref(), Some("42501"));
+
+    // An admin cannot enrol a key for themselves.
+    let spare = Authenticator::new().public_key();
+    let own_id = credential(7);
+    let own = CredentialContent {
+        ca_id: &ca,
+        credential_id: &own_id,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &spare,
+    };
+    let own = AdminChange::AdminCredential(CredentialChangeKind::Enroll, &own);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &own, &ADMIN_A, 120)
+        .unwrap();
+    let refused =
+        admin_submit(&mut lab.admin, &mut admin_a, &a_id, &challenge, Some(&own)).unwrap_err();
+    assert_eq!(sqlstate(&refused).as_deref(), Some("23514"));
+
+    // A proposes C's key, B approves.
+    let c_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &c_id,
+        officer: &ADMIN_C,
+        person_id: "person-admin-c",
+        public_key_sec1: &c_key,
+    };
+    let enroll = AdminChange::AdminCredential(CredentialChangeKind::Enroll, &c_content);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &enroll, &ADMIN_A, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&enroll),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::AdminCredential, &change, &ADMIN_B, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
+    lab.admin
+        .reverify_admin_change(AdminFamily::AdminCredential, &change, &RP)
+        .unwrap();
+
+    // C (newly enrolled) proposes removing A's key, B approves.
+    let a_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_id,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &a_key,
+    };
+    let remove = AdminChange::AdminCredential(CredentialChangeKind::Remove, &a_content);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &remove, &ADMIN_C, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_c,
+        &c_id,
+        &challenge,
+        Some(&remove),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::AdminCredential, &change, &ADMIN_B, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
+    let statuses: Vec<(String, String)> = owner
+        .query(
+            "SELECT subject, status FROM ca_admin_credential
+             WHERE ca_id = $1::text::uuid ORDER BY subject",
+            &[&ca],
+        )
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            ("admin-a".to_owned(), "REMOVED".to_owned()),
+            ("admin-b".to_owned(), "ACTIVE".to_owned()),
+            ("admin-c".to_owned(), "ACTIVE".to_owned()),
+        ]
+    );
+    // A's removed key no longer signs anything.
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    assert!(matches!(
+        admin_submit(
+            &mut lab.admin,
+            &mut admin_a,
+            &a_id,
+            &challenge,
+            Some(&grant)
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+}

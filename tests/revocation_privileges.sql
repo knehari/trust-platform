@@ -111,7 +111,9 @@ BEGIN
           'ca_admin_propose_unchecked', 'ca_admin_approve_unchecked',
           'credential_propose_unchecked', 'credential_approve_unchecked',
           'issue_close_challenge', 'close_signed_status_change',
-          'status_change_reject_unchecked', 'status_change_withdraw_unchecked')
+          'status_change_reject_unchecked', 'status_change_withdraw_unchecked',
+          'admin_credential_propose_unchecked', 'admin_credential_approve_unchecked',
+          'reject_admin_credential_change')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
@@ -215,7 +217,9 @@ BEGIN
             $$SELECT credential_propose_unchecked(NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                 NULL, NULL)$$,
             $$SELECT status_change_reject_unchecked(NULL, NULL, NULL)$$,
-            $$SELECT status_change_withdraw_unchecked(NULL, NULL, NULL)$$] LOOP
+            $$SELECT status_change_withdraw_unchecked(NULL, NULL, NULL)$$,
+            $$SELECT count(*) FROM ca_admin_credential_change$$,
+            $$SELECT admin_credential_approve_unchecked(NULL, NULL, NULL, NULL)$$] LOOP
             PERFORM pg_temp.as_role(r, s, '42501');
         END LOOP;
     END LOOP;
