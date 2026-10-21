@@ -217,6 +217,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0041_signed_evidence_audit.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0042_signed_ca_admin_rejection.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0043_policy_and_reconciliation_least_privilege.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0044_pending_admin_changes.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_lifecycle.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/crl_pipeline.sql

@@ -16,6 +16,8 @@
 //!   the signed one. `PgRevocationStore::submit_signed_admin` verifies the
 //!   assertion before anything is written; the database re-checks the rest
 //!   (migrations 0037, 0040, 0042).
+//! * `GET /v1/cas/{ca_id}/pending-admin-changes` lists pending changes with
+//!   their content and the digest a checker signs (migration 0044).
 //!
 //! The acting admin is the verified OIDC token's (issuer, subject), never a
 //! request field (ADR-0003). The token must carry the `trust-ca-admin` role
@@ -47,7 +49,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -115,6 +117,25 @@ struct ChallengeResponse {
     change_id: Option<String>,
     webauthn_challenge: String,
     expires_at_us: i64,
+}
+
+/// A pending change as the checker reviews it (binary fields base64url).
+#[derive(Serialize)]
+struct PendingResponse {
+    family: &'static str,
+    change_id: String,
+    kind: &'static str,
+    certificate_der: Option<String>,
+    officer_issuer: Option<String>,
+    officer_subject: Option<String>,
+    credential_id: Option<String>,
+    person_id: Option<String>,
+    public_key: Option<String>,
+    content_sha256: String,
+    maker_issuer: String,
+    maker_subject: String,
+    proposed_at_unix: i64,
+    maker_signed: bool,
 }
 
 #[derive(Serialize)]
@@ -252,6 +273,10 @@ fn router(state: AppState) -> Router {
             "/v1/admin-change-challenges/{challenge_id}/assertion",
             post(submit_assertion),
         )
+        .route(
+            "/v1/cas/{ca_id}/pending-admin-changes",
+            get(pending_admin_changes),
+        )
         .with_state(state)
 }
 
@@ -263,6 +288,14 @@ fn canonical_uuid(text: &str) -> Option<String> {
 
 fn hex_uuid(bytes: &[u8; 16]) -> String {
     uuid::Uuid::from_bytes(*bytes).hyphenated().to_string()
+}
+
+fn family_path(family: AdminFamily) -> &'static str {
+    match family {
+        AdminFamily::CaAdmin => "ca-admin",
+        AdminFamily::Credential => "credential",
+        AdminFamily::AdminCredential => "admin-credential",
+    }
 }
 
 fn family(text: &str) -> Option<AdminFamily> {
@@ -471,6 +504,46 @@ async fn rejection_challenge(
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     decision_challenge(state, family, change_id, headers, SignedStep::Reject).await
+}
+
+/// The CA's pending CA-admin changes with their content and the digest a
+/// checker signs (recomputed and checked by the Rust core, migration 0044).
+async fn pending_admin_changes(
+    State(state): State<AppState>,
+    Path(ca_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = admin(&headers, &state.verifier).await?;
+    let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
+    if !claims.ca_ids.contains(&ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let pending = with_store(
+        &state,
+        move |store| Ok(store.pending_admin_changes(&ca_id)?),
+    )
+    .await?;
+    let encode = |bytes: &Option<Vec<u8>>| bytes.as_ref().map(|b| URL_SAFE_NO_PAD.encode(b));
+    let body: Vec<PendingResponse> = pending
+        .into_iter()
+        .map(|change| PendingResponse {
+            family: family_path(change.family),
+            kind: change.kind,
+            certificate_der: encode(&change.certificate_der),
+            credential_id: encode(&change.credential_id),
+            public_key: encode(&change.public_key_sec1),
+            content_sha256: URL_SAFE_NO_PAD.encode(change.content_sha256),
+            change_id: change.change_id,
+            officer_issuer: change.officer_issuer,
+            officer_subject: change.officer_subject,
+            person_id: change.person_id,
+            maker_issuer: change.maker_issuer,
+            maker_subject: change.maker_subject,
+            proposed_at_unix: change.proposed_at_unix,
+            maker_signed: change.maker_signed,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 async fn submit_assertion(
@@ -696,6 +769,25 @@ mod tests {
         let response = app
             .clone()
             .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn get(app: &Router, path: &str, token: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = response.status();
@@ -956,6 +1048,38 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{proposed}");
         let change = proposed["change_id"].as_str().unwrap().to_owned();
 
+        // The checker sees exactly what is pending, with the digest it signs.
+        let pending_path = format!("/v1/cas/{ca}/pending-admin-changes");
+        let (status, pending) = get(&app, &pending_path, &b_token).await;
+        assert_eq!(status, StatusCode::OK, "{pending}");
+        assert_eq!(pending.as_array().unwrap().len(), 1);
+        assert_eq!(pending[0]["family"], "ca-admin");
+        assert_eq!(pending[0]["change_id"], change.as_str());
+        assert_eq!(pending[0]["kind"], "GRANT_OFFICER");
+        assert_eq!(pending[0]["officer_subject"], "officer-1");
+        assert_eq!(pending[0]["maker_subject"], "admin-a");
+        assert_eq!(pending[0]["maker_signed"], true);
+        let expected = trust_pki_core::revocation_store::officer_grant_digest(
+            OfficerGrantAction::Grant,
+            &OfficerIdentity {
+                issuer: ISSUER,
+                subject: "officer-1",
+            },
+        );
+        assert_eq!(
+            pending[0]["content_sha256"],
+            URL_SAFE_NO_PAD.encode(expected)
+        );
+        let outsider = oidc.token(
+            "admin-b",
+            &[ADMIN_ROLE],
+            &["5eedc0de-0000-4000-8000-000000000099"],
+        );
+        assert_eq!(
+            get(&app, &pending_path, &outsider).await.0,
+            StatusCode::FORBIDDEN
+        );
+
         let approval = format!("/v1/admin-changes/ca-admin/{change}/approval-challenges");
         assert_eq!(
             post(&app, &approval, Some(&a_token), Value::Null).await.0,
@@ -971,6 +1095,8 @@ mod tests {
         let signed = b.assertion(&b_id, issued["webauthn_challenge"].as_str().unwrap(), None);
         let (status, approved) = post(&app, &path, Some(&b_token), signed).await;
         assert_eq!(status, StatusCode::OK, "{approved}");
+
+        assert_eq!(get(&app, &pending_path, &b_token).await.1, json!([]));
 
         // A second proposal, rejected by B with a signature.
         let second =

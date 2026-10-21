@@ -25,8 +25,9 @@ TRUST_WEBAUTHN_RP_ID=admin.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://admin.lab.i
   cargo run -p trust-management-api --bin ca_admin_api
 ```
 
+- `GET /v1/cas/{ca}/pending-admin-changes` lists pending changes with their content and the digest a checker signs (migration 0044). The Rust core recomputes each digest from the content and refuses the whole list if one does not match.
+
 Not covered:
-- listing pending CA-admin changes;
 - break-glass;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);
 - rate limiting beyond 8 concurrent requests;

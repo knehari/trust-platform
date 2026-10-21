@@ -1398,3 +1398,61 @@ fn signed_ca_admin_rejection() {
         .unwrap_err();
     assert_eq!(sqlstate(&approval).as_deref(), Some("23514"));
 }
+
+/// Migration 0044: a checker lists pending CA-admin changes with their
+/// content; the digest is recomputed from the content, and content altered
+/// in the database makes the listing fail closed instead of showing the
+/// checker something other than what the maker signed.
+#[test]
+fn pending_admin_changes_show_the_signed_content() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO revocation_officer_grant(issuer, subject, ca_id)
+                 VALUES ('{ISSUER}', 'third', '{ca}')"
+        ))
+        .unwrap();
+    let key = Authenticator::new().public_key();
+    let credential_id = {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(8);
+        id
+    };
+    let content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &credential_id,
+        officer: &THIRD,
+        person_id: "person-third",
+        public_key_sec1: &key,
+    };
+    let change = lab
+        .admin
+        .propose_credential_enrollment(&content, &ADMIN_A)
+        .unwrap();
+    let pending = lab.admin.pending_admin_changes(&ca).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].change_id, change);
+    assert_eq!(pending[0].family, AdminFamily::Credential);
+    assert_eq!(pending[0].kind, "ENROLL_CREDENTIAL");
+    assert_eq!(pending[0].officer_subject.as_deref(), Some("third"));
+    assert!(!pending[0].maker_signed);
+
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE officer_credential_change DISABLE TRIGGER officer_credential_change_guard;
+             UPDATE officer_credential_change SET person_id = 'someone-else'
+              WHERE change_id = '{change}';
+             ALTER TABLE officer_credential_change ENABLE TRIGGER officer_credential_change_guard"
+        ))
+        .unwrap();
+    assert!(matches!(
+        lab.admin.pending_admin_changes(&ca),
+        Err(RevocationStoreError::InconsistentResult)
+    ));
+    // Officers cannot read pending CA administration.
+    let denied = lab.officer.pending_admin_changes(&ca).unwrap_err();
+    assert_eq!(sqlstate(&denied).as_deref(), Some("42501"));
+}

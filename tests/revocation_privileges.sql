@@ -115,7 +115,8 @@ BEGIN
           'admin_credential_propose_unchecked', 'admin_credential_approve_unchecked',
           'reject_admin_credential_change', 'signed_evidence_index',
           'reject_signed_admin_change', 'ca_admin_reject_unchecked',
-          'credential_reject_unchecked', 'admin_credential_reject_unchecked')
+          'credential_reject_unchecked', 'admin_credential_reject_unchecked',
+          'pending_admin_changes')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);

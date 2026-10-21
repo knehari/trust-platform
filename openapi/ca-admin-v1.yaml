@@ -32,6 +32,41 @@ paths:
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Non-canonical CA identifier}
         '503': {description: Database unavailable or busy}
+  /v1/cas/{ca_id}/pending-admin-changes:
+    get:
+      summary: Pending CA-admin changes with their content and the digest a checker signs (migration 0044)
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Pending changes, oldest first (at most 500)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [family, change_id, kind, content_sha256, maker_issuer, maker_subject,
+                             proposed_at_unix, maker_signed]
+                  properties:
+                    family: {enum: [ca-admin, credential, admin-credential]}
+                    change_id: {type: string, format: uuid}
+                    kind: {type: string}
+                    certificate_der: {type: [string, 'null']}
+                    officer_issuer: {type: [string, 'null']}
+                    officer_subject: {type: [string, 'null']}
+                    credential_id: {type: [string, 'null']}
+                    person_id: {type: [string, 'null']}
+                    public_key: {type: [string, 'null']}
+                    content_sha256: {type: string, description: base64url; recomputed from the content}
+                    maker_issuer: {type: string}
+                    maker_subject: {type: string}
+                    proposed_at_unix: {type: integer}
+                    maker_signed: {type: boolean}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin or CA out of token scope}
+        '404': {description: Non-canonical CA identifier}
+        '503': {description: Database unavailable, busy, or stored content inconsistent with its digest}
   /v1/admin-changes/{family}/{change_id}/approval-challenges:
     post:
       summary: Another CA admin asks for a challenge to approve a pending change

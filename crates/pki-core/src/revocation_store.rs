@@ -209,6 +209,28 @@ pub struct EvidenceFinding {
     pub result: Result<(), RevocationStoreError>,
 }
 
+/// A pending CA-admin change with the content a checker reviews
+/// (migration 0044). `content_sha256` is the digest the checker signs,
+/// recomputed from the content here and checked against the stored one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAdminChange {
+    pub family: AdminFamily,
+    pub change_id: String,
+    pub kind: &'static str,
+    pub certificate_der: Option<Vec<u8>>,
+    /// Officer (or, for admin credentials, admin) identity.
+    pub officer_issuer: Option<String>,
+    pub officer_subject: Option<String>,
+    pub credential_id: Option<Vec<u8>>,
+    pub person_id: Option<String>,
+    pub public_key_sec1: Option<Vec<u8>>,
+    pub content_sha256: [u8; 32],
+    pub maker_issuer: String,
+    pub maker_subject: String,
+    pub proposed_at_unix: i64,
+    pub maker_signed: bool,
+}
+
 /// A CA-admin challenge as stored (migration 0037).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminChallenge {
@@ -288,6 +310,50 @@ fn admin_kind(kind: &str) -> Result<&'static str, RevocationStoreError> {
         "ENROLL_ADMIN_CREDENTIAL" => Ok("ENROLL_ADMIN_CREDENTIAL"),
         "REMOVE_ADMIN_CREDENTIAL" => Ok("REMOVE_ADMIN_CREDENTIAL"),
         _ => Err(RevocationStoreError::InconsistentResult),
+    }
+}
+
+/// The content digest of a pending CA-admin change, recomputed as in 0024 /
+/// 0028 / 0040 (None if the content does not fit its kind).
+fn pending_content_digest(ca: &[u8; 16], change: &PendingAdminChange) -> Option<[u8; 32]> {
+    match change.kind {
+        "REGISTER_ISSUER" => change
+            .certificate_der
+            .as_ref()
+            .map(|der| Sha256::digest(der).into()),
+        "GRANT_OFFICER" | "REVOKE_OFFICER" => {
+            let action = if change.kind == "GRANT_OFFICER" {
+                OfficerGrantAction::Grant
+            } else {
+                OfficerGrantAction::Revoke
+            };
+            Some(officer_grant_digest(
+                action,
+                &OfficerIdentity {
+                    issuer: change.officer_issuer.as_deref()?,
+                    subject: change.officer_subject.as_deref()?,
+                },
+            ))
+        }
+        kind => {
+            let credential_kind = match kind {
+                "ENROLL_CREDENTIAL" | "ENROLL_ADMIN_CREDENTIAL" => CredentialChangeKind::Enroll,
+                _ => CredentialChangeKind::Remove,
+            };
+            let key: [u8; 33] = change.public_key_sec1.as_deref()?.try_into().ok()?;
+            Some(
+                CredentialChange {
+                    kind: credential_kind,
+                    ca_id: *ca,
+                    credential_id: change.credential_id.as_deref()?,
+                    officer_issuer: change.officer_issuer.as_deref()?,
+                    officer_subject: change.officer_subject.as_deref()?,
+                    person_id: change.person_id.as_deref()?,
+                    public_key: &key,
+                }
+                .digest_with_kind(kind),
+            )
+        }
     }
 }
 
@@ -1044,6 +1110,54 @@ impl PgRevocationStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// The CA's pending CA-admin changes with their content (migration
+    /// 0044), oldest first. Each content digest is recomputed from the
+    /// content and must equal the stored one (otherwise the whole answer is
+    /// refused as inconsistent rather than shown to a checker).
+    pub fn pending_admin_changes(
+        &mut self,
+        ca_id: &str,
+    ) -> Result<Vec<PendingAdminChange>, RevocationStoreError> {
+        let ca = parse_uuid(ca_id).ok_or(RevocationStoreError::InconsistentResult)?;
+        let rows = self.client.query(
+            "SELECT family, change_id::text, kind, certificate_der, officer_issuer,
+                    officer_subject, credential_id, person_id, public_key_sec1, content_sha256,
+                    maker_issuer, maker_subject, extract(epoch FROM proposed_at)::bigint,
+                    maker_signed
+             FROM pending_admin_changes($1::text::uuid)",
+            &[&ca_id],
+        )?;
+        rows.iter()
+            .map(|row| {
+                let family = match column::<String>(row, 0)?.as_str() {
+                    "CA_ADMIN" => AdminFamily::CaAdmin,
+                    "CREDENTIAL" => AdminFamily::Credential,
+                    "ADMIN_CREDENTIAL" => AdminFamily::AdminCredential,
+                    _ => return Err(RevocationStoreError::InconsistentResult),
+                };
+                let change = PendingAdminChange {
+                    family,
+                    change_id: column(row, 1)?,
+                    kind: admin_kind(&column::<String>(row, 2)?)?,
+                    certificate_der: column(row, 3)?,
+                    officer_issuer: column(row, 4)?,
+                    officer_subject: column(row, 5)?,
+                    credential_id: column(row, 6)?,
+                    person_id: column(row, 7)?,
+                    public_key_sec1: column(row, 8)?,
+                    content_sha256: hash_column(row, 9)?,
+                    maker_issuer: column(row, 10)?,
+                    maker_subject: column(row, 11)?,
+                    proposed_at_unix: column(row, 12)?,
+                    maker_signed: column(row, 13)?,
+                };
+                (pending_content_digest(&ca, &change) == Some(change.content_sha256))
+                    .then_some(change)
+                    .ok_or(RevocationStoreError::InconsistentResult)
+            })
+            .collect()
     }
 
     /// Asks for a single-use challenge to sign a CA-admin proposal
