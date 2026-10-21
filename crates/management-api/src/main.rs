@@ -85,7 +85,7 @@ struct PaginationQuery {
     event_type: Option<String>,
 }
 
-fn certificate_cn_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
     let Some(raw) = raw else { return Ok(None) };
     let cn = raw.trim();
     if !(2..=255).contains(&cn.chars().count()) || cn.chars().any(char::is_control) {
@@ -153,6 +153,7 @@ fn valid_utc_timestamp(raw: &str) -> Result<String, StatusCode> {
 #[derive(Deserialize)]
 struct CaPaginationQuery {
     after: Option<String>,
+    q: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -501,6 +502,7 @@ async fn list_cas(
     Query(page): Query<CaPaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
+    let search = literal_prefix(page.q)?;
     let after = parse_ca_cursor(page.after)?;
     let (after_name, after_id) = after.map_or((None, None), |cursor| {
         (Some(cursor.display_name), Some(cursor.ca_id))
@@ -519,8 +521,9 @@ async fn list_cas(
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
          AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ($4,$5)) \
+         AND ($6::text IS NULL OR lower(c.display_name) LIKE $6 ESCAPE '\\' OR lower(c.policy_version) LIKE $6 ESCAPE '\\') \
          ORDER BY c.display_name,c.ca_id LIMIT 101",
-            &[&ids, &issuer, &subject, &after_name, &after_id],
+            &[&ids, &issuer, &subject, &after_name, &after_id, &search],
         )
     })
     .await?;
@@ -578,7 +581,7 @@ async fn list_certificates(
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let cursor = parse_history_cursor(page.before)?;
-    let cn_prefix = certificate_cn_prefix(page.cn)?;
+    let cn_prefix = literal_prefix(page.cn)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -1163,6 +1166,24 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(second.len(), 2);
         assert!(next.is_none());
+        let (status, search_cursor, first_matches) =
+            history_page(&app, &token, "/v1/cas?q=SAME%20NAME").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first_matches.len(), 100);
+        let (status, _, second_matches) = history_page(
+            &app,
+            &token,
+            &format!("/v1/cas?q=SAME%20NAME&after={}", search_cursor.unwrap()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second_matches.len(), 2);
+        let (status, _, policy_matches) = history_page(&app, &token, "/v1/cas?q=v1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(policy_matches.len(), 100);
+        let (status, _, wildcard_matches) = history_page(&app, &token, "/v1/cas?q=%25%25").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(wildcard_matches.is_empty());
         let ids: HashSet<&str> = first
             .iter()
             .chain(&second)

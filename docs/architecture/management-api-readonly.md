@@ -27,3 +27,5 @@ Unit/HTTP tests generate ephemeral RSA keys and validate positive signature, aud
 ## Scoped history queries (laboratory extension)
 
 Certificate pages accept an optional literal, case-insensitive `cn` prefix (2–255 characters). Wildcards are escaped, historical null CNs do not match, and every page retains the signed CA scope and current database reader grant. Audit pages accept optional `from` (inclusive UTC), `until` (exclusive UTC), and exact `event_type` filters. The same filters must be sent with each cursor; results remain capped at 100 rows and are not a transactionally consistent snapshot. These filtered queries retain the three-second SQL timeout but have not yet been shown to use an index through the security-barrier management views. They need query-plan and load evidence before large-history use.
+
+CA inventory pages also accept a literal case-insensitive `q` prefix over display name or policy version. The query is applied only after signed CA scope and server-owned grant intersection, and must accompany every subsequent cursor. The view remains bounded to 100 rows per page; query-plan and large-scope performance evidence remain open.

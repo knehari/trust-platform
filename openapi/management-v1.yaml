@@ -46,6 +46,7 @@ paths:
       summary: List one ordered page of CAs in both the signed scope and server-managed reader grants, at most 100
       parameters:
         - $ref: '#/components/parameters/CaCursor'
+        - $ref: '#/components/parameters/CaSearch'
       responses:
         '200':
           description: Scoped CA list. Repeat with X-Next-Cursor until the header is absent.
@@ -244,6 +245,12 @@ components:
       required: false
       description: Pass the previous CA page's opaque X-Next-Cursor unchanged. It carries the last displayed name and CA identifier, so paging can continue if that CA's grant is revoked. Malformed values return 400; concurrent renames or inserts do not form a snapshot.
       schema: { type: string, maxLength: 4096 }
+    CaSearch:
+      in: query
+      name: q
+      required: false
+      description: Case-insensitive literal prefix of CA display name or policy version over all signed and granted CAs. Keep this query on subsequent cursor pages.
+      schema: { type: string, minLength: 2, maxLength: 255 }
   schemas:
     CA:
       type: object
