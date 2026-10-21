@@ -668,6 +668,7 @@ dependencies = [
  "libfuzzer-sys",
  "sha2",
  "trust-pki-core",
+ "trust-pki-crypto",
 ]
 
 [[package]]

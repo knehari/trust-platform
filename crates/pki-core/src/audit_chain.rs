@@ -195,23 +195,30 @@ impl Checkpoint {
     pub fn parse_line(line: &str) -> Option<Self> {
         let rest = line.strip_prefix(CHECKPOINT_TAG)?.strip_prefix(' ')?;
         let (sequence, head) = rest.split_once(' ')?;
-        if sequence.starts_with('0') || head.len() != 64 {
+        // Canonical decimal only: no sign, no leading zero (Rust's parse
+        // accepts a leading '+').
+        if sequence.is_empty()
+            || sequence.starts_with('0')
+            || !sequence.bytes().all(|c| c.is_ascii_digit())
+        {
             return None;
         }
         let sequence = sequence.parse().ok()?;
-        let mut out = [0u8; 32];
-        for (i, pair) in head.as_bytes().chunks(2).enumerate() {
-            let pair = std::str::from_utf8(pair).ok()?;
-            if pair.bytes().any(|c| c.is_ascii_uppercase()) {
-                return None;
-            }
-            out[i] = u8::from_str_radix(pair, 16).ok()?;
-        }
-        Some(Self {
-            sequence,
-            head: out,
-        })
+        let head = lower_hex(head)?.try_into().ok()?;
+        Some(Self { sequence, head })
     }
+}
+
+/// Canonical lowercase hex only (from_str_radix alone would accept a '+'
+/// sign, and slicing non-ASCII text by byte offsets could panic).
+fn lower_hex(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 || !text.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
 }
 
 const SIGNED_CHECKPOINT_TAG: &str = "audit-chain-checkpoint v2";
@@ -260,16 +267,10 @@ impl SignedCheckpoint {
             .strip_prefix(' ')?;
         let (body, signature) = rest.rsplit_once(' ')?;
         let checkpoint = Checkpoint::parse_line(&format!("{CHECKPOINT_TAG} {body}"))?;
-        if signature.len() % 2 != 0
-            || !(16..=160).contains(&signature.len())
-            || signature.bytes().any(|c| c.is_ascii_uppercase())
-        {
+        if !(16..=160).contains(&signature.len()) {
             return None;
         }
-        let signature_der = (0..signature.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&signature[i..i + 2], 16).ok())
-            .collect::<Option<Vec<u8>>>()?;
+        let signature_der = lower_hex(signature)?;
         Some(Self {
             checkpoint,
             signature_der,
@@ -549,6 +550,23 @@ mod tests {
         assert!(SignedCheckpoint::parse_line(&checkpoint.to_line()).is_none());
         assert!(SignedCheckpoint::parse_line(&line.to_uppercase()).is_none());
         assert!(SignedCheckpoint::parse_line(&format!("{line}0")).is_none());
+    }
+
+    /// Found by the audit_checkpoint fuzz target: Rust's integer parsing
+    /// accepts a '+' sign, so "+b" read as 0x0b and two different lines meant
+    /// the same checkpoint; byte slicing of non-ASCII hex could panic.
+    #[test]
+    fn checkpoint_lines_reject_signs_and_non_ascii() {
+        let head = "ab".repeat(32);
+        assert!(Checkpoint::parse_line(&format!("audit-chain-checkpoint v1 42 {head}")).is_some());
+        let crash = format!("audit-chain-checkpoint v1 42 {}+bab", "ab".repeat(30));
+        assert!(Checkpoint::parse_line(&crash).is_none());
+        assert!(Checkpoint::parse_line(&format!("audit-chain-checkpoint v1 +42 {head}")).is_none());
+        assert!(Checkpoint::parse_line(&format!("audit-chain-checkpoint v1 -1 {head}")).is_none());
+        let signed = format!("audit-chain-checkpoint v2 42 {head} 3044{}", "é".repeat(8));
+        assert!(SignedCheckpoint::parse_line(&signed).is_none());
+        let plus = format!("audit-chain-checkpoint v2 42 {head} +0{}", "44".repeat(8));
+        assert!(SignedCheckpoint::parse_line(&plus).is_none());
     }
 
     #[test]

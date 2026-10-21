@@ -13,7 +13,8 @@ quiet() {
     exit 1
   fi
 }
-mkdir -p "$out/csr_p256" "$out/csr_rsa_pkcs1_lab" "$out/ca_certificate" "$out/crl_verify"
+mkdir -p "$out/csr_p256" "$out/csr_rsa_pkcs1_lab" "$out/ca_certificate" "$out/crl_verify" \
+  "$out/webauthn_assertion" "$out/audit_checkpoint"
 
 quiet openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "$work/p256.key" -subj "/CN=fuzz.lab.invalid" -outform DER -out "$out/csr_p256/p256.der"
@@ -70,3 +71,13 @@ done
 # flipped bit in the signature area (offset 0xffff wraps modulo the length).
 printf '\001' > "$out/crl_verify/own.bin"
 printf '\001\377\377\001' > "$out/crl_verify/own-flip.bin"
+
+# WebAuthn: odd selects mutations of the harness's own valid assertion; even
+# with empty parts exercises the length-prefixed split.
+printf '\001' > "$out/webauthn_assertion/own.bin"
+printf '\001\000\041\001' > "$out/webauthn_assertion/own-flag.bin"
+printf '\000\000\045' > "$out/webauthn_assertion/short.bin"
+# Checkpoint lines: one canonical unsigned and one canonical signed shape.
+head="$(printf 'ab%.0s' $(seq 1 32))"
+printf 'audit-chain-checkpoint v1 42 %s' "$head" > "$out/audit_checkpoint/v1.txt"
+printf 'audit-chain-checkpoint v2 42 %s 3006020101020101' "$head" > "$out/audit_checkpoint/v2.txt"

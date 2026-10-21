@@ -1,7 +1,7 @@
 name: Fuzz
 
-# SEC-07: untrusted DER (PKCS#10 CSRs, CA certificates, CRLs) must be rejected, never
-# panic. Short smoke on every PR; longer weekly campaign.
+# SEC-07: untrusted DER (PKCS#10 CSRs, CA certificates, CRLs), WebAuthn assertions and
+# exported audit checkpoints must be rejected, never panic. Short smoke on every PR; longer weekly campaign.
 on:
   pull_request:
     paths:
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [csr_p256, csr_rsa_pkcs1_lab, ca_certificate, crl_verify]
+        target: [csr_p256, csr_rsa_pkcs1_lab, ca_certificate, crl_verify, webauthn_assertion, audit_checkpoint]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned nightly and cargo-fuzz

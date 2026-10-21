@@ -8,6 +8,8 @@ return an error, never panic, hang or abort.
 | `csr_p256` | `trust_pki_core::csr::verify_pkcs10_p256` |
 | `csr_rsa_pkcs1_lab` | `trust_pki_core::csr::verify_pkcs10_rsa_pkcs1_lab` (lab feature) |
 | `ca_certificate` | `trust_pki_core::ca_observation::observe_pinned_lab_ca` (pin = SHA-256 of the input, so parsing behind the pin is reached) |
+| `webauthn_assertion` | `trust_pki_core::webauthn::verify_assertion` with a fixed RP, key and claim digest (lab key). First input byte even: length-prefixed authenticatorData, clientDataJSON and signature verified as is. Odd: XOR mutations of a valid assertion, none of which may verify |
+| `audit_checkpoint` | `audit_chain::Checkpoint` / `SignedCheckpoint::parse_line` on arbitrary text: never panic, and a line that parses must re-serialise to exactly itself (found the '+' sign accepted by integer parsing) |
 | `crl_verify` | `trust_pki_core::crl::LabCrlVerifier::verify` against an ephemeral lab CA and a fixed reservation (lab feature). First input byte even: bytes verified as-is, foreign CRLs must be rejected, never panic. Odd: XOR mutations of the CA's own signed CRL; the unmodified CRL must verify and an accepted mutation must keep the reserved TBS |
 
 Run locally (nightly toolchain and `cargo install cargo-fuzz --version 0.13.2 --locked`):

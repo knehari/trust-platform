@@ -5,7 +5,7 @@
   "name": "trust-platform-locked-source-dependencies",
   "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-2ae51a4a7afdecf296d86b136f7c375b439f6e984698466f9212eb753678940e",
   "creationInfo": {
-    "created": "2026-10-20T23:26:34Z",
+    "created": "2026-10-21T10:05:06Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],

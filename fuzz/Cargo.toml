@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "=0.4.13"
 sha2 = "=0.10.9"
 trust-pki-core = { path = "../crates/pki-core", features = ["lab-software"] }
+trust-pki-crypto = { path = "../crates/pki-crypto", features = ["lab-software"] }
 
 # Not a member of the main workspace: cargo-fuzz needs a nightly toolchain.
 [workspace]
@@ -39,6 +40,20 @@ bench = false
 [[bin]]
 name = "crl_verify"
 path = "fuzz_targets/crl_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webauthn_assertion"
+path = "fuzz_targets/webauthn_assertion.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_checkpoint"
+path = "fuzz_targets/audit_checkpoint.rs"
 test = false
 doc = false
 bench = false
