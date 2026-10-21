@@ -910,3 +910,71 @@ fn signed_ca_admin_changes() {
         .unwrap_err();
     assert_eq!(off.code().map(|c| c.code()), Some("23514"));
 }
+
+/// One officer cannot hold more certificates as a precaution than the CA's
+/// limit while those holds await confirmation (migration 0038); another
+/// officer still can, and a confirmed hold frees the slot.
+#[test]
+fn precautionary_holds_are_capped_per_officer() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                 requester_id, policy_version, state)
+                 VALUES (gen_random_uuid(), '{ca}', 'signed-2', sha256('csr2'::bytea),
+                         'requester', 'v1', 'PUBLISHED');
+             INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+                 SELECT '{ca}', '\\x02', request_id FROM certificate_request
+                 WHERE ca_id = '{ca}' AND idempotency_key = 'signed-2';
+             INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                 certificate_der, signed_at)
+                 SELECT ca_id, serial_der_content, request_id, sha256('der2'::bytea),
+                        '\\x3003020102', now()
+                 FROM serial_reservation WHERE ca_id = '{ca}' AND serial_der_content = '\\x02';
+             UPDATE ca_revocation_policy
+                 SET suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 24,
+                     precautionary_hold_limit = 1
+                 WHERE ca_id = '{ca}';"
+        ))
+        .unwrap();
+    let first = SerialNumber::from_positive_der_content(&[0x01]).unwrap();
+    let second = SerialNumber::from_positive_der_content(&[0x02]).unwrap();
+    let hold = |lab: &mut Lab, serial: &SerialNumber, maker: bool| {
+        let officer = if maker { &MAKER } else { &CHECKER };
+        let challenge = lab
+            .officer
+            .issue_precaution_challenge(&ca, serial, officer, 120)
+            .unwrap();
+        lab.submit(&challenge, maker, None)
+    };
+    hold(&mut lab, &first, true).unwrap();
+    let capped = hold(&mut lab, &second, true).unwrap_err();
+    assert_eq!(sqlstate(&capped).as_deref(), Some("23514"));
+    assert_eq!(
+        lab.officer.status(&ca, &second).unwrap(),
+        CertificateStatus::Valid
+    );
+    // Confirming the first hold (dual-controlled revocation) frees the slot.
+    let definitive = lab.signed_proposal();
+    let approval = lab
+        .officer
+        .issue_approval_challenge(&definitive, &CHECKER, 120)
+        .unwrap();
+    lab.submit(&approval, false, None).unwrap();
+    hold(&mut lab, &second, true).unwrap();
+    assert_eq!(
+        lab.officer.status(&ca, &second).unwrap(),
+        CertificateStatus::Suspended
+    );
+    let limit = owner
+        .execute(
+            "UPDATE ca_revocation_policy SET precautionary_hold_limit = 0
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap_err();
+    assert_eq!(limit.code().map(|c| c.code()), Some("23514"));
+}

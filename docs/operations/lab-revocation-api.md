@@ -61,7 +61,9 @@ Other endpoints:
   one officer asks for a challenge to put a valid certificate on hold as a
   precaution (ADR-0007 section 6, migration 0036). The CA must allow
   suspension under a CPS reference and set `precautionary_hold_hours`
-  (1-72), otherwise 409. The claim's action is `PRECAUTIONARY_SUSPEND`, so
+  (1-72), otherwise 409. One officer may have at most
+  `precautionary_hold_limit` (default 3, migration 0038) holds awaiting
+  confirmation on a CA; past that the assertion is refused (409). The claim's action is `PRECAUTIONARY_SUSPEND`, so
   the signature cannot serve as an ordinary maker signature. The assertion
   goes to the usual assertion endpoint, which applies the hold at once and
   logs `precautionary_hold_applied`.
@@ -77,8 +79,7 @@ Other endpoints:
 Not covered:
 - signed rejection and withdrawal;
 - CA-admin endpoints (credential enrolment, grants);
-- break-glass (ADR-0007 section 6) and per-officer limits on precautionary
-  holds;
+- break-glass (ADR-0007 section 6);
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side;
 - a browser client.
