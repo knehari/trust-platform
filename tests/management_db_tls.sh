@@ -36,7 +36,7 @@ docker run --detach --name "$name" \
   -e POSTGRES_PASSWORD=test-only-not-secret \
   -e POSTGRES_DB=trust_tls \
   -v "$work/certs:/certs:ro" \
-  -p 127.0.0.1:55434:5432 postgres:16 \
+  -p 127.0.0.1::5432 postgres:16 \
   -c ssl=on -c ssl_cert_file=/certs/server.pem -c ssl_key_file=/certs/server.key \
   -c ssl_min_protocol_version=TLSv1.3 >/dev/null
 
@@ -47,9 +47,13 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 docker exec "$name" pg_isready -h 127.0.0.1 -U trust_tls_ci -d trust_tls
+# Docker picks a free host port: a fixed one collided on a CI runner.
+mapped="$(docker port "$name" 5432/tcp | grep -m1 '^127\.0\.0\.1:')"
+port="${mapped##*:}"
+[[ "$port" =~ ^[0-9]+$ ]] || { echo "FAIL: no host port mapped for PostgreSQL: $mapped"; exit 1; }
 
 TRUST_REQUIRE_DATABASE=1 \
-TRUST_API_TLS_TEST_DATABASE_URL="postgresql://trust_tls_ci:test-only-not-secret@localhost:55434/trust_tls" \
+TRUST_API_TLS_TEST_DATABASE_URL="postgresql://trust_tls_ci:test-only-not-secret@localhost:$port/trust_tls" \
 TRUST_API_TLS_TEST_CA_FILE="$work/ca.pem" \
 TRUST_API_TLS_TEST_UNTRUSTED_CA_FILE="$work/untrusted-ca.pem" \
   cargo test -p trust-management-api --locked \
@@ -62,7 +66,7 @@ echo 'PASS: management API requires verified TLS 1.3 to PostgreSQL'
 # name they never get a session.
 cargo build -q --locked -p trust-management-api --bin crl_distribution --bin revocation_api \
   --bin crl_housekeeping --bin signed_evidence_audit --bin ca_admin_api
-tls_url="postgresql://trust_tls_ci:test-only-not-secret@localhost:55434/trust_tls"
+tls_url="postgresql://trust_tls_ci:test-only-not-secret@localhost:$port/trust_tls"
 service_error() { # <binary> <ca-file> <url>
   local binary="$1" ca="$2" url="$3"
   TRUST_DATABASE_CA_FILE="$ca" TRUST_CRL_DATABASE_URL="$url" TRUST_CRL_BIND=127.0.0.1:18099 \
