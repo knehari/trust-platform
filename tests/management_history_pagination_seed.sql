@@ -27,6 +27,14 @@ SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
        'paged-' || lpad(to_hex(n), 4, '0') || '.lab.invalid'
 FROM generate_series(1, 102) AS n;
 
+-- The request ending in hex 0066 belongs to row 102 in this fixture. Keep
+-- its SAN metadata synthetic and explicit for the server-side search test.
+UPDATE certificate SET
+    not_before_utc = '2026-10-01T00:00:00Z',
+    not_after_utc = '2027-10-01T00:00:00Z',
+    san_dns = ARRAY['paged-0102.lab.invalid']
+WHERE request_id = '11111111-1111-4111-8111-000000000066';
+
 INSERT INTO audit_event (event_id, ca_id, actor_id, event_type, decision, policy_version, recorded_at)
 SELECT ('33333333-3333-4333-8333-' || lpad(to_hex(n), 12, '0'))::uuid,
        'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'private-pagination-actor',

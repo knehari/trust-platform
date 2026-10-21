@@ -1073,7 +1073,7 @@ mod tests {
         let (status, _, combined) = history_page(
             &app,
             &token,
-            &format!("{cert_base}?cn=PAGED-010&san_dns=paged-0102.lab.invalid"),
+            &format!("{cert_base}?cn=PAGED-0&san_dns=paged-0102.lab.invalid"),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

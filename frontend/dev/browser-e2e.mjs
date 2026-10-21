@@ -8,6 +8,7 @@ const allowedRequest = '11111111-1111-4111-8111-000000000001';
 const hiddenRequest = '11111111-1111-4111-8111-000000000002';
 const allowedEvent = '33333333-3333-4333-8333-000000000001';
 const expectedCn = process.env.TRUST_E2E_EXPECTED_CN ?? 'compose-allowed.lab.invalid';
+const sanExpectedCn = process.env.TRUST_E2E_SAN_CN ?? 'paged-0102.lab.invalid';
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}),
@@ -62,6 +63,21 @@ try {
     assert.equal(content.includes('private-compose-actor'), false);
   }
 
+  // Search the full history by DNS SAN, including a record beyond page one.
+  if (!process.env.TRUST_E2E_SKIP_CN) {
+    await page.getByRole('button', { name: 'Clear', exact: true }).click();
+  }
+  const sanSearch = page.getByLabel('Search exact DNS SAN across this authority’s full certificate history');
+  await sanSearch.fill('PAGED-0102.LAB.INVALID');
+  await page.getByRole('button', { name: 'Search SAN' }).click();
+  await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).waitFor();
+  assert.equal(await table.getByRole('row').count(), 2);
+  await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).click();
+  await certificateDialog.getByText(sanExpectedCn).first().waitFor();
+  await certificateDialog.getByText('RECORDED PERIOD', { exact: true }).waitFor();
+  await certificateDialog.getByRole('button', { name: /Close certificate detail/i }).click();
+  await certificateDialog.waitFor({ state: 'hidden' });
+
   // The same browser session must deny a CA outside the signed scope. A forged
   // deep link must not surface the hidden certificate.
   await page.goto(`${origin}/?view=certificates&ca=${hiddenCa}&certificate=${hiddenRequest}`);
@@ -77,7 +93,16 @@ try {
   await auditDialog.getByRole('button', { name: /Close audit event detail/i }).click();
   await auditDialog.waitFor({ state: 'hidden' });
 
-  console.log(`Browser E2E passed: OIDC, scoped direct links, denial, pagination, dialogs${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  await page.getByRole('searchbox', { name: 'Exact decision' }).fill('allow');
+  await page.getByRole('searchbox', { name: 'Exact policy version' }).fill('v1');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await page.getByText('Server filters are active for this authority’s full audit history.').waitFor();
+  await page.getByRole('button', { name: 'Load older audit events' }).waitFor();
+  await page.getByRole('searchbox', { name: 'Exact decision' }).fill('deny');
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await page.getByText('No audit events recorded').waitFor();
+
+  console.log(`Browser E2E passed: OIDC, scoped direct links, denial, pagination, dialogs, SAN search, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));
