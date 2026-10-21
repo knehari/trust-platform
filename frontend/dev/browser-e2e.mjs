@@ -74,7 +74,7 @@ try {
   assert.equal(await table.getByRole('row').count(), 2);
   await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).click();
   await certificateDialog.getByText(sanExpectedCn).first().waitFor();
-  await certificateDialog.getByText('RECORDED PERIOD').waitFor();
+  await certificateDialog.getByText('RECORDED PERIOD', { exact: true }).waitFor();
   await certificateDialog.getByRole('button', { name: /Close certificate detail/i }).click();
   await certificateDialog.waitFor({ state: 'hidden' });
 
