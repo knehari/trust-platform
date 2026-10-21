@@ -39,7 +39,7 @@ Signing the decisions with distinct officer keys is a separate, larger design. I
 
 ### C. Service connections refuse privileged logins
 
-`PgRevocationStore::connect_lab_service` refuses (`PrivilegedSession`) a session whose login is a superuser, can create roles, bypasses row-level security or is a member of `trust_revocation_owner`. The check uses `session_user`, so setting a role does not hide a privileged login. Services, and the `crl_housekeeping` job, connect through it.
+`PgRevocationStore::connect_lab_service` refuses (`PrivilegedSession`) a session whose login is a superuser, can create roles, bypasses row-level security or is a member of `trust_revocation_owner`. The check uses `session_user`, so setting a role does not hide a privileged login. Services, and the `crl_housekeeping` job, connect through it (or through `from_service_client` on a verified-TLS connection, which applies the same check).
 
 ### D. Housekeeping
 

@@ -42,7 +42,7 @@ and evidence. It is not what keeps old CRLs from being signed.
 
 ```
 TRUST_DATABASE_URL=postgresql://... \
-  cargo run -p trust-pki-core --features postgres-store --example crl_housekeeping -- <ca-uuid>|--all
+  cargo run -p trust-management-api --bin crl_housekeeping -- <ca-uuid>|--all
 ```
 
 With `--all` the job covers every CA with a registered issuer certificate
@@ -62,10 +62,13 @@ A scheduler (cron, systemd timer) can therefore alert on any non-zero status.
 For example, an hourly cron line can call a wrapper script that runs the
 command above and mails its output when it exits non-zero.
 
-The connection uses the lab `NoTls` adapter. Run it only against a loopback
-or private lab database. It authenticates nobody and holds no key. It
-refuses a privileged login (`connect_lab_service`): use a login granted only
-`trust_crl_operator` (migration 0023).
+The connection follows the management API's policy: TLS 1.3, verified
+against `TRUST_DATABASE_CA_FILE` (certificate and host name), by default.
+Plaintext only with the explicit lab opt-out `TRUST_DATABASE_TLS=disable-lab`,
+reported on stderr; `tests/management_db_tls.sh` covers this. The job
+authenticates nobody and holds no key. It refuses a privileged login
+(`from_service_client`): use a login granted only `trust_crl_operator`
+(migration 0023).
 Covered by `housekeeping_reports_and_cleans_up` and
 `unreviewed_schema_changes_reach_the_operator` in
 `crates/pki-core/tests/revocation_crl_postgres.rs`, and by

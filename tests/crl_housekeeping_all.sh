@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable PostgreSQL 16 (lab only): the crl_housekeeping example with
+# Disposable PostgreSQL 16 (lab only): the crl_housekeeping job with
 # --all covers every CA with a registered issuer (migration 0033), under a
 # login holding only trust_crl_operator, and alerts (exit 2) when one of them
 # needs attention. Needs migrations 0001..0033, a superuser URL and psql:
@@ -31,8 +31,18 @@ print(urllib.parse.urlunsplit((u.scheme, f"trust_crl_operator_ci:test-only-not-s
                                u.path, u.query, u.fragment)))
 PY
 )"
-cargo build -q --locked -p trust-pki-core --features postgres-store --example crl_housekeeping
-bin=target/debug/examples/crl_housekeeping
+cargo build -q --locked -p trust-management-api --bin crl_housekeeping
+bin=target/debug/crl_housekeeping
+
+# Verified TLS by default: without a CA bundle or the explicit lab opt-out
+# the job refuses to run (tests/management_db_tls.sh covers verified TLS).
+set +e
+TRUST_DATABASE_URL="$operator_url" "$bin" --all >"$temp/out" 2>"$temp/err"
+status=$?
+set -e
+[ "$status" = 1 ] || fail "ran without TLS or the lab opt-out (exit $status)"
+grep -q "TRUST_DATABASE_CA_FILE" "$temp/err" || fail "missing CA bundle not reported"
+export TRUST_DATABASE_TLS=disable-lab
 
 set +e
 TRUST_DATABASE_URL="$operator_url" "$bin" --all >"$temp/out" 2>"$temp/err"

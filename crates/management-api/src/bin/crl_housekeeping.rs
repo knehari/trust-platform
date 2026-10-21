@@ -14,16 +14,30 @@
 //!
 //! Exit status: 0 nothing to do, 2 attention needed (alert), 1 error (on
 //! any CA; an error outranks an alert).
-//! The database URL is read from TRUST_DATABASE_URL; the connection is the
-//! lab NoTls adapter, for a loopback or private lab database only, and must
-//! use a non-privileged login holding trust_crl_operator (migration 0023).
+//! The database URL is read from TRUST_DATABASE_URL and must be a
+//! non-privileged login holding trust_crl_operator (migration 0023).
+//! The database connection follows the management API's policy: TLS 1.3
+//! with certificate and host name verification against
+//! TRUST_DATABASE_CA_FILE by default; plaintext only with the explicit lab
+//! opt-out TRUST_DATABASE_TLS=disable-lab (reported on stderr).
 //! Usage:
-//!   TRUST_DATABASE_URL=postgresql://... cargo run -p trust-pki-core \
-//!     --features postgres-store --example crl_housekeeping -- <ca-uuid>|--all \
+//!   TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=ca.pem \
+//!     cargo run -p trust-management-api --bin crl_housekeeping -- <ca-uuid>|--all \
 //!     [--reserved-older-than SECONDS] [--intent-older-than SECONDS]
+
+#![forbid(unsafe_code)]
+
+// The management API's PostgreSQL TLS policy (verify-full by default).
+#[allow(dead_code)]
+#[path = "../database.rs"]
+mod database;
 
 use std::{env, process::ExitCode};
 use trust_pki_core::revocation_store::PgRevocationStore;
+
+const NAME: &str = "crl_housekeeping";
+/// One CA's housekeeping is a few statements; bound each one.
+const STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
 fn seconds(args: &[String], flag: &str) -> Result<i64, String> {
     match args.iter().position(|a| a == flag) {
@@ -51,9 +65,18 @@ fn run() -> Result<Outcome, String> {
     let reserved = seconds(&args, "--reserved-older-than")?;
     let intent = seconds(&args, "--intent-older-than")?;
     let url = env::var("TRUST_DATABASE_URL").map_err(|_| "TRUST_DATABASE_URL is not set")?;
+    let tls = database::tls_from_settings(
+        env::var(database::TLS_MODE_ENV).ok().as_deref(),
+        env::var(database::CA_FILE_ENV).ok().as_deref(),
+    )?;
+    if matches!(tls, database::DatabaseTls::DisabledForLab) {
+        eprintln!("{NAME}: database TLS disabled (lab opt-out)");
+    }
+    let client = database::connect_client(&url, &tls, STATEMENT_TIMEOUT_MS)
+        .map_err(|()| "database unavailable (connection or TLS failed)".to_owned())?;
     // Refuses a privileged login (superuser, owner role member): run it with
     // a login granted trust_crl_operator only.
-    let mut store = PgRevocationStore::connect_lab_service(&url)
+    let mut store = PgRevocationStore::from_service_client(client)
         .map_err(|e| format!("database connection refused: {e:?}"))?;
     let cas = if target == "--all" {
         store
