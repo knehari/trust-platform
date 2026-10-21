@@ -79,6 +79,75 @@ struct Audit {
 #[derive(Deserialize)]
 struct PaginationQuery {
     before: Option<String>,
+    cn: Option<String>,
+    from: Option<String>,
+    until: Option<String>,
+    event_type: Option<String>,
+}
+
+fn certificate_cn_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+    let Some(raw) = raw else { return Ok(None) };
+    let cn = raw.trim();
+    if !(2..=255).contains(&cn.chars().count()) || cn.chars().any(char::is_control) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let escaped = cn
+        .to_lowercase()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    Ok(Some(format!("{escaped}%")))
+}
+
+struct AuditFilters {
+    from: Option<String>,
+    until: Option<String>,
+    event_type: Option<String>,
+}
+
+fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
+    let from = page.from.as_deref().map(valid_utc_timestamp).transpose()?;
+    let until = page.until.as_deref().map(valid_utc_timestamp).transpose()?;
+    if from
+        .as_ref()
+        .zip(until.as_ref())
+        .is_some_and(|(from, until)| from >= until)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let event_type = page
+        .event_type
+        .as_ref()
+        .map(|value| value.trim().to_owned());
+    if event_type.as_ref().is_some_and(|value| {
+        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(AuditFilters {
+        from,
+        until,
+        event_type,
+    })
+}
+
+fn valid_utc_timestamp(raw: &str) -> Result<String, StatusCode> {
+    let bytes = raw.as_bytes();
+    let valid = bytes.len() == 24
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'.'
+        && bytes[23] == b'Z'
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16 | 19 | 23) || byte.is_ascii_digit()
+        });
+    if !valid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(raw.to_owned())
 }
 
 #[derive(Deserialize)]
@@ -509,6 +578,7 @@ async fn list_certificates(
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let cursor = parse_history_cursor(page.before)?;
+    let cn_prefix = certificate_cn_prefix(page.cn)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -518,14 +588,21 @@ async fn list_certificates(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        db.query(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+        let query = "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
-             ORDER BY signed_at DESC, request_id DESC LIMIT 101",
-            &[&ca_id, &issuer, &subject, &before_time, &before_id]
-        ).map(Some)
+             ORDER BY signed_at DESC, request_id DESC LIMIT 101";
+        let search_query = "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn \
+             FROM management_certificate WHERE ca_id=$1 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
+             AND ($4::text IS NULL OR (signed_at, request_id) < ($4, $5)) \
+             AND lower(subject_cn) LIKE $6 ESCAPE '\\' \
+             ORDER BY signed_at DESC, request_id DESC LIMIT 101";
+        match cn_prefix {
+            Some(prefix) => db.query(search_query, &[&ca_id, &issuer, &subject, &before_time, &before_id, &prefix]),
+            None => db.query(query, &[&ca_id, &issuer, &subject, &before_time, &before_id]),
+        }.map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
     let items: Vec<Certificate> = rows
@@ -617,6 +694,7 @@ async fn list_audit(
 ) -> Result<(HeaderMap, Json<Vec<Audit>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let filters = audit_filters(&page)?;
     let cursor = parse_history_cursor(page.before)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
@@ -632,8 +710,11 @@ async fn list_audit(
              FROM management_audit WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (recorded_at, event_id) < ($4, $5)) \
+             AND ($6::text IS NULL OR recorded_at >= $6) \
+             AND ($7::text IS NULL OR recorded_at < $7) \
+             AND ($8::text IS NULL OR event_type = $8) \
              ORDER BY recorded_at DESC, event_id DESC LIMIT 101",
-            &[&ca_id, &issuer, &subject, &before_time, &before_id]
+            &[&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type]
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -859,7 +940,70 @@ mod tests {
         );
         assert_eq!(certificate["ca_id"], "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
         assert_eq!(certificate["subject_cn"], "paged-0001.lab.invalid");
+        let search = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates?cn=PAGED-006";
+        let (status, cursor, matches) = history_page(&app, &token, search).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(matches.len(), 7);
+        assert!(cursor.is_none());
+        assert!(matches.iter().all(|item| item["subject_cn"]
+            .as_str()
+            .unwrap()
+            .starts_with("paged-006")));
+        let (status, _, none) = history_page(
+            &app,
+            &token,
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates?cn=paged%25",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(none.is_empty());
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates?cn=paged",
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates?cn=x",
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(certificate.get("certificate_der").is_none());
+        let audit_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit";
+        let (status, _, events) = history_page(
+            &app,
+            &token,
+            &format!("{audit_base}?from=2026-10-02T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(events.is_empty());
+        let (status, _, events) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{audit_base}?event_type=certificate.signed&until=2026-10-02T00%3A00%3A00.000Z"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(events.len(), 100);
+        let (status, _, events) =
+            history_page(&app, &token, &format!("{audit_base}?event_type=other")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(events.is_empty());
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{audit_base}?from=2026-10-02T00%3A00%3A00.000Z&until=2026-10-01T00%3A00%3A00.000Z"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         let serial_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates/by-serial";
         let (status, by_serial) =
             detail_response(&app, &token, &format!("{serial_base}/010001")).await;

@@ -85,6 +85,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CaId'
         - $ref: '#/components/parameters/HistoryCursor'
+        - $ref: '#/components/parameters/CertificateCnPrefix'
       responses:
         '200':
           description: Metadata only; certificate DER is not exposed. Repeat with X-Next-Cursor until the header is absent.
@@ -152,6 +153,9 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CaId'
         - $ref: '#/components/parameters/HistoryCursor'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditUntil'
+        - $ref: '#/components/parameters/AuditEventType'
       responses:
         '200':
           description: Audit metadata without actor identifiers. Repeat with X-Next-Cursor until the header is absent.
@@ -210,6 +214,30 @@ components:
       required: false
       description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
       schema: { type: string, maxLength: 61 }
+    CertificateCnPrefix:
+      in: query
+      name: cn
+      required: false
+      description: Case-insensitive literal CN prefix over the selected CA's full history. Percent, underscore and backslash are escaped as literals. Keep the same prefix on every page.
+      schema: { type: string, minLength: 2, maxLength: 255 }
+    AuditFrom:
+      in: query
+      name: from
+      required: false
+      description: Inclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format.
+      schema: { type: string, maxLength: 24 }
+    AuditUntil:
+      in: query
+      name: until
+      required: false
+      description: Exclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; must follow from.
+      schema: { type: string, maxLength: 24 }
+    AuditEventType:
+      in: query
+      name: event_type
+      required: false
+      description: Exact event type in the selected CA's full audit history.
+      schema: { type: string, minLength: 1, maxLength: 128 }
     CaCursor:
       in: query
       name: after
