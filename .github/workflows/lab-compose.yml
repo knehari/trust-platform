@@ -7,6 +7,7 @@ on:
       - Dockerfile.api
       - frontend/**
       - scripts/lab/**
+      - tests/management_browser_e2e_seed.sql
       - migrations/**
       - crates/management-api/**
       - Cargo.lock
@@ -33,6 +34,23 @@ jobs:
         run: |
           node frontend/dev/check-api-compat.mjs
           node frontend/dev/compose-smoke.mjs
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install pinned browser test runtime
+        run: |
+          npm ci --prefix frontend
+          cd frontend
+          npx playwright install --with-deps chromium
+      - name: Exercise console interactions in a real browser
+        run: |
+          set -euo pipefail
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          test -n "$DB_CONTAINER"
+          docker exec -i "$DB_CONTAINER" psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 < tests/management_browser_e2e_seed.sql
+          node frontend/dev/browser-e2e.mjs
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
