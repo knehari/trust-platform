@@ -121,10 +121,45 @@ BEGIN
     WHERE p.pronamespace = 'public'::regnamespace
       AND a.grantee::regrole::text IN ('trust_revocation_officer_api', 'trust_crl_signer',
           'trust_crl_operator', 'trust_ca_admin', 'trust_audit_sealer', 'trust_audit_verifier',
-          'trust_crl_publisher')
+          'trust_crl_publisher', 'trust_issuance_service')
       AND (NOT p.prosecdef
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
     PERFORM pg_temp.must(bad IS NULL, 'granted functions without definer settings: ' || coalesce(bad, ''));
+END $t$;
+
+-- ------------------------------------- issuance least privilege (0035)
+-- The issuance functions run as trust_issuance_owner (definer, pinned
+-- search_path), and the service role reaches the issuance tables through
+-- them only.
+DO $t$
+DECLARE
+    bad TEXT;
+BEGIN
+    SELECT string_agg(p.oid::regprocedure::text, ', ') INTO bad
+    FROM pg_proc p
+    WHERE p.pronamespace = 'public'::regnamespace
+      AND (p.proname IN ('create_issuance_request', 'transition_issuance_request',
+               'reserve_issuance_serial', 'create_signing_intent', 'mark_signing_uncertain',
+               'quarantine_stale_signing_intents')
+           OR p.oid = 'store_signed_certificate(uuid,uuid,text,bytea,bytea,bytea,bytea,timestamptz)'::regprocedure)
+      AND (NOT p.prosecdef
+           OR p.proowner <> 'trust_issuance_owner'::regrole
+           OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
+    PERFORM pg_temp.must(bad IS NULL, 'issuance functions without definer settings: ' || coalesce(bad, ''));
+
+    SELECT string_agg(t, ', ') INTO bad
+    FROM unnest(ARRAY['certificate_request', 'serial_reservation', 'signing_intent', 'certificate',
+                      'audit_event', 'ca', 'issuance_policy_grant', 'approved_policy_edition']) t
+    WHERE has_table_privilege('trust_issuance_service', t, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE');
+    PERFORM pg_temp.must(bad IS NULL, 'trust_issuance_service has table rights on: ' || coalesce(bad, ''));
+    PERFORM pg_temp.must(NOT has_column_privilege('trust_issuance_owner', 'ca', 'display_name', 'UPDATE'),
+                         'trust_issuance_owner may update more of ca than policy_gate_epoch');
+    PERFORM pg_temp.must(NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'trust_issuance_owner'),
+                         'trust_issuance_owner can log in');
+    -- The service role cannot reach the policy administration functions.
+    PERFORM pg_temp.must(NOT has_function_privilege('trust_issuance_service',
+                             'activate_ca_policy_gate_lab(uuid,text)', 'EXECUTE'),
+                         'trust_issuance_service may activate the policy gate');
 END $t$;
 
 -- ------------------------------------------------ no direct DML for anyone

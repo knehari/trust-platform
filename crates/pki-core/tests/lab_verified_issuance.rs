@@ -785,3 +785,136 @@ fn pinned_ca_and_draft_cps_are_traced_to_real_issued_x509_without_approval() {
     assert_eq!(row.get::<usize, Vec<u8>>(5), pin.to_vec());
     assert_eq!(row.get::<usize, Vec<u8>>(6), signed_der);
 }
+
+/// `url` with `role` set for the session (the test login is a superuser).
+fn url_as(url: &str, role: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}options=-crole%3D{role}")
+}
+
+#[test]
+fn issuance_service_role_issues_through_functions_only() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let service_url = url_as(&url, "trust_issuance_service");
+    let mut db = PgIssuanceStore::connect_lab(&service_url)
+        .expect("trust_issuance_service (migration 0035) must exist");
+    let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let (csr, authorization, binding) = context();
+    let request = db
+        .create_request(
+            ca_id,
+            "service-role-issuance-1",
+            csr.fingerprint_sha256(),
+            "lab-actor",
+            "v1",
+        )
+        .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "RECEIVED",
+        "CSR_VALIDATED",
+        "lab-actor",
+    )
+    .unwrap();
+    db.transition(
+        ca_id,
+        &request.request_id,
+        "CSR_VALIDATED",
+        "AUTHORIZED",
+        "lab-actor",
+    )
+    .unwrap();
+    let serial_data = db
+        .reserve_serial(ca_id, &request.request_id, "lab-actor")
+        .unwrap();
+    let serial = SerialNumber::from_positive_der_content(&serial_data).unwrap();
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let tbs_der = ca
+        .prepare_leaf_tbs(&csr, &authorization, &serial, &binding)
+        .unwrap()
+        .to_der()
+        .unwrap();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let plan = IssuancePlan {
+        ca_id,
+        request_id: &request.request_id,
+        actor_id: "lab-actor",
+        signer_key_ref: &key_ref,
+        policy_revision: "v1",
+        operation_ref: "service-role-op-1",
+        serial_der: &serial_data,
+        tbs_der: &tbs_der,
+    };
+    let verifier = LabX509Verifier::new(
+        ca.root_certificate().clone(),
+        binding,
+        "api.lab.invalid".into(),
+    );
+    let issued = issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan).unwrap();
+    assert_eq!(
+        issue_once(&mut db, &mut ca, &LabCertificateAssembler, &verifier, &plan),
+        Err(IssueError::ReplayedOrAmbiguousIntent)
+    );
+
+    // The same login cannot write or read the issuance tables directly: a
+    // stolen service credential cannot persist a certificate that skipped
+    // the signing intent, nor rewrite an intent.
+    let mut direct = postgres::Client::connect(&service_url, postgres::NoTls).unwrap();
+    let denied = |client: &mut postgres::Client, sql: &str| {
+        let error = client.batch_execute(sql).expect_err(sql);
+        assert_eq!(
+            error.code().map(|c| c.code()),
+            Some("42501"),
+            "{sql}: {error}"
+        );
+    };
+    denied(
+        &mut direct,
+        &format!(
+            "INSERT INTO certificate(ca_id, request_id, serial_der_content, certificate_der)
+             VALUES ('{ca_id}', '{}', '\\x01', '\\x30')",
+            request.request_id
+        ),
+    );
+    denied(
+        &mut direct,
+        "UPDATE signing_intent SET outcome = 'CERTIFICATE_STORED'",
+    );
+    denied(
+        &mut direct,
+        "UPDATE certificate_request SET state = 'AUTHORIZED'",
+    );
+    denied(
+        &mut direct,
+        "INSERT INTO serial_reservation SELECT * FROM serial_reservation LIMIT 0",
+    );
+    denied(
+        &mut direct,
+        "INSERT INTO audit_event SELECT * FROM audit_event LIMIT 0",
+    );
+    denied(&mut direct, "UPDATE ca SET policy_gate_epoch = 0");
+    denied(&mut direct, "SELECT certificate_der FROM certificate");
+    // Nor reach the policy administration functions (lab policy gate setup).
+    denied(
+        &mut direct,
+        &format!("SELECT activate_ca_policy_gate_lab('{ca_id}', 'lab-actor')"),
+    );
+
+    let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let stored: Vec<u8> = reader
+        .query_one(
+            "SELECT certificate_der FROM certificate WHERE request_id = $1::text::uuid",
+            &[&request.request_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, issued);
+}
