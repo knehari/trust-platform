@@ -2723,3 +2723,104 @@ fn stale_admin_proposals_cannot_be_approved() {
         assert_eq!(refused.code().map(|c| c.code()), Some("23514"));
     }
 }
+
+/// Challenges that expired unused more than the retention ago are not
+/// evidence of anything and are purged by housekeeping (migration 0053);
+/// consumed challenges (evidence) and recent ones stay, and nobody else
+/// may delete a challenge.
+#[test]
+fn expired_unused_challenges_are_purged() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let old_unused = lab.propose_challenge();
+    let recent_unused = lab.propose_challenge();
+    let change = lab.signed_proposal();
+    let consumed: String = owner
+        .query_one(
+            "SELECT challenge_id::text FROM status_change_signature
+             WHERE change_id = $1::text::uuid AND role = 'MAKER'",
+            &[&change],
+        )
+        .unwrap()
+        .get(0);
+    // Age two of them (a superuser, with the guard disabled).
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE status_change_challenge DISABLE TRIGGER status_change_challenge_guard;
+             UPDATE status_change_challenge
+                SET issued_at = issued_at - interval '40 days',
+                    expires_at = expires_at - interval '40 days'
+              WHERE challenge_id IN ('{old_unused}', '{consumed}');
+             ALTER TABLE status_change_challenge ENABLE TRIGGER status_change_challenge_guard"
+        ))
+        .unwrap();
+    // Recent or consumed challenges cannot be deleted, even by a superuser.
+    for id in [&recent_unused, &consumed] {
+        let refused = owner
+            .execute(
+                "DELETE FROM status_change_challenge WHERE challenge_id = $1::text::uuid",
+                &[id],
+            )
+            .unwrap_err();
+        assert_eq!(refused.code().map(|c| c.code()), Some("23514"));
+    }
+    let mut operator = Client::connect(&url_as(&url, "trust_crl_operator"), NoTls).unwrap();
+    // An admin challenge expired unused long ago is purged by housekeeping.
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let admin_unused = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE ca_admin_challenge DISABLE TRIGGER ca_admin_challenge_guard;
+             UPDATE ca_admin_challenge
+                SET issued_at = issued_at - interval '40 days',
+                    expires_at = expires_at - interval '40 days'
+              WHERE challenge_id = '{admin_unused}';
+             ALTER TABLE ca_admin_challenge ENABLE TRIGGER ca_admin_challenge_guard"
+        ))
+        .unwrap();
+    let report = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator"))
+        .unwrap()
+        .crl_housekeeping(&ca, 3600, 3600)
+        .unwrap();
+    // Both old unused challenges (status change and CA admin) go.
+    assert_eq!(report.purged_challenges, 2);
+    let too_short = operator
+        .query_one("SELECT purge_expired_challenges($1::text::uuid, 6)", &[&ca])
+        .unwrap_err();
+    assert_eq!(too_short.code().map(|c| c.code()), Some("22023"));
+    let purged: i64 = operator
+        .query_one(
+            "SELECT purge_expired_challenges($1::text::uuid, 30)",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    // Nothing is left to purge.
+    assert_eq!(purged, 0);
+    let left: Vec<String> = owner
+        .query(
+            "SELECT challenge_id::text FROM status_change_challenge
+             WHERE ca_id = $1::text::uuid ORDER BY challenge_id",
+            &[&ca],
+        )
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert!(!left.contains(&old_unused));
+    assert!(left.contains(&recent_unused) && left.contains(&consumed));
+    let audited: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM audit_event
+             WHERE ca_id = $1::text::uuid AND event_type = 'challenge.purged'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(audited, 1);
+}

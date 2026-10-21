@@ -523,6 +523,9 @@ pub struct CrlHousekeepingReport {
     /// those of them past their review deadline.
     pub open_breakglass_uses: i64,
     pub overdue_breakglass_uses: i64,
+    /// Challenges deleted because they expired unused more than
+    /// `CHALLENGE_RETENTION_DAYS` ago (migration 0053); housekeeping only.
+    pub purged_challenges: i64,
     /// Database clock against the Rust core's clock (ADR-0006 condition 6).
     pub clock: ClockReading,
     pub clock_within_bound: bool,
@@ -540,6 +543,10 @@ impl CrlHousekeepingReport {
             || !self.clock_within_bound
     }
 }
+
+/// How long challenges that expired unused are kept before housekeeping
+/// purges them (migration 0053; at least 7 days).
+pub const CHALLENGE_RETENTION_DAYS: i32 = 30;
 
 pub struct PgRevocationStore {
     client: Client,
@@ -2266,6 +2273,10 @@ impl PgRevocationStore {
     ) -> Result<CrlHousekeepingReport, RevocationStoreError> {
         let abandoned = self.abandon_stale_crl_reservations(ca_id, reserved_older_than_seconds)?;
         let quarantined = self.quarantine_stale_crl_intents(ca_id, intent_older_than_seconds)?;
+        let purged = self.client.query_one(
+            "SELECT purge_expired_challenges($1::text::uuid, $2)",
+            &[&ca_id, &CHALLENGE_RETENTION_DAYS],
+        )?;
         let row = self.client.query_one(
             "SELECT crl_due($1::text::uuid),
                     (SELECT count(*) FROM overdue_status_changes($1::text::uuid)),
@@ -2283,6 +2294,7 @@ impl PgRevocationStore {
             overdue_precautionary_holds: column(&row, 2)?,
             open_breakglass_uses: column(&row, 3)?,
             overdue_breakglass_uses: column(&row, 4)?,
+            purged_challenges: column(&purged, 0)?,
             clock,
             clock_within_bound: clock.within(self.max_clock_skew_us),
         })

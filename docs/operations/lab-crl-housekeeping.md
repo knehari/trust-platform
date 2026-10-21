@@ -15,6 +15,9 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    precautionary holds, and break-glass uses not yet reviewed by two admins
    (`open_breakglass_uses`, `overdue_breakglass_uses`, migration 0045). Any
    of them sets the attention exit status.
+4. purges the CA's challenges that expired unused more than 30 days ago
+   (`purge_expired_challenges`, migration 0053; `purged_challenges`). Consumed
+   challenges are evidence and are never deleted.
 
 It also reads the database clock between two readings of the host clock
 (`clock_skew_us`, `clock_uncertainty_us`, `clock_ok`) and alerts when

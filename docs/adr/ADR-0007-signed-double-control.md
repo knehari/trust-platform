@@ -72,7 +72,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - Enrolment and removal under CA-admin dual control (section 5), with one person per officer identity and per CA (section 3).
   - `StatusChangeClaim`, the canonical, domain-separated, length-prefixed claim of section 2, whose SHA-256 is the WebAuthn challenge.
 - **Step 2 (migration 0029, `webauthn` module, `PgRevocationStore::submit_signed`):**
-  - Single-use challenges bound to the change and the acting officer (section 4). Since 0049 one actor may hold at most 16 open (unexpired, unconsumed) challenges per CA, for status changes and for CA administration each.
+  - Single-use challenges bound to the change and the acting officer (section 4). Since 0049 one actor may hold at most 16 open (unexpired, unconsumed) challenges per CA, for status changes and for CA administration each. Since 0053 housekeeping purges challenges that expired unused more than 30 days ago; consumed challenges, which the evidence references, are never deleted.
   - Verification of the ES256 WebAuthn assertion in Rust: RP id hash, UP and UV flags, origin, `webauthn.get` type, challenge equal to the claim digest, non-regressing counter. Attested data, extensions and cross-origin ceremonies are refused.
   - Database re-checks of everything except the ECDSA signature, and storage of the evidence.
   - Distinct keys and persons for maker and checker.
