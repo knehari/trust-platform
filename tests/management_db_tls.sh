@@ -61,12 +61,13 @@ echo 'PASS: management API requires verified TLS 1.3 to PostgreSQL'
 # check (which refuses this superuser); with an unrelated CA or another host
 # name they never get a session.
 cargo build -q --locked -p trust-management-api --bin crl_distribution --bin revocation_api \
-  --bin crl_housekeeping --bin signed_evidence_audit
+  --bin crl_housekeeping --bin signed_evidence_audit --bin ca_admin_api
 tls_url="postgresql://trust_tls_ci:test-only-not-secret@localhost:55434/trust_tls"
 service_error() { # <binary> <ca-file> <url>
   local binary="$1" ca="$2" url="$3"
   TRUST_DATABASE_CA_FILE="$ca" TRUST_CRL_DATABASE_URL="$url" TRUST_CRL_BIND=127.0.0.1:18099 \
-  TRUST_REVOCATION_DATABASE_URL="$url" TRUST_OIDC_ISSUER=https://issuer.invalid \
+  TRUST_REVOCATION_DATABASE_URL="$url" TRUST_CA_ADMIN_DATABASE_URL="$url" \
+  TRUST_OIDC_ISSUER=https://issuer.invalid \
   TRUST_OIDC_AUDIENCE=trust-api TRUST_WEBAUTHN_RP_ID=officer.lab.invalid \
   TRUST_WEBAUTHN_ORIGIN=https://officer.lab.invalid \
     timeout 30 "target/debug/$binary" 2>&1 | tail -1 || true
@@ -103,6 +104,10 @@ expect_error "revocation_api verified TLS" "login is privileged" \
   revocation_api "$work/ca.pem" "$tls_url"
 expect_error "revocation_api untrusted CA" "connection or TLS failed" \
   revocation_api "$work/untrusted-ca.pem" "$tls_url"
+expect_error "ca_admin_api verified TLS" "login is privileged" \
+  ca_admin_api "$work/ca.pem" "$tls_url"
+expect_error "ca_admin_api untrusted CA" "connection or TLS failed" \
+  ca_admin_api "$work/untrusted-ca.pem" "$tls_url"
 # The lab jobs apply the same policy: verified TLS reaches the login check
 # (this superuser is refused), an unrelated CA gets no session.
 for job in "crl_housekeeping --all" "signed_evidence_audit 00000000-0000-4000-8000-000000000000"; do
@@ -111,4 +116,4 @@ for job in "crl_housekeeping --all" "signed_evidence_audit 00000000-0000-4000-80
   expect_job_error "$1 untrusted CA" "connection or TLS failed" \
     "$1" "$work/untrusted-ca.pem" "$tls_url" "$2"
 done
-echo 'PASS: lab CRL distribution, revocation API, housekeeping and evidence audit require verified TLS 1.3 to PostgreSQL'
+echo 'PASS: lab CRL distribution, revocation and CA-admin APIs, housekeeping and evidence audit require verified TLS 1.3 to PostgreSQL'

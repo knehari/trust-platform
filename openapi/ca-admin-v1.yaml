@@ -1,0 +1,154 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform CA administration API
+  version: 0.1.0-lab
+  description: >-
+    Laboratory signed CA-administration API (crates/management-api/src/bin/ca_admin_api.rs;
+    ADR-0005 and ADR-0007 ca-admin/v1, both Proposed). Every change is proposed by one
+    CA admin and approved or rejected by another, each signing the canonical claim with
+    an enrolled WebAuthn key. The acting admin is the verified access token's issuer and
+    subject, never a request field. The token must carry the trust-ca-admin role and the
+    CA in ca_ids; the database still requires the CA admin grant and an enrolled admin
+    key. No production readiness is implied.
+servers:
+  - url: http://127.0.0.1:8084
+security:
+  - oidcAccessToken: []
+paths:
+  /v1/cas/{ca_id}/admin-change-challenges:
+    post:
+      summary: A CA admin asks for a single-use challenge to propose a change
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Change'}
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '400': {description: Unknown kind, fields that do not belong to the kind, or malformed values}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
+        '404': {description: Non-canonical CA identifier}
+        '503': {description: Database unavailable or busy}
+  /v1/admin-changes/{family}/{change_id}/approval-challenges:
+    post:
+      summary: Another CA admin asks for a challenge to approve a pending change
+      parameters:
+        - $ref: '#/components/parameters/Family'
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
+        '404': {description: Unknown family or non-canonical change}
+        '409': {description: Closed change, or the actor is the maker}
+        '503': {description: Database unavailable or busy}
+  /v1/admin-changes/{family}/{change_id}/rejection-challenges:
+    post:
+      summary: Another CA admin asks for a challenge to reject a pending change (migration 0042)
+      parameters:
+        - $ref: '#/components/parameters/Family'
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
+        '404': {description: Unknown family or non-canonical change}
+        '409': {description: Closed change, or the actor is the maker}
+        '503': {description: Database unavailable or busy}
+  /v1/admin-change-challenges/{challenge_id}/assertion:
+    post:
+      summary: Submit the authenticator's assertion for a challenge
+      description: >
+        For a proposal the body repeats the change, which must be exactly the signed one.
+        The assertion is verified before anything is written; the database re-checks the
+        challenge, key, counter, distinct keys and persons, and the content digest.
+      parameters:
+        - name: challenge_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credential_id, authenticator_data, client_data_json, signature]
+              properties:
+                credential_id: {type: string, description: base64url without padding}
+                authenticator_data: {type: string, description: base64url without padding}
+                client_data_json: {type: string, description: base64url without padding}
+                signature: {type: string, description: DER ECDSA signature, base64url without padding}
+                change: {$ref: '#/components/schemas/Change'}
+      responses:
+        '200':
+          description: The change was proposed, approved or rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [change_id]
+                properties:
+                  change_id: {type: string, format: uuid}
+        '400': {description: Malformed body, invalid assertion, or a proposal without its change}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not the admin the challenge was issued to, or CA out of scope}
+        '404': {description: Non-canonical challenge identifier}
+        '409': {description: Spent challenge, substituted content, same key or person, closed change}
+        '503': {description: Database unavailable or busy}
+components:
+  securitySchemes:
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT (at+jwt)
+  parameters:
+    CaId:
+      name: ca_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ChangeId:
+      name: change_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Family:
+      name: family
+      in: path
+      required: true
+      schema: {enum: [ca-admin, credential, admin-credential]}
+  responses:
+    Challenge:
+      description: A single-use challenge; sign webauthn_challenge with the enrolled key
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [challenge_id, webauthn_challenge, expires_at_us]
+            properties:
+              challenge_id: {type: string, format: uuid}
+              change_id: {type: [string, 'null'], format: uuid, description: null for a proposal}
+              webauthn_challenge: {type: string, description: base64url SHA-256 of the canonical claim}
+              expires_at_us: {type: integer}
+  schemas:
+    Change:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          enum: [REGISTER_ISSUER, GRANT_OFFICER, REVOKE_OFFICER, ENROLL_CREDENTIAL,
+                 REMOVE_CREDENTIAL, ENROLL_ADMIN_CREDENTIAL, REMOVE_ADMIN_CREDENTIAL]
+        certificate_der:
+          type: string
+          description: REGISTER_ISSUER only; DER issuer certificate, base64url
+        officer_issuer: {type: string, description: Officer or admin identity (all other kinds)}
+        officer_subject: {type: string}
+        credential_id: {type: string, description: Credential kinds; base64url}
+        person_id: {type: string, description: Credential kinds}
+        public_key: {type: string, description: Credential kinds; SEC1 P-256, base64url}

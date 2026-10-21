@@ -80,7 +80,7 @@ Other endpoints:
   includes approval challenges.
 
 Not covered:
-- CA-admin endpoints (credential enrolment, grants);
+- CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6);
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side;
