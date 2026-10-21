@@ -135,6 +135,60 @@ paths:
         '403': {description: Not an officer or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
         '503': {description: Database unavailable or busy}
+  /v1/cas/{ca_id}/precautionary-hold-challenges:
+    post:
+      summary: One officer asks for a challenge to put a valid certificate on precautionary hold (ADR-0007 section 6, migration 0036)
+      description: >
+        The signed claim's action is PRECAUTIONARY_SUSPEND. The hold is applied when the
+        assertion is submitted to the assertion endpoint, without a checker, and must be
+        followed by a dual-controlled revocation or release before its deadline.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [serial_hex]
+              properties:
+                serial_hex: {type: string}
+      responses:
+        '201': {$ref: '#/components/responses/Challenge'}
+        '400': {description: Malformed serial or body}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not an officer, CA out of token scope, or no officer grant}
+        '404': {description: Non-canonical CA identifier}
+        '409': {description: Precautionary holds not enabled for the CA, or the certificate is not valid}
+        '503': {description: Database unavailable or busy}
+  /v1/cas/{ca_id}/precautionary-holds:
+    get:
+      summary: Precautionary holds awaiting a dual-controlled revocation or release
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Open holds, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [change_id, serial_hex, maker_issuer, maker_subject, held_at_unix, confirm_by_unix, overdue]
+                  properties:
+                    change_id: {type: string, format: uuid}
+                    serial_hex: {type: string}
+                    maker_issuer: {type: string}
+                    maker_subject: {type: string}
+                    held_at_unix: {type: integer}
+                    confirm_by_unix: {type: integer}
+                    overdue: {type: boolean}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not an officer or CA out of token scope}
+        '404': {description: Non-canonical CA identifier}
+        '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/rejection:
     post:
       summary: A checker rejects a proposed change (changes no certificate status; not signed yet)

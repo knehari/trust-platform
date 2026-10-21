@@ -65,6 +65,21 @@ pub struct SignedChallenge {
 pub enum SignedStep {
     Propose,
     Approve,
+    /// A single-officer precautionary hold (migration 0036).
+    Precaution,
+}
+
+/// A precautionary hold still awaiting its dual-controlled revocation or
+/// release (migration 0036).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrecautionaryHold {
+    pub change_id: String,
+    pub serial_der_content: Vec<u8>,
+    pub maker_issuer: String,
+    pub maker_subject: String,
+    pub held_at_unix: i64,
+    pub confirm_by_unix: i64,
+    pub overdue: bool,
 }
 
 /// A proposed status change waiting for a checker (migration 0034).
@@ -95,6 +110,7 @@ fn claim_action(action: &str) -> Result<&'static str, RevocationStoreError> {
         "SUSPEND" => Ok("SUSPEND"),
         "RELEASE" => Ok("RELEASE"),
         "REVOKE" => Ok("REVOKE"),
+        "PRECAUTIONARY_SUSPEND" => Ok("PRECAUTIONARY_SUSPEND"),
         _ => Err(RevocationStoreError::InconsistentResult),
     }
 }
@@ -213,6 +229,9 @@ pub struct CrlHousekeepingReport {
     pub crl_due: bool,
     /// `overdue_status_changes`: changes past their publication deadline.
     pub overdue_changes: i64,
+    /// Precautionary holds past their confirmation deadline (0036) without
+    /// a dual-controlled revocation or release.
+    pub overdue_precautionary_holds: i64,
     /// Database clock against the Rust core's clock (ADR-0006 condition 6).
     pub clock: ClockReading,
     pub clock_within_bound: bool,
@@ -225,6 +244,7 @@ impl CrlHousekeepingReport {
             || self.quarantined > 0
             || self.crl_due
             || self.overdue_changes > 0
+            || self.overdue_precautionary_holds > 0
             || !self.clock_within_bound
     }
 }
@@ -481,6 +501,58 @@ impl PgRevocationStore {
         column(&row, 0)
     }
 
+    /// Asks for a single-use challenge to put `serial` on hold as a
+    /// precaution, signed by one officer (ADR-0007 §6, migration 0036). The
+    /// database refuses unless the CA allows suspension under a CPS
+    /// reference, sets a confirmation deadline and the certificate is valid.
+    pub fn issue_precaution_challenge(
+        &mut self,
+        ca_id: &str,
+        serial: &SerialNumber,
+        officer: &OfficerIdentity<'_>,
+        ttl_seconds: i32,
+    ) -> Result<String, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT issue_precautionary_hold_challenge($1::text::uuid, $2, $3, $4, $5)::text",
+            &[
+                &ca_id,
+                &serial.as_der_content(),
+                &officer.issuer,
+                &officer.subject,
+                &ttl_seconds,
+            ],
+        )?;
+        column(&row, 0)
+    }
+
+    /// The CA's precautionary holds not yet followed by a dual-controlled
+    /// revocation or release, oldest first, with whether the deadline passed.
+    pub fn precautionary_holds(
+        &mut self,
+        ca_id: &str,
+    ) -> Result<Vec<PrecautionaryHold>, RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT change_id::text, serial_der_content, maker_issuer, maker_subject,
+                    extract(epoch FROM held_at)::bigint, extract(epoch FROM confirm_by)::bigint,
+                    overdue
+             FROM precautionary_holds($1::text::uuid)",
+            &[&ca_id],
+        )?;
+        rows.iter()
+            .map(|row| {
+                Ok(PrecautionaryHold {
+                    change_id: column(row, 0)?,
+                    serial_der_content: column(row, 1)?,
+                    maker_issuer: column(row, 2)?,
+                    maker_subject: column(row, 3)?,
+                    held_at_unix: column(row, 4)?,
+                    confirm_by_unix: column(row, 5)?,
+                    overdue: column(row, 6)?,
+                })
+            })
+            .collect()
+    }
+
     /// The stored challenge and the claim rebuilt from it: what the officer
     /// signs, and what a submission is verified against.
     pub fn signed_challenge(
@@ -500,6 +572,7 @@ impl PgRevocationStore {
         let purpose = match column::<String>(row, 0)?.as_str() {
             "PROPOSE" => SignedStep::Propose,
             "APPROVE" => SignedStep::Approve,
+            "PRECAUTION" => SignedStep::Precaution,
             _ => return Err(RevocationStoreError::InconsistentResult),
         };
         let reason: Option<i16> = column(row, 6)?;
@@ -588,6 +661,7 @@ impl PgRevocationStore {
         let function = match challenge.purpose {
             SignedStep::Propose => "propose_signed_status_change",
             SignedStep::Approve => "approve_signed_status_change",
+            SignedStep::Precaution => "apply_precautionary_hold",
         };
         self.client.query_one(
             &format!("SELECT {function}($1::text::uuid, $2, $3, $4, $5)::text"),
@@ -604,7 +678,8 @@ impl PgRevocationStore {
 
     /// Re-verifies the stored evidence of a signed change offline: both
     /// assertions against the enrolled keys and the claims rebuilt from
-    /// their challenges, with distinct keys and persons. Exposes an
+    /// their challenges, with distinct keys and persons (or the single
+    /// signature of a precautionary hold, 0036). Exposes an
     /// assertion that reached the database without the Rust core.
     pub fn reverify_signed_change(
         &mut self,
@@ -617,13 +692,17 @@ impl PgRevocationStore {
              FROM status_change_signatures($1::text::uuid)",
             &[&change_id],
         )?;
-        if rows.len() != 2 {
+        // A maker and a checker signature (ordinary change), or a single
+        // precautionary-hold signature (0036); nothing else is evidence.
+        if !(1..=2).contains(&rows.len()) {
             return Err(RevocationStoreError::SignedApprovalRefused);
         }
         let mut keys = Vec::new();
         let mut persons = Vec::new();
+        let mut steps = Vec::new();
         for row in &rows {
             let challenge = self.signed_challenge(&column::<String>(row, 1)?)?;
+            steps.push(challenge.purpose);
             let digest = challenge.claim.digest();
             if hash_column(row, 4)? != digest || hex_uuid(&challenge.claim.change_id) != change_id {
                 return Err(RevocationStoreError::SignedApprovalRefused);
@@ -649,10 +728,16 @@ impl PgRevocationStore {
             keys.push(key);
             persons.push(column::<String>(row, 3)?);
         }
-        if keys[0] == keys[1] || persons[0] == persons[1] {
-            return Err(RevocationStoreError::SignedApprovalRefused);
-        }
-        Ok(())
+        let complete = match steps.as_slice() {
+            [SignedStep::Precaution] => true,
+            [SignedStep::Propose, SignedStep::Approve] => {
+                keys[0] != keys[1] && persons[0] != persons[1]
+            }
+            _ => false,
+        };
+        complete
+            .then_some(())
+            .ok_or(RevocationStoreError::SignedApprovalRefused)
     }
 
     /// Registers `issuer` as the certificate this CA signs CRLs with, after
@@ -1000,7 +1085,8 @@ impl PgRevocationStore {
         let quarantined = self.quarantine_stale_crl_intents(ca_id, intent_older_than_seconds)?;
         let row = self.client.query_one(
             "SELECT crl_due($1::text::uuid),
-                    (SELECT count(*) FROM overdue_status_changes($1::text::uuid))",
+                    (SELECT count(*) FROM overdue_status_changes($1::text::uuid)),
+                    (SELECT count(*) FROM precautionary_holds($1::text::uuid) WHERE overdue)",
             &[&ca_id],
         )?;
         let clock = self.database_clock()?;
@@ -1009,6 +1095,7 @@ impl PgRevocationStore {
             quarantined,
             crl_due: column(&row, 0)?,
             overdue_changes: column(&row, 1)?,
+            overdue_precautionary_holds: column(&row, 2)?,
             clock,
             clock_within_bound: clock.within(self.max_clock_skew_us),
         })

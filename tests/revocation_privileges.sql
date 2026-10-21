@@ -103,7 +103,9 @@ BEGIN
           'abandon_stale_crl_reservations', 'crl_due', 'overdue_status_changes',
           'register_ca_issuer', 'propose_ca_admin_change', 'approve_ca_admin_change',
           'reject_ca_admin_change', 'propose_credential_change',
-          'approve_credential_change', 'reject_credential_change')
+          'approve_credential_change', 'reject_credential_change',
+          'issue_precautionary_hold_challenge', 'apply_precautionary_hold',
+          'precautionary_holds')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);

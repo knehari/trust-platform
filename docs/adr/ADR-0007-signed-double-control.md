@@ -80,10 +80,16 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - A per-CA, one-way `signed_approvals_required` setting.
   - Offline re-verification (`reverify_signed_change`).
   - Tests cover every case in the evidence list below except "same person with two credentials", which the registry refuses at enrolment (0028), and the counter of a removed credential.
+- **Precautionary hold (migration 0036, section 6):**
+  - Opt-in per CA (`precautionary_hold_hours`, 1-72), only where suspension is allowed under a CPS reference.
+  - One officer signs a `PRECAUTIONARY_SUSPEND` claim through a single-use `PRECAUTION` challenge. The action is part of the claim, so the signature can never stand in for an ordinary maker signature.
+  - The hold is applied at once, with a fixed `confirm_by` deadline and one stored signature, which `reverify_signed_change` accepts only for a precaution.
+  - Confirmation is the ordinary signed double control: hold to revoked, or release. The deadline never lifts the hold. Past it, `precautionary_holds` reports it as overdue and `crl_housekeeping` alerts.
+  - Each use writes an audit event and a `precautionary_hold_applied` log line.
 - **Not yet:**
   - CA-admin signed claims (`trust-platform/ca-admin/v1`);
   - signed reject and withdraw;
-  - urgency rules and break-glass (section 6);
+  - break-glass and the on-call rota (section 6); per-officer limits on precautionary holds;
   - attestation policy.
 
   The person identifier is whatever the caller supplies until the IAM decision.

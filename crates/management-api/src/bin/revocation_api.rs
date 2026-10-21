@@ -9,6 +9,11 @@
 //! * `POST /v1/status-change-challenges/{challenge_id}/assertion` submits the
 //!   authenticator's assertion; `PgRevocationStore::submit_signed` verifies
 //!   it before anything is written, and the database re-checks the rest.
+//! * `POST /v1/cas/{ca_id}/precautionary-hold-challenges` (one officer)
+//!   returns the challenge for a precautionary hold (ADR-0007 §6, migration
+//!   0036), applied when its assertion is submitted; logged as
+//!   `precautionary_hold_applied`. `GET /v1/cas/{ca_id}/precautionary-holds`
+//!   lists holds awaiting a dual-controlled revocation or release.
 //!
 //! The acting officer is the verified OIDC token's (issuer, subject), never
 //! a request field (ADR-0003). The token must carry the
@@ -54,7 +59,7 @@ use std::{
 use tokio::sync::Semaphore;
 use trust_pki_core::{
     revocation::{OfficerIdentity, RevocationReason, StatusAction},
-    revocation_store::{PgRevocationStore, RevocationStoreError, SignedChallenge},
+    revocation_store::{PgRevocationStore, RevocationStoreError, SignedChallenge, SignedStep},
     serial::SerialNumber,
     webauthn::{challenge_text, Assertion, RelyingParty},
 };
@@ -82,6 +87,23 @@ struct ProposalRequest {
     action: String,
     reason: Option<i16>,
     invalidity_unix: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrecautionRequest {
+    serial_hex: String,
+}
+
+#[derive(Serialize)]
+struct HoldResponse {
+    change_id: String,
+    serial_hex: String,
+    maker_issuer: String,
+    maker_subject: String,
+    held_at_unix: i64,
+    confirm_by_unix: i64,
+    overdue: bool,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +159,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/status-changes/{change_id}/withdrawal",
             post(withdraw_change),
+        )
+        .route(
+            "/v1/cas/{ca_id}/precautionary-hold-challenges",
+            post(precaution_challenge),
+        )
+        .route(
+            "/v1/cas/{ca_id}/precautionary-holds",
+            get(precautionary_holds),
         )
         .with_state(state)
 }
@@ -257,6 +287,84 @@ fn challenge_response(challenge_id: String, challenge: &SignedChallenge) -> Resp
         .into_response()
 }
 
+fn parse_serial(serial_hex: &str) -> Result<SerialNumber, StatusCode> {
+    let serial_bytes = (serial_hex.len() % 2 == 0)
+        .then(|| {
+            (0..serial_hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(serial_hex.get(i..i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()
+        })
+        .flatten()
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    SerialNumber::from_positive_der_content(&serial_bytes).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
+fn serial_hex(der_content: &[u8]) -> String {
+    der_content.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A single-officer precautionary hold (ADR-0007 §6, migration 0036): the
+/// challenge to sign; the assertion goes to the usual assertion endpoint
+/// and the hold is applied there. Refused (409) unless the CA allows it.
+async fn precaution_challenge(
+    State(state): State<AppState>,
+    Path(ca_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<PrecautionRequest>,
+) -> Result<Response, StatusCode> {
+    let claims = officer(&headers, &state.verifier).await?;
+    let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
+    if !claims.ca_ids.contains(&ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let serial = parse_serial(&request.serial_hex)?;
+    let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let (challenge_id, challenge) = with_store(&state, move |store| {
+        let officer = OfficerIdentity {
+            issuer: &issuer,
+            subject: &subject,
+        };
+        let id =
+            store.issue_precaution_challenge(&ca_id, &serial, &officer, CHALLENGE_TTL_SECONDS)?;
+        let challenge = store.signed_challenge(&id)?;
+        Ok((id, challenge))
+    })
+    .await?;
+    write_log(
+        serde_json::json!({"event":"status_change_challenge_issued","step":"precaution",
+                                 "challenge_id":challenge_id}),
+    );
+    Ok(challenge_response(challenge_id, &challenge))
+}
+
+/// Precautionary holds awaiting a dual-controlled revocation or release.
+async fn precautionary_holds(
+    State(state): State<AppState>,
+    Path(ca_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = officer(&headers, &state.verifier).await?;
+    let ca_id = canonical_uuid(&ca_id).ok_or(StatusCode::NOT_FOUND)?;
+    if !claims.ca_ids.contains(&ca_id) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let holds = with_store(&state, move |store| Ok(store.precautionary_holds(&ca_id)?)).await?;
+    let body: Vec<HoldResponse> = holds
+        .into_iter()
+        .map(|hold| HoldResponse {
+            change_id: hold.change_id,
+            serial_hex: serial_hex(&hold.serial_der_content),
+            maker_issuer: hold.maker_issuer,
+            maker_subject: hold.maker_subject,
+            held_at_unix: hold.held_at_unix,
+            confirm_by_unix: hold.confirm_by_unix,
+            overdue: hold.overdue,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(body)).into_response())
+}
+
 async fn proposal_challenge(
     State(state): State<AppState>,
     Path(ca_id): Path<String>,
@@ -268,17 +376,7 @@ async fn proposal_challenge(
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let serial_bytes = (request.serial_hex.len() % 2 == 0)
-        .then(|| {
-            (0..request.serial_hex.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(request.serial_hex.get(i..i + 2)?, 16).ok())
-                .collect::<Option<Vec<u8>>>()
-        })
-        .flatten()
-        .ok_or(StatusCode::BAD_REQUEST)?;
-    let serial = SerialNumber::from_positive_der_content(&serial_bytes)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let serial = parse_serial(&request.serial_hex)?;
     let action = match request.action.as_str() {
         "SUSPEND" => StatusAction::Suspend,
         "RELEASE" => StatusAction::Release,
@@ -396,11 +494,7 @@ async fn pending_changes(
         .into_iter()
         .map(|change| PendingChange {
             change_id: change.change_id,
-            serial_hex: change
-                .serial_der_content
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
+            serial_hex: serial_hex(&change.serial_der_content),
             action: change.action,
             reason: change.reason_code,
             invalidity_unix: change.invalidity_at_unix,
@@ -496,7 +590,8 @@ async fn submit_assertion(
         {
             return Err(Failure::Refused(StatusCode::FORBIDDEN));
         }
-        Ok(store.submit_signed(
+        let precaution = challenge.purpose == SignedStep::Precaution;
+        let id = store.submit_signed(
             &challenge_id,
             &credential_id,
             &Assertion {
@@ -508,11 +603,12 @@ async fn submit_assertion(
                 rp_id: &rp_id,
                 origin: &origin,
             },
-        )?)
+        )?;
+        Ok((id, precaution))
     })
     .await;
-    let change_id = match change_id {
-        Ok(id) => id,
+    let (change_id, precaution) = match change_id {
+        Ok(result) => result,
         Err(status) => {
             write_log(
                 serde_json::json!({"event":"status_change_assertion_refused",
@@ -521,7 +617,13 @@ async fn submit_assertion(
             return Err(status);
         }
     };
-    write_log(serde_json::json!({"event":"status_change_signed","change_id":change_id}));
+    // Every single-officer hold is logged as such, for alerting.
+    let event = if precaution {
+        "precautionary_hold_applied"
+    } else {
+        "status_change_signed"
+    };
+    write_log(serde_json::json!({"event":event,"change_id":change_id}));
     Ok((StatusCode::OK, Json(SubmittedResponse { change_id })).into_response())
 }
 
@@ -1027,6 +1129,105 @@ mod tests {
                     )
                     .unwrap(),
                 CertificateStatus::Revoked
+            );
+            reader
+                .reverify_signed_change(
+                    &change,
+                    &RelyingParty {
+                        rp_id: RP_ID,
+                        origin: ORIGIN,
+                    },
+                )
+                .unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    /// One officer puts a certificate on precautionary hold through HTTP
+    /// once the CA allows it; the hold is listed with its deadline; another
+    /// CA's token sees nothing.
+    #[tokio::test]
+    async fn precautionary_hold_through_the_api() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, maker_id, _, mut maker, _) = tokio::task::spawn_blocking(move || {
+            let lab = setup(&setup_url);
+            postgres::Client::connect(&setup_url, postgres::NoTls)
+                .unwrap()
+                .execute(
+                    "UPDATE ca_revocation_policy SET suspension_allowed = true,
+                         suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 12
+                     WHERE ca_id = $1::text::uuid",
+                    &[&lab.0],
+                )
+                .unwrap();
+            lab
+        })
+        .await
+        .unwrap();
+        let oidc = oidc();
+        let api_url = url_with_login(&url, "trust_revocation_api_ci", "test-only-not-secret");
+        let (app, session) = app_with_session(oidc.verifier.clone(), &api_url);
+        let maker_token = oidc.token("maker", &[OFFICER_ROLE], &[&ca]);
+        let outsider = oidc.token("maker", &[OFFICER_ROLE], &[CA]);
+        let path = format!("/v1/cas/{ca}/precautionary-hold-challenges");
+
+        assert_eq!(
+            post(&app, &path, Some(&outsider), json!({"serial_hex":"01"}))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, issued) =
+            post(&app, &path, Some(&maker_token), json!({"serial_hex":"01"})).await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        let challenge = issued["challenge_id"].as_str().unwrap();
+        let signed = maker.assertion(&maker_id, issued["webauthn_challenge"].as_str().unwrap());
+        let (status, submitted) = post(
+            &app,
+            &format!("/v1/status-change-challenges/{challenge}/assertion"),
+            Some(&maker_token),
+            signed,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{submitted}");
+        let change = submitted["change_id"].as_str().unwrap().to_owned();
+        // Held now: a second precaution conflicts.
+        assert_eq!(
+            post(&app, &path, Some(&maker_token), json!({"serial_hex":"01"}))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let holds_path = format!("/v1/cas/{ca}/precautionary-holds");
+        let (status, holds) = get(&app, &holds_path, &maker_token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(holds[0]["change_id"], change.as_str());
+        assert_eq!(holds[0]["serial_hex"], "01");
+        assert_eq!(holds[0]["overdue"], false);
+        let window = holds[0]["confirm_by_unix"].as_i64().unwrap()
+            - holds[0]["held_at_unix"].as_i64().unwrap();
+        assert_eq!(window, 12 * 3600);
+        assert_eq!(
+            get(&app, &holds_path, &outsider).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        drop(app);
+        tokio::task::spawn_blocking(move || {
+            drop(session.lock().unwrap().take());
+            let mut reader = PgRevocationStore::connect_lab(&url).unwrap();
+            assert_eq!(
+                reader
+                    .status(
+                        &ca,
+                        &SerialNumber::from_positive_der_content(&[0x01]).unwrap()
+                    )
+                    .unwrap(),
+                CertificateStatus::Suspended
             );
             reader
                 .reverify_signed_change(

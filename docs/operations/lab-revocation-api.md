@@ -57,6 +57,19 @@ Other endpoints:
   maker) and `.../withdrawal` (the maker only) close a change. They change no
   certificate status and are not signed yet, like the database functions.
   The actor is still the token's.
+- `POST /v1/cas/{ca}/precautionary-hold-challenges` with `{"serial_hex"}`:
+  one officer asks for a challenge to put a valid certificate on hold as a
+  precaution (ADR-0007 section 6, migration 0036). The CA must allow
+  suspension under a CPS reference and set `precautionary_hold_hours`
+  (1-72), otherwise 409. The claim's action is `PRECAUTIONARY_SUSPEND`, so
+  the signature cannot serve as an ordinary maker signature. The assertion
+  goes to the usual assertion endpoint, which applies the hold at once and
+  logs `precautionary_hold_applied`.
+- `GET /v1/cas/{ca}/precautionary-holds` lists holds not yet followed by a
+  dual-controlled revocation or release, with `confirm_by_unix` and
+  `overdue`. Confirmation is the ordinary signed maker-checker path (hold to
+  revoked, or release). Past the deadline the hold stays in place (fail
+  closed), and `crl_housekeeping` exits 2.
 - For any change identifier, the change's CA is checked against the token's
   scope before anything is written (unknown 404, out of scope 403). This
   includes approval challenges.
@@ -64,7 +77,8 @@ Other endpoints:
 Not covered:
 - signed rejection and withdrawal;
 - CA-admin endpoints (credential enrolment, grants);
-- listing pending changes;
+- break-glass (ADR-0007 section 6) and per-officer limits on precautionary
+  holds;
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side;
 - a browser client.

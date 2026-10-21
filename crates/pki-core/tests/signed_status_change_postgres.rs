@@ -515,3 +515,130 @@ fn forged_assertion_is_exposed_by_reverification() {
         RevocationStoreError::InvalidAssertion(WebAuthnError::Signature)
     ));
 }
+
+/// ADR-0007 §6: one signed officer may put a certificate on hold as a
+/// precaution when the CA's CPS allows suspension and the CA sets a
+/// confirmation deadline. The hold is applied at once, re-verifies
+/// offline with its single signature, and stays listed (overdue past the
+/// deadline) until a dual-controlled revocation or release follows.
+#[test]
+fn precautionary_hold_by_one_signed_officer() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let serial = lab.serial.clone();
+
+    // Not enabled for the CA: refused before anything is signed.
+    let disabled = lab
+        .officer
+        .issue_precaution_challenge(&lab.ca_id, &serial, &MAKER, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&disabled).as_deref(), Some("23514"));
+    // A deadline needs the CPS reference for suspension.
+    let no_cps = owner
+        .execute(
+            "UPDATE ca_revocation_policy SET precautionary_hold_hours = 24
+             WHERE ca_id = $1::text::uuid",
+            &[&lab.ca_id],
+        )
+        .unwrap_err();
+    assert_eq!(no_cps.code().map(|c| c.code()), Some("23514"));
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy
+             SET suspension_cps_ref = 'CPS 4.9.13', precautionary_hold_hours = 24
+             WHERE ca_id = $1::text::uuid",
+            &[&lab.ca_id],
+        )
+        .unwrap();
+
+    let challenge = lab
+        .officer
+        .issue_precaution_challenge(&lab.ca_id, &serial, &MAKER, 120)
+        .unwrap();
+    let claim = lab.officer.signed_challenge(&challenge).unwrap().claim;
+    assert_eq!(claim.action, "PRECAUTIONARY_SUSPEND");
+    // Another officer's key cannot answer the maker's challenge.
+    assert!(matches!(
+        lab.submit(&challenge, false, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    let change = lab.submit(&challenge, true, None).unwrap();
+    assert_eq!(
+        lab.officer.status(&lab.ca_id, &serial).unwrap(),
+        CertificateStatus::Suspended
+    );
+    assert!(matches!(
+        lab.submit(&challenge, true, None).unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    lab.officer.reverify_signed_change(&change, &RP).unwrap();
+    // A second precaution on a held certificate is refused at once.
+    let again = lab
+        .officer
+        .issue_precaution_challenge(&lab.ca_id, &serial, &MAKER, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&again).as_deref(), Some("23514"));
+
+    let holds = lab.officer.precautionary_holds(&lab.ca_id).unwrap();
+    assert_eq!(holds.len(), 1);
+    assert_eq!(holds[0].change_id, change);
+    assert!(!holds[0].overdue);
+    let window = holds[0].confirm_by_unix - holds[0].held_at_unix;
+    assert_eq!(window, 24 * 3600);
+
+    // Past the deadline it is reported as overdue (the deadline is moved
+    // back by a superuser here; nothing else can update a decided change).
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE certificate_status_change DISABLE TRIGGER certificate_status_change_guard;
+             UPDATE certificate_status_change
+             SET confirm_by = decided_at + interval '1 microsecond'
+             WHERE change_id = '{change}';
+             ALTER TABLE certificate_status_change ENABLE TRIGGER certificate_status_change_guard"
+        ))
+        .unwrap();
+    let holds = lab.officer.precautionary_holds(&lab.ca_id).unwrap();
+    assert!(holds[0].overdue);
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    assert_eq!(operator.precautionary_holds(&lab.ca_id).unwrap().len(), 1);
+    let report = operator.crl_housekeeping(&lab.ca_id, 3600, 3600).unwrap();
+    assert_eq!(report.overdue_precautionary_holds, 1);
+    assert!(report.needs_attention());
+
+    // Confirmation is the ordinary signed double control: hold -> revoked.
+    let definitive = lab.signed_proposal();
+    // A lone maker signature of an ordinary proposal is not evidence.
+    assert!(matches!(
+        lab.officer.reverify_signed_change(&definitive, &RP),
+        Err(RevocationStoreError::SignedApprovalRefused)
+    ));
+    let approval = lab
+        .officer
+        .issue_approval_challenge(&definitive, &CHECKER, 120)
+        .unwrap();
+    lab.submit(&approval, false, None).unwrap();
+    assert_eq!(
+        lab.officer.status(&lab.ca_id, &serial).unwrap(),
+        CertificateStatus::Revoked
+    );
+    assert!(lab
+        .officer
+        .precautionary_holds(&lab.ca_id)
+        .unwrap()
+        .is_empty());
+    lab.officer.reverify_signed_change(&change, &RP).unwrap();
+    lab.officer
+        .reverify_signed_change(&definitive, &RP)
+        .unwrap();
+    let audit: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM audit_event
+             WHERE event_type = 'certificate.status.precautionary_hold'
+               AND decision LIKE '%change=' || $1 || '%'",
+            &[&change],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(audit, 1);
+}

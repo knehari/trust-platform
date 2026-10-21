@@ -91,7 +91,7 @@ pub struct StatusChangeClaim {
     pub ca_id: [u8; 16],
     pub issuer_certificate_sha256: [u8; 32],
     pub serial_der_content: Vec<u8>,
-    /// SUSPEND, RELEASE or REVOKE.
+    /// SUSPEND, RELEASE, REVOKE or PRECAUTIONARY_SUSPEND.
     pub action: &'static str,
     /// CRL reason code, None for RELEASE.
     pub reason: Option<u8>,
@@ -124,6 +124,9 @@ impl StatusChangeClaim {
         let action_ok = match self.action {
             "RELEASE" => self.reason.is_none() && self.invalidity_date_us.is_none(),
             "SUSPEND" => self.reason == Some(6),
+            // A single-officer precautionary hold (ADR-0007 §6, migration
+            // 0036): its own action, so it is never an ordinary maker claim.
+            "PRECAUTIONARY_SUSPEND" => self.reason == Some(6) && self.invalidity_date_us.is_none(),
             "REVOKE" => matches!(self.reason, Some(0..=5 | 9 | 10)),
             _ => false,
         };
@@ -293,6 +296,35 @@ mod tests {
             StatusChangeClaim {
                 serial_der_content: vec![],
                 ..claim()
+            },
+        ] {
+            assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));
+        }
+    }
+
+    /// A single-officer precautionary hold (ADR-0007 §6) signs a claim that
+    /// cannot be mistaken for the maker half of an ordinary suspension.
+    #[test]
+    fn precautionary_suspension_is_a_distinct_claim() {
+        let precaution = StatusChangeClaim {
+            action: "PRECAUTIONARY_SUSPEND",
+            reason: Some(6),
+            ..claim()
+        };
+        assert_eq!(precaution.validate(), Ok(()));
+        let ordinary = StatusChangeClaim {
+            action: "SUSPEND",
+            ..precaution.clone()
+        };
+        assert_ne!(precaution.digest(), ordinary.digest());
+        for invalid in [
+            StatusChangeClaim {
+                reason: Some(1),
+                ..precaution.clone()
+            },
+            StatusChangeClaim {
+                invalidity_date_us: Some(1),
+                ..precaution.clone()
             },
         ] {
             assert_eq!(invalid.validate(), Err(CredentialError::InvalidInput));

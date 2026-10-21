@@ -53,8 +53,9 @@ the others still run.
 Exit status:
 - 0: nothing to do;
 - 2: attention needed (something was retired or quarantined, a CRL is due,
-  a change is overdue, a schema change is unreviewed, or the clocks
-  disagree);
+  a change is overdue, a precautionary hold is past its confirmation
+  deadline (`overdue_precautionary_holds`, migration 0036), a schema change
+  is unreviewed, or the clocks disagree);
 - 1: error on any CA (an error outranks an alert).
 
 A scheduler (cron, systemd timer) can therefore alert on any non-zero status.
