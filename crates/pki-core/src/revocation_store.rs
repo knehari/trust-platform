@@ -262,6 +262,20 @@ pub struct BreakGlassUse {
     pub overdue: bool,
 }
 
+/// What a break-glass use enrolled, as a reviewer sees it (migration 0051).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakGlassContent {
+    pub use_id: String,
+    pub admin_credential_id: Vec<u8>,
+    pub admin_issuer: String,
+    pub admin_subject: String,
+    pub person_id: String,
+    pub public_key_sec1: Vec<u8>,
+}
+
+/// A break-glass use's content and whether its evidence re-verifies.
+pub type BreakGlassEvidence = (BreakGlassContent, Result<(), RevocationStoreError>);
+
 /// A precautionary hold still awaiting its dual-controlled revocation or
 /// release (migration 0036).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1692,6 +1706,46 @@ impl PgRevocationStore {
                 })
             })
             .collect()
+    }
+
+    /// A break-glass use's enrolled content and the result of re-verifying
+    /// its evidence (emergency signature and reviews so far) in the Rust
+    /// core (migration 0051, `trust_ca_admin` or `trust_audit_verifier`).
+    /// None if the use is unknown.
+    pub fn breakglass_use_evidence(
+        &mut self,
+        use_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<Option<BreakGlassEvidence>, RevocationStoreError> {
+        let Some(ca_id) = self.breakglass_use_ca(use_id)? else {
+            return Ok(None);
+        };
+        let rows: Vec<Row> = self
+            .client
+            .query(
+                "SELECT use_id::text, role, challenge_id::text, public_key_sec1, person_id,
+                        claim_sha256, authenticator_data, client_data_json, signature_der,
+                        admin_credential_id, admin_issuer, admin_subject, admin_person_id,
+                        admin_public_key_sec1, use_claim_sha256, reviewed
+                 FROM breakglass_evidence($1::text::uuid)",
+                &[&ca_id],
+            )?
+            .into_iter()
+            .filter(|row| row.try_get::<_, String>(0).ok().as_deref() == Some(use_id))
+            .collect();
+        let Some(first) = rows.first() else {
+            return Ok(None);
+        };
+        let content = BreakGlassContent {
+            use_id: use_id.to_owned(),
+            admin_credential_id: column(first, 9)?,
+            admin_issuer: column(first, 10)?,
+            admin_subject: column(first, 11)?,
+            person_id: column(first, 12)?,
+            public_key_sec1: column(first, 13)?,
+        };
+        let result = self.reverify_breakglass_use(use_id, &rows, rp);
+        Ok(Some((content, result)))
     }
 
     /// Re-verifies a break-glass use offline (migration 0045): the

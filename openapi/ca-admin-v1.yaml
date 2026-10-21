@@ -97,6 +97,35 @@ paths:
         '403': {description: Not a CA admin or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
         '503': {description: Database unavailable or busy}
+  /v1/breakglass-uses/{use_id}:
+    get:
+      summary: What a break-glass use enrolled, with its evidence re-verified by the Rust core (migration 0051)
+      parameters:
+        - name: use_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The enrolled admin key and whether the stored evidence re-verifies
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [use_id, admin_credential_id, admin_issuer, admin_subject, person_id,
+                           public_key, evidence_verified]
+                properties:
+                  use_id: {type: string, format: uuid}
+                  admin_credential_id: {type: string, description: base64url}
+                  admin_issuer: {type: string}
+                  admin_subject: {type: string}
+                  person_id: {type: string}
+                  public_key: {type: string, description: compressed SEC1 P-256, base64url}
+                  evidence_verified: {type: boolean, description: emergency signature and reviews so far re-verify}
+        '401': {description: Missing or invalid access token}
+        '403': {description: Not a CA admin or CA out of token scope}
+        '404': {description: Unknown or non-canonical use identifier}
+        '503': {description: Database unavailable or busy}
   /v1/breakglass-uses/{use_id}/review-challenges:
     post:
       summary: A CA admin other than the enrolled one asks for a challenge to review a break-glass use (migration 0045)
@@ -114,7 +143,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Unknown or non-canonical use identifier}
-        '409': {description: Already reviewed, the actor is the enrolled admin, or already reviewed by the actor}
+        '409': {description: Already reviewed, the actor is the enrolled admin, already reviewed by the actor, or the use's evidence does not re-verify}
         '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/approval-challenges:
     post:

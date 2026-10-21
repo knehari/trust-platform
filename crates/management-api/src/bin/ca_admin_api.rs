@@ -151,6 +151,18 @@ struct SubmittedResponse {
     reviewed: Option<bool>,
 }
 
+/// What a break-glass use enrolled, re-verified (migration 0051).
+#[derive(Serialize)]
+struct BreakGlassDetailResponse {
+    use_id: String,
+    admin_credential_id: String,
+    admin_issuer: String,
+    admin_subject: String,
+    person_id: String,
+    public_key: String,
+    evidence_verified: bool,
+}
+
 /// A break-glass use as admins review it (migration 0045).
 #[derive(Serialize)]
 struct BreakGlassUseResponse {
@@ -300,6 +312,7 @@ fn router(state: AppState) -> Router {
             get(pending_admin_changes),
         )
         .route("/v1/cas/{ca_id}/breakglass-uses", get(breakglass_uses))
+        .route("/v1/breakglass-uses/{use_id}", get(breakglass_use))
         .route(
             "/v1/breakglass-uses/{use_id}/review-challenges",
             post(breakglass_review_challenge),
@@ -614,10 +627,49 @@ async fn breakglass_uses(
     Ok((StatusCode::OK, Json(body)).into_response())
 }
 
+/// What a break-glass use enrolled and whether its stored evidence
+/// re-verifies in the Rust core (migration 0051).
+async fn breakglass_use(
+    State(state): State<AppState>,
+    Path(use_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let claims = admin(&headers, &state.verifier).await?;
+    let use_id = canonical_uuid(&use_id).ok_or(StatusCode::NOT_FOUND)?;
+    let ca_ids = claims.ca_ids.clone();
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
+    let (content, verified) = with_store(&state, move |store| {
+        in_scope(store.breakglass_use_ca(&use_id)?, &ca_ids)?;
+        let rp = RelyingParty {
+            rp_id: &rp_id,
+            origin: &origin,
+        };
+        let (content, result) = store
+            .breakglass_use_evidence(&use_id, &rp)?
+            .ok_or(Failure::Refused(StatusCode::NOT_FOUND))?;
+        Ok((content, result.is_ok()))
+    })
+    .await?;
+    Ok((
+        StatusCode::OK,
+        Json(BreakGlassDetailResponse {
+            use_id: content.use_id,
+            admin_credential_id: URL_SAFE_NO_PAD.encode(&content.admin_credential_id),
+            admin_issuer: content.admin_issuer,
+            admin_subject: content.admin_subject,
+            person_id: content.person_id,
+            public_key: URL_SAFE_NO_PAD.encode(&content.public_key_sec1),
+            evidence_verified: verified,
+        }),
+    )
+        .into_response())
+}
+
 /// A review challenge for a break-glass use, for an admin other than the
 /// one it enrolled. As for approvals, the use's CA is checked against the
-/// token's scope before anything is written, then the database checks the
-/// admin grant.
+/// token's scope before anything is written; the use's evidence must
+/// re-verify in the Rust core (409 otherwise, migration 0051); then the
+/// database checks the admin grant.
 async fn breakglass_review_challenge(
     State(state): State<AppState>,
     Path(use_id): Path<String>,
@@ -627,8 +679,23 @@ async fn breakglass_review_challenge(
     let use_id = canonical_uuid(&use_id).ok_or(StatusCode::NOT_FOUND)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let (challenge_id, challenge) = with_store(&state, move |store| {
         in_scope(store.breakglass_use_ca(&use_id)?, &ca_ids)?;
+        // Nobody reviews a use whose evidence does not re-verify (0051).
+        let rp = RelyingParty {
+            rp_id: &rp_id,
+            origin: &origin,
+        };
+        match store.breakglass_use_evidence(&use_id, &rp)? {
+            None => return Err(Failure::Refused(StatusCode::NOT_FOUND)),
+            Some((_, Err(_))) => {
+                write_log(serde_json::json!({"event":"breakglass_evidence_refused",
+                                             "use_id":use_id}));
+                return Err(Failure::Refused(StatusCode::CONFLICT));
+            }
+            Some((_, Ok(()))) => {}
+        }
         let reviewer = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -1673,5 +1740,79 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    /// Reviewers see what the emergency key enrolled, re-verified by the
+    /// Rust core (migration 0051); a use whose stored emergency signature
+    /// does not verify cannot be reviewed (409) and stays open.
+    #[tokio::test]
+    async fn breakglass_review_requires_verified_evidence() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let BreakGlassFixture { ca, use_id, .. } =
+            tokio::task::spawn_blocking(move || breakglass_setup(&setup_url))
+                .await
+                .unwrap();
+        let oidc = oidc();
+        let (app, session) = app_with_session(
+            oidc.verifier.clone(),
+            &url_with_login(&url, "trust_ca_admin_api_ci"),
+        );
+        let a_token = oidc.token("admin-a", &[ADMIN_ROLE], &[&ca]);
+        let detail_path = format!("/v1/breakglass-uses/{use_id}");
+        let (status, detail) = get(&app, &detail_path, &a_token).await;
+        assert_eq!(status, StatusCode::OK, "{detail}");
+        assert_eq!(detail["admin_subject"], "admin-c");
+        assert_eq!(detail["person_id"], "person-admin-c");
+        assert!(detail["public_key"].as_str().is_some());
+        assert_eq!(detail["evidence_verified"], true);
+        let outsider = oidc.token(
+            "admin-a",
+            &[ADMIN_ROLE],
+            &["5eedc0de-0000-4000-8000-000000000099"],
+        );
+        assert_eq!(
+            get(&app, &detail_path, &outsider).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        // A superuser alters the stored emergency signature.
+        let tamper_url = url.clone();
+        let tampered = use_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut owner = postgres::Client::connect(&tamper_url, postgres::NoTls).unwrap();
+            owner
+                .batch_execute(&format!(
+                    "ALTER TABLE breakglass_use DISABLE TRIGGER breakglass_use_guard;
+                     UPDATE breakglass_use
+                        SET signature_der = set_byte(signature_der, octet_length(signature_der) - 1,
+                                get_byte(signature_der, octet_length(signature_der) - 1) # 1)
+                      WHERE use_id = '{tampered}';
+                     ALTER TABLE breakglass_use ENABLE TRIGGER breakglass_use_guard"
+                ))
+                .unwrap();
+        })
+        .await
+        .unwrap();
+        let (status, detail) = get(&app, &detail_path, &a_token).await;
+        assert_eq!(status, StatusCode::OK, "{detail}");
+        assert_eq!(detail["evidence_verified"], false);
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/breakglass-uses/{use_id}/review-challenges"),
+                Some(&a_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
     }
 }

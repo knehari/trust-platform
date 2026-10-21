@@ -78,7 +78,10 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
   0046 (audit event `MIGRATION_0046:no_custodian_person`); re-enrol them.
 - The database cannot verify ECDSA. A holder of `trust_ca_admin` could store
   a forged break-glass assertion while the CA has fewer than two admin keys.
-  The offline audit exposes it.
+  Since 0051 a reviewer cannot get a review challenge for a use whose
+  evidence does not re-verify in the Rust core, so such a use stays open and
+  housekeeping keeps alerting. The offline audit also exposes it. A forged
+  use's admin key stays enrolled until two admins remove it.
 - There is no on-call rota and no CPS text yet.
 
 Tested by `break_glass_restores_admin_keys_under_review`,

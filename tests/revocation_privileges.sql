@@ -169,7 +169,8 @@ BEGIN
             'breakglass_enroll_admin_credential(uuid,bytea,bytea,bytea,bytea,bytea,text,text,text,bytea)',
             'EXECUTE') = (r = 'trust_ca_admin'), r || ': break-glass use is for CA admins only');
         PERFORM pg_temp.must(has_function_privilege(r, 'breakglass_evidence(uuid)', 'EXECUTE')
-            = (r = 'trust_audit_verifier'), r || ': break-glass evidence is the auditor''s');
+            = (r IN ('trust_audit_verifier', 'trust_ca_admin')),
+            r || ': break-glass evidence is for auditors and reviewing admins (0051)');
     END LOOP;
 END $t$;
 
