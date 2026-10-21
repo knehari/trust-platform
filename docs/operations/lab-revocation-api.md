@@ -82,6 +82,8 @@ Other endpoints:
   scope before anything is written (unknown 404, out of scope 403). This
   includes approval challenges.
 
+Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);

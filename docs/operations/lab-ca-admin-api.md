@@ -29,6 +29,8 @@ TRUST_WEBAUTHN_RP_ID=admin.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://admin.lab.i
 
 - `GET /v1/cas/{ca}/breakglass-uses` lists the CA's break-glass uses with their review state, and `POST /v1/breakglass-uses/{use}/review-challenges` issues a challenge for a signed review by an admin other than the enrolled one (migration 0045). The assertion route answers it and returns `reviewed: true` at the second review.
 
+Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);

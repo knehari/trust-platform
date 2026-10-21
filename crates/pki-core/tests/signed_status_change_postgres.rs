@@ -2428,3 +2428,66 @@ fn concurrent_custodian_and_admin_enrolment_stay_disjoint() {
         .get(0);
     assert_eq!(admins, 0);
 }
+
+/// One actor cannot pile up open challenges on a CA (migration 0049): at
+/// most 16 unexpired, unconsumed status-change and 16 CA-admin challenges
+/// each. Other actors are unaffected; expired or consumed challenges stop
+/// counting.
+#[test]
+fn open_challenges_are_capped_per_actor() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    for _ in 0..15 {
+        lab.propose_challenge();
+    }
+    // The 16th is consumed: it no longer counts.
+    let change = lab.signed_proposal();
+    // A 16th open one, short-lived.
+    lab.officer
+        .issue_proposal_challenge(
+            &ca,
+            &lab.serial,
+            StatusAction::Revoke,
+            Some(RevocationReason::KeyCompromise),
+            None,
+            &MAKER,
+            1,
+        )
+        .unwrap();
+    let flood = lab
+        .officer
+        .issue_proposal_challenge(
+            &ca,
+            &lab.serial,
+            StatusAction::Revoke,
+            Some(RevocationReason::KeyCompromise),
+            None,
+            &MAKER,
+            120,
+        )
+        .unwrap_err();
+    assert_eq!(sqlstate(&flood).as_deref(), Some("23514"));
+    // Another officer still gets one.
+    lab.officer
+        .issue_approval_challenge(&change, &CHECKER, 120)
+        .unwrap();
+    // The short-lived ones expire and free their slots.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    lab.propose_challenge();
+
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    for _ in 0..16 {
+        lab.admin
+            .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+            .unwrap();
+    }
+    let flood = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap_err();
+    assert_eq!(sqlstate(&flood).as_deref(), Some("23514"));
+    lab.admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_B, 120)
+        .unwrap();
+}
