@@ -78,6 +78,19 @@ try {
   await certificateDialog.getByRole('button', { name: /Close certificate detail/i }).click();
   await certificateDialog.waitFor({ state: 'hidden' });
 
+  // Historical rows without recorded X.509 dates are excluded by this server
+  // filter. The synthetic fixture expires before 2028, but not before 2027.
+  await page.getByRole('button', { name: 'Clear SAN' }).click();
+  const expiryBefore = page.getByLabel('Recorded valid-until before this UTC date (exclusive)');
+  await expiryBefore.fill('2028-01-01');
+  await page.getByRole('button', { name: 'Apply date' }).click();
+  await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).waitFor();
+  assert.equal(await table.getByRole('row').count(), 2);
+  await expiryBefore.fill('2027-01-01');
+  await page.getByRole('button', { name: 'Apply date' }).click();
+  await page.getByText('No certificates recorded').waitFor();
+  await page.getByRole('button', { name: 'Clear date' }).click();
+
   // The same browser session must deny a CA outside the signed scope. A forged
   // deep link must not surface the hidden certificate.
   await page.goto(`${origin}/?view=certificates&ca=${hiddenCa}&certificate=${hiddenRequest}`);
@@ -102,7 +115,7 @@ try {
   await page.getByRole('button', { name: 'Apply' }).click();
   await page.getByText('No audit events recorded').waitFor();
 
-  console.log(`Browser E2E passed: OIDC, scoped direct links, denial, pagination, dialogs, SAN search, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));
