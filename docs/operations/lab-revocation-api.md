@@ -34,14 +34,18 @@ What is verified, and when:
 
 Database access and logging:
 - The database login must hold only `trust_revocation_officer_api`;
-  `connect_lab_service` refuses privileged logins. The connection is the
-  lab `NoTls` adapter.
+  `PgRevocationStore::from_service_client` refuses privileged logins.
+- The connection uses the management API's TLS policy: verified TLS 1.3
+  against `TRUST_DATABASE_CA_FILE` by default, plaintext only with
+  `TRUST_DATABASE_TLS=disable-lab` (logged). This is covered by
+  `tests/management_db_tls.sh`.
 - Logs carry event names, challenge and change identifiers, never tokens or
   assertions.
 
 ```
 TRUST_OIDC_ISSUER=... TRUST_OIDC_AUDIENCE=trust-api \
-TRUST_REVOCATION_DATABASE_URL=postgresql://officer-api@127.0.0.1/trust \
+TRUST_REVOCATION_DATABASE_URL=postgresql://officer-api@db.lab.invalid/trust \
+TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
 TRUST_WEBAUTHN_RP_ID=officer.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://officer.lab.invalid \
   cargo run -p trust-management-api --bin revocation_api
 ```
@@ -62,7 +66,7 @@ Not covered:
 - CA-admin endpoints (credential enrolment, grants);
 - listing pending changes;
 - rate limiting beyond 8 concurrent requests;
-- TLS termination;
+- TLS termination for the HTTP side;
 - a browser client.
 
 Tested by the binary's tests:

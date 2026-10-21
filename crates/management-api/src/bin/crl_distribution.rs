@@ -15,11 +15,19 @@
 //!   nextUpdate is still served, uncached, so relying parties see it is
 //!   stale rather than nothing.
 //!
-//! The database connection is the lab NoTls adapter, for a loopback or
-//! private lab database only. Environment: TRUST_CRL_DATABASE_URL,
+//! The database connection follows the management API's policy: TLS 1.3
+//! with certificate and host name verification against
+//! TRUST_DATABASE_CA_FILE by default; plaintext only with the explicit lab
+//! opt-out TRUST_DATABASE_TLS=disable-lab (logged). Environment:
+//! TRUST_CRL_DATABASE_URL, TRUST_DATABASE_TLS, TRUST_DATABASE_CA_FILE,
 //! TRUST_CRL_BIND (default 127.0.0.1:8082).
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
+
+// The management API's PostgreSQL TLS policy (verify-full by default).
+#[allow(dead_code)]
+#[path = "../database.rs"]
+mod database;
 
 use axum::{
     body::Body,
@@ -29,7 +37,7 @@ use axum::{
     routing::get,
     Router,
 };
-use postgres::{Client, NoTls};
+use postgres::Client;
 use std::{
     env,
     io::{self, Write},
@@ -62,6 +70,7 @@ trait CrlSource: Send + Sync + 'static {
 /// One lazily (re)connected session; a failed query drops it.
 struct PgSource {
     url: String,
+    tls: database::DatabaseTls,
     client: Mutex<Option<Client>>,
 }
 
@@ -69,12 +78,9 @@ impl CrlSource for PgSource {
     fn latest(&self, ca_id: &str) -> Result<Option<StoredCrl>, ()> {
         let mut slot = self.client.lock().map_err(|_| ())?;
         if slot.is_none() {
-            let mut client = Client::connect(&self.url, NoTls).map_err(|_| ())?;
+            let mut client = database::connect_client(&self.url, &self.tls, STATEMENT_TIMEOUT_MS)?;
             client
-                .batch_execute(&format!(
-                    "SET statement_timeout = {STATEMENT_TIMEOUT_MS}; \
-                     SET default_transaction_read_only = on"
-                ))
+                .batch_execute("SET default_transaction_read_only = on")
                 .map_err(|_| ())?;
             *slot = Some(client);
         }
@@ -249,8 +255,13 @@ async fn serve_crl(
 fn publisher_only(client: &mut Client) -> Result<bool, postgres::Error> {
     client
         .query_one(
-            "SELECT pg_has_role(session_user, 'trust_crl_publisher', 'member')
-                AND NOT pg_has_role(session_user, 'trust_revocation_owner', 'member')
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_crl_publisher')
+                         THEN pg_has_role(session_user, 'trust_crl_publisher', 'member')
+                         ELSE false END
+                AND NOT CASE WHEN EXISTS (SELECT 1 FROM pg_roles
+                                          WHERE rolname = 'trust_revocation_owner')
+                             THEN pg_has_role(session_user, 'trust_revocation_owner', 'member')
+                             ELSE false END
                 AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = session_user
                     AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb))
                 AND NOT EXISTS (SELECT 1 FROM pg_class c
@@ -266,18 +277,29 @@ fn publisher_only(client: &mut Client) -> Result<bool, postgres::Error> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = env::var("TRUST_CRL_DATABASE_URL")?;
-    let check_url = url.clone();
+    let tls = database::tls_from_settings(
+        env::var(database::TLS_MODE_ENV).ok().as_deref(),
+        env::var(database::CA_FILE_ENV).ok().as_deref(),
+    )?;
+    if matches!(tls, database::DatabaseTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"crl_database_tls_disabled_lab"}));
+    }
+    let (check_url, check_tls) = (url.clone(), tls.clone());
     let isolated = tokio::task::spawn_blocking(move || {
-        Client::connect(&check_url, NoTls).and_then(|mut client| publisher_only(&mut client))
+        database::connect_client(&check_url, &check_tls, STATEMENT_TIMEOUT_MS)
+            .map_err(|()| "CRL database unavailable (connection or TLS failed)")
+            .and_then(|mut client| {
+                publisher_only(&mut client).map_err(|_| "CRL database login check failed")
+            })
     })
-    .await?
-    .map_err(|_| "CRL database unavailable")?;
+    .await??;
     if !isolated {
         return Err("CRL database login must hold only trust_crl_publisher".into());
     }
     let state = AppState {
         source: Arc::new(PgSource {
             url,
+            tls,
             client: Mutex::new(None),
         }),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),

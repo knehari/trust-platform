@@ -17,10 +17,13 @@
 //! are bound to the officer who asked for them.
 //!
 //! The database login must hold only `trust_revocation_officer_api`
-//! (`connect_lab_service` refuses privileged logins). The connection is the
-//! lab NoTls adapter, for a loopback or private lab database only.
+//! (`from_service_client` refuses privileged logins). The connection
+//! follows the management API's policy: TLS 1.3 verified against
+//! TRUST_DATABASE_CA_FILE by default; plaintext only with
+//! TRUST_DATABASE_TLS=disable-lab (logged).
 //! Environment: TRUST_OIDC_ISSUER, TRUST_OIDC_AUDIENCE,
-//! TRUST_REVOCATION_DATABASE_URL, TRUST_WEBAUTHN_RP_ID,
+//! TRUST_REVOCATION_DATABASE_URL, TRUST_DATABASE_TLS, TRUST_DATABASE_CA_FILE,
+//! TRUST_WEBAUTHN_RP_ID,
 //! TRUST_WEBAUTHN_ORIGIN, TRUST_REVOCATION_BIND (default 127.0.0.1:8083).
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
@@ -29,6 +32,9 @@
 #[allow(dead_code)]
 #[path = "../auth.rs"]
 mod auth;
+#[allow(dead_code)]
+#[path = "../database.rs"]
+mod database;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -56,12 +62,14 @@ use trust_pki_core::{
 const OFFICER_ROLE: &str = "trust-revocation-officer";
 const CHALLENGE_TTL_SECONDS: i32 = 300;
 const MAX_CONCURRENT_REQUESTS: usize = 8;
+const STATEMENT_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Clone)]
 struct AppState {
     verifier: OidcVerifier,
     store: Arc<Mutex<Option<PgRevocationStore>>>,
     database_url: Arc<String>,
+    database_tls: database::DatabaseTls,
     rp_id: Arc<String>,
     origin: Arc<String>,
     slots: Arc<Semaphore>,
@@ -208,11 +216,14 @@ async fn with_store<T: Send + 'static>(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let store = state.store.clone();
     let url = state.database_url.clone();
+    let tls = state.database_tls.clone();
     tokio::task::spawn_blocking(move || {
         let mut slot = store.lock().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         if slot.is_none() {
+            let client = database::connect_client(&url, &tls, STATEMENT_TIMEOUT_MS)
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
             *slot = Some(
-                PgRevocationStore::connect_lab_service(&url)
+                PgRevocationStore::from_service_client(client)
                     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
             );
         }
@@ -521,15 +532,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = env::var("TRUST_REVOCATION_DATABASE_URL")?;
     let rp_id = env::var("TRUST_WEBAUTHN_RP_ID")?;
     let origin = env::var("TRUST_WEBAUTHN_ORIGIN")?;
-    let check_url = database_url.clone();
-    tokio::task::spawn_blocking(move || PgRevocationStore::connect_lab_service(&check_url))
-        .await?
-        .map_err(|_| "revocation database login refused or unavailable")?;
+    let database_tls = database::tls_from_settings(
+        env::var(database::TLS_MODE_ENV).ok().as_deref(),
+        env::var(database::CA_FILE_ENV).ok().as_deref(),
+    )?;
+    if matches!(database_tls, database::DatabaseTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"revocation_database_tls_disabled_lab"}));
+    }
+    let (check_url, check_tls) = (database_url.clone(), database_tls.clone());
+    let checked = tokio::task::spawn_blocking(move || {
+        database::connect_client(&check_url, &check_tls, STATEMENT_TIMEOUT_MS)
+            .map(PgRevocationStore::from_service_client)
+    })
+    .await?;
+    match checked {
+        Err(()) => return Err("revocation database unavailable (connection or TLS failed)".into()),
+        Ok(Err(RevocationStoreError::PrivilegedSession)) => {
+            return Err("revocation database login is privileged; use an officer API login".into())
+        }
+        Ok(Err(_)) => return Err("revocation database check failed".into()),
+        Ok(Ok(_)) => {}
+    }
     let verifier = OidcVerifier::discover(&issuer, &audience).await?;
     let state = AppState {
         verifier,
         store: Arc::new(Mutex::new(None)),
         database_url: Arc::new(database_url),
+        database_tls,
         rp_id: Arc::new(rp_id),
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
@@ -615,6 +644,7 @@ mod tests {
             verifier,
             store: session.clone(),
             database_url: Arc::new(database_url.to_owned()),
+            database_tls: database::DatabaseTls::DisabledForLab,
             rp_id: Arc::new(RP_ID.into()),
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
@@ -627,6 +657,7 @@ mod tests {
             verifier,
             store: Arc::new(Mutex::new(None)),
             database_url: Arc::new(database_url.to_owned()),
+            database_tls: database::DatabaseTls::DisabledForLab,
             rp_id: Arc::new(RP_ID.into()),
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),

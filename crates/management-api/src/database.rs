@@ -142,24 +142,35 @@ impl Database {
     }
 
     fn connect(&self, statement_timeout_ms: u64) -> Result<Client, ()> {
-        let mut config: postgres::Config = self.url.parse().map_err(|_| ())?;
-        config.connect_timeout(Duration::from_secs(3));
-        // Apply the limit at session startup so every management read, including
-        // startup checks, is bounded even after the connection succeeds.
-        config.options(&format!("-c statement_timeout={statement_timeout_ms}"));
-        match &self.tls {
-            DatabaseTls::VerifyFull(tls) => {
-                // Override any sslmode in the URL: "prefer" would silently fall
-                // back to plaintext when the server does not offer TLS.
-                config.ssl_mode(SslMode::Require);
-                config
-                    .connect(MakeRustlsConnect::new(ClientConfig::clone(tls)))
-                    .map_err(|_| ())
-            }
-            DatabaseTls::DisabledForLab => {
-                config.ssl_mode(SslMode::Disable);
-                config.connect(NoTls).map_err(|_| ())
-            }
+        connect_client(&self.url, &self.tls, statement_timeout_ms)
+    }
+}
+
+/// One session under `tls`, with a connect timeout and a session statement
+/// timeout. Shared by the management API and the lab service binaries
+/// (CRL distribution, revocation API) so they all apply the same policy.
+pub fn connect_client(
+    url: &str,
+    tls: &DatabaseTls,
+    statement_timeout_ms: u64,
+) -> Result<Client, ()> {
+    let mut config: postgres::Config = url.parse().map_err(|_| ())?;
+    config.connect_timeout(Duration::from_secs(3));
+    // Apply the limit at session startup so every read, including startup
+    // checks, is bounded even after the connection succeeds.
+    config.options(&format!("-c statement_timeout={statement_timeout_ms}"));
+    match tls {
+        DatabaseTls::VerifyFull(tls) => {
+            // Override any sslmode in the URL: "prefer" would silently fall
+            // back to plaintext when the server does not offer TLS.
+            config.ssl_mode(SslMode::Require);
+            config
+                .connect(MakeRustlsConnect::new(ClientConfig::clone(tls)))
+                .map_err(|_| ())
+        }
+        DatabaseTls::DisabledForLab => {
+            config.ssl_mode(SslMode::Disable);
+            config.connect(NoTls).map_err(|_| ())
         }
     }
 }

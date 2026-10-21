@@ -46,14 +46,22 @@ PY
 
 cargo build -q --locked -p trust-management-api --bin crl_distribution
 port=18082
+# Without the explicit lab opt-out, verified TLS is required: no CA bundle,
+# no start (the database here has no TLS; tests/management_db_tls.sh covers
+# verified TLS).
+if TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="127.0.0.1:$port" \
+   timeout 10 target/debug/crl_distribution 2>"$temp/tls.log"; then
+  fail "started without TLS or the lab opt-out"
+fi
+grep -q "TRUST_DATABASE_CA_FILE" "$temp/tls.log" || fail "missing CA bundle not reported"
 # A superuser login is refused at start.
-if TRUST_CRL_DATABASE_URL="$db" TRUST_CRL_BIND="127.0.0.1:$port" \
+if TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$db" TRUST_CRL_BIND="127.0.0.1:$port" \
    timeout 10 target/debug/crl_distribution 2>"$temp/refused.log"; then
   fail "a superuser login was accepted"
 fi
 grep -q "trust_crl_publisher" "$temp/refused.log" || fail "superuser refusal not reported"
 
-TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="127.0.0.1:$port" \
+TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="127.0.0.1:$port" \
   target/debug/crl_distribution 2>"$temp/server.log" &
 server=$!
 for _ in $(seq 1 100); do

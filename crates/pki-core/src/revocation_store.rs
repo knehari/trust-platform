@@ -253,11 +253,25 @@ impl PgRevocationStore {
     /// security or is a member of `trust_revocation_owner`, since any of
     /// these bypasses the least-privilege model of migration 0023.
     pub fn connect_lab_service(conn_str: &str) -> Result<Self, RevocationStoreError> {
-        let mut store = Self::connect_lab(conn_str)?;
+        Self::from_service_client(Client::connect(conn_str, NoTls)?)
+    }
+
+    /// A service session on a client the caller connected under its own
+    /// TLS policy (e.g. verify-full); refuses a privileged login exactly like
+    /// `connect_lab_service`.
+    pub fn from_service_client(client: Client) -> Result<Self, RevocationStoreError> {
+        let mut store = Self {
+            client,
+            clock: system_clock_us,
+            max_clock_skew_us: DEFAULT_MAX_CLOCK_SKEW_US,
+        };
         let privileged: bool = column(
             &store.client.query_one(
                 "SELECT r.rolsuper OR r.rolcreaterole OR r.rolbypassrls
-                        OR pg_has_role(session_user, 'trust_revocation_owner', 'MEMBER')
+                        OR CASE WHEN EXISTS (SELECT 1 FROM pg_roles
+                                             WHERE rolname = 'trust_revocation_owner')
+                                THEN pg_has_role(session_user, 'trust_revocation_owner', 'MEMBER')
+                                ELSE false END
                  FROM pg_roles r WHERE r.rolname = session_user",
                 &[],
             )?,

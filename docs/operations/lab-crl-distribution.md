@@ -39,13 +39,22 @@ write path either:
 - At most 16 requests run concurrently; the others get 503.
 
 ```
-TRUST_CRL_DATABASE_URL=postgresql://publisher@127.0.0.1/trust \
+TRUST_CRL_DATABASE_URL=postgresql://publisher@db.lab.invalid/trust \
+TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
 TRUST_CRL_BIND=127.0.0.1:8082 \
   cargo run -p trust-management-api --bin crl_distribution
 ```
 
-The database connection uses the lab `NoTls` adapter; run it only against a
-loopback or private lab database.
+The database connection follows the management API's policy (SEC-03/D-03):
+- TLS 1.3, with the server certificate checked against
+  `TRUST_DATABASE_CA_FILE` and the host name checked, by default;
+- any `sslmode` in the URL is overridden;
+- plaintext only with the explicit lab opt-out `TRUST_DATABASE_TLS=disable-lab`,
+  which is logged (`crl_database_tls_disabled_lab`).
+
+`tests/management_db_tls.sh` shows, against a TLS-only PostgreSQL, that the
+binary reaches its login check with the trusted CA and gets no session with
+an unrelated CA or another host name.
 
 Issued certificates name it in a cRLDistributionPoints extension (RFC 5280
 4.2.1.13) when the lab CA is configured with

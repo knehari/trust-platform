@@ -55,3 +55,37 @@ TRUST_API_TLS_TEST_UNTRUSTED_CA_FILE="$work/untrusted-ca.pem" \
   cargo test -p trust-management-api --locked \
     database::tests::verify_full_connects_only_to_a_trusted_matching_server -- --exact
 echo 'PASS: management API requires verified TLS 1.3 to PostgreSQL'
+
+# The lab services (CRL distribution, revocation API) apply the same policy:
+# with the trusted CA the handshake succeeds and they reach their login
+# check (which refuses this superuser); with an unrelated CA or another host
+# name they never get a session.
+cargo build -q --locked -p trust-management-api --bin crl_distribution --bin revocation_api
+tls_url="postgresql://trust_tls_ci:test-only-not-secret@localhost:55434/trust_tls"
+service_error() { # <binary> <ca-file> <url>
+  local binary="$1" ca="$2" url="$3"
+  TRUST_DATABASE_CA_FILE="$ca" TRUST_CRL_DATABASE_URL="$url" TRUST_CRL_BIND=127.0.0.1:18099 \
+  TRUST_REVOCATION_DATABASE_URL="$url" TRUST_OIDC_ISSUER=https://issuer.invalid \
+  TRUST_OIDC_AUDIENCE=trust-api TRUST_WEBAUTHN_RP_ID=officer.lab.invalid \
+  TRUST_WEBAUTHN_ORIGIN=https://officer.lab.invalid \
+    timeout 30 "target/debug/$binary" 2>&1 | tail -1 || true
+}
+expect_error() { # <what> <expected substring> <binary> <ca-file> <url>
+  local what="$1" expected="$2"; shift 2
+  local out; out="$(service_error "$@")"
+  case "$out" in
+    *"$expected"*) ;;
+    *) echo "FAIL: $what: $out" >&2; exit 1 ;;
+  esac
+}
+expect_error "crl_distribution verified TLS" "must hold only trust_crl_publisher" \
+  crl_distribution "$work/ca.pem" "$tls_url"
+expect_error "crl_distribution untrusted CA" "connection or TLS failed" \
+  crl_distribution "$work/untrusted-ca.pem" "$tls_url"
+expect_error "crl_distribution wrong host" "connection or TLS failed" \
+  crl_distribution "$work/ca.pem" "${tls_url/localhost/127.0.0.1}"
+expect_error "revocation_api verified TLS" "login is privileged" \
+  revocation_api "$work/ca.pem" "$tls_url"
+expect_error "revocation_api untrusted CA" "connection or TLS failed" \
+  revocation_api "$work/untrusted-ca.pem" "$tls_url"
+echo 'PASS: lab CRL distribution and revocation API require verified TLS 1.3 to PostgreSQL'

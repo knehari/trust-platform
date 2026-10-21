@@ -59,7 +59,7 @@ out="$(verify valid)"
 echo "$out" | grep -q "unable to get certificate CRL" || fail "CRL found without the distribution point: $out"
 
 cargo build -q --locked -p trust-management-api --bin crl_distribution
-TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="$bind" \
+TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="$bind" \
   target/debug/crl_distribution 2>"$temp/server.log" &
 server=$!
 for _ in $(seq 1 100); do
