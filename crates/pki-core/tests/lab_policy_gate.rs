@@ -23,6 +23,12 @@ use x509_cert::{
     request::CertReq,
 };
 
+/// `url` with `role` set for the session (the test login is a superuser).
+fn url_as(url: &str, role: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}options=-crole%3D{role}")
+}
+
 fn configured_policy() -> StaticPolicy {
     StaticPolicy {
         profile_id: "lab-server".into(),
@@ -56,12 +62,16 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
         .unwrap();
     drop(raw_db);
 
-    let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
+    // Least privilege (0035, 0043): issuance through the issuance service
+    // role, policy administration through the policy admin role.
+    let mut db = PgIssuanceStore::connect_lab(&url_as(&url, "trust_issuance_service")).unwrap();
+    let mut admin = PgIssuanceStore::connect_lab(&url_as(&url, "trust_policy_admin"))
+        .expect("trust_policy_admin (migration 0043) must exist");
     let ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
     let root_der = ca.root_certificate().to_der().unwrap();
     let trusted_pin: [u8; 32] = Sha256::digest(&root_der).into();
     let observed = observe_pinned_lab_ca(&root_der, &trusted_pin).unwrap();
-    let observed_id = db
+    let observed_id = admin
         .register_ca_public_observation(ca_id, "lab-observer", &observed)
         .unwrap();
     let policy = configured_policy();
@@ -75,12 +85,12 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
     };
     let drafts = generate(&input).unwrap();
     assert!(!drafts.publication_authorized);
-    let draft_id = db
+    let draft_id = admin
         .register_cp_cps_draft(ca_id, &observed_id, "lab-preparer", &input)
         .unwrap();
 
     // Actor identity is NOT authenticated in the laboratory DB.
-    let approval_id = db
+    let approval_id = admin
         .approve_draft_policy_lab(&trust_pki_core::postgres_store::LabDraftApproval {
             ca_id,
             draft_id: &draft_id,
@@ -93,7 +103,8 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
         })
         .unwrap();
     assert_eq!(
-        db.activate_issuer_policy_gate_lab(ca_id, "lab-admin")
+        admin
+            .activate_issuer_policy_gate_lab(ca_id, "lab-admin")
             .unwrap(),
         "ENFORCE_ALL_NEW_SIGNING_INTENTS"
     );
@@ -207,7 +218,8 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
     let verified = verify_presign_policy(&plan, "v1", &binding).unwrap();
 
     assert_eq!(
-        db.grant_presign_policy_lab(&approval_id, "lab-authority", &verified)
+        admin
+            .grant_presign_policy_lab(&approval_id, "lab-authority", &verified)
             .unwrap(),
         "GRANTED_FOR_THIS_TBS_ONLY"
     );

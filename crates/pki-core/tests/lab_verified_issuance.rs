@@ -435,7 +435,7 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         return;
     };
     let ca_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-    let mut db = PgIssuanceStore::connect_lab(&url).unwrap();
+    let mut db = PgIssuanceStore::connect_lab(&url_as(&url, "trust_issuance_service")).unwrap();
     let (csr, authorization, binding) = context();
     let request = db
         .create_request(
@@ -556,11 +556,26 @@ fn verified_collector_evidence_persists_once_and_leaves_issuance_quarantined() {
         verify_collector_evidence(&provider, &verifier, &plan, &hash, &attestation, &pinned)
             .unwrap();
 
-    let receipt_id = db.persist_verified_collector_evidence(&verified).unwrap();
+    // Evidence goes through the reconciliation operator role (0043), which
+    // cannot issue; the issuance service cannot record evidence.
+    let denied = db
+        .persist_verified_collector_evidence(&verified)
+        .unwrap_err();
+    assert!(
+        matches!(&denied, StoreError::Database(e) if e.code().map(|c| c.code()) == Some("42501")),
+        "{denied:?}"
+    );
+    let mut operator = PgIssuanceStore::connect_lab(&url_as(&url, "trust_reconciliation_operator"))
+        .expect("trust_reconciliation_operator (migration 0043) must exist");
+    let receipt_id = operator
+        .persist_verified_collector_evidence(&verified)
+        .unwrap();
     assert!(!receipt_id.is_empty());
     // Reusing the exact same signed observation MUST be rejected, not
     // silently converted to a second audit event or a fresh signature.
-    assert!(db.persist_verified_collector_evidence(&verified).is_err());
+    assert!(operator
+        .persist_verified_collector_evidence(&verified)
+        .is_err());
 
     let mut reader = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let row = reader

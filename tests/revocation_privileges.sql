@@ -133,7 +133,8 @@ BEGIN
     WHERE p.pronamespace = 'public'::regnamespace
       AND a.grantee::regrole::text IN ('trust_revocation_officer_api', 'trust_crl_signer',
           'trust_crl_operator', 'trust_ca_admin', 'trust_audit_sealer', 'trust_audit_verifier',
-          'trust_crl_publisher', 'trust_issuance_service')
+          'trust_crl_publisher', 'trust_issuance_service', 'trust_policy_admin',
+          'trust_reconciliation_operator')
       AND (NOT p.prosecdef
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
     PERFORM pg_temp.must(bad IS NULL, 'granted functions without definer settings: ' || coalesce(bad, ''));
@@ -168,6 +169,35 @@ BEGIN
                          'trust_issuance_owner may update more of ca than policy_gate_epoch');
     PERFORM pg_temp.must(NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'trust_issuance_owner'),
                          'trust_issuance_owner can log in');
+    -- Policy administration, reconciliation and evidence (0043): same
+    -- owner and settings; the two capability roles have no table rights.
+    SELECT string_agg(p.oid::regprocedure::text, ', ') INTO bad
+    FROM pg_proc p
+    WHERE p.pronamespace = 'public'::regnamespace
+      AND p.proname IN ('register_ca_public_observation', 'register_cp_cps_draft',
+               'approve_policy_draft_lab', 'activate_ca_policy_gate_lab',
+               'grant_request_approved_policy_lab', 'persist_verified_dual_policy_receipt_lab',
+               'require_dual_signature_policy_lab', 'record_signing_reconciliation_observation',
+               'propose_reconciliation_review', 'review_reconciliation_proposal',
+               'persist_signing_collector_evidence', 'trace_issued_certificate_to_draft')
+      AND (NOT p.prosecdef
+           OR p.proowner <> 'trust_issuance_owner'::regrole
+           OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
+    PERFORM pg_temp.must(bad IS NULL, 'policy/reconciliation functions without definer settings: '
+                                      || coalesce(bad, ''));
+    SELECT string_agg(r || ':' || t, ', ') INTO bad
+    FROM unnest(ARRAY['trust_policy_admin', 'trust_reconciliation_operator']) r,
+         unnest(ARRAY['approved_policy_edition', 'issuance_policy_grant', 'ca_policy_enforcement',
+                      'signing_collector_evidence', 'signing_reconciliation_review',
+                      'certificate', 'signing_intent', 'certificate_request']) t
+    WHERE has_table_privilege(r, t, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE');
+    PERFORM pg_temp.must(bad IS NULL, 'capability roles with table rights: ' || coalesce(bad, ''));
+    PERFORM pg_temp.must(NOT has_function_privilege('trust_policy_admin',
+                             'create_issuance_request(uuid,text,bytea,text,text)', 'EXECUTE')
+                         AND NOT has_function_privilege('trust_reconciliation_operator',
+                             'activate_ca_policy_gate_lab(uuid,text)', 'EXECUTE'),
+                         'a capability role reaches another role''s functions');
+
     -- The service role cannot reach the policy administration functions.
     PERFORM pg_temp.must(NOT has_function_privilege('trust_issuance_service',
                              'activate_ca_policy_gate_lab(uuid,text)', 'EXECUTE'),
