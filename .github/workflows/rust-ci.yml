@@ -206,6 +206,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0030_crl_distribution.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0031_crl_expired_entry_pruning.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0032_crl_pruned_entries.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0033_crl_operator_ca_list.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_lifecycle.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/crl_pipeline.sql
@@ -231,6 +232,7 @@ jobs:
           bash tests/recovery_concurrency.sh "$CONTAINER"
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_concurrency.sh
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/revocation_lock_order.sh
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_housekeeping_all.sh
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO ca(ca_id,display_name,policy_version) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Rust Lab Adapter CA','v1'),('ffffffff-ffff-4fff-8fff-ffffffffffff','Unprovisioned Lab CA','v1')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://other-issuer.example.test','operator','ffffffff-ffff-4fff-8fff-ffffffffffff')"

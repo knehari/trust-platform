@@ -943,6 +943,16 @@ impl PgRevocationStore {
         })
     }
 
+    /// Every CA that can publish CRLs (registered issuer certificate,
+    /// migration 0033), for a housekeeping job that covers them all.
+    pub fn crl_issuing_cas(&mut self) -> Result<Vec<String>, RevocationStoreError> {
+        self.client
+            .query("SELECT ca_id::text FROM crl_issuing_cas()", &[])?
+            .iter()
+            .map(|row| column(row, 0))
+            .collect()
+    }
+
     /// Schema changes (DDL, object grants) recorded since the last reviewed
     /// migration acknowledged them (migration 0026, ADR-0006 condition 3).
     /// Database-wide, not per CA; anything above zero needs an operator.

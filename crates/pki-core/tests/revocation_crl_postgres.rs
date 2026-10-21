@@ -2009,3 +2009,45 @@ fn a_falsified_expiry_cannot_prune_a_revoked_certificate() {
         .get(0);
     assert_eq!(status, "RESERVED", "no intent, nothing signed");
 }
+
+/// Migration 0033: the housekeeping job covers every CA that can publish
+/// CRLs (registered issuer), and only the CRL operator may list them.
+#[test]
+fn housekeeping_lists_every_crl_issuing_ca() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let (issuing, silent) = (fresh_ca(&url), fresh_ca(&url));
+    let root = EphemeralLabCa::new("Sovereign Trust Lab Root")
+        .unwrap()
+        .root_certificate()
+        .clone();
+    PgRevocationStore::connect_lab(&url)
+        .unwrap()
+        .register_ca_issuer(&issuing, &root, "ca-admin")
+        .unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    let cas = operator.crl_issuing_cas().unwrap();
+    assert!(cas.contains(&issuing));
+    assert!(
+        !cas.contains(&silent),
+        "a CA without issuer cannot publish CRLs"
+    );
+    for role in [
+        "trust_crl_signer",
+        "trust_revocation_officer_api",
+        "trust_ca_admin",
+    ] {
+        let mut other = PgRevocationStore::connect_lab(&url_as(&url, role)).unwrap();
+        assert_eq!(
+            sqlstate(&other.crl_issuing_cas().unwrap_err()).as_deref(),
+            Some("42501"),
+            "{role}"
+        );
+    }
+}

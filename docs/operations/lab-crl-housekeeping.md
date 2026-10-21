@@ -42,15 +42,20 @@ and evidence. It is not what keeps old CRLs from being signed.
 
 ```
 TRUST_DATABASE_URL=postgresql://... \
-  cargo run -p trust-pki-core --features postgres-store --example crl_housekeeping -- <ca-uuid>
+  cargo run -p trust-pki-core --features postgres-store --example crl_housekeeping -- <ca-uuid>|--all
 ```
+
+With `--all` the job covers every CA with a registered issuer certificate
+(`crl_issuing_cas()`, migration 0033, operator only), so no CA can be
+forgotten in a hand-kept list. A CA that fails is reported on stderr and
+the others still run.
 
 Exit status:
 - 0: nothing to do;
 - 2: attention needed (something was retired or quarantined, a CRL is due,
   a change is overdue, a schema change is unreviewed, or the clocks
   disagree);
-- 1: error.
+- 1: error on any CA (an error outranks an alert).
 
 A scheduler (cron, systemd timer) can therefore alert on any non-zero status.
 For example, an hourly cron line can call a wrapper script that runs the
