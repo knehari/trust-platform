@@ -111,10 +111,9 @@ paths:
           schema: {type: string, format: uuid}
       responses:
         '201': {$ref: '#/components/responses/Challenge'}
-        '400': {description: Unknown use}
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
-        '404': {description: Non-canonical use identifier}
+        '404': {description: Unknown or non-canonical use identifier}
         '409': {description: Already reviewed, the actor is the enrolled admin, or already reviewed by the actor}
         '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/approval-challenges:
@@ -127,7 +126,7 @@ paths:
         '201': {$ref: '#/components/responses/Challenge'}
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
-        '404': {description: Unknown family or non-canonical change}
+        '404': {description: Unknown family, unknown change in that family, or non-canonical change}
         '409': {description: Closed change, or the actor is the maker}
         '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/rejection-challenges:
@@ -140,7 +139,7 @@ paths:
         '201': {$ref: '#/components/responses/Challenge'}
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
-        '404': {description: Unknown family or non-canonical change}
+        '404': {description: Unknown family, unknown change in that family, or non-canonical change}
         '409': {description: Closed change, or the actor is the maker}
         '503': {description: Database unavailable or busy}
   /v1/admin-change-challenges/{challenge_id}/assertion:

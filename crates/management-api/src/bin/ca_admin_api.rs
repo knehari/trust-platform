@@ -464,9 +464,10 @@ async fn proposal_challenge(
     Ok(challenge_response(challenge_id, &challenge))
 }
 
-/// Approval or rejection by another admin. The database checks the actor's
-/// admin grant on the change's CA before issuing; the token's CA scope is
-/// checked on the issued challenge (nothing is changed by issuing one).
+/// Approval or rejection by another admin. The change's CA is checked
+/// against the token's scope before anything is written (unknown 404, out
+/// of scope 403, migration 0050); the database then checks the actor's
+/// admin grant, and the issued challenge's CA is checked again.
 async fn decision_challenge(
     state: AppState,
     family_text: String,
@@ -478,7 +479,9 @@ async fn decision_challenge(
     let family = family(&family_text).ok_or(StatusCode::NOT_FOUND)?;
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let ca_ids = claims.ca_ids.clone();
     let (challenge_id, challenge) = with_store(&state, move |store| {
+        in_scope(store.admin_change_ca(family, &change_id)?, &ca_ids)?;
         let checker = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -515,6 +518,15 @@ async fn decision_challenge(
                                  "challenge_id":challenge_id}),
     );
     Ok(challenge_response(challenge_id, &challenge))
+}
+
+/// Unknown (404) or outside the token's CAs (403), before any write.
+fn in_scope(ca: Option<String>, ca_ids: &[String]) -> Result<(), Failure> {
+    match ca {
+        None => Err(Failure::Refused(StatusCode::NOT_FOUND)),
+        Some(ca) if !ca_ids.contains(&ca) => Err(Failure::Refused(StatusCode::FORBIDDEN)),
+        Some(_) => Ok(()),
+    }
 }
 
 async fn approval_challenge(
@@ -603,9 +615,9 @@ async fn breakglass_uses(
 }
 
 /// A review challenge for a break-glass use, for an admin other than the
-/// one it enrolled. As for approvals, the database checks the admin grant
-/// on the use's CA before issuing and the token's CA scope is checked on
-/// the issued challenge.
+/// one it enrolled. As for approvals, the use's CA is checked against the
+/// token's scope before anything is written, then the database checks the
+/// admin grant.
 async fn breakglass_review_challenge(
     State(state): State<AppState>,
     Path(use_id): Path<String>,
@@ -614,7 +626,9 @@ async fn breakglass_review_challenge(
     let claims = admin(&headers, &state.verifier).await?;
     let use_id = canonical_uuid(&use_id).ok_or(StatusCode::NOT_FOUND)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let ca_ids = claims.ca_ids.clone();
     let (challenge_id, challenge) = with_store(&state, move |store| {
+        in_scope(store.breakglass_use_ca(&use_id)?, &ca_ids)?;
         let reviewer = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -1552,5 +1566,112 @@ mod tests {
         tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
             .await
             .unwrap();
+    }
+
+    /// The token's CA scope is checked before a decision or review
+    /// challenge is written (as in the revocation API): an out-of-scope
+    /// request writes nothing, an unknown change or use is 404.
+    #[tokio::test]
+    async fn out_of_scope_challenges_write_nothing() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let fixture = tokio::task::spawn_blocking(move || breakglass_setup(&setup_url))
+            .await
+            .unwrap();
+        let ca = fixture.ca.clone();
+        let proposal_url = url.clone();
+        let change = tokio::task::spawn_blocking(move || {
+            let mut fixture = fixture;
+            let mut store = PgRevocationStore::connect_lab(&proposal_url).unwrap();
+            let grant = AdminChange::Officer(
+                OfficerGrantAction::Grant,
+                &OfficerIdentity {
+                    issuer: ISSUER,
+                    subject: "officer-x",
+                },
+            );
+            let admin_b = OfficerIdentity {
+                issuer: ISSUER,
+                subject: "admin-b",
+            };
+            let id = store
+                .issue_admin_proposal_challenge(&fixture.ca, &grant, &admin_b, 120)
+                .unwrap();
+            let (data, client, signature) =
+                store_sign(&mut store, &mut fixture.b, &fixture.b_id, &id);
+            let change = store
+                .submit_signed_admin(
+                    &id,
+                    &fixture.b_id,
+                    &Assertion {
+                        authenticator_data: &data,
+                        client_data_json: &client,
+                        signature_der: &signature,
+                    },
+                    &RelyingParty {
+                        rp_id: RP_ID,
+                        origin: ORIGIN,
+                    },
+                    Some(&grant),
+                )
+                .unwrap();
+            (change, fixture.use_id)
+        })
+        .await
+        .unwrap();
+        let (change, use_id) = change;
+        let oidc = oidc();
+        let (app, session) = app_with_session(
+            oidc.verifier.clone(),
+            &url_with_login(&url, "trust_ca_admin_api_ci"),
+        );
+        let outsider = oidc.token(
+            "admin-a",
+            &[ADMIN_ROLE],
+            &["5eedc0de-0000-4000-8000-000000000099"],
+        );
+        for path in [
+            format!("/v1/admin-changes/ca-admin/{change}/approval-challenges"),
+            format!("/v1/admin-changes/ca-admin/{change}/rejection-challenges"),
+            format!("/v1/breakglass-uses/{use_id}/review-challenges"),
+        ] {
+            assert_eq!(
+                post(&app, &path, Some(&outsider), Value::Null).await.0,
+                StatusCode::FORBIDDEN,
+                "{path}"
+            );
+        }
+        let admin = oidc.token("admin-a", &[ADMIN_ROLE], &[&ca]);
+        let unknown = "5eedc0de-0000-4000-8000-0000000000aa";
+        for path in [
+            format!("/v1/admin-changes/ca-admin/{unknown}/approval-challenges"),
+            format!("/v1/admin-changes/credential/{change}/approval-challenges"),
+            format!("/v1/breakglass-uses/{unknown}/review-challenges"),
+        ] {
+            assert_eq!(
+                post(&app, &path, Some(&admin), Value::Null).await.0,
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+        drop(app);
+        tokio::task::spawn_blocking(move || {
+            drop(session.lock().unwrap().take());
+            let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+            let written: i64 = owner
+                .query_one(
+                    "SELECT count(*) FROM ca_admin_challenge
+                     WHERE ca_id = $1::text::uuid AND actor_subject = 'admin-a'
+                       AND purpose IN ('APPROVE', 'REJECT', 'REVIEW')",
+                    &[&ca],
+                )
+                .unwrap()
+                .get(0);
+            assert_eq!(written, 0);
+        })
+        .await
+        .unwrap();
     }
 }

@@ -1214,6 +1214,31 @@ impl PgRevocationStore {
             .collect()
     }
 
+    /// The CA of a CA-admin change (migration 0050), None if unknown, so a
+    /// caller can check its scope before a challenge is written.
+    pub fn admin_change_ca(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+    ) -> Result<Option<String>, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT admin_change_ca($1, $2::text::uuid)::text",
+            &[&family.as_sql(), &change_id],
+        )?;
+        column(&row, 0)
+    }
+
+    /// The CA of a break-glass use (migration 0050), None if unknown.
+    pub fn breakglass_use_ca(
+        &mut self,
+        use_id: &str,
+    ) -> Result<Option<String>, RevocationStoreError> {
+        let row = self
+            .client
+            .query_one("SELECT breakglass_use_ca($1::text::uuid)::text", &[&use_id])?;
+        column(&row, 0)
+    }
+
     /// Asks for a single-use challenge to sign a CA-admin proposal
     /// (ADR-0007, `trust-platform/ca-admin/v1`, migration 0037).
     pub fn issue_admin_proposal_challenge(

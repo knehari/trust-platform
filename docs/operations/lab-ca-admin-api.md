@@ -37,7 +37,7 @@ Not covered:
 - rate limiting beyond 8 concurrent requests;
 - TLS termination for the HTTP side.
 
-The token scope of an approval or rejection is checked on the issued challenge, after the database has already checked the admin grant on the change's CA. Issuing a challenge changes nothing.
+For an approval, rejection or review challenge, the change's or use's CA is checked against the token's scope before anything is written (migration 0050): unknown is 404, out of scope 403. The database then checks the admin grant, and the issued challenge's CA is checked again.
 
 Tested by the binary's tests:
 - missing token, wrong role and CA out of scope;

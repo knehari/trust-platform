@@ -120,7 +120,7 @@ BEGIN
           'remove_breakglass_credential', 'breakglass_credential_for',
           'issue_breakglass_challenge', 'breakglass_enroll_admin_credential',
           'issue_breakglass_review_challenge', 'review_breakglass_use', 'breakglass_uses',
-          'breakglass_evidence')
+          'breakglass_evidence', 'admin_change_ca', 'breakglass_use_ca')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);
