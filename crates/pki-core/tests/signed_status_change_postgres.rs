@@ -2824,3 +2824,55 @@ fn expired_unused_challenges_are_purged() {
         .get(0);
     assert_eq!(audited, 1);
 }
+
+/// Housekeeping reports CA-admin proposals past the CA's
+/// `admin_proposal_max_age_hours` (migration 0054) and needs attention
+/// until an admin rejects them; younger proposals do not count.
+#[test]
+fn housekeeping_reports_stale_admin_proposals() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let stale = lab
+        .admin
+        .propose_officer_grant(&ca, OfficerGrantAction::Grant, &THIRD, &ADMIN_A)
+        .unwrap();
+    lab.admin
+        .propose_officer_grant(&ca, OfficerGrantAction::Revoke, &MAKER, &ADMIN_A)
+        .unwrap();
+    owner
+        .batch_execute(&format!(
+            "ALTER TABLE ca_admin_change DISABLE TRIGGER ca_admin_change_guard;
+             UPDATE ca_admin_change SET proposed_at = proposed_at - interval '8 days'
+             WHERE change_id = '{stale}';
+             ALTER TABLE ca_admin_change ENABLE TRIGGER ca_admin_change_guard"
+        ))
+        .unwrap();
+    let mut operator = Client::connect(&url_as(&url, "trust_crl_operator"), NoTls).unwrap();
+    let listed: Vec<(String, String)> = operator
+        .query(
+            "SELECT family, change_id::text FROM stale_admin_proposals($1::text::uuid)",
+            &[&ca],
+        )
+        .unwrap()
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(listed, [("CA_ADMIN".to_owned(), stale.clone())]);
+    let mut housekeeping =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    let report = housekeeping.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    assert_eq!(report.stale_admin_proposals, 1);
+    assert!(report.needs_attention());
+    // Rejected, it no longer counts.
+    Client::connect(&url_as(&url, "trust_ca_admin"), NoTls)
+        .unwrap()
+        .execute(
+            "SELECT reject_ca_admin_change($1::text::uuid, $2, $3)",
+            &[&stale, &ADMIN_B.issuer, &ADMIN_B.subject],
+        )
+        .unwrap();
+    let report = housekeeping.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    assert_eq!(report.stale_admin_proposals, 0);
+}

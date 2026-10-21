@@ -18,6 +18,10 @@ pass for one CA (ADR-0006 section D, proposed). It calls
 4. purges the CA's challenges that expired unused more than 30 days ago
    (`purge_expired_challenges`, migration 0053; `purged_challenges`). Consumed
    challenges are evidence and are never deleted.
+5. reports CA-admin proposals past `admin_proposal_max_age_hours`
+   (`stale_admin_proposals`, migration 0054). They can no longer be approved;
+   an admin rejects them (and proposes again if still wanted). Any of them
+   sets the attention exit status.
 
 It also reads the database clock between two readings of the host clock
 (`clock_skew_us`, `clock_uncertainty_us`, `clock_ok`) and alerts when

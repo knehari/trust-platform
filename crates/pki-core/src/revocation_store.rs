@@ -526,6 +526,9 @@ pub struct CrlHousekeepingReport {
     /// Challenges deleted because they expired unused more than
     /// `CHALLENGE_RETENTION_DAYS` ago (migration 0053); housekeeping only.
     pub purged_challenges: i64,
+    /// CA-admin proposals past `admin_proposal_max_age_hours` (0052, 0054):
+    /// no longer approvable, to be rejected.
+    pub stale_admin_proposals: i64,
     /// Database clock against the Rust core's clock (ADR-0006 condition 6).
     pub clock: ClockReading,
     pub clock_within_bound: bool,
@@ -540,6 +543,7 @@ impl CrlHousekeepingReport {
             || self.overdue_changes > 0
             || self.overdue_precautionary_holds > 0
             || self.open_breakglass_uses > 0
+            || self.stale_admin_proposals > 0
             || !self.clock_within_bound
     }
 }
@@ -2282,7 +2286,8 @@ impl PgRevocationStore {
                     (SELECT count(*) FROM overdue_status_changes($1::text::uuid)),
                     (SELECT count(*) FROM precautionary_holds($1::text::uuid) WHERE overdue),
                     (SELECT count(*) FROM breakglass_uses($1::text::uuid) WHERE NOT reviewed),
-                    (SELECT count(*) FROM breakglass_uses($1::text::uuid) WHERE overdue)",
+                    (SELECT count(*) FROM breakglass_uses($1::text::uuid) WHERE overdue),
+                    (SELECT count(*) FROM stale_admin_proposals($1::text::uuid))",
             &[&ca_id],
         )?;
         let clock = self.database_clock()?;
@@ -2295,6 +2300,7 @@ impl PgRevocationStore {
             open_breakglass_uses: column(&row, 3)?,
             overdue_breakglass_uses: column(&row, 4)?,
             purged_challenges: column(&purged, 0)?,
+            stale_admin_proposals: column(&row, 5)?,
             clock,
             clock_within_bound: clock.within(self.max_clock_skew_us),
         })
