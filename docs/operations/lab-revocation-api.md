@@ -92,11 +92,19 @@ An assertion is refused with 503 while the database clock and the Rust core's di
 
 Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` (`response_headers.rs`): challenges and evidence are not kept by browsers or proxies.
 
+- HTTP transport: with `TRUST_HTTP_TLS_CERT_FILE` and
+  `TRUST_HTTP_TLS_KEY_FILE` (PEM chain and key) the API serves TLS 1.3 only
+  (rustls). Without them it serves plain HTTP only on a loopback bind address,
+  for example behind a TLS proxy on the same host. Any other address needs
+  `TRUST_HTTP_TLS=disable-lab`, which is logged; otherwise startup is refused
+  before any OIDC or database work. There is no client certificate (mTLS) and
+  no certificate reload. Tested by `tests/http_tls.sh`.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);
 - rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
-- TLS termination for the HTTP side;
+- mutual TLS, certificate reload or HTTP/2 on the HTTP side;
 - a browser client.
 
 Tested by the binary's tests:

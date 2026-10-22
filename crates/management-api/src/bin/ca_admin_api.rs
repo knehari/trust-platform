@@ -48,6 +48,8 @@ mod auth;
 #[allow(dead_code)]
 #[path = "../database.rs"]
 mod database;
+#[path = "../http_tls.rs"]
+mod http_tls;
 #[path = "../rate_limit.rs"]
 mod rate_limit;
 #[path = "../response_headers.rs"]
@@ -890,6 +892,16 @@ async fn submit_assertion(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Transport policy first, so bad TLS settings fail before any connection.
+    let http_tls = http_tls::from_env()?;
+    if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"ca_admin_http_tls_disabled_lab"}));
+    }
+    // Bound and checked before any OIDC or database work: a refused
+    // transport fails fast.
+    let bind = env::var("TRUST_CA_ADMIN_BIND").unwrap_or_else(|_| "127.0.0.1:8084".into());
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    http_tls::check_bind(&http_tls, &listener)?;
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
     let database_url = env::var("TRUST_CA_ADMIN_DATABASE_URL")?;
@@ -927,10 +939,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
     };
-    let bind = env::var("TRUST_CA_ADMIN_BIND").unwrap_or_else(|_| "127.0.0.1:8084".into());
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    write_log(serde_json::json!({"event":"ca_admin_api_started","bind":bind}));
-    axum::serve(listener, router(state)).await?;
+    let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
+    write_log(serde_json::json!({"event":"ca_admin_api_started","bind":bind,"tls":tls}));
+    http_tls::serve(listener, router(state), http_tls).await?;
     Ok(())
 }
 

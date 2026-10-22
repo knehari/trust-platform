@@ -2005,6 +2005,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tokio-postgres-rustls",
+ "tokio-rustls",
  "tower",
  "trust-pki-core",
  "trust-pki-crypto",

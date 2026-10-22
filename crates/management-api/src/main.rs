@@ -3,6 +3,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 mod auth;
 mod database;
+mod http_tls;
 // Shared with the lab write APIs; this binary uses its own budget.
 #[allow(dead_code)]
 mod rate_limit;
@@ -142,6 +143,16 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Transport policy first, so bad TLS settings fail before any connection.
+    let http_tls = http_tls::from_env()?;
+    if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"management_http_tls_disabled_lab"}));
+    }
+    // Bound and checked before any OIDC or database work: a refused
+    // transport fails fast.
+    let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    http_tls::check_bind(&http_tls, &listener)?;
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
     let database = Database::new(
@@ -183,10 +194,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
         limiter: Arc::new(reads_limiter()),
     });
-    let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    write_log(serde_json::json!({"event":"management_api_started","bind":bind}));
-    axum::serve(listener, app).await?;
+    let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
+    write_log(serde_json::json!({"event":"management_api_started","bind":bind,"tls":tls}));
+    http_tls::serve(listener, app, http_tls).await?;
     Ok(())
 }
 

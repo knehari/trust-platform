@@ -45,7 +45,15 @@ Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);
 - rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
-- TLS termination for the HTTP side.
+- mutual TLS, certificate reload or HTTP/2 on the HTTP side.
+
+- HTTP transport: with `TRUST_HTTP_TLS_CERT_FILE` and
+  `TRUST_HTTP_TLS_KEY_FILE` (PEM chain and key) the API serves TLS 1.3 only
+  (rustls). Without them it serves plain HTTP only on a loopback bind address,
+  for example behind a TLS proxy on the same host. Any other address needs
+  `TRUST_HTTP_TLS=disable-lab`, which is logged; otherwise startup is refused
+  before any OIDC or database work. There is no client certificate (mTLS) and
+  no certificate reload. Tested by `tests/http_tls.sh`.
 
 For an approval, rejection or review challenge, the change's or use's CA is checked against the token's scope before anything is written (migration 0050): unknown is 404, out of scope 403. The database then checks the admin grant, and the issued challenge's CA is checked again.
 
