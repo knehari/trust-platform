@@ -109,6 +109,13 @@ try {
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).waitFor();
   await page.getByText('These proposals are not approved or active.').waitFor();
+  await page.getByRole('button', { name: 'View proposal detail' }).click();
+  const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
+  await profileDialog.waitFor();
+  await profileDialog.getByText('SNAPSHOT SHA-256').waitFor();
+  assert.match(await profileDialog.textContent(), /[0-9a-f]{64}/);
+  await profileDialog.getByRole('button', { name: 'Close proposal detail' }).click();
+  await profileDialog.waitFor({ state: 'hidden' });
   assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
   await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}`);
   await page.getByRole('alert').first().waitFor();
