@@ -39,3 +39,5 @@ The console can export up to 100 explicitly checked, currently visible certifica
 ## Inert profile-draft reads
 
 Migration 0016 adds immutable, versioned proposal rows; every row remains DRAFT and none authorizes issuance. `GET /v1/cas/{ca_id}/profile-drafts` returns at most 100 revisions per page after checking both signed CA scope and the current server-owned reader grant. The cursor orders by profile ID and revision. Only the limited management view is granted to the API reader; the source table and its writes remain inaccessible. A separate approval and key-custody control plane is required before profiles can become active.
+
+The API reports `proposal_warnings` for blank display/policy labels, malformed or repeated proposed DNS zones, and malformed or repeated signature-suite identifiers. These are advisory shape checks on stored drafts. An empty list does not validate DNS ownership, cryptographic support, certificate policy, provider custody or approval.

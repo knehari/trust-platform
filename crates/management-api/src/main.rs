@@ -1,4 +1,5 @@
 mod auth;
+mod profile_proposal;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -93,6 +94,7 @@ struct ProfileDraft {
     created_by: String,
     created_at: String,
     status: &'static str,
+    proposal_warnings: Vec<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -713,26 +715,41 @@ async fn list_profile_drafts(
     let items: Vec<ProfileDraft> = rows
         .into_iter()
         .take(HISTORY_PAGE_SIZE)
-        .map(|row| ProfileDraft {
-            ca_id: row.get(0),
-            profile_id: row.get(1),
-            revision: row.get(2),
-            display_name: row.get(3),
-            policy_version: row.get(4),
-            max_validity_days: row.get(5),
-            max_dns_sans: row.get(6),
-            proposed_dns_zones: row.get(7),
-            proposed_signature_suites: row.get(8),
-            created_by: row.get(9),
-            created_at: row.get(10),
-            status: "DRAFT",
-        })
+        .map(profile_draft_from_row)
         .collect();
     let next = has_more.then(|| {
         let last = items.last().expect("nonempty page has a final item");
         format!("{}|{}", last.profile_id, last.revision)
     });
     Ok((history_headers(next), Json(items)))
+}
+
+fn profile_draft_from_row(row: Row) -> ProfileDraft {
+    let display_name: String = row.get(3);
+    let policy_version: String = row.get(4);
+    let proposed_dns_zones: Vec<String> = row.get(7);
+    let proposed_signature_suites: Vec<String> = row.get(8);
+    let proposal_warnings = profile_proposal::syntax_warnings(
+        &display_name,
+        &policy_version,
+        &proposed_dns_zones,
+        &proposed_signature_suites,
+    );
+    ProfileDraft {
+        ca_id: row.get(0),
+        profile_id: row.get(1),
+        revision: row.get(2),
+        display_name,
+        policy_version,
+        max_validity_days: row.get(5),
+        max_dns_sans: row.get(6),
+        proposed_dns_zones,
+        proposed_signature_suites,
+        created_by: row.get(9),
+        created_at: row.get(10),
+        status: "DRAFT",
+        proposal_warnings,
+    }
 }
 
 async fn list_certificates(
@@ -1100,6 +1117,9 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(first.len(), 100);
         assert!(first.iter().all(|row| row["status"] == "DRAFT"));
+        assert!(first
+            .iter()
+            .all(|row| row["proposal_warnings"] == json!([])));
         let (status, next, second) = history_page(
             &app,
             &token,
