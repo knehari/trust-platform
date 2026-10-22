@@ -16,6 +16,7 @@ Entities:
 - Challenge purge (0053): the challenge guards allow only the DELETE of a challenge never consumed and expired more than 7 days ago; `purge_expired_challenges(ca, retention_days)` (7..3650, `trust_crl_operator`) deletes such challenges of a CA in both tables and writes a `challenge.purged` audit event; `crl_housekeeping` runs it with 30 days.
 - `not_after` backfill (0055): `certificates_without_not_after(ca, limit)` and `record_certificate_not_after(ca, serial, not_after)` (`trust_crl_operator`) let the Rust core record `not_after` read from the stored DER for certificates stored before 0031; the guard allows the NULL to value transition only inside that function (direct UPDATEs are still refused), audited.
 - Evidence CAs (0056): `evidence_cas()` (`trust_audit_verifier`) lists every CA with a status-change or CA-admin signature or a break-glass use, for `signed_evidence_audit --all`.
+- Role review (0057): `role_state()` (security-relevant role lines), append-only `role_state_review` (superuser `acknowledge_role_state`), and `unreviewed_role_changes()` (`trust_crl_operator`) counting the lines that differ from the last snapshot.
 - Pending CA administration (0044): `pending_admin_changes(ca)`, granted to `trust_ca_admin`, returns the PROPOSED changes of all three families with their content, stored digest, maker and whether the maker signed.
 - Signed CA-admin rejection (0042): `ca_admin_challenge` purpose REJECT and `ca_admin_signature` role CLOSER. On a signing CA, `reject_ca_admin_change`, `reject_credential_change` and `reject_admin_credential_change` refuse, and `reject_signed_admin_change` closes the change.
 - Evidence audit (0041): `signed_evidence_index(ca)` (family, change, status) and the signature and claim read functions are granted to `trust_audit_verifier`.
@@ -34,4 +35,4 @@ Entities:
 - `crl_entry_snapshot`: the revoked entries frozen when a CRL number is reserved, keyed by (CA, CRL number, serial); immutable.
 - `audit_event`: actor, request correlation, policy version, decision, timestamp and integrity metadata.
 
-Lab migrations 0001-0056 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.
+Lab migrations 0001-0057 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.

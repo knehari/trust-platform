@@ -2542,6 +2542,16 @@ impl PgRevocationStore {
             .collect()
     }
 
+    /// Lines of the security-relevant role state (logins, role grants,
+    /// elevated attributes) that differ from the last superuser-acknowledged
+    /// snapshot (migration 0057, ADR-0006 condition 3). Database-wide.
+    pub fn unreviewed_role_changes(&mut self) -> Result<i64, RevocationStoreError> {
+        let row = self
+            .client
+            .query_one("SELECT unreviewed_role_changes()", &[])?;
+        column(&row, 0)
+    }
+
     /// Schema changes (DDL, object grants) recorded since the last reviewed
     /// migration acknowledged them (migration 0026, ADR-0006 condition 3).
     /// Database-wide, not per CA; anything above zero needs an operator.

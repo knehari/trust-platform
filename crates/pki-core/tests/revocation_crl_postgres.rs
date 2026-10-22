@@ -2051,3 +2051,66 @@ fn housekeeping_lists_every_crl_issuing_ca() {
         );
     }
 }
+
+/// ADR-0006 condition 3: role changes (new logins, role grants, elevated
+/// attributes) are not caught by the event triggers. Migration 0057 keeps
+/// a reviewed snapshot of the security-relevant role state; housekeeping
+/// reports the lines that differ until a superuser acknowledges them.
+#[test]
+fn unreviewed_role_changes_are_reported() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&format!(
+        "{url}{}options=-crole%3Dtrust_crl_operator",
+        if url.contains('?') { '&' } else { '?' }
+    ))
+    .unwrap();
+    owner
+        .batch_execute("SELECT acknowledge_role_state('test baseline')")
+        .unwrap();
+    assert_eq!(operator.unreviewed_role_changes().unwrap(), 0);
+    // A new login that can act as a CA admin is a role change.
+    owner
+        .batch_execute(
+            "DROP ROLE IF EXISTS trust_rolecheck_ci;
+             CREATE ROLE trust_rolecheck_ci LOGIN;
+             GRANT trust_ca_admin TO trust_rolecheck_ci",
+        )
+        .unwrap();
+    assert!(operator.unreviewed_role_changes().unwrap() >= 2);
+    owner
+        .batch_execute("SELECT acknowledge_role_state('test: rolecheck login reviewed')")
+        .unwrap();
+    assert_eq!(operator.unreviewed_role_changes().unwrap(), 0);
+    // So is an elevated attribute.
+    owner
+        .batch_execute("ALTER ROLE trust_rolecheck_ci CREATEROLE")
+        .unwrap();
+    assert!(operator.unreviewed_role_changes().unwrap() >= 1);
+    owner
+        .batch_execute(
+            "DROP ROLE trust_rolecheck_ci;
+             SELECT acknowledge_role_state('test cleanup')",
+        )
+        .unwrap();
+    // Only a superuser acknowledges.
+    let mut ack = postgres::Client::connect(
+        &format!(
+            "{url}{}options=-crole%3Dtrust_crl_operator",
+            if url.contains('?') { '&' } else { '?' }
+        ),
+        postgres::NoTls,
+    )
+    .unwrap();
+    let denied = ack
+        .batch_execute("SELECT acknowledge_role_state('operator')")
+        .unwrap_err();
+    assert_eq!(denied.code().map(|c| c.code()), Some("42501"));
+}

@@ -126,11 +126,14 @@ fn run() -> Result<Outcome, String> {
     let schema_changes = store
         .unreviewed_schema_changes()
         .map_err(|e| format!("schema-change report failed: {e:?}"))?;
+    let role_changes = store
+        .unreviewed_role_changes()
+        .map_err(|e| format!("role-change report failed: {e:?}"))?;
     println!(
-        "cas={} unreviewed_schema_changes={schema_changes}",
+        "cas={} unreviewed_schema_changes={schema_changes} unreviewed_role_changes={role_changes}",
         cas.len()
     );
-    if schema_changes > 0 && matches!(outcome, Outcome::Quiet) {
+    if (schema_changes > 0 || role_changes > 0) && matches!(outcome, Outcome::Quiet) {
         outcome = Outcome::Attention;
     }
     Ok(outcome)

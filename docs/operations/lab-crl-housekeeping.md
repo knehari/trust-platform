@@ -46,6 +46,18 @@ SELECT * FROM schema_change_audit
 WHERE change_seq > (SELECT coalesce(max(reviewed_up_to), 0) FROM schema_change_review);
 ```
 
+It also reports `unreviewed_role_changes` (migration 0057): how many lines
+of the security-relevant role state (trust_* roles and their members,
+SUPERUSER/CREATEROLE/BYPASSRLS/REPLICATION holders) differ from the last
+snapshot a superuser acknowledged. Roles are cluster-wide, so a change made
+from any database counts. Compare and acknowledge after review:
+
+```
+SELECT unnest(role_state())
+EXCEPT SELECT unnest(state) FROM role_state_review ORDER BY 1;  -- added lines
+SELECT acknowledge_role_state('reviewed: <ticket>');
+```
+
 Acknowledge (as a superuser) only after the change was reviewed, naming the
 review reference: `SELECT acknowledge_schema_changes('0026_manual_review_x');`.
 Role changes are not in this audit; enable server logging (pgaudit, `ROLE`
