@@ -1797,6 +1797,20 @@ impl PgRevocationStore {
             stored_count,
         )
         .map_err(RevocationStoreError::InvalidAssertion)?;
+        // The use's stored evidence (emergency signature and reviews so far)
+        // must re-verify before this review is written: a forged earlier
+        // review cannot be completed by an honest one.
+        let use_id = challenge
+            .claim
+            .change_id
+            .as_ref()
+            .map(hex_uuid)
+            .ok_or(RevocationStoreError::InconsistentResult)?;
+        match self.breakglass_use_evidence(&use_id, rp)? {
+            Some((_, Ok(()))) => {}
+            Some((_, Err(error))) => return Err(error),
+            None => return Err(RevocationStoreError::SignedApprovalRefused),
+        }
         let row = self.client.query_one(
             "SELECT review_breakglass_use($1::text::uuid, $2, $3, $4, $5)",
             &[

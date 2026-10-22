@@ -3228,3 +3228,128 @@ fn admin_approvals_reverify_the_makers_stored_signature() {
         .get(0);
     assert_eq!(granted, 0);
 }
+
+/// A break-glass use whose stored evidence includes a forged first review
+/// (sent straight to the database) is not closed by an honest second
+/// review: the Rust core re-verifies the use's evidence before writing.
+#[test]
+fn breakglass_reviews_reverify_the_stored_evidence() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (b_id, bg_id, a_id, c_id) = (
+        credential(4),
+        credential(20),
+        credential(11),
+        credential(13),
+    );
+    let (mut admin_a, mut admin_b, mut admin_c) = (
+        Authenticator::new(),
+        Authenticator::new(),
+        Authenticator::new(),
+    );
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO ca_admin_grant(issuer, subject, ca_id) VALUES ('{ISSUER}', 'admin-c', '{ca}');
+             UPDATE ca_revocation_policy SET signed_admin_required = true WHERE ca_id = '{ca}'"
+        ))
+        .unwrap();
+    let mut emergency = Authenticator::new();
+    boot.enroll_breakglass_credential(
+        &ca,
+        &bg_id,
+        "custodian",
+        "person-custodian",
+        &emergency.public_key(),
+    )
+    .unwrap();
+    let a_key = admin_a.public_key();
+    let a_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_id,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &a_key,
+    };
+    let challenge = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &a_content, 120)
+        .unwrap();
+    let use_id = breakglass_submit(
+        &mut lab.admin,
+        &mut emergency,
+        &bg_id,
+        &challenge,
+        &a_content,
+    )
+    .unwrap();
+    // A proposes C's key, B approves: three admins with keys.
+    let c_key = admin_c.public_key();
+    let c_content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &c_id,
+        officer: &ADMIN_C,
+        person_id: "person-admin-c",
+        public_key_sec1: &c_key,
+    };
+    let enroll = AdminChange::AdminCredential(CredentialChangeKind::Enroll, &c_content);
+    let proposal = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &enroll, &ADMIN_A, 120)
+        .unwrap();
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &proposal,
+        Some(&enroll),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::AdminCredential, &change, &ADMIN_B, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
+
+    // B's review is forged straight in the database (another key signs).
+    let review = lab
+        .admin
+        .issue_breakglass_review_challenge(&use_id, &ADMIN_B, 120)
+        .unwrap();
+    let digest = lab.admin.admin_challenge(&review).unwrap().claim.digest();
+    let (data, client, _) = admin_b.sign(&digest);
+    let (_, _, forged) = Authenticator::new().sign(&digest);
+    let mut direct = Client::connect(&url_as(&url, "trust_ca_admin"), NoTls).unwrap();
+    let first: String = direct
+        .query_one(
+            "SELECT review_breakglass_use($1::text::uuid, $2, $3, $4, $5)",
+            &[&review, &b_id, &data, &client, &forged],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(first, "PENDING_SECOND_REVIEW");
+    // C's honest review does not close the use.
+    let refused =
+        breakglass_review(&mut lab.admin, &mut admin_c, &c_id, &use_id, &ADMIN_C).unwrap_err();
+    assert!(
+        matches!(refused, RevocationStoreError::InvalidAssertion(_)),
+        "{refused:?}"
+    );
+    let uses = lab.admin.breakglass_uses(&ca).unwrap();
+    assert!(!uses[0].reviewed);
+}
