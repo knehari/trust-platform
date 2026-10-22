@@ -18,6 +18,12 @@ INSERT INTO ca(ca_id,display_name,policy_version) VALUES
 INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
   ('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('https://other-issuer.example.test','lab-operator','ffffffff-ffff-4fff-8fff-ffffffffffff');
+-- Inert profile proposals; neither one can authorize issuance.
+INSERT INTO certificate_profile_draft
+  (ca_id,profile_id,revision,display_name,policy_version,max_validity_days,
+   max_dns_sans,proposed_dns_zones,proposed_signature_suites,created_by) VALUES
+  ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','server-lab',1,'Laboratory server proposal','v1',90,5,ARRAY['lab.invalid'],ARRAY['P256-SHA256'],'synthetic-editor'),
+  ('ffffffff-ffff-4fff-8fff-ffffffffffff','hidden-lab',1,'Hidden laboratory proposal','v1',90,5,ARRAY['hidden.lab.invalid'],ARRAY['P256-SHA256'],'synthetic-editor');
 -- Synthetic metadata only: 3000 is a schema sentinel, not a signed X.509 certificate.
 -- These CNs are display fixtures, not claims parsed from certificate DER.
 INSERT INTO certificate_request(request_id,ca_id,idempotency_key,csr_sha256,requester_id,policy_version,state) VALUES
