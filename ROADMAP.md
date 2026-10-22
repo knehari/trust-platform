@@ -150,7 +150,8 @@ Engineering backlog:
     remove it.
   - The challenge table keeps consumed challenges and 30 days of unused ones.
   - `reconcile_crl` needs the caller to still hold the DER.
-  - Certificates stored before 0031 have no `notAfter` backfill.
+  - Certificates stored before 0031 whose stored DER does not parse stay
+    without `notAfter` (reported by housekeeping, never pruned).
 - **Hygiene:**
   - Migrations copy whole function bodies, and the CRL entries digest and
     audit-decision helpers are duplicated.

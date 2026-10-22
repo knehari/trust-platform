@@ -22,6 +22,11 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    (`stale_admin_proposals`, migration 0054). They can no longer be approved;
    an admin rejects them (and proposes again if still wanted). Any of them
    sets the attention exit status.
+6. backfills `not_after` for certificates stored before migration 0031
+   (`backfilled_not_after`, migration 0055), read from each stored DER after
+   checking its serial, so expired-entry pruning can cover them. A stored
+   DER that does not parse or names another serial is counted in
+   `unreadable_certificates`, never guessed, and sets the attention status.
 
 It also reads the database clock between two readings of the host clock
 (`clock_skew_us`, `clock_uncertainty_us`, `clock_ok`) and alerts when

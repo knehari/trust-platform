@@ -2876,3 +2876,119 @@ fn housekeeping_reports_stale_admin_proposals() {
     let report = housekeeping.crl_housekeeping(&ca, 3600, 3600).unwrap();
     assert_eq!(report.stale_admin_proposals, 0);
 }
+
+/// Certificates stored before migration 0031 have no `not_after`, so they
+/// are never pruned. Housekeeping backfills it (migration 0055): the Rust
+/// core reads notAfter from the stored DER after checking its serial; the
+/// value is then set once. A DER that does not parse or names another
+/// serial is reported (and needs attention), never guessed.
+#[test]
+fn housekeeping_backfills_not_after_from_the_stored_der() {
+    let Some(url) = database_url() else { return };
+    let mut owner = Client::connect(&url, NoTls).unwrap();
+    let ca: String = owner
+        .query_one(
+            "INSERT INTO ca(ca_id, display_name, policy_version)
+             VALUES (gen_random_uuid(), 'Backfill CA', 'v1') RETURNING ca_id::text",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    owner
+        .execute(
+            "INSERT INTO ca_revocation_policy(ca_id) VALUES ($1::text::uuid)",
+            &[&ca],
+        )
+        .unwrap();
+    let other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = other.root_certificate();
+    let der = x509_cert::der::Encode::to_der(root).unwrap();
+    let serial = root.tbs_certificate.serial_number.as_bytes().to_vec();
+    let expected = i64::try_from(
+        root.tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "WITH r AS (
+                 INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                     requester_id, policy_version, state)
+                 VALUES (gen_random_uuid(), $1::text::uuid, 'backfill', sha256('csr-b'::bytea),
+                         'requester', 'v1', 'PUBLISHED') RETURNING request_id),
+             s AS (
+                 INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+                 SELECT $1::text::uuid, $2, request_id FROM r RETURNING request_id)
+             INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                 certificate_der, signed_at)
+             SELECT $1::text::uuid, $2, request_id, sha256($3), $3,
+                    to_timestamp($4::bigint) - interval '1 day'
+             FROM s",
+            &[&ca, &serial, &der, &expected],
+        )
+        .unwrap();
+    // A certificate whose stored DER is not a certificate.
+    owner
+        .batch_execute(&format!(
+            "INSERT INTO certificate_request(request_id, ca_id, idempotency_key, csr_sha256,
+                 requester_id, policy_version, state)
+                 VALUES (gen_random_uuid(), '{ca}', 'backfill-junk', sha256('csr-j'::bytea),
+                         'requester', 'v1', 'PUBLISHED');
+             INSERT INTO serial_reservation(ca_id, serial_der_content, request_id)
+                 SELECT '{ca}', '\\x7f01', request_id FROM certificate_request
+                 WHERE ca_id = '{ca}' AND idempotency_key = 'backfill-junk';
+             INSERT INTO certificate(ca_id, serial_der_content, request_id, fingerprint_sha256,
+                 certificate_der, signed_at)
+                 SELECT ca_id, serial_der_content, request_id, sha256('junk'::bytea),
+                        '\\x3003020101', now()
+                 FROM serial_reservation
+                 WHERE ca_id = '{ca}' AND serial_der_content = '\\x7f01';"
+        ))
+        .unwrap();
+    let mut operator = PgRevocationStore::connect_lab(&url_as(&url, "trust_crl_operator")).unwrap();
+    let report = operator.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    // The real certificate is backfilled; the placeholder DER is reported
+    // as unreadable.
+    assert_eq!(
+        (report.backfilled_not_after, report.unreadable_certificates),
+        (1, 1)
+    );
+    assert!(report.needs_attention());
+    let stored: i64 = owner
+        .query_one(
+            "SELECT extract(epoch FROM not_after)::bigint FROM certificate
+             WHERE ca_id = $1::text::uuid AND serial_der_content = $2",
+            &[&ca, &serial],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, expected);
+    let report = operator.crl_housekeeping(&ca, 3600, 3600).unwrap();
+    assert_eq!(
+        (report.backfilled_not_after, report.unreadable_certificates),
+        (0, 1)
+    );
+    // Once set, not_after never changes, even for a superuser.
+    let refused = owner
+        .execute(
+            "UPDATE certificate SET not_after = not_after + interval '1 day'
+             WHERE ca_id = $1::text::uuid AND serial_der_content = $2",
+            &[&ca, &serial],
+        )
+        .unwrap_err();
+    assert_eq!(refused.code().map(|c| c.code()), Some("23514"));
+    // A value that disagrees with nothing in the DER cannot be recorded for
+    // another serial by a direct call either: the function only fills NULLs.
+    let mut sql_operator = Client::connect(&url_as(&url, "trust_crl_operator"), NoTls).unwrap();
+    let changed: bool = sql_operator
+        .query_one(
+            "SELECT record_certificate_not_after($1::text::uuid, $2, to_timestamp($3::bigint))",
+            &[&ca, &serial, &(expected - 10)],
+        )
+        .unwrap()
+        .get(0);
+    assert!(!changed);
+}

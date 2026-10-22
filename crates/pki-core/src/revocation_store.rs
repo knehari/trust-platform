@@ -22,7 +22,10 @@ use crate::serial::SerialNumber;
 use crate::webauthn::{verify_assertion, Assertion, RelyingParty, WebAuthnError};
 use postgres::{error::SqlState, types::FromSqlOwned, Client, Error as PgError, NoTls, Row};
 use sha2::{Digest, Sha256};
-use x509_cert::{der::Encode, Certificate};
+use x509_cert::{
+    der::{Decode, Encode},
+    Certificate,
+};
 
 #[derive(Debug)]
 pub enum RevocationStoreError {
@@ -529,6 +532,12 @@ pub struct CrlHousekeepingReport {
     /// CA-admin proposals past `admin_proposal_max_age_hours` (0052, 0054):
     /// no longer approvable, to be rejected.
     pub stale_admin_proposals: i64,
+    /// Certificates whose `not_after` was read from the stored DER and
+    /// recorded (migration 0055); housekeeping only.
+    pub backfilled_not_after: i64,
+    /// Certificates still without `not_after` whose stored DER does not
+    /// parse or names another serial: never guessed, so never pruned.
+    pub unreadable_certificates: i64,
     /// Database clock against the Rust core's clock (ADR-0006 condition 6).
     pub clock: ClockReading,
     pub clock_within_bound: bool,
@@ -544,6 +553,7 @@ impl CrlHousekeepingReport {
             || self.overdue_precautionary_holds > 0
             || self.open_breakglass_uses > 0
             || self.stale_admin_proposals > 0
+            || self.unreadable_certificates > 0
             || !self.clock_within_bound
     }
 }
@@ -2277,6 +2287,7 @@ impl PgRevocationStore {
     ) -> Result<CrlHousekeepingReport, RevocationStoreError> {
         let abandoned = self.abandon_stale_crl_reservations(ca_id, reserved_older_than_seconds)?;
         let quarantined = self.quarantine_stale_crl_intents(ca_id, intent_older_than_seconds)?;
+        let (backfilled, unreadable) = self.backfill_not_after(ca_id)?;
         let purged = self.client.query_one(
             "SELECT purge_expired_challenges($1::text::uuid, $2)",
             &[&ca_id, &CHALLENGE_RETENTION_DAYS],
@@ -2301,9 +2312,56 @@ impl PgRevocationStore {
             overdue_breakglass_uses: column(&row, 4)?,
             purged_challenges: column(&purged, 0)?,
             stale_admin_proposals: column(&row, 5)?,
+            backfilled_not_after: backfilled,
+            unreadable_certificates: unreadable,
             clock,
             clock_within_bound: clock.within(self.max_clock_skew_us),
         })
+    }
+
+    /// Records `not_after` for the CA's certificates stored without it
+    /// (migration 0055), read from each stored DER after checking that it
+    /// parses and names the stored serial. Returns how many were recorded
+    /// and how many remain unreadable (up to 1000 per call).
+    pub fn backfill_not_after(&mut self, ca_id: &str) -> Result<(i64, i64), RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT serial_der_content, certificate_der
+             FROM certificates_without_not_after($1::text::uuid, 1000)",
+            &[&ca_id],
+        )?;
+        let (mut recorded, mut unreadable) = (0, 0);
+        for row in &rows {
+            let serial: Vec<u8> = column(row, 0)?;
+            let der: Vec<u8> = column(row, 1)?;
+            let not_after = Certificate::from_der(&der).ok().and_then(|certificate| {
+                (certificate.tbs_certificate.serial_number.as_bytes() == serial.as_slice())
+                    .then(|| {
+                        i64::try_from(
+                            certificate
+                                .tbs_certificate
+                                .validity
+                                .not_after
+                                .to_unix_duration()
+                                .as_secs(),
+                        )
+                        .ok()
+                    })
+                    .flatten()
+            });
+            let Some(not_after) = not_after else {
+                unreadable += 1;
+                continue;
+            };
+            let row = self.client.query_one(
+                "SELECT record_certificate_not_after($1::text::uuid, $2,
+                                                    to_timestamp($3::bigint))",
+                &[&ca_id, &serial, &not_after],
+            )?;
+            if column::<bool>(&row, 0)? {
+                recorded += 1;
+            }
+        }
+        Ok((recorded, unreadable))
     }
 
     /// Every CA that can publish CRLs (registered issuer certificate,

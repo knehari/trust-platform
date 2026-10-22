@@ -55,5 +55,6 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   process stays `RECONCILIATION_REQUIRED` (no signer read-back exists).
 - Expired-entry pruning (`keep_expired_on_crl = false`): implemented in 0031
   from `certificate.not_after` recorded at issuance; certificates stored
-  before 0031 have no `not_after` and are never pruned (no backfill). Entry
+  before 0031 are backfilled by housekeeping from their stored DER (0055);
+  an unreadable DER is reported and never pruned. Entry
   order is raw serial bytes, not OpenSSL's (length, bytes).

@@ -94,6 +94,7 @@ fn run() -> Result<Outcome, String> {
                     "ca={ca_id} abandoned={} quarantined={} crl_due={} overdue_changes={} \
                      overdue_precautionary_holds={} open_breakglass_uses={} \
                      overdue_breakglass_uses={} purged_challenges={} stale_admin_proposals={} \
+                     backfilled_not_after={} unreadable_certificates={} \
                      clock_skew_us={} \
                      clock_uncertainty_us={} \
                      clock_ok={}",
@@ -106,6 +107,8 @@ fn run() -> Result<Outcome, String> {
                     report.overdue_breakglass_uses,
                     report.purged_challenges,
                     report.stale_admin_proposals,
+                    report.backfilled_not_after,
+                    report.unreadable_certificates,
                     report.clock.skew_us,
                     report.clock.uncertainty_us,
                     report.clock_within_bound
