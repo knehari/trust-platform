@@ -120,4 +120,13 @@ for job in "crl_housekeeping --all" "signed_evidence_audit 00000000-0000-4000-80
   expect_job_error "$1 untrusted CA" "connection or TLS failed" \
     "$1" "$work/untrusted-ca.pem" "$tls_url" "$2"
 done
-echo 'PASS: lab CRL distribution, revocation and CA-admin APIs, housekeeping and evidence audit require verified TLS 1.3 to PostgreSQL'
+# The audit chain anchoring lab example (pki-core) applies the same policy.
+cargo build -q --locked -p trust-pki-core --features postgres-store,lab-software \
+  --example audit_chain_anchor
+expect_job_error "audit_chain_anchor verified TLS" "privileged session" \
+  examples/audit_chain_anchor "$work/ca.pem" "$tls_url" seal
+expect_job_error "audit_chain_anchor untrusted CA" "connection or TLS failed" \
+  examples/audit_chain_anchor "$work/untrusted-ca.pem" "$tls_url" seal
+expect_job_error "audit_chain_anchor wrong host" "connection or TLS failed" \
+  examples/audit_chain_anchor "$work/ca.pem" "${tls_url/localhost/127.0.0.1}" seal
+echo 'PASS: lab CRL distribution, revocation and CA-admin APIs, housekeeping, evidence audit and audit chain anchoring require verified TLS 1.3 to PostgreSQL'

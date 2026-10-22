@@ -10,7 +10,9 @@ use postgres::{Client, NoTls};
 use std::env;
 use trust_pki_core::{
     audit_chain::{verify_sealed_chain, ChainVerifyError, Checkpoint},
-    audit_chain_store::{load_entries, seal, unsealed, AuditChainStoreError},
+    audit_chain_store::{
+        load_entries, refuse_privileged_session, seal, unsealed, AuditChainStoreError,
+    },
 };
 
 fn database_url() -> Option<String> {
@@ -36,7 +38,7 @@ fn url_as(url: &str, role: &str) -> String {
 fn sqlstate(error: &AuditChainStoreError) -> Option<String> {
     match error {
         AuditChainStoreError::Database(e) => e.code().map(|c| c.code().to_owned()),
-        AuditChainStoreError::Malformed(_) => None,
+        AuditChainStoreError::Malformed(_) | AuditChainStoreError::PrivilegedSession => None,
     }
 }
 
@@ -175,4 +177,19 @@ fn tampering_is_detected_against_exported_checkpoints() {
     // Untampered, the extended chain still matches the checkpoint.
     verify_sealed_chain(load_entries(&mut tx).unwrap(), &[anchor]).unwrap();
     tx.rollback().unwrap();
+}
+
+/// The audit jobs refuse a privileged session: the test superuser login is
+/// refused even with a role set for the session (session_user stays the
+/// superuser).
+#[test]
+fn audit_jobs_refuse_privileged_sessions() {
+    let Some(url) = database_url() else { return };
+    for login in [url.clone(), url_as(&url, "trust_audit_sealer")] {
+        let mut client = Client::connect(&login, NoTls).unwrap();
+        assert!(matches!(
+            refuse_privileged_session(&mut client),
+            Err(AuditChainStoreError::PrivilegedSession)
+        ));
+    }
 }

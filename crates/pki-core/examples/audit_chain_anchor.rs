@@ -23,8 +23,13 @@
 //! seconds (default 3600) are not sealed yet; 3 the chain or a signed
 //! anchor does not verify (tampering or loss: investigate, do not append);
 //! 1 error.
-//! The database URL is read from TRUST_DATABASE_URL; the connection is the
-//! lab NoTls adapter, for a loopback or private lab database only.
+//! The database URL is read from TRUST_DATABASE_URL and must be a
+//! non-privileged login holding trust_audit_sealer or trust_audit_verifier
+//! (a superuser, role creator or owner member is refused). The connection
+//! follows the management API's policy: TLS 1.3 with certificate and host
+//! name verification against TRUST_DATABASE_CA_FILE by default; plaintext
+//! only with the explicit lab opt-out TRUST_DATABASE_TLS=disable-lab
+//! (reported on stderr).
 //! Usage:
 //!   TRUST_DATABASE_URL=postgresql://... cargo run -p trust-pki-core \
 //!     --features postgres-store --example audit_chain_anchor -- seal
@@ -33,7 +38,11 @@
 //!     verify <checkpoint-file> [--unsealed-older-than SECONDS] \
 //!     [--anchor-key PKCS8.der | --anchor-public-key SPKI.der]
 
-use postgres::{Client, NoTls};
+// The management API's PostgreSQL TLS policy (verify-full by default).
+#[allow(dead_code)]
+#[path = "../../management-api/src/database.rs"]
+mod database;
+
 use std::{
     env, fs,
     io::{ErrorKind, Write},
@@ -41,10 +50,13 @@ use std::{
 };
 use trust_pki_core::{
     audit_chain::{checkpoint_signing_message, verify_sealed_chain, Checkpoint, SignedCheckpoint},
-    audit_chain_store::{load_entries, seal, unsealed},
+    audit_chain_store::{load_entries, refuse_privileged_session, seal, unsealed},
 };
 use trust_pki_crypto::{canonical_p256_public_key_sec1, lab::LabP256KeyFile};
 use x509_cert::{der::Decode, spki::SubjectPublicKeyInfoOwned};
+
+/// Loading and re-encoding the whole chain may take a while; still bounded.
+const STATEMENT_TIMEOUT_MS: u64 = 300_000;
 
 enum Outcome {
     Verified,
@@ -143,8 +155,18 @@ fn read_checkpoints(
 fn run() -> Result<Outcome, String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let url = env::var("TRUST_DATABASE_URL").map_err(|_| "TRUST_DATABASE_URL is not set")?;
-    let mut client =
-        Client::connect(&url, NoTls).map_err(|e| format!("database connection failed: {e}"))?;
+    let tls = database::tls_from_settings(
+        env::var(database::TLS_MODE_ENV).ok().as_deref(),
+        env::var(database::CA_FILE_ENV).ok().as_deref(),
+    )?;
+    if matches!(tls, database::DatabaseTls::DisabledForLab) {
+        eprintln!("audit_chain_anchor: database TLS disabled (lab opt-out)");
+    }
+    let mut client = database::connect_client(&url, &tls, STATEMENT_TIMEOUT_MS)
+        .map_err(|()| "database unavailable (connection or TLS failed)".to_owned())?;
+    // A sealer or verifier that could also rewrite the records is not one.
+    refuse_privileged_session(&mut client)
+        .map_err(|e| format!("database connection refused: privileged session ({e:?})"))?;
     match args.first().map(String::as_str) {
         Some("seal") => {
             let mut total = 0;

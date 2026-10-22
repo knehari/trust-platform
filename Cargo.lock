@@ -2018,8 +2018,11 @@ version = "0.1.0"
 dependencies = [
  "base64ct",
  "postgres",
+ "rustls",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
+ "tokio-postgres-rustls",
  "trust-pki-crypto",
  "trust-pki-policy",
  "x509-cert",

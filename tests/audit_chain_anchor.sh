@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Disposable PostgreSQL 16 (lab only): end-to-end sealing and external
-# anchoring with the audit_chain_anchor example (migration 0027). Needs an
-# EMPTY database it may tamper with (committed superuser rewrites), a
-# superuser URL and host psql:
+# anchoring with the audit_chain_anchor job (migration 0027), under logins
+# holding only trust_audit_sealer or trust_audit_verifier. Needs an EMPTY
+# database it may tamper with (committed superuser rewrites), a superuser
+# URL and host psql:
 #   TRUST_ANCHOR_DATABASE_URL=postgresql://... bash tests/audit_chain_anchor.sh
 set -euo pipefail
 : "${TRUST_ANCHOR_DATABASE_URL:?TRUST_ANCHOR_DATABASE_URL is required}"
@@ -17,10 +18,30 @@ for migration in migrations/*.sql; do
 done
 cargo build -q --locked -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor
 bin="target/debug/examples/audit_chain_anchor"
+# One login per role (test-only password, lab only); the job refuses a
+# superuser or an owner-member login.
+for role in trust_audit_sealer trust_audit_verifier; do
+  psql_run -c "DO \$\$BEGIN
+                 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}_ci') THEN
+                   CREATE ROLE ${role}_ci LOGIN PASSWORD 'test-only-not-secret';
+                 END IF;
+               END\$\$;
+               GRANT ${role} TO ${role}_ci" >/dev/null
+done
+login_url() { # <login>
+  python3 - "$db" "$1" <<'PY'
+import sys, urllib.parse
+u = urllib.parse.urlsplit(sys.argv[1])
+host = u.hostname + (f":{u.port}" if u.port else "")
+print(urllib.parse.urlunsplit((u.scheme, f"{sys.argv[2]}:test-only-not-secret@{host}",
+                               u.path, u.query, u.fragment)))
+PY
+}
+# Plaintext is the explicit lab opt-out here; verified TLS is the default
+# and is covered by tests/management_db_tls.sh.
 as_role() { # <role> <args...>
   local role="$1"; shift
-  local sep='?'; [[ "$db" == *\?* ]] && sep='&'
-  TRUST_DATABASE_URL="${db}${sep}options=-crole%3D${role}" "$bin" "$@"
+  TRUST_DATABASE_TLS=disable-lab TRUST_DATABASE_URL="$(login_url "${role}_ci")" "$bin" "$@"
 }
 expect_status() { # <expected> <what> <command...>
   local expected="$1" what="$2"; shift 2
@@ -35,6 +56,13 @@ event() {
   psql_run -c "INSERT INTO audit_event(event_id,actor_id,event_type,decision)
                VALUES (gen_random_uuid(),'anchor-test','audit.anchor.probe','$1')" >/dev/null
 }
+
+# Fail closed: no TLS settings, or a superuser login, is refused (exit 1).
+expect_status 1 "no TLS settings" env TRUST_DATABASE_URL="$(login_url trust_audit_sealer_ci)" "$bin" seal
+expect_status 1 "superuser login" env TRUST_DATABASE_TLS=disable-lab TRUST_DATABASE_URL="$db" "$bin" seal
+grep -q "privileged" "$temp/out" || { cat "$temp/out" >&2; echo "FAIL: wrong refusal" >&2; exit 1; }
+expect_status 1 "superuser verifier" env TRUST_DATABASE_TLS=disable-lab TRUST_DATABASE_URL="$db" \
+  "$bin" verify "$temp/superuser-anchor"
 
 event first
 expect_status 0 "seal" as_role trust_audit_sealer seal

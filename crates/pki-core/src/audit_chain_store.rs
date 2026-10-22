@@ -12,6 +12,10 @@ pub enum AuditChainStoreError {
     Database(PgError),
     /// A row does not have the shape migration 0027 defines.
     Malformed(&'static str),
+    /// The login is a superuser, can create roles, bypasses row security or
+    /// is a member of an owner role: a sealer or verifier that could also
+    /// rewrite the records is not one.
+    PrivilegedSession,
 }
 
 impl From<PgError> for AuditChainStoreError {
@@ -21,6 +25,27 @@ impl From<PgError> for AuditChainStoreError {
 }
 
 const PAGE: i32 = 1000;
+
+/// Refuses a privileged session (see `PrivilegedSession`); the audit jobs
+/// call it before sealing or verifying.
+pub fn refuse_privileged_session(
+    client: &mut impl GenericClient,
+) -> Result<(), AuditChainStoreError> {
+    let privileged: bool = client
+        .query_one(
+            "SELECT r.rolsuper OR r.rolcreaterole OR r.rolbypassrls
+                    OR EXISTS (SELECT 1 FROM pg_roles o
+                               WHERE o.rolname IN ('trust_audit_owner', 'trust_revocation_owner')
+                                 AND pg_has_role(session_user, o.oid, 'MEMBER'))
+             FROM pg_roles r WHERE r.rolname = session_user",
+            &[],
+        )?
+        .try_get(0)?;
+    if privileged {
+        return Err(AuditChainStoreError::PrivilegedSession);
+    }
+    Ok(())
+}
 
 /// Seal up to `limit` unsealed records (role `trust_audit_sealer`).
 pub fn seal(client: &mut impl GenericClient, limit: i32) -> Result<i32, AuditChainStoreError> {

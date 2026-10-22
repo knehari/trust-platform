@@ -25,14 +25,23 @@ sealed and anchored.
 
 ```
 # every few minutes, login granted trust_audit_sealer only
-TRUST_DATABASE_URL=postgresql://... \
-  cargo run -p trust-pki-core --features postgres-store --example audit_chain_anchor -- seal
+TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+  cargo run -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor -- seal
 
 # after sealing, on another host, login granted trust_audit_verifier only
-TRUST_DATABASE_URL=postgresql://... \
-  cargo run -p trust-pki-core --features postgres-store --example audit_chain_anchor -- \
+TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+  cargo run -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor -- \
   verify /var/lib/trust-audit/checkpoints [--unsealed-older-than 3600]
 ```
+
+The connection follows the management API's policy: verified TLS 1.3
+against `TRUST_DATABASE_CA_FILE` by default, plaintext only with the
+explicit lab opt-out `TRUST_DATABASE_TLS=disable-lab` (reported on stderr).
+A superuser, a role creator, a role bypassing row security or a member of
+`trust_audit_owner` or `trust_revocation_owner` is refused (exit 1): a sealer
+or verifier that could also rewrite the records is not one. The job stays a
+`pki-core` lab example because `--anchor-key` signs with a lab key file
+(`lab-software`), which is kept out of the service binaries.
 
 `verify` loads the whole chain, re-encodes every record in Rust, checks the
 links and every checkpoint already in the file, then appends the new head
