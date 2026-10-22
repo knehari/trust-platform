@@ -118,6 +118,7 @@ try {
   assert.equal(new URL(page.url()).searchParams.get('revision'), '1');
   await profileDialog.getByRole('button', { name: 'Close proposal detail' }).click();
   await profileDialog.waitFor({ state: 'hidden' });
+  await page.waitForFunction(() => !new URL(location.href).searchParams.has('profile'));
   assert.equal(new URL(page.url()).searchParams.has('profile'), false);
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}&profile=server-lab&revision=2`);
   const linkedProfileDialog = page.getByRole('dialog', { name: 'Revision 2' });
