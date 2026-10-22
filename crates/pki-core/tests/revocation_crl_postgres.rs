@@ -5,7 +5,10 @@
 use std::env;
 use trust_pki_core::{
     clock,
-    crl::{CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
+    crl::{
+        verify_published_crl, verify_published_delta_crl, CrlError, CrlReservation,
+        LabCrlAssembler, LabCrlVerifier,
+    },
     crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan, SignerPublicKey},
     csr::{verify_pkcs10_p256, VerifiedCsr},
     lab_ca::EphemeralLabCa,
@@ -2113,4 +2116,164 @@ fn unreviewed_role_changes_are_reported() {
         .batch_execute("SELECT acknowledge_role_state('operator')")
         .unwrap_err();
     assert_eq!(denied.code().map(|c| c.code()), Some("42501"));
+}
+
+/// Delta CRLs through the database (migration 0059, RFC 5280 5.2.4): the
+/// base complete CRL advertises them (freshestCRL from the CA policy), the
+/// delta shares the numbering, lists the new revocation and the released
+/// hold, is signed and stored by the same pipeline, and is never published
+/// as the complete CRL.
+#[test]
+fn delta_crl_is_reserved_signed_and_stored_through_the_database() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let delta_url = "http://crl.lab.invalid/delta/test.crl";
+    let mut owner = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let s1 = issue_leaf(&mut issuance, &mut ca, &ca_id, 601);
+    let s2 = issue_leaf(&mut issuance, &mut ca, &ca_id, 602);
+    let s3 = issue_leaf(&mut issuance, &mut ca, &ca_id, 603);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+    let verifier = LabCrlVerifier::new(root.clone());
+    let sign =
+        |store: &mut PgRevocationStore, ca: &mut EphemeralLabCa, r: &CrlReservation, op: &str| {
+            let plan = CrlPlan {
+                reservation: r,
+                issuer: &root,
+                signer_key_ref: &key_ref,
+                operation_ref: op,
+            };
+            crl_once(store, ca, &LabCrlAssembler, &verifier, &plan).unwrap()
+        };
+
+    // Deltas are off by default: refused before anything is written.
+    let err = store
+        .reserve_delta_crl(&ca_id, "crl-operator", "delta-off")
+        .unwrap_err();
+    assert_eq!(sqlstate(&err).as_deref(), Some("55000"));
+
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET delta_crl_url = $2 WHERE ca_id = $1::text::uuid",
+            &[&ca_id, &delta_url],
+        )
+        .unwrap();
+    change(
+        &mut store,
+        &ca_id,
+        &s1,
+        StatusAction::Revoke,
+        Some(RevocationReason::KeyCompromise),
+    );
+    change(
+        &mut store,
+        &ca_id,
+        &s2,
+        StatusAction::Suspend,
+        Some(RevocationReason::CertificateHold),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let base = store
+        .reserve_crl(&ca_id, "crl-operator", "delta-base")
+        .unwrap();
+    assert_eq!(base.freshest_crl_url(), Some(delta_url));
+    let base_der = sign(&mut store, &mut ca, &base, "delta-base");
+    assert_eq!(
+        verify_published_crl(&root, &base_der).unwrap().crl_number,
+        base.crl_number()
+    );
+
+    change(&mut store, &ca_id, &s2, StatusAction::Release, None);
+    change(
+        &mut store,
+        &ca_id,
+        &s3,
+        StatusAction::Revoke,
+        Some(RevocationReason::Superseded),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let delta = store
+        .reserve_delta_crl(&ca_id, "crl-operator", "delta-1")
+        .unwrap();
+    assert_eq!(
+        delta.crl_number(),
+        base.crl_number() + 1,
+        "one numbering sequence"
+    );
+    assert_eq!(delta.base_crl_number(), Some(base.crl_number()));
+    assert_eq!(delta.freshest_crl_url(), None);
+    assert_eq!(delta.entries().len(), 1);
+    assert_eq!(delta.entries()[0].serial, s3);
+    assert_eq!(delta.entries()[0].reason, RevocationReason::Superseded);
+    assert_eq!(delta.released().len(), 1);
+    assert_eq!(delta.released()[0].serial, s2);
+    // Rebuilt from the database, the reservation is the same: a
+    // quarantined delta can be reconciled like a complete CRL.
+    assert_eq!(
+        store.load_reservation(&ca_id, delta.crl_number()).unwrap(),
+        delta
+    );
+    let delta_der = sign(&mut store, &mut ca, &delta, "delta-1");
+    let published = verify_published_delta_crl(&root, &delta_der).unwrap();
+    assert_eq!(published.base_crl_number, base.crl_number());
+    assert_eq!(
+        verify_published_crl(&root, &delta_der),
+        Err(CrlError::VerificationFailure)
+    );
+
+    // The distribution point's functions keep the two apart.
+    let publisher_row = owner
+        .query_one(
+            "SELECT (SELECT crl_number FROM published_crl($1::text::uuid)),
+                    (SELECT crl_number FROM published_delta_crl($1::text::uuid))",
+            &[&ca_id],
+        )
+        .unwrap();
+    assert_eq!(publisher_row.get::<usize, i64>(0), base.crl_number() as i64);
+    assert_eq!(
+        publisher_row.get::<usize, i64>(1),
+        delta.crl_number() as i64
+    );
+
+    if let Ok(dir) = env::var("TRUST_CRL_EXPORT_DIR") {
+        let dir = std::path::Path::new(&dir).join("delta");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("root.der"), root.to_der().unwrap()).unwrap();
+        for (n, serial) in [&s1, &s2, &s3].iter().enumerate() {
+            let der: Vec<u8> = owner
+                .query_one(
+                    "SELECT certificate_der FROM certificate
+                     WHERE ca_id=$1::text::uuid AND serial_der_content=$2",
+                    &[&ca_id, &serial.as_der_content()],
+                )
+                .unwrap()
+                .get(0);
+            std::fs::write(dir.join(format!("leaf{}.der", n + 1)), der).unwrap();
+        }
+        for (name, number) in [
+            ("crl1", base.crl_number()),
+            ("crl_delta", delta.crl_number()),
+        ] {
+            let der: Vec<u8> = owner
+                .query_one(
+                    "SELECT crl_der FROM crl_publication
+                     WHERE ca_id=$1::text::uuid AND crl_number=$2 AND status='STORED'",
+                    &[&ca_id, &(number as i64)],
+                )
+                .unwrap()
+                .get(0);
+            std::fs::write(dir.join(format!("{name}.der")), der).unwrap();
+        }
+    }
 }

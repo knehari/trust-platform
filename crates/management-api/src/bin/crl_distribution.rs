@@ -1,13 +1,18 @@
 //! Lab-only, read-only CRL distribution point (RFC 5280 4.2.1.13, RFC 2585
-//! 4.2): `GET /crl/<ca-uuid>.crl` returns the CA's latest stored CRL as
-//! `application/pkix-crl`. Unauthenticated by design: relying parties fetch
+//! 4.2): `GET /crl/<ca-uuid>.crl` returns the CA's latest stored complete
+//! CRL as `application/pkix-crl`, and `GET /delta/<ca-uuid>.crl` its latest
+//! stored delta CRL (migration 0059, RFC 5280 5.2.4; the URL the CA's
+//! complete CRLs advertise as freshestCRL). The two never mix: a delta is
+//! never served at the CDP, where a relying party would take it for the
+//! complete CRL. Unauthenticated by design: relying parties fetch
 //! CRLs anonymously. LAB ONLY: not a production publication service.
 //!
 //! * The database login must hold only `trust_crl_publisher` (migration
 //!   0030): it can read the latest stored CRL and nothing else. A privileged
 //!   or table-reading login is refused at start.
 //! * Every CRL is re-checked before it is served
-//!   (`trust_pki_core::crl::verify_published_crl`): canonical DER, issued and
+//!   (`trust_pki_core::crl::verify_published_crl`, or
+//!   `verify_published_delta_crl` for a delta): canonical DER, issued and
 //!   signed by the CA's registered issuer certificate, and the number and
 //!   times the database reports. A CRL altered in the database is never
 //!   served (503).
@@ -46,7 +51,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Semaphore;
-use trust_pki_core::crl::verify_published_crl;
+use trust_pki_core::crl::{verify_published_crl, verify_published_delta_crl, PublishedCrl};
 use x509_cert::{der::Decode, Certificate};
 
 const MAX_CONCURRENT_REQUESTS: usize = 16;
@@ -63,9 +68,25 @@ struct StoredCrl {
     issuer_certificate_der: Vec<u8>,
 }
 
+/// Complete CRLs at the CDP, delta CRLs at the freshestCRL location.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Complete,
+    Delta,
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Complete => "crl",
+            Kind::Delta => "delta",
+        }
+    }
+}
+
 trait CrlSource: Send + Sync + 'static {
-    /// The latest stored CRL of `ca_id` (a canonical UUID), if any.
-    fn latest(&self, ca_id: &str) -> Result<Option<StoredCrl>, ()>;
+    /// The latest stored CRL of that kind of `ca_id` (a canonical UUID).
+    fn latest(&self, ca_id: &str, kind: Kind) -> Result<Option<StoredCrl>, ()>;
 }
 
 /// One lazily (re)connected session; a failed query drops it.
@@ -76,7 +97,7 @@ struct PgSource {
 }
 
 impl CrlSource for PgSource {
-    fn latest(&self, ca_id: &str) -> Result<Option<StoredCrl>, ()> {
+    fn latest(&self, ca_id: &str, kind: Kind) -> Result<Option<StoredCrl>, ()> {
         let mut slot = self.client.lock().map_err(|_| ())?;
         if slot.is_none() {
             let mut client = database::connect_client(&self.url, &self.tls, STATEMENT_TIMEOUT_MS)?;
@@ -87,9 +108,18 @@ impl CrlSource for PgSource {
         }
         let client = slot.as_mut().ok_or(())?;
         let result = client.query(
-            "SELECT crl_number, this_update_unix, next_update_unix, crl_der,
-                    issuer_certificate_der
-             FROM published_crl($1::text::uuid)",
+            match kind {
+                Kind::Complete => {
+                    "SELECT crl_number, this_update_unix, next_update_unix, crl_der,
+                            issuer_certificate_der
+                     FROM published_crl($1::text::uuid)"
+                }
+                Kind::Delta => {
+                    "SELECT crl_number, this_update_unix, next_update_unix, crl_der,
+                            issuer_certificate_der
+                     FROM published_delta_crl($1::text::uuid)"
+                }
+            },
             &[&ca_id],
         );
         match result {
@@ -157,6 +187,7 @@ fn write_log(value: serde_json::Value) {
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/crl/{file}", get(serve_crl))
+        .route("/delta/{file}", get(serve_delta))
         .with_state(state)
 }
 
@@ -212,10 +243,14 @@ fn not_modified(request: &HeaderMap, etag: &str, this_update_unix: i64) -> bool 
 
 /// The CA's latest stored CRL, served only if it re-verifies against the
 /// registered issuer certificate and agrees with its stored metadata.
-async fn fetch_verified(state: &AppState, ca_id: &str) -> Result<StoredCrl, StatusCode> {
+async fn fetch_verified(
+    state: &AppState,
+    ca_id: &str,
+    kind: Kind,
+) -> Result<StoredCrl, StatusCode> {
     let source = state.source.clone();
     let lookup = ca_id.to_owned();
-    let stored = match tokio::task::spawn_blocking(move || source.latest(&lookup)).await {
+    let stored = match tokio::task::spawn_blocking(move || source.latest(&lookup, kind)).await {
         Ok(Ok(Some(stored))) => stored,
         Ok(Ok(None)) => return Err(StatusCode::NOT_FOUND),
         _ => {
@@ -223,9 +258,14 @@ async fn fetch_verified(state: &AppState, ca_id: &str) -> Result<StoredCrl, Stat
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
-    let checked = Certificate::from_der(&stored.issuer_certificate_der)
+    let checked: Option<PublishedCrl> = Certificate::from_der(&stored.issuer_certificate_der)
         .ok()
-        .and_then(|issuer| verify_published_crl(&issuer, &stored.crl_der).ok());
+        .and_then(|issuer| match kind {
+            Kind::Complete => verify_published_crl(&issuer, &stored.crl_der).ok(),
+            Kind::Delta => verify_published_delta_crl(&issuer, &stored.crl_der)
+                .ok()
+                .map(|delta| delta.crl),
+        });
     let consistent = checked.is_some_and(|crl| {
         i64::try_from(crl.crl_number).ok() == Some(stored.crl_number)
             && crl.this_update_unix == stored.this_update_unix
@@ -236,6 +276,7 @@ async fn fetch_verified(state: &AppState, ca_id: &str) -> Result<StoredCrl, Stat
         write_log(serde_json::json!({
             "event":"crl_refused_verification_failed",
             "ca_id":ca_id,
+            "kind":kind.label(),
             "crl_number":stored.crl_number
         }));
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -248,6 +289,18 @@ async fn serve_crl(
     Path(file): Path<String>,
     request: HeaderMap,
 ) -> Response {
+    serve(state, file, request, Kind::Complete).await
+}
+
+async fn serve_delta(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    request: HeaderMap,
+) -> Response {
+    serve(state, file, request, Kind::Delta).await
+}
+
+async fn serve(state: AppState, file: String, request: HeaderMap, kind: Kind) -> Response {
     let Some(ca_id) = ca_from_path(&file).map(str::to_owned) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -255,9 +308,10 @@ async fn serve_crl(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now = (state.now_unix)();
+    let key = format!("{}:{ca_id}", kind.label());
     let reused = state.verified.lock().ok().and_then(|cache| {
         cache
-            .get(&ca_id)
+            .get(&key)
             .filter(|(read_at, crl)| {
                 now - *read_at < state.reuse_seconds
                     && crl.next_update_unix.is_none_or(|next| now < next)
@@ -266,13 +320,13 @@ async fn serve_crl(
     });
     let stored = match reused {
         Some(stored) => stored,
-        None => match fetch_verified(&state, &ca_id).await {
+        None => match fetch_verified(&state, &ca_id, kind).await {
             Ok(stored) => {
                 if let Ok(mut cache) = state.verified.lock() {
                     if cache.len() >= MAX_REUSED_CRLS {
                         cache.clear();
                     }
-                    cache.insert(ca_id.clone(), (now, stored.clone()));
+                    cache.insert(key, (now, stored.clone()));
                 }
                 stored
             }
@@ -400,8 +454,9 @@ mod tests {
     struct Fixed(Result<Option<StoredCrl>, ()>);
 
     impl CrlSource for Fixed {
-        fn latest(&self, ca_id: &str) -> Result<Option<StoredCrl>, ()> {
+        fn latest(&self, ca_id: &str, kind: Kind) -> Result<Option<StoredCrl>, ()> {
             assert_eq!(ca_id, CA);
+            assert_eq!(kind, Kind::Complete);
             self.0.clone()
         }
     }
@@ -578,11 +633,103 @@ mod tests {
         assert_eq!(cache_control(100, None), "no-cache");
     }
 
+    /// Answers by kind: what the database would return for each endpoint.
+    struct ByKind {
+        complete: StoredCrl,
+        delta: StoredCrl,
+    }
+
+    impl CrlSource for ByKind {
+        fn latest(&self, _ca_id: &str, kind: Kind) -> Result<Option<StoredCrl>, ()> {
+            Ok(Some(match kind {
+                Kind::Complete => self.complete.clone(),
+                Kind::Delta => self.delta.clone(),
+            }))
+        }
+    }
+
+    /// A complete CRL 7 and a delta CRL 8 on it, signed by one lab CA.
+    fn stored_pair() -> (StoredCrl, StoredCrl) {
+        let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let issuer = ca.root_certificate().clone();
+        let this_update = system_now() + 1;
+        let key_ref = ca.lab_signer_key_ref().to_owned();
+        let mut sign = |reservation: &CrlReservation| {
+            let tbs = build_tbs_cert_list(&issuer, reservation).unwrap();
+            let signature = ca
+                .sign_once(&key_ref, "crl-distribution-test", &tbs)
+                .unwrap();
+            StoredCrl {
+                crl_number: i64::try_from(reservation.crl_number()).unwrap(),
+                this_update_unix: this_update,
+                next_update_unix: Some(this_update + 86_400),
+                crl_der: LabCrlAssembler.assemble(&tbs, &signature).unwrap(),
+                issuer_certificate_der: issuer.to_der().unwrap(),
+            }
+        };
+        let complete = CrlReservation::new(CA, 7, this_update, this_update + 86_400, vec![], None)
+            .unwrap()
+            .with_freshest_crl("http://crl.lab.invalid/delta/test.crl")
+            .unwrap();
+        let delta =
+            CrlReservation::new_delta(CA, 8, 7, this_update, this_update + 86_400, vec![], vec![])
+                .unwrap();
+        (sign(&complete), sign(&delta))
+    }
+
+    async fn get_from(source: impl CrlSource, path: &str) -> Response {
+        router(AppState::new(Arc::new(source), 1, system_now))
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// The delta CRL is served at /delta, the complete CRL at /crl, and a
+    /// CRL of the wrong kind is never served at either (503).
+    #[tokio::test]
+    async fn delta_and_complete_crls_are_served_apart() {
+        let (complete, delta) = stored_pair();
+        let both = || ByKind {
+            complete: complete.clone(),
+            delta: delta.clone(),
+        };
+        let response = get_from(both(), &format!("/crl/{CA}.crl")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::ETAG], "\"7\"");
+        let response = get_from(both(), &format!("/delta/{CA}.crl")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::ETAG], "\"8\"");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/pkix-crl"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), delta.crl_der.as_slice());
+
+        // The database answering with the wrong kind is refused, both ways.
+        let swapped = ByKind {
+            complete: delta.clone(),
+            delta: complete.clone(),
+        };
+        let response = get_from(swapped, &format!("/crl/{CA}.crl")).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let swapped = ByKind {
+            complete: delta.clone(),
+            delta: complete.clone(),
+        };
+        let response = get_from(swapped, &format!("/delta/{CA}.crl")).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let response = get_from(both(), "/delta/not-a-ca.crl").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     /// A source that counts its lookups.
     struct Counting(StoredCrl, std::sync::atomic::AtomicUsize);
 
     impl CrlSource for Counting {
-        fn latest(&self, _ca_id: &str) -> Result<Option<StoredCrl>, ()> {
+        fn latest(&self, _ca_id: &str, _kind: Kind) -> Result<Option<StoredCrl>, ()> {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Some(self.0.clone()))
         }

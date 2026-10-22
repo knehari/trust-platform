@@ -71,36 +71,10 @@ check crl2 leaf1 revoked
 check crl2 leaf2 ok
 check crl2 leaf3 ok
 
-# Delta CRL (RFC 5280 5.2.4), when present: crl3_delta updates base CRL 1
-# with leaf3 superseded and leaf2 removeFromCRL.
+# Delta CRL (RFC 5280 5.2.4) written by the lab example on base CRL 1.
 delta_label=""
-if [ -s "$out/crl3_delta.der" ] || { [ $# -ge 1 ] && [ -s "$1/crl3_delta.der" ] && cp "$1/crl3_delta.der" "$out/"; }; then
-  openssl crl -inform DER -in "$out/crl3_delta.der" -out "$out/crl3_delta.pem"
-  res="$(openssl crl -inform DER -in "$out/crl3_delta.der" -CAfile "$out/root.pem" -noout 2>&1)" \
-    || fail "crl3_delta rejected by openssl crl: $res"
-  grep -qx 'verify OK' <<<"$res" || fail "crl3_delta: expected 'verify OK', got: $res"
-  text3="$(openssl crl -inform DER -in "$out/crl3_delta.der" -noout -text)"
-  grep -A1 'X509v3 Delta CRL Indicator: critical' <<<"$text3" | grep -qx '[[:space:]]*1' \
-    || fail "crl3_delta lacks a critical delta CRL indicator for base 1"
-  grep -q 'Remove From CRL' <<<"$text3" || fail "crl3_delta lacks removeFromCRL"
-  delta_check() { # <leaf> <revoked|ok> [no-deltas]
-    local status=0 res flags=(-crl_check -use_deltas)
-    [ "${3:-}" = no-deltas ] && flags=(-crl_check)
-    res="$(openssl verify "${flags[@]}" -purpose sslserver -CAfile "$out/root.pem" \
-      -CRLfile "$out/crl1.pem" -CRLfile "$out/crl3_delta.pem" "$out/$1.pem" 2>&1)" || status=$?
-    if [ "$2" = revoked ]; then
-      [ "$status" -ne 0 ] && grep -q 'certificate revoked' <<<"$res" \
-        || fail "$1 with crl1+delta (${3:-deltas}): expected revoked, got: $res"
-    else
-      [ "$status" -eq 0 ] || fail "$1 with crl1+delta (${3:-deltas}): expected OK, got: $res"
-    fi
-  }
-  delta_check leaf1 revoked
-  delta_check leaf2 ok
-  delta_check leaf3 revoked
-  # Without delta processing, the base CRL alone decides.
-  delta_check leaf2 revoked no-deltas
-  delta_check leaf3 ok no-deltas
+if [ -s "$out/crl_delta.der" ]; then
+  bash "$root_dir/tests/crl_delta_openssl.sh" "$out" crl1 crl_delta >/dev/null
   delta_label=" and a delta CRL"
 fi
 

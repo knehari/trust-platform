@@ -36,6 +36,17 @@ write path either:
     `304 Not Modified` with the same validators and cache headers. The
     answer is given only after re-verification, so a client holding a CRL
     whose stored copy was altered gets 503, not 304.
+- Delta CRLs (migration 0059, RFC 5280 5.2.4) are served at
+  `GET /delta/<ca-uuid>.crl`: the CA's latest stored delta CRL, re-checked
+  with `crl::verify_published_delta_crl`. It requires exactly one critical
+  delta CRL indicator naming a base below the CRL number; the other checks
+  are as above.
+  - The two endpoints never mix. `published_crl` returns complete CRLs only,
+    and `verify_published_crl` refuses a delta. A database answer of the
+    wrong kind gets 503 at either endpoint.
+  - A CA without a stored delta gets 404 at `/delta`.
+  - Point the CA's `ca_revocation_policy.delta_crl_url` (the freshestCRL
+    its complete CRLs carry) at this path.
 - At most 16 requests run concurrently; the others get 503.
 - A CRL that re-verified is reused for 30 seconds (never past its
   nextUpdate) without querying the database or re-verifying, so a flood of
@@ -82,3 +93,14 @@ timeout.
 Covered by the unit tests in the binary and by `tests/crl_distribution.sh`,
 which checks the served bytes against the database, verifies them with
 OpenSSL and tampers with the stored CRL.
+
+## Delta CRLs and relying parties
+
+`tests/crl_delta_openssl.sh` checks a delta CRL stored through PostgreSQL
+against its base with OpenSSL 3.0, which needs both `-use_deltas` and
+`-extended_crl`. With only `-use_deltas`, or with neither, OpenSSL picks the
+newest of the CRLs it is given as the complete CRL, even if it is a delta.
+A certificate revoked only in the base then verifies as valid. This was
+observed when the delta's thisUpdate was later than the base's. That is why
+the CDP never serves a delta: a client that fetches only the CDP gets the
+complete CRL. A client given both files must enable extended CRL support.

@@ -67,8 +67,9 @@ cases, starting with `valid_leaf`. The source was restored afterwards.
 
 - Intermediate CAs, name constraints, policy mapping and inhibitAnyPolicy:
   the lab issuer has a single level and no policy constraints.
-- Delta CRLs: the platform does not issue them yet, and webpki does not
-  process them.
+- Delta CRLs: webpki does not process them. OpenSSL checks them in
+  `tests/crl_delta_openssl.sh`, which needs `-extended_crl` (see
+  `docs/operations/lab-crl-distribution.md`).
 - OCSP, and algorithms other than ECDSA P-256 with SHA-256 on this path.
   The RSA and other classical lab chains have their own OpenSSL tests.
 - The NIST PKITS or a full conformance corpus.

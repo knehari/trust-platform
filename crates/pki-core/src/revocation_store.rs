@@ -10,7 +10,9 @@ use crate::audit_chain::parse_uuid;
 use crate::clock::{
     system_clock_us, this_update_plausible, ClockReading, ClockSource, DEFAULT_MAX_CLOCK_SKEW_US,
 };
-use crate::crl::{check_crl_issuer, check_pruned_entry, CrlEntry, CrlError, CrlReservation};
+use crate::crl::{
+    check_crl_issuer, check_pruned_entry, CrlEntry, CrlError, CrlReservation, ReleasedEntry,
+};
 use crate::crl_orchestrator::{CrlJournal, CrlPlan, CrlReconciliationJournal, ReconciledCrl};
 use crate::officer_credential::{
     canonical_officer_key, CaAdminClaim, CredentialChange, CredentialChangeKind, CredentialError,
@@ -2314,12 +2316,36 @@ impl PgRevocationStore {
             return Err(RevocationStoreError::ClockSkew);
         }
         let number: i64 = column(&row, 0)?;
-        self.reservation_from_snapshot(
+        self.load_reservation(
             ca_id,
-            number,
-            column(&row, 1)?,
-            column(&row, 2)?,
-            column(&row, 3)?,
+            u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?,
+        )
+    }
+
+    /// Reserves a delta CRL (migration 0059, RFC 5280 5.2.4) on the CA's
+    /// latest stored complete CRL, which must advertise delta CRLs
+    /// (`ca_revocation_policy.delta_crl_url`). Same isolation and clock rules
+    /// as `reserve_crl`; sign it with `crl_once` like a complete CRL.
+    pub fn reserve_delta_crl(
+        &mut self,
+        ca_id: &str,
+        actor: &str,
+        operation_ref: &str,
+    ) -> Result<CrlReservation, RevocationStoreError> {
+        let before = (self.clock)();
+        let row = self.client.query_one(
+            "SELECT crl_number, floor(extract(epoch FROM this_update))::bigint
+             FROM reserve_delta_crl($1::text::uuid, $2, $3)",
+            &[&ca_id, &actor, &operation_ref],
+        )?;
+        let after = (self.clock)();
+        if !this_update_plausible(column(&row, 1)?, before, after, self.max_clock_skew_us) {
+            return Err(RevocationStoreError::ClockSkew);
+        }
+        let number: i64 = column(&row, 0)?;
+        self.load_reservation(
+            ca_id,
+            u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?,
         )
     }
 
@@ -2336,17 +2362,27 @@ impl PgRevocationStore {
         let row = self.client.query_one(
             "SELECT floor(extract(epoch FROM this_update))::bigint,
                     floor(extract(epoch FROM next_update))::bigint,
-                    floor(extract(epoch FROM expired_certs_on_crl_since))::bigint
+                    floor(extract(epoch FROM expired_certs_on_crl_since))::bigint,
+                    base_crl_number, freshest_crl_url
              FROM crl_publication WHERE ca_id = $1::text::uuid AND crl_number = $2",
             &[&ca_id, &number],
         )?;
-        self.reservation_from_snapshot(
+        let reservation = self.reservation_from_snapshot(
             ca_id,
             number,
             column(&row, 0)?,
             column(&row, 1)?,
             column(&row, 2)?,
-        )
+            column(&row, 3)?,
+        )?;
+        // The URL the database recorded at reservation (0059) is signed as
+        // freshestCRL; a reservation rebuilt later signs the same bytes.
+        match column::<Option<String>>(&row, 4)? {
+            Some(url) => reservation
+                .with_freshest_crl(&url)
+                .map_err(|_| RevocationStoreError::InconsistentResult),
+            None => Ok(reservation),
+        }
     }
 
     fn reservation_from_snapshot(
@@ -2356,6 +2392,7 @@ impl PgRevocationStore {
         this_update_unix: i64,
         next_update_unix: i64,
         expired_certs_on_crl_since_unix: Option<i64>,
+        base_crl_number: Option<i64>,
     ) -> Result<CrlReservation, RevocationStoreError> {
         let rows = self.client.query(
             "SELECT serial_der_content,
@@ -2378,15 +2415,46 @@ impl PgRevocationStore {
                 invalidity_at_unix: column(&r, 3)?,
             });
         }
+        let crl_number =
+            u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?;
         // The sealed reservation is the only thing the CA core can sign; its
         // entries digest must equal the snapshot's or record_crl_intent refuses.
-        CrlReservation::new(
+        let Some(base) = base_crl_number else {
+            return CrlReservation::new(
+                ca_id,
+                crl_number,
+                this_update_unix,
+                next_update_unix,
+                entries,
+                expired_certs_on_crl_since_unix,
+            )
+            .map_err(|_| RevocationStoreError::InconsistentResult);
+        };
+        let rows = self.client.query(
+            "SELECT serial_der_content, floor(extract(epoch FROM released_at))::bigint
+             FROM crl_delta_releases($1::text::uuid, $2::bigint)",
+            &[&ca_id, &number],
+        )?;
+        let mut released = Vec::with_capacity(rows.len());
+        for r in rows {
+            let serial_bytes: Vec<u8> = column(&r, 0)?;
+            released.push(ReleasedEntry {
+                serial: SerialNumber::from_positive_der_content(&serial_bytes)
+                    .map_err(|_| RevocationStoreError::InconsistentResult)?,
+                released_at_unix: column(&r, 1)?,
+            });
+        }
+        if expired_certs_on_crl_since_unix.is_some() {
+            return Err(RevocationStoreError::InconsistentResult);
+        }
+        CrlReservation::new_delta(
             ca_id,
-            u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?,
+            crl_number,
+            u64::try_from(base).map_err(|_| RevocationStoreError::InconsistentResult)?,
             this_update_unix,
             next_update_unix,
             entries,
-            expired_certs_on_crl_since_unix,
+            released,
         )
         .map_err(|_| RevocationStoreError::InconsistentResult)
     }

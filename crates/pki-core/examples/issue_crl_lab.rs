@@ -9,7 +9,7 @@
 //! Scenario: CRL 1 = {leaf1 keyCompromise, leaf2 certificateHold}; CRL 2 = {leaf1}
 //! (the hold on leaf2 is released). Leaf 3 is never revoked by a complete CRL.
 //! CRL 3 is a delta CRL on base 1 (RFC 5280 5.2.4): leaf3 superseded, and
-//! leaf2 removeFromCRL; it is written as crl3_delta.der.
+//! leaf2 removeFromCRL; it is written as crl_delta.der.
 //! Usage: cargo run -p trust-pki-core --features lab-software --example issue_crl_lab -- /tmp/lab-crl
 
 use std::{
@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (reservation, crl) in reservations.iter().zip(&crls) {
         let name = match reservation.base_crl_number() {
             None => format!("crl{}.der", reservation.crl_number()),
-            Some(_) => format!("crl{}_delta.der", reservation.crl_number()),
+            Some(_) => "crl_delta.der".to_owned(),
         };
         fs::write(output.join(name), crl)?;
     }

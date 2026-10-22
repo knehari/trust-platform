@@ -20,10 +20,19 @@ fail() { echo "FAIL: $*" >&2; [ -f "$temp/server.log" ] && cat "$temp/server.log
 sql() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" -c "$1"; }
 unhex() { python3 -c 'import sys,binascii;sys.stdout.buffer.write(binascii.unhexlify(sys.stdin.read().strip()))'; }
 
+# A CA with a stored complete CRL, preferably one that also has a stored
+# delta CRL (0059): /crl serves the latest complete CRL, /delta the latest
+# delta, never the other way round.
 ca="$(sql "SELECT p.ca_id FROM crl_publication p JOIN ca_issuer_certificate i USING (ca_id)
-           WHERE p.status = 'STORED' ORDER BY p.ca_id LIMIT 1")"
+           WHERE p.status = 'STORED' AND p.base_crl_number IS NULL
+           ORDER BY EXISTS (SELECT 1 FROM crl_publication d WHERE d.ca_id = p.ca_id
+                            AND d.status = 'STORED' AND d.base_crl_number IS NOT NULL) DESC,
+                    p.ca_id LIMIT 1")"
 [ -n "$ca" ] || fail "no stored CRL in the database"
-number="$(sql "SELECT max(crl_number) FROM crl_publication WHERE ca_id = '$ca' AND status = 'STORED'")"
+number="$(sql "SELECT max(crl_number) FROM crl_publication WHERE ca_id = '$ca' AND status = 'STORED'
+               AND base_crl_number IS NULL")"
+delta_number="$(sql "SELECT max(crl_number) FROM crl_publication WHERE ca_id = '$ca'
+                     AND status = 'STORED' AND base_crl_number IS NOT NULL")"
 sql "SELECT encode(crl_der, 'hex') FROM crl_publication WHERE ca_id = '$ca' AND crl_number = $number" | unhex >"$temp/expected.der"
 sql "SELECT encode(certificate_der, 'hex') FROM ca_issuer_certificate WHERE ca_id = '$ca'" | unhex >"$temp/issuer.der"
 openssl x509 -inform DER -in "$temp/issuer.der" -out "$temp/issuer.pem"
@@ -98,6 +107,26 @@ openssl crl -inform DER -in "$temp/served.der" -CAfile "$temp/issuer.pem" -noout
   || fail "unknown CA not 404"
 [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/crl/$ca.der")" = 404 ] \
   || fail "non-canonical path not 404"
+if [ -n "$delta_number" ]; then
+  sql "SELECT encode(crl_der, 'hex') FROM crl_publication WHERE ca_id = '$ca'
+       AND crl_number = $delta_number" | unhex >"$temp/expected-delta.der"
+  curl -sf -D "$temp/delta-headers" -o "$temp/served-delta.der" "http://127.0.0.1:$port/delta/$ca.crl" \
+    || fail "stored delta CRL not served"
+  cmp -s "$temp/served-delta.der" "$temp/expected-delta.der" || fail "served delta CRL differs from the stored one"
+  grep -qi "^etag: \"$delta_number\"" "$temp/delta-headers" || fail "delta ETag is not its CRL number"
+  openssl crl -inform DER -in "$temp/served-delta.der" -CAfile "$temp/issuer.pem" -noout 2>&1 \
+    | grep -q "verify OK" || fail "OpenSSL does not verify the served delta CRL"
+  openssl crl -inform DER -in "$temp/served-delta.der" -noout -text | grep -q 'Delta CRL Indicator: critical' \
+    || fail "the /delta endpoint served a complete CRL"
+  delta_label=" and its delta CRL"
+fi
+no_delta_ca="$(sql "SELECT p.ca_id FROM crl_publication p JOIN ca_issuer_certificate i USING (ca_id)
+                    WHERE p.status = 'STORED' GROUP BY p.ca_id
+                    HAVING bool_and(p.base_crl_number IS NULL) LIMIT 1")"
+if [ -n "$no_delta_ca" ]; then
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/delta/$no_delta_ca.crl")" = 404 ] \
+    || fail "a CA without delta CRLs did not answer 404 at /delta"
+fi
 
 # A superuser alters the stored CRL: the distribution point refuses to serve
 # it. The original bytes are restored afterwards (shared CI database).
@@ -125,4 +154,4 @@ grep -q crl_refused_verification_failed "$temp/server.log" || fail "refusal not 
 curl -sf -o "$temp/again.der" "http://127.0.0.1:$port/crl/$ca.crl" || fail "restored CRL not served"
 cmp -s "$temp/again.der" "$temp/expected.der" || fail "restored CRL differs"
 
-echo "PASS: CRL distribution serves verified stored CRLs and refuses altered ones"
+echo "PASS: CRL distribution serves verified stored CRLs${delta_label:-} and refuses altered ones"
