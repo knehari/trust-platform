@@ -30,6 +30,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Lab API HTTP transport (TLS 1.3, no plaintext off loopback)
         run: bash tests/http_tls.sh
+      - name: RFC 5280 path validation of platform certificates and CRLs (webpki and OpenSSL)
+        run: bash tests/rfc5280_path_validation.sh
       - name: CP/CPS generation stays draft only
         run: |
           cargo run --locked -p trust-pki-core --example draft_cp_cps -- "$RUNNER_TEMP/governance-lab"

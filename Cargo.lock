@@ -2020,6 +2020,8 @@ dependencies = [
  "base64ct",
  "postgres",
  "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde_json",
  "sha2 0.10.9",
  "tokio",

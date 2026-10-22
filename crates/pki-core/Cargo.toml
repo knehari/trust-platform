@@ -26,6 +26,10 @@ postgres = { version = "=0.19.12", optional = true }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring"] }
 tokio = { version = "=1.53.2", features = ["rt"] }
+# Independent RFC 5280 path validator for tests/rfc5280_path_validation.rs
+# (already in the lockfile through rustls).
+webpki = { package = "rustls-webpki", version = "=0.103.16", default-features = false, features = ["alloc", "ring", "std"] }
+rustls-pki-types = { version = "=1.15.1", features = ["std"] }
 
 [[example]]
 name = "audit_chain_anchor"

@@ -148,7 +148,10 @@ Engineering backlog:
   CA keys are ephemeral). CA key rollover (several issuer certificates per CA)
   is not modelled.
 - **Validation services:** OCSP, delta CRLs, highly available CRL
-  publication, and an RFC 5280 path-validation test suite (v2.9).
+  publication, and path validation beyond one level (intermediates, name
+  and policy constraints, PKITS). The platform's certificates and CRLs pass
+  a 17-case RFC 5280 suite under webpki and OpenSSL
+  (`docs/testing/rfc5280-path-validation.md`) (v2.9).
 - **Identity:** production IAM integration. Person identifiers are
   caller-supplied, so one human under two identifiers is not detected.
   WebAuthn attestation is not checked.
