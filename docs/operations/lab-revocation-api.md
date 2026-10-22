@@ -86,6 +86,8 @@ Challenge issuance answers 409 once the acting identity already holds 16 open (u
 
 Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies. Request bodies larger than 64 KiB are refused (413) before they are parsed or authenticated.
 
+The pending list shows `maker_evidence_verified`: whether the maker's stored signature re-verifies in the Rust core. An approval challenge for a proposal whose maker signature does not re-verify is refused (409) before anyone signs, and an approval is never written for one.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);

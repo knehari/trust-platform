@@ -63,7 +63,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Non-canonical change identifier}
-        '409': {description: Closed change, or the checker is the maker}
+        '409': {description: Closed change, the checker is the maker, or the maker's stored signature does not re-verify}
         '503': {description: Database unavailable or busy}
   /v1/status-change-challenges/{challenge_id}/assertion:
     post:
@@ -121,7 +121,8 @@ paths:
                 type: array
                 items:
                   type: object
-                  required: [change_id, serial_hex, action, maker_issuer, maker_subject, proposed_at_unix, maker_signed]
+                  required: [change_id, serial_hex, action, maker_issuer, maker_subject, proposed_at_unix, maker_signed,
+                             maker_evidence_verified]
                   properties:
                     change_id: {type: string, format: uuid}
                     serial_hex: {type: string}
@@ -132,6 +133,7 @@ paths:
                     maker_subject: {type: string}
                     proposed_at_unix: {type: integer}
                     maker_signed: {type: boolean}
+                    maker_evidence_verified: {type: boolean, description: the maker's stored signature re-verifies in the Rust core}
         '401': {description: Missing or invalid access token}
         '403': {description: Not an officer or CA out of token scope}
         '404': {description: Non-canonical CA identifier}

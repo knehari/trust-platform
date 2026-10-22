@@ -452,7 +452,19 @@ async fn approval_challenge(
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let (challenge_id, challenge) = with_store(&state, move |store| {
+        // Nobody signs an approval of a proposal whose stored maker
+        // signature does not re-verify (the database cannot check it).
+        let rp = RelyingParty {
+            rp_id: &rp_id,
+            origin: &origin,
+        };
+        if store.verify_pending_maker(&change_id, &rp).is_err() {
+            write_log(serde_json::json!({"event":"maker_evidence_refused",
+                                         "change_id":change_id}));
+            return Err(Failure::Refused(StatusCode::CONFLICT));
+        }
         let checker = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -502,6 +514,8 @@ struct PendingChange {
     maker_subject: String,
     proposed_at_unix: i64,
     maker_signed: bool,
+    /// The maker's stored signature re-verifies in the Rust core.
+    maker_evidence_verified: bool,
 }
 
 async fn pending_changes(
@@ -514,13 +528,26 @@ async fn pending_changes(
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let pending = with_store(&state, move |store| {
-        Ok(store.pending_status_changes(&ca_id)?)
+        let rp = RelyingParty {
+            rp_id: &rp_id,
+            origin: &origin,
+        };
+        let changes = store.pending_status_changes(&ca_id)?;
+        Ok(changes
+            .into_iter()
+            .map(|change| {
+                let verified = change.maker_signed
+                    && store.verify_pending_maker(&change.change_id, &rp).is_ok();
+                (change, verified)
+            })
+            .collect::<Vec<_>>())
     })
     .await?;
     let body: Vec<PendingChange> = pending
         .into_iter()
-        .map(|change| PendingChange {
+        .map(|(change, maker_evidence_verified)| PendingChange {
             change_id: change.change_id,
             serial_hex: serial_hex(&change.serial_der_content),
             action: change.action,
@@ -530,6 +557,7 @@ async fn pending_changes(
             maker_subject: change.maker_subject,
             proposed_at_unix: change.proposed_at_unix,
             maker_signed: change.maker_signed,
+            maker_evidence_verified,
         })
         .collect();
     Ok((StatusCode::OK, Json(body)).into_response())
@@ -1492,6 +1520,7 @@ mod tests {
         assert_eq!(pending[0]["change_id"], change.as_str());
         assert_eq!(pending[0]["serial_hex"], "01");
         assert_eq!(pending[0]["maker_signed"], true);
+        assert_eq!(pending[0]["maker_evidence_verified"], true);
         assert_eq!(
             get(&app, &pending_path, &outsider).await.0,
             StatusCode::FORBIDDEN
@@ -1619,5 +1648,82 @@ mod tests {
             post(&app, &path, None, body).await.0,
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    /// A checker sees whether the maker's stored signature re-verifies, and
+    /// gets no approval challenge (409) for a proposal stored with a forged
+    /// one (straight to the database, which cannot verify ECDSA).
+    #[tokio::test]
+    async fn forged_maker_evidence_is_flagged_and_not_offered_for_approval() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, maker_id, _, mut maker, _) =
+            tokio::task::spawn_blocking(move || setup(&setup_url))
+                .await
+                .unwrap();
+        let oidc = oidc();
+        let api_url = url_with_login(&url, "trust_revocation_api_ci", "test-only-not-secret");
+        let (app, session) = app_with_session(oidc.verifier.clone(), &api_url);
+        let maker_token = oidc.token("maker", &[OFFICER_ROLE], &[&ca]);
+        let checker_token = oidc.token("checker", &[OFFICER_ROLE], &[&ca]);
+        let (status, issued) = post(
+            &app,
+            &format!("/v1/cas/{ca}/status-change-challenges"),
+            Some(&maker_token),
+            json!({"serial_hex":"01","action":"REVOKE","reason":4}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        let challenge_id = issued["challenge_id"].as_str().unwrap().to_owned();
+        let webauthn = issued["webauthn_challenge"].as_str().unwrap().to_owned();
+        let honest = maker.assertion(&maker_id, &webauthn);
+        let forged = Authenticator::new().assertion(&maker_id, &webauthn);
+        let decode = |value: &Value| URL_SAFE_NO_PAD.decode(value.as_str().unwrap()).unwrap();
+        let (data, client, signature) = (
+            decode(&honest["authenticator_data"]),
+            decode(&honest["client_data_json"]),
+            decode(&forged["signature"]),
+        );
+        let direct_url = format!("{url}?options=-crole%3Dtrust_revocation_officer_api");
+        let forged_maker_id = maker_id.clone();
+        let change: String = tokio::task::spawn_blocking(move || {
+            let mut direct = postgres::Client::connect(&direct_url, postgres::NoTls).unwrap();
+            direct
+                .query_one(
+                    "SELECT propose_signed_status_change($1::text::uuid, $2, $3, $4, $5)::text",
+                    &[&challenge_id, &forged_maker_id, &data, &client, &signature],
+                )
+                .unwrap()
+                .get(0)
+        })
+        .await
+        .unwrap();
+        let (status, pending) = get(
+            &app,
+            &format!("/v1/cas/{ca}/pending-status-changes"),
+            &checker_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{pending}");
+        assert_eq!(pending[0]["change_id"], change.as_str());
+        assert_eq!(pending[0]["maker_signed"], true);
+        assert_eq!(pending[0]["maker_evidence_verified"], false);
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/status-changes/{change}/approval-challenges"),
+                Some(&checker_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
     }
 }

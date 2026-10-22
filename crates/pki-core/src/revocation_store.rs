@@ -1051,6 +1051,16 @@ impl PgRevocationStore {
 
     /// `reverify_signed_change`, or for a still-open proposal (`pending`)
     /// its maker signature alone.
+    /// Re-verifies a pending proposal's stored maker signature (as before
+    /// an approval is written), so a checker can be told before signing.
+    pub fn verify_pending_maker(
+        &mut self,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        self.reverify_status_evidence(change_id, rp, true)
+    }
+
     fn reverify_status_evidence(
         &mut self,
         change_id: &str,
