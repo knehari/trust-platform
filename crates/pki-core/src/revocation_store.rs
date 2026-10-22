@@ -238,6 +238,9 @@ pub struct PendingAdminChange {
     pub maker_subject: String,
     pub proposed_at_unix: i64,
     pub maker_signed: bool,
+    /// Past the CA's `admin_proposal_max_age_hours` (0052, 0054): it can
+    /// only be rejected.
+    pub expired: bool,
 }
 
 /// A CA-admin challenge as stored (migration 0037).
@@ -1218,6 +1221,7 @@ impl PgRevocationStore {
              FROM pending_admin_changes($1::text::uuid)",
             &[&ca_id],
         )?;
+        let stale = self.stale_admin_proposals(ca_id)?;
         rows.iter()
             .map(|row| {
                 let family = match column::<String>(row, 0)?.as_str() {
@@ -1241,10 +1245,39 @@ impl PgRevocationStore {
                     maker_subject: column(row, 11)?,
                     proposed_at_unix: column(row, 12)?,
                     maker_signed: column(row, 13)?,
+                    expired: false,
+                };
+                let change = PendingAdminChange {
+                    expired: stale.contains(&(family, change.change_id.clone())),
+                    ..change
                 };
                 (pending_content_digest(&ca, &change) == Some(change.content_sha256))
                     .then_some(change)
                     .ok_or(RevocationStoreError::InconsistentResult)
+            })
+            .collect()
+    }
+
+    /// The CA's pending CA-admin changes past `admin_proposal_max_age_hours`
+    /// (migration 0054), which can only be rejected.
+    pub fn stale_admin_proposals(
+        &mut self,
+        ca_id: &str,
+    ) -> Result<Vec<(AdminFamily, String)>, RevocationStoreError> {
+        self.client
+            .query(
+                "SELECT family, change_id::text FROM stale_admin_proposals($1::text::uuid)",
+                &[&ca_id],
+            )?
+            .iter()
+            .map(|row| {
+                let family = match column::<String>(row, 0)?.as_str() {
+                    "CA_ADMIN" => AdminFamily::CaAdmin,
+                    "CREDENTIAL" => AdminFamily::Credential,
+                    "ADMIN_CREDENTIAL" => AdminFamily::AdminCredential,
+                    _ => return Err(RevocationStoreError::InconsistentResult),
+                };
+                Ok((family, column(row, 1)?))
             })
             .collect()
     }

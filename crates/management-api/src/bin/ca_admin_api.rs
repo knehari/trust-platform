@@ -146,6 +146,8 @@ struct PendingResponse {
     maker_subject: String,
     proposed_at_unix: i64,
     maker_signed: bool,
+    /// Past the CA's maximum proposal age (0052): it can only be rejected.
+    expired: bool,
 }
 
 #[derive(Serialize)]
@@ -506,7 +508,20 @@ async fn decision_challenge(
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
     let (challenge_id, challenge) = with_store(&state, move |store| {
-        in_scope(store.admin_change_ca(family, &change_id)?, &ca_ids)?;
+        let ca = store.admin_change_ca(family, &change_id)?;
+        in_scope(ca.clone(), &ca_ids)?;
+        // An expired proposal is no longer approvable (0052): refuse before
+        // anyone signs; it can still be rejected.
+        if step == SignedStep::Approve {
+            if let Some(ca) = ca {
+                if store
+                    .stale_admin_proposals(&ca)?
+                    .contains(&(family, change_id.clone()))
+                {
+                    return Err(Failure::Refused(StatusCode::CONFLICT));
+                }
+            }
+        }
         let checker = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -605,6 +620,7 @@ async fn pending_admin_changes(
             maker_subject: change.maker_subject,
             proposed_at_unix: change.proposed_at_unix,
             maker_signed: change.maker_signed,
+            expired: change.expired,
         })
         .collect();
     Ok((StatusCode::OK, Json(body)).into_response())
@@ -1880,5 +1896,99 @@ mod tests {
             post(&app, &path, None, body).await.0,
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    /// A proposal past the CA's maximum age (0052) is shown as expired, and
+    /// no approval challenge is issued for it (409) before anyone signs; it
+    /// can still be rejected.
+    #[tokio::test]
+    async fn expired_proposals_are_flagged_and_not_offered_for_approval() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, change) = tokio::task::spawn_blocking(move || {
+            let (ca, a_id, _, mut a, _) = setup(&setup_url);
+            let mut store = PgRevocationStore::connect_lab(&setup_url).unwrap();
+            let officer = OfficerIdentity {
+                issuer: ISSUER,
+                subject: "officer-stale",
+            };
+            let grant = AdminChange::Officer(OfficerGrantAction::Grant, &officer);
+            let admin_a = OfficerIdentity {
+                issuer: ISSUER,
+                subject: "admin-a",
+            };
+            let id = store
+                .issue_admin_proposal_challenge(&ca, &grant, &admin_a, 120)
+                .unwrap();
+            let (data, client, signature) = store_sign(&mut store, &mut a, &a_id, &id);
+            let change = store
+                .submit_signed_admin(
+                    &id,
+                    &a_id,
+                    &Assertion {
+                        authenticator_data: &data,
+                        client_data_json: &client,
+                        signature_der: &signature,
+                    },
+                    &RelyingParty {
+                        rp_id: RP_ID,
+                        origin: ORIGIN,
+                    },
+                    Some(&grant),
+                )
+                .unwrap();
+            let mut owner = postgres::Client::connect(&setup_url, postgres::NoTls).unwrap();
+            owner
+                .batch_execute(&format!(
+                    "ALTER TABLE ca_admin_change DISABLE TRIGGER ca_admin_change_guard;
+                     UPDATE ca_admin_change SET proposed_at = proposed_at - interval '8 days'
+                     WHERE change_id = '{change}';
+                     ALTER TABLE ca_admin_change ENABLE TRIGGER ca_admin_change_guard"
+                ))
+                .unwrap();
+            (ca, change)
+        })
+        .await
+        .unwrap();
+        let oidc = oidc();
+        let (app, session) = app_with_session(
+            oidc.verifier.clone(),
+            &url_with_login(&url, "trust_ca_admin_api_ci"),
+        );
+        let b_token = oidc.token("admin-b", &[ADMIN_ROLE], &[&ca]);
+        let (status, pending) = get(
+            &app,
+            &format!("/v1/cas/{ca}/pending-admin-changes"),
+            &b_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{pending}");
+        assert_eq!(pending[0]["change_id"], change.as_str());
+        assert_eq!(pending[0]["expired"], true);
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/admin-changes/ca-admin/{change}/approval-challenges"),
+                Some(&b_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, issued) = post(
+            &app,
+            &format!("/v1/admin-changes/ca-admin/{change}/rejection-challenges"),
+            Some(&b_token),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
     }
 }
