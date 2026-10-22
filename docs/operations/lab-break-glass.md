@@ -81,7 +81,10 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
   Since 0051 a reviewer cannot get a review challenge for a use whose
   evidence does not re-verify in the Rust core, so such a use stays open and
   housekeeping keeps alerting. The offline audit also exposes it. A forged
-  use's admin key stays enrolled until two admins remove it.
+  use's admin key stays enrolled until two admins remove it, but the Rust
+  core (and so the CA-admin API) refuses every signature made with it while
+  the use's evidence does not re-verify. A direct database call by a holder
+  of `trust_ca_admin` is not stopped by this.
 - There is no on-call rota and no CPS text yet.
 
 Tested by `break_glass_restores_admin_keys_under_review`,

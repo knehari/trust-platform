@@ -146,8 +146,8 @@ Engineering backlog:
 - **Residual lab risks:**
   - The database cannot verify ECDSA, so a holder of a service role could
     store a forged assertion. Re-verification exposes it; a forged break-glass
-    use cannot be reviewed but its admin key stays enrolled until two admins
-    remove it.
+    use cannot be reviewed, and its admin key signs nothing through the Rust
+    core, but stays enrolled until two admins remove it.
   - The challenge table keeps consumed challenges and 30 days of unused ones.
   - `reconcile_crl` needs the caller to still hold the DER.
   - Certificates stored before 0031 whose stored DER does not parse stay

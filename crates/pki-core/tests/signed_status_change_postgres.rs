@@ -2992,3 +2992,106 @@ fn housekeeping_backfills_not_after_from_the_stored_der() {
         .get(0);
     assert!(!changed);
 }
+
+/// An admin key enrolled by a break-glass use whose evidence does not
+/// re-verify (a forged emergency signature) signs nothing through the Rust
+/// core; once the evidence is intact the same key signs normally.
+#[test]
+fn keys_from_unverifiable_breakglass_uses_cannot_sign() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (b_id, bg_id, a_id) = (credential(4), credential(20), credential(11));
+    let mut admin_b = Authenticator::new();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let mut emergency = Authenticator::new();
+    boot.enroll_breakglass_credential(
+        &ca,
+        &bg_id,
+        "custodian",
+        "person-custodian",
+        &emergency.public_key(),
+    )
+    .unwrap();
+    let mut admin_a = Authenticator::new();
+    let a_key = admin_a.public_key();
+    let content = CredentialContent {
+        ca_id: &ca,
+        credential_id: &a_id,
+        officer: &ADMIN_A,
+        person_id: "person-admin-a",
+        public_key_sec1: &a_key,
+    };
+    let challenge = lab
+        .admin
+        .issue_breakglass_challenge(&bg_id, &content, 120)
+        .unwrap();
+    let use_id =
+        breakglass_submit(&mut lab.admin, &mut emergency, &bg_id, &challenge, &content).unwrap();
+    let flip = |owner: &mut Client| {
+        owner
+            .batch_execute(&format!(
+                "ALTER TABLE breakglass_use DISABLE TRIGGER breakglass_use_guard;
+                 UPDATE breakglass_use
+                    SET signature_der = set_byte(signature_der, octet_length(signature_der) - 1,
+                            get_byte(signature_der, octet_length(signature_der) - 1) # 1)
+                  WHERE use_id = '{use_id}';
+                 ALTER TABLE breakglass_use ENABLE TRIGGER breakglass_use_guard"
+            ))
+            .unwrap();
+    };
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    // Forged evidence: A's key is refused before anything is written.
+    flip(&mut owner);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    assert!(matches!(
+        admin_submit(
+            &mut lab.admin,
+            &mut admin_a,
+            &a_id,
+            &challenge,
+            Some(&grant)
+        )
+        .unwrap_err(),
+        RevocationStoreError::SignedApprovalRefused
+    ));
+    // Restored evidence (flip the byte back): A signs; B approves as usual.
+    flip(&mut owner);
+    let change = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&grant),
+    )
+    .unwrap();
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap();
+    admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
+}

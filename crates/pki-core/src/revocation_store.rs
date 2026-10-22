@@ -1455,7 +1455,7 @@ impl PgRevocationStore {
         change: Option<&AdminChange<'_>>,
     ) -> Result<String, RevocationStoreError> {
         let challenge = self.admin_challenge(challenge_id)?;
-        let credential = self.admin_signer(&challenge, credential_id)?;
+        let credential = self.admin_signer(&challenge, credential_id, rp)?;
         // A proposal must carry exactly the content that was signed.
         let params = match (challenge.purpose, change) {
             (SignedStep::Propose, Some(change)) => {
@@ -1534,6 +1534,7 @@ impl PgRevocationStore {
         &mut self,
         challenge: &AdminChallenge,
         credential_id: &[u8],
+        rp: &RelyingParty<'_>,
     ) -> Result<StoredCredential, RevocationStoreError> {
         let ca_text = hex_uuid(&challenge.claim.ca_id);
         let rows = self.client.query(
@@ -1561,7 +1562,53 @@ impl PgRevocationStore {
         {
             return Err(RevocationStoreError::SignedApprovalRefused);
         }
+        // A key enrolled by a break-glass use signs only while that use's
+        // evidence re-verifies: a forged emergency signature (which the
+        // database cannot detect) leaves a key that signs nothing here.
+        if !self.breakglass_enrolment_verifies(&ca_text, credential_id, rp)? {
+            return Err(RevocationStoreError::SignedApprovalRefused);
+        }
         Ok(credential)
+    }
+
+    /// True unless `credential_id` was enrolled by a break-glass use of the
+    /// CA whose evidence does not re-verify (migrations 0045, 0051).
+    fn breakglass_enrolment_verifies(
+        &mut self,
+        ca_text: &str,
+        credential_id: &[u8],
+        rp: &RelyingParty<'_>,
+    ) -> Result<bool, RevocationStoreError> {
+        let rows = self.client.query(
+            "SELECT use_id::text, role, challenge_id::text, public_key_sec1, person_id,
+                    claim_sha256, authenticator_data, client_data_json, signature_der,
+                    admin_credential_id, admin_issuer, admin_subject, admin_person_id,
+                    admin_public_key_sec1, use_claim_sha256, reviewed
+             FROM breakglass_evidence($1::text::uuid)
+             WHERE admin_credential_id = $2",
+            &[&ca_text, &credential_id],
+        )?;
+        let mut uses: Vec<String> = Vec::new();
+        for row in &rows {
+            let use_id: String = column(row, 0)?;
+            if !uses.contains(&use_id) {
+                uses.push(use_id);
+            }
+        }
+        for use_id in uses {
+            let evidence: Vec<Row> = rows
+                .iter()
+                .filter(|row| row.try_get::<_, String>(0).ok().as_deref() == Some(use_id.as_str()))
+                .cloned()
+                .collect();
+            if self
+                .reverify_breakglass_use(&use_id, &evidence, rp)
+                .is_err()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// DBA bootstrap of the CA's break-glass key (migration 0045): needs a
@@ -1704,7 +1751,7 @@ impl PgRevocationStore {
         if challenge.purpose != SignedStep::Review {
             return Err(RevocationStoreError::SignedApprovalRefused);
         }
-        let credential = self.admin_signer(&challenge, credential_id)?;
+        let credential = self.admin_signer(&challenge, credential_id, rp)?;
         let stored_count = u32::try_from(credential.sign_count)
             .map_err(|_| RevocationStoreError::InconsistentResult)?;
         verify_assertion(
