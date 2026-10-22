@@ -69,8 +69,13 @@ try {
   }
   const sanSearch = page.getByLabel('Search exact DNS SAN across this authority’s full certificate history');
   await sanSearch.fill('PAGED-0102.LAB.INVALID');
+  const sanPage = page.waitForResponse(response => response.status() === 200
+    && response.url().includes('/certificates?')
+    && new URL(response.url()).searchParams.get('san_dns') === 'PAGED-0102.LAB.INVALID');
   await page.getByRole('button', { name: 'Search SAN' }).click();
+  await sanPage;
   await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('table.certificate-table tr').length === 2);
   assert.equal(await table.getByRole('row').count(), 2);
   await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).click();
   await certificateDialog.getByText(sanExpectedCn).first().waitFor();
@@ -83,11 +88,20 @@ try {
   await page.getByRole('button', { name: 'Clear SAN' }).click();
   const expiryBefore = page.getByLabel('Recorded valid-until before this UTC date (exclusive)');
   await expiryBefore.fill('2028-01-01');
+  const expiryPage = page.waitForResponse(response => response.status() === 200
+    && response.url().includes('/certificates?')
+    && new URL(response.url()).searchParams.get('not_after_before') === '2028-01-01T00:00:00.000Z');
   await page.getByRole('button', { name: 'Apply date' }).click();
+  await expiryPage;
   await table.getByRole('button', { name: `View certificate for ${sanExpectedCn}` }).waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('table.certificate-table tr').length === 2);
   assert.equal(await table.getByRole('row').count(), 2);
   await expiryBefore.fill('2027-01-01');
+  const emptyExpiryPage = page.waitForResponse(response => response.status() === 200
+    && response.url().includes('/certificates?')
+    && new URL(response.url()).searchParams.get('not_after_before') === '2027-01-01T00:00:00.000Z');
   await page.getByRole('button', { name: 'Apply date' }).click();
+  await emptyExpiryPage;
   await page.getByText('No certificates recorded').waitFor();
   await page.getByRole('button', { name: 'Clear date' }).click();
 
