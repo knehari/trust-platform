@@ -34,6 +34,7 @@ use x509_cert::crl::CertificateList;
 const INVALIDITY_DATE_OID: &str = "2.5.29.24";
 const EXPIRED_CERTS_ON_CRL_OID: &str = "2.5.29.60";
 const CRL_NUMBER_OID: &str = "2.5.29.20";
+const DELTA_CRL_INDICATOR_OID: &str = "2.5.29.27";
 const REASON_CODE_OID: &str = "2.5.29.21";
 const SUBJECT_KEY_IDENTIFIER_OID: &str = "2.5.29.14";
 const AUTHORITY_KEY_IDENTIFIER_OID: &str = "2.5.29.35";
@@ -488,7 +489,8 @@ pub struct PublishedCrl {
 /// Re-checks a stored CRL before it is served (RFC 5280 6.3.3 from the
 /// publisher's side): canonical DER, ECDSA P-256/SHA-256 in both algorithm
 /// fields, issued by `issuer` (the CA's registered issuer certificate) and
-/// signed by its key, with exactly one CRL number. Content was checked
+/// signed by its key, with exactly one CRL number, no critical extension
+/// and no delta CRL indicator (a complete CRL). Content was checked
 /// against the reservation before storage (`LabCrlVerifier`); this only
 /// guards against a stored CRL altered or substituted afterwards.
 pub fn verify_published_crl(
@@ -505,6 +507,23 @@ pub fn verify_published_crl(
     if crl.signature_algorithm != identifier
         || tbs.signature != identifier
         || tbs.issuer != issuer.tbs_certificate.subject
+    {
+        return Err(fail);
+    }
+    // RFC 5280 5.2 and 5.3: a critical extension (none of the lab's own is
+    // critical) may be one a relying party does not understand, and a delta
+    // CRL (5.2.4) is not a complete CRL. Neither is served as the CRL.
+    let entry_extensions = tbs
+        .revoked_certificates
+        .iter()
+        .flatten()
+        .flat_map(|entry| entry.crl_entry_extensions.iter().flatten());
+    if tbs
+        .crl_extensions
+        .iter()
+        .flatten()
+        .chain(entry_extensions)
+        .any(|e| e.critical || e.extn_id.to_string() == DELTA_CRL_INDICATOR_OID)
     {
         return Err(fail);
     }
@@ -825,6 +844,35 @@ mod tests {
             verify_published_crl(&root(&ca), &renumbered),
             Err(CrlError::VerificationFailure)
         );
+    }
+
+    /// RFC 5280 5.2: a CRL with an unrecognised critical extension must not
+    /// be used to decide revocation status, and a delta CRL (5.2.4) is not a
+    /// complete CRL; neither may be served as the CA's CRL.
+    #[test]
+    fn published_crl_with_an_unknown_critical_extension_is_refused() {
+        let mut ca = ca();
+        let r = reservation(vec![entry(&[0x01], RevocationReason::KeyCompromise, None)]);
+        let der = issue(&mut ca, &r);
+        for (oid, value) in [
+            // Delta CRL indicator, BaseCRLNumber 1.
+            ("2.5.29.27", vec![0x02, 0x01, 0x01]),
+            // Some critical extension nobody here understands.
+            ("1.3.6.1.4.1.55555.99", vec![0x05, 0x00]),
+        ] {
+            let marked = resigned(&mut ca, &der, |tbs| {
+                tbs.crl_extensions.as_mut().unwrap().push(Extension {
+                    extn_id: ObjectIdentifier::new(oid).unwrap(),
+                    critical: true,
+                    extn_value: OctetString::new(value).unwrap(),
+                });
+            });
+            assert_eq!(
+                verify_published_crl(&root(&ca), &marked),
+                Err(CrlError::VerificationFailure),
+                "{oid}"
+            );
+        }
     }
 
     #[test]
