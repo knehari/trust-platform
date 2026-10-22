@@ -1,6 +1,6 @@
 # Disposable laboratory stack
 
-This Compose stack runs only the read-only management slice: PostgreSQL 16, ordered migrations and two example CAs, the restricted Rust API, a React/Vite console and a loopback test OIDC issuer. It does **not** run CA issuance, software signing or a real IAM service. The generated database passwords stay in ignored `.env.lab`; the script preserves an existing file rather than replacing credentials underneath a running volume.
+This Compose stack runs only the read-only management slice: PostgreSQL 16, ordered migrations and two example CAs, the restricted Rust API, a React/Vite console, a loopback test OIDC issuer, and the scheduled lab database jobs. It does **not** run CA issuance, software signing or a real IAM service. The generated database passwords stay in ignored `.env.lab`; the script preserves an existing file rather than replacing credentials underneath a running volume.
 
 From the repository root, with Docker Compose, OpenSSL and a free local 8080/8081/5173:
 
@@ -10,6 +10,40 @@ docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 node frontend/dev/compose-smoke.mjs
 ```
+
+### Scheduled database jobs
+
+The `jobs` service (`Dockerfile.jobs`, `scripts/lab/jobs.sh`) runs every
+`TRUST_LAB_JOBS_INTERVAL_SECONDS` (default 300, 10 to 86400). Each job uses
+its own login, created by `scripts/lab/init-db.sh` with a password from
+`.env.lab`:
+
+| Job | Login | Role |
+| --- | --- | --- |
+| `crl_housekeeping --all` | `trust_housekeeping_lab` | `trust_crl_operator` |
+| `audit_chain_anchor seal` | `trust_sealer_lab` | `trust_audit_sealer` |
+| `audit_chain_anchor verify` | `trust_auditor_lab` | `trust_audit_verifier` |
+| `signed_evidence_audit --all` | `trust_auditor_lab` | `trust_audit_verifier` |
+
+None of them is a superuser or an owner member, and the jobs refuse such
+logins. The audit chain checkpoints go to the `trust_lab_checkpoints` volume,
+outside the database but on the same host. That makes it a lab stand-in,
+not an independent anchor.
+
+Each job prints `job=<name> exit=<status>`: 0 means nothing to report, 2 an
+alert (housekeeping, unsealed records), 3 evidence or chain that does not
+verify, 1 an error. A failing job does not stop the others. Nothing pages
+anyone: read the logs with
+`docker compose --env-file .env.lab -f compose.lab.yaml logs jobs`. The
+container is healthy while its last round finished within three intervals.
+
+`init-db.sh` acknowledges the lab role provisioning
+(`acknowledge_role_state('lab-init')`, migration 0057). On a fresh volume,
+housekeeping therefore reports `unreviewed_role_changes=0` and only alerts
+on later role changes; without that acknowledgement it exited 2 from the
+first round. `init-env.sh` adds missing passwords to an existing `.env.lab`
+without touching the others. The new logins only exist on a volume created
+after that, so reset the lab volume (below).
 
 Open `http://127.0.0.1:5173/` to inspect the UI. The test issuer automatically approves a fixed laboratory operator and one of the two seeded CAs. The second CA must remain absent from the list and return 403 by direct API request. All published ports bind host loopback. The API shares the issuer's container network namespace so both browser and API can use the exact OIDC issuer `http://127.0.0.1:8080`; the frontend development proxy targets the shared namespace at `issuer:8081`.
 
@@ -26,7 +60,7 @@ docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 ```
 
-PostgreSQL's entrypoint runs migrations `0001`–`0013` and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
+PostgreSQL's entrypoint runs every migration in `migrations/` (`0001`–`0058`) and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
 
 The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a separate empty PostgreSQL database. It seeds data after migration 0011, applies 0012–0013 and checks row preservation and reader privileges. This is an upgrade regression for those two migrations only; it does not upgrade an existing Compose volume or provide a repeatable production migration runner.
 

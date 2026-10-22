@@ -5,10 +5,13 @@ on:
     paths:
       - compose.lab.yaml
       - Dockerfile.api
+      - Dockerfile.jobs
       - frontend/**
       - scripts/lab/**
       - migrations/**
       - crates/management-api/**
+      - crates/pki-core/**
+      - crates/pki-crypto/**
       - Cargo.lock
       - Cargo.toml
       - .github/workflows/lab-compose.yml
@@ -31,6 +34,21 @@ jobs:
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 180
       - name: Exercise code/PKCE and scoped database reads
         run: node frontend/dev/compose-smoke.mjs
+      - name: Scheduled database jobs ran under their own logins
+        run: |
+          set -euo pipefail
+          logs="$(docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color jobs)"
+          printf '%s\n' "$logs" | tail -n 40
+          # Fresh lab database: nothing to alert on, every job exits 0
+          # (lab role provisioning is acknowledged by scripts/lab/init-db.sh).
+          for job in crl_housekeeping audit_chain_seal audit_chain_verify signed_evidence_audit; do
+            printf '%s\n' "$logs" | grep -q "job=$job exit=0" || { echo "FAIL: $job did not exit 0" >&2; exit 1; }
+          done
+          if printf '%s\n' "$logs" | grep -q 'job=[a-z_]* exit=[1-9]'; then
+            echo 'FAIL: a scheduled job failed or alerted' >&2
+            exit 1
+          fi
+          printf '%s\n' "$logs" | grep -q 'unreviewed_role_changes=0' || { echo 'FAIL: role changes reported' >&2; exit 1; }
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80

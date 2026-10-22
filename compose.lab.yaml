@@ -8,6 +8,9 @@ services:
       POSTGRES_DB: trust_lab
       POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_HOUSEKEEPING_PASSWORD: ${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_AUDITOR_PASSWORD: ${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_SEALER_PASSWORD: ${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}
     volumes:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro
@@ -58,6 +61,34 @@ services:
       timeout: 3s
       retries: 30
 
+  # Scheduled lab database jobs (scripts/lab/jobs.sh), each under its own
+  # non-privileged login. Output: one "job=<name> exit=<status>" line per job.
+  jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobs
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      TRUST_LAB_HOUSEKEEPING_URL: postgresql://trust_housekeeping_lab:${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_AUDITOR_URL: postgresql://trust_auditor_lab:${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_SEALER_URL: postgresql://trust_sealer_lab:${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_JOBS_INTERVAL_SECONDS: "300"
+      # Disposable lab network only (see the api service).
+      TRUST_DATABASE_TLS: disable-lab
+      TRUST_WEBAUTHN_RP_ID: officer.lab.invalid
+      TRUST_WEBAUTHN_ORIGIN: https://officer.lab.invalid
+    volumes:
+      # The audit chain checkpoints. Outside the database, but on the same
+      # host: a lab stand-in for a separate anchoring system.
+      - trust_lab_checkpoints:/var/lib/trust-jobs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/trust-lab-jobs", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [lab]
+
   frontend:
     build:
       context: .
@@ -79,6 +110,7 @@ services:
 
 volumes:
   trust_lab_pg:
+  trust_lab_checkpoints:
 
 networks:
   lab:
