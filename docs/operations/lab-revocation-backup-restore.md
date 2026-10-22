@@ -191,7 +191,8 @@ Tested by:
   rejected or withdrawn proposals, signed evidence and audit events. So are
   certificates issued after the backup. Delta CRLs are not used for the
   restore.
-- The restore tool is not rehearsed against an actual `pg_restore` of an
-  older dump. The tests simulate the loss with a CRL the database never
-  stored.
+- `tests/crl_restore_rehearsal.sh` runs the restore tool on a database
+  restored by `pg_restore` from a dump taken before the published CRL. The
+  loss is still staged: that CRL is signed by the test, not by a CA that
+  went on running after the dump. Same cluster only, as above.
 - RTO and RPO need a human-designed recovery exercise.
