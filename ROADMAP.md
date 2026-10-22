@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #145](https://github.com/knehari/trust-platform/pull/145) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #146](https://github.com/knehari/trust-platform/pull/146) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -44,6 +44,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] Specify CA and profile lifecycle, actor permissions, approval states and immutable policy/version binding before adding write routes ([Draft #137](https://github.com/knehari/trust-platform/pull/137)).
 - [x] Add an inert immutable profile-draft catalogue, scoped read API and read-only console ([Drafts #138–#140](https://github.com/knehari/trust-platform/pulls)); these do not activate profiles or issue certificates.
 - [x] Add advisory syntax warnings, deterministic draft snapshot digests, exact revision reads, a detail dialog and local revision comparison ([Drafts #141–#145](https://github.com/knehari/trust-platform/pulls)). These remain inert read-only laboratory proposals.
+- [x] Preserve an exact profile proposal revision in a scoped console link and restore it after sign-in ([Draft #146](https://github.com/knehari/trust-platform/pull/146)); the server reauthorizes each read.
 - [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.
