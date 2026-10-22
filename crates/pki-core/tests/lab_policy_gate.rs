@@ -50,16 +50,18 @@ fn real_x509_issuance_requires_active_two_actor_policy_and_exact_oid() {
         );
         return;
     };
-    let ca_id = "88888888-8888-4888-8888-888888888888";
+    // A fresh CA per run, so the test also passes on a reused database
+    // (its approved policy edition and gate are per CA).
     let mut raw_db = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    raw_db
-        .execute(
+    let ca_id: String = raw_db
+        .query_one(
             "INSERT INTO ca(ca_id,display_name,policy_version)
-         VALUES($1::text::uuid,'Pre-sign Approval Gate CI','v1')
-         ON CONFLICT(ca_id) DO NOTHING",
-            &[&ca_id],
+         VALUES(gen_random_uuid(),'Pre-sign Approval Gate CI','v1') RETURNING ca_id::text",
+            &[],
         )
-        .unwrap();
+        .unwrap()
+        .get(0);
+    let ca_id = ca_id.as_str();
     drop(raw_db);
 
     // Least privilege (0035, 0043): issuance through the issuance service

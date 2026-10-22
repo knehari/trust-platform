@@ -1,7 +1,8 @@
 # Revocation/CRL lab slice — follow-ups
 
 Collected from the per-task and whole-branch reviews of
-`2026-10-18-revocation-crl.md` (branch head cdfef84). None blocks the lab slice;
+`2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
+22 October 2026 for migrations up to 0055. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
@@ -15,8 +16,11 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   without superuser, schema-change control, external audit anchoring,
   authenticated time), real service logins and their credentials, and the
   owner role holding UPDATE on `ca`/`certificate` (row locks).
-- Maker-checker is textual only; `AGENTS.md` requires cryptographically distinct
-  signer keys (known deviation). ADR-0007 proposes WebAuthn-signed claims.
+- Maker-checker is textual by default; `AGENTS.md` requires cryptographically
+  distinct signer keys. Since 0028-0029 (status changes) and 0037-0042 (CA
+  administration) a CA can opt in, one way, to WebAuthn-signed claims with
+  distinct keys and persons (ADR-0007, still Proposed); CAs that do not opt
+  in keep the known deviation.
 - Authentication of revocation officers stays with the identity adapter.
 - CA issuer binding (0022) has one immutable issuer certificate per CA; key
   rollover (several issuer certificates over time, CRLs signed by the new key
@@ -29,13 +33,20 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
   `tests/revocation_populated_upgrade.sh`).
-- `lab_policy_gate` and the policy block of `revocation_lifecycle.sql` are not
-  idempotent on a reused database (pre-existing).
+- Rerunning on a reused database: `revocation_lifecycle.sql` and
+  `lab_policy_gate` (a fresh CA per run since 22 October 2026) pass again,
+  as do `audit_chain_postgres` and `signed_status_change_postgres`. The
+  historical issuance suites `postgres_store`, `lab_verified_issuance`,
+  `lab_rsa_pss_postgres` and `policy_decisions` still fail on a second run:
+  they use the CI-seeded CA and fixed idempotency keys or ids by design and
+  are left unchanged; run them on a fresh database (as CI does).
 
 ## Robustness and hygiene
-- `crl_housekeeping` (lab example, `docs/operations/lab-crl-housekeeping.md`)
-  runs the sweeps and alerts through its exit status; deploying it on a
-  schedule with a `trust_crl_operator` login remains open.
+- `crl_housekeeping` (management-api binary, verified TLS,
+  `docs/operations/lab-crl-housekeeping.md`) runs the sweeps and alerts
+  through its exit status; deploying it, `signed_evidence_audit` and the
+  audit chain anchoring on a schedule with their dedicated logins remains
+  open.
 - `crl_due` / `overdue_status_changes` still call `crl_change_covered` per
   approved change (the supersession probe is indexed since 0025); read-only
   queries do not check isolation.
