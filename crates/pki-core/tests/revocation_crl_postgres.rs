@@ -6,7 +6,7 @@ use std::env;
 use trust_pki_core::{
     clock,
     crl::{
-        verify_published_crl, verify_published_delta_crl, CrlError, CrlReservation,
+        verify_published_crl, verify_published_delta_crl, CrlAssembler, CrlError, CrlReservation,
         LabCrlAssembler, LabCrlVerifier,
     },
     crl_orchestrator::{crl_once, reconcile_crl, CrlJournal, CrlPlan, SignerPublicKey},
@@ -2276,4 +2276,168 @@ fn delta_crl_is_reserved_signed_and_stored_through_the_database() {
             std::fs::write(dir.join(format!("{name}.der")), der).unwrap();
         }
     }
+}
+
+/// After a restore from an older backup (migration 0060): the revocations a
+/// published CRL lists but the database lost are re-applied from that CRL,
+/// once its signature verifies against the CA's registered issuer; the next
+/// CRL is numbered above it, lists them again and goes through the normal
+/// signing pipeline.
+#[test]
+fn revocations_lost_in_a_restore_are_reapplied_from_the_published_crl() {
+    let Ok(url) = env::var("TRUST_CI_DATABASE_URL") else {
+        assert_ne!(
+            env::var("TRUST_REQUIRE_DATABASE").as_deref(),
+            Ok("1"),
+            "TRUST_CI_DATABASE_URL is required for PostgreSQL integration tests"
+        );
+        return;
+    };
+    let ca_id = fresh_ca(&url);
+    let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let root = ca.root_certificate().clone();
+    let key_ref = ca.lab_signer_key_ref().to_owned();
+    let mut issuance = PgIssuanceStore::connect_lab(&url).unwrap();
+    let s1 = issue_leaf(&mut issuance, &mut ca, &ca_id, 701);
+    let s2 = issue_leaf(&mut issuance, &mut ca, &ca_id, 702);
+    let s3 = issue_leaf(&mut issuance, &mut ca, &ca_id, 703);
+    let mut store = PgRevocationStore::connect_lab(&url).unwrap();
+    store.register_ca_issuer(&ca_id, &root, "ca-admin").unwrap();
+    // The restored database: only the hold on s2 survived.
+    change(
+        &mut store,
+        &ca_id,
+        &s2,
+        StatusAction::Suspend,
+        Some(RevocationReason::CertificateHold),
+    );
+
+    // CRL 5, published before the database was rolled back: s1 and s2
+    // keyCompromise, and a certificate issued after the backup.
+    let lost_serial = SerialNumber::from_positive_der_content(&[0x7f, 0x01]).unwrap();
+    let now = trust_pki_core::clock::system_clock_us() / 1_000_000 + 1;
+    let entry = |serial: &SerialNumber| trust_pki_core::crl::CrlEntry {
+        serial: serial.clone(),
+        revoked_at_unix: now - 60,
+        reason: RevocationReason::KeyCompromise,
+        invalidity_at_unix: None,
+    };
+    let lost = CrlReservation::new(
+        &ca_id,
+        5,
+        now,
+        now + 86_400,
+        vec![entry(&s1), entry(&s2), entry(&lost_serial)],
+        None,
+    )
+    .unwrap();
+    let sign_crl = |ca: &mut EphemeralLabCa, r: &CrlReservation| {
+        let tbs = trust_pki_core::crl::build_tbs_cert_list(&root, r).unwrap();
+        let signature = ca.sign_once(&key_ref, "lost-crl", &tbs).unwrap();
+        LabCrlAssembler.assemble(&tbs, &signature).unwrap()
+    };
+    let lost_der = sign_crl(&mut ca, &lost);
+
+    // The same CRL signed by another key is refused before the database.
+    let mut forger = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+    let forged_tbs = trust_pki_core::crl::build_tbs_cert_list(&root, &lost).unwrap();
+    let forger_key = forger.lab_signer_key_ref().to_owned();
+    let forged_sig = forger
+        .sign_once(&forger_key, "forged", &forged_tbs)
+        .unwrap();
+    let forged = LabCrlAssembler.assemble(&forged_tbs, &forged_sig).unwrap();
+    assert!(matches!(
+        store.restore_revocations_from_crl(&ca_id, &forged, "restore drill"),
+        Err(RevocationStoreError::InvalidCrl)
+    ));
+    assert_eq!(store.status(&ca_id, &s1).unwrap(), CertificateStatus::Valid);
+
+    use trust_pki_core::revocation_store::RestoreOutcome;
+    let mut outcomes = store
+        .restore_revocations_from_crl(&ca_id, &lost_der, "restore drill")
+        .unwrap();
+    outcomes.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut expected = vec![
+        (s1.clone(), RestoreOutcome::Restored),
+        (s2.clone(), RestoreOutcome::Upgraded),
+        (lost_serial.clone(), RestoreOutcome::UnknownCertificate),
+    ];
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(outcomes, expected);
+    assert_eq!(
+        store.status(&ca_id, &s1).unwrap(),
+        CertificateStatus::Revoked
+    );
+    assert_eq!(
+        store.status(&ca_id, &s2).unwrap(),
+        CertificateStatus::Revoked
+    );
+    assert_eq!(store.status(&ca_id, &s3).unwrap(), CertificateStatus::Valid);
+    // The same CRL again: nothing changes.
+    assert!(store
+        .restore_revocations_from_crl(&ca_id, &lost_der, "restore drill")
+        .unwrap()
+        .iter()
+        .all(|(serial, outcome)| *outcome == RestoreOutcome::Present || *serial == lost_serial));
+
+    // The next CRL is 6, lists both revocations and is signed, verified
+    // and stored by the usual pipeline.
+    let next = store
+        .reserve_crl(&ca_id, "crl-operator", "after-restore")
+        .unwrap();
+    assert_eq!(next.crl_number(), 6);
+    let listed: Vec<&SerialNumber> = next.entries().iter().map(|e| &e.serial).collect();
+    assert!(listed.contains(&&s1) && listed.contains(&&s2) && listed.len() == 2);
+    let verifier = LabCrlVerifier::new(root.clone());
+    let plan = CrlPlan {
+        reservation: &next,
+        issuer: &root,
+        signer_key_ref: &key_ref,
+        operation_ref: "after-restore",
+    };
+    crl_once(&mut store, &mut ca, &LabCrlAssembler, &verifier, &plan).unwrap();
+    // An older CRL can no longer be restored over it.
+    assert!(matches!(
+        store.restore_revocations_from_crl(&ca_id, &lost_der, "restore drill"),
+        Err(RevocationStoreError::Database(_))
+    ));
+
+    // For tests/crl_restore_revocations.sh, which runs the binary: CRL 7
+    // (s3 superseded as well, never applied here) and a forged copy.
+    if let Ok(dir) = env::var("TRUST_CRL_EXPORT_DIR") {
+        let dir = std::path::Path::new(&dir).join("restore");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s3_entry = entry(&s3);
+        s3_entry.reason = RevocationReason::Superseded;
+        let seventh = CrlReservation::new(
+            &ca_id,
+            7,
+            now + 1,
+            now + 86_400,
+            vec![entry(&s1), entry(&s2), s3_entry, entry(&lost_serial)],
+            None,
+        )
+        .unwrap();
+        std::fs::write(dir.join("crl7.der"), sign_crl(&mut ca, &seventh)).unwrap();
+        let tbs = trust_pki_core::crl::build_tbs_cert_list(&root, &seventh).unwrap();
+        let sig = forger.sign_once(&forger_key, "forged-7", &tbs).unwrap();
+        std::fs::write(
+            dir.join("crl7_forged.der"),
+            LabCrlAssembler.assemble(&tbs, &sig).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ids"),
+            format!(
+                "{ca_id} {} {}\n",
+                hex(s3.as_der_content()),
+                hex(lost_serial.as_der_content())
+            ),
+        )
+        .unwrap();
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

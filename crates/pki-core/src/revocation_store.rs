@@ -53,6 +53,58 @@ pub enum RevocationStoreError {
     /// configured bound (ADR-0006 condition 6). Nothing was signed; a CRL
     /// reservation made meanwhile stays RESERVED and housekeeping retires it.
     ClockSkew,
+    /// A CRL offered for a restore (migration 0060) does not verify against
+    /// the CA's registered issuer certificate, is a delta, or lists an
+    /// entry it cannot represent; nothing was sent.
+    InvalidCrl,
+    /// A maintenance operation needs a superuser session
+    /// (`from_superuser_client`).
+    NotSuperuser,
+}
+
+/// What a restore from a published CRL did with one certificate (migration
+/// 0060); see `restore_revocations_from_crl` there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    Restored,
+    Upgraded,
+    Present,
+    Conflict,
+    UnknownCertificate,
+    HoldNotOnCrl,
+}
+
+impl RestoreOutcome {
+    fn from_sql(text: &str) -> Option<Self> {
+        Some(match text {
+            "RESTORED" => Self::Restored,
+            "UPGRADED" => Self::Upgraded,
+            "PRESENT" => Self::Present,
+            "CONFLICT" => Self::Conflict,
+            "UNKNOWN_CERTIFICATE" => Self::UnknownCertificate,
+            "HOLD_NOT_ON_CRL" => Self::HoldNotOnCrl,
+            _ => return None,
+        })
+    }
+
+    /// Whether an operator must still act on this certificate by hand.
+    pub fn needs_attention(self) -> bool {
+        matches!(
+            self,
+            Self::Conflict | Self::UnknownCertificate | Self::HoldNotOnCrl
+        )
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Restored => "RESTORED",
+            Self::Upgraded => "UPGRADED",
+            Self::Present => "PRESENT",
+            Self::Conflict => "CONFLICT",
+            Self::UnknownCertificate => "UNKNOWN_CERTIFICATE",
+            Self::HoldNotOnCrl => "HOLD_NOT_ON_CRL",
+        }
+    }
 }
 
 /// A challenge as stored (migration 0029): the claim the officer must sign
@@ -584,6 +636,30 @@ impl PgRevocationStore {
             clock: system_clock_us,
             max_clock_skew_us: DEFAULT_MAX_CLOCK_SKEW_US,
         })
+    }
+
+    /// A maintenance session for superuser-only operations (migration 0058
+    /// CRL number floor, 0060 revocation restore) on a client the caller
+    /// connected under its own TLS policy. Refuses (`NotSuperuser`) any
+    /// other login: those operations have no grant, so it would only fail
+    /// later.
+    pub fn from_superuser_client(client: Client) -> Result<Self, RevocationStoreError> {
+        let mut store = Self {
+            client,
+            clock: system_clock_us,
+            max_clock_skew_us: DEFAULT_MAX_CLOCK_SKEW_US,
+        };
+        let superuser: bool = column(
+            &store.client.query_one(
+                "SELECT rolsuper FROM pg_roles WHERE rolname = session_user",
+                &[],
+            )?,
+            0,
+        )?;
+        if !superuser {
+            return Err(RevocationStoreError::NotSuperuser);
+        }
+        Ok(store)
     }
 
     /// Like `connect_lab`, for a service login: refuses (fail closed) a
@@ -2320,6 +2396,62 @@ impl PgRevocationStore {
             ca_id,
             u64::try_from(number).map_err(|_| RevocationStoreError::InconsistentResult)?,
         )
+    }
+
+    /// Re-applies the revocations a published complete CRL lists, after a
+    /// restore from an older backup (migration 0060). The CRL is verified
+    /// here against the CA's registered issuer certificate before anything
+    /// is sent: the database cannot check its signature. Superuser only
+    /// (the SQL function has no grant). Returns one outcome per certificate,
+    /// in serial order.
+    pub fn restore_revocations_from_crl(
+        &mut self,
+        ca_id: &str,
+        crl_der: &[u8],
+        reason: &str,
+    ) -> Result<Vec<(SerialNumber, RestoreOutcome)>, RevocationStoreError> {
+        let row = self.client.query_one(
+            "SELECT certificate_der FROM ca_issuer_certificate WHERE ca_id = $1::text::uuid",
+            &[&ca_id],
+        )?;
+        let issuer = Certificate::from_der(&column::<Vec<u8>>(&row, 0)?)
+            .map_err(|_| RevocationStoreError::InvalidIssuer)?;
+        let (published, entries) = crate::crl::published_crl_entries(&issuer, crl_der)
+            .map_err(|_| RevocationStoreError::InvalidCrl)?;
+        let number =
+            i64::try_from(published.crl_number).map_err(|_| RevocationStoreError::InvalidCrl)?;
+        let serials: Vec<&[u8]> = entries.iter().map(|e| e.serial.as_der_content()).collect();
+        let reasons: Vec<i16> = entries.iter().map(|e| e.reason.code()).collect();
+        let revoked_at: Vec<i64> = entries.iter().map(|e| e.revoked_at_unix).collect();
+        let invalidity_at: Vec<Option<i64>> =
+            entries.iter().map(|e| e.invalidity_at_unix).collect();
+        let rows = self.client.query(
+            "SELECT serial_der_content, outcome
+             FROM restore_revocations_from_crl($1::text::uuid, $2, $3, $4, $5, $6, $7, $8)",
+            &[
+                &ca_id,
+                &number,
+                &crl_der,
+                &serials,
+                &reasons,
+                &revoked_at,
+                &invalidity_at,
+                &reason,
+            ],
+        )?;
+        let mut outcomes = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let serial: Vec<u8> = column(row, 0)?;
+            let outcome: String = column(row, 1)?;
+            outcomes.push((
+                SerialNumber::from_positive_der_content(&serial)
+                    .map_err(|_| RevocationStoreError::InconsistentResult)?,
+                RestoreOutcome::from_sql(&outcome)
+                    .ok_or(RevocationStoreError::InconsistentResult)?,
+            ));
+        }
+        outcomes.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(outcomes)
     }
 
     /// Reserves a delta CRL (migration 0059, RFC 5280 5.2.4) on the CA's

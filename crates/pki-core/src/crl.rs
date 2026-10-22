@@ -671,6 +671,59 @@ pub fn verify_published_crl(
     }
 }
 
+/// The entries of a published complete CRL, after `verify_published_crl`
+/// accepted it against `issuer`: what a restore from an older backup
+/// re-applies (migration 0060). Fails closed on a delta CRL, a
+/// removeFromCRL or unknown entry extension, a reason or date it cannot
+/// represent, or a serial listed twice. Entries keep the CRL's order.
+pub fn published_crl_entries(
+    issuer: &Certificate,
+    crl_der: &[u8],
+) -> Result<(PublishedCrl, Vec<CrlEntry>), CrlError> {
+    let published = verify_published_crl(issuer, crl_der)?;
+    let fail = CrlError::VerificationFailure;
+    let crl = x509_cert::crl::CertificateList::from_der(crl_der).map_err(|_| fail.clone())?;
+    let unix = |time: &Time| i64::try_from(time.to_unix_duration().as_secs()).ok();
+    let mut entries: Vec<CrlEntry> = Vec::new();
+    for revoked in crl.tbs_cert_list.revoked_certificates.iter().flatten() {
+        let mut reason = RevocationReason::Unspecified;
+        let mut invalidity_at_unix = None;
+        for extension in revoked.crl_entry_extensions.iter().flatten() {
+            match extension.extn_id.to_string().as_str() {
+                REASON_CODE_OID => {
+                    let code = CrlReason::from_der(extension.extn_value.as_bytes())
+                        .map_err(|_| fail.clone())?;
+                    if code == CrlReason::RemoveFromCRL {
+                        return Err(fail);
+                    }
+                    reason = RevocationReason::from_code(code as i16).map_err(|_| fail.clone())?;
+                }
+                INVALIDITY_DATE_OID => {
+                    let time = GeneralizedTime::from_der(extension.extn_value.as_bytes())
+                        .map_err(|_| fail.clone())?;
+                    invalidity_at_unix = Some(
+                        i64::try_from(time.to_unix_duration().as_secs())
+                            .map_err(|_| fail.clone())?,
+                    );
+                }
+                _ => return Err(fail),
+            }
+        }
+        let serial = SerialNumber::from_positive_der_content(revoked.serial_number.as_bytes())
+            .map_err(|_| fail.clone())?;
+        if entries.iter().any(|e| e.serial == serial) {
+            return Err(fail);
+        }
+        entries.push(CrlEntry {
+            serial,
+            revoked_at_unix: unix(&revoked.revocation_date).ok_or_else(|| fail.clone())?,
+            reason,
+            invalidity_at_unix,
+        });
+    }
+    Ok((published, entries))
+}
+
 /// A stored delta CRL, re-checked like `verify_published_crl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishedDeltaCrl {
@@ -1269,6 +1322,69 @@ mod tests {
         assert_eq!(plain.entries_sha256(), complete.entries_sha256());
         assert_eq!(plain.base_crl_number(), Some(2));
         assert_eq!(complete.base_crl_number(), None);
+    }
+
+    #[test]
+    fn published_crl_entries_are_read_back_after_verification() {
+        let mut ca = ca();
+        let r = reservation(vec![
+            entry(
+                &[0x01],
+                RevocationReason::KeyCompromise,
+                Some(THIS_UPDATE - 500),
+            ),
+            entry(&[0x02], RevocationReason::CertificateHold, None),
+            entry(&[0x03], RevocationReason::Unspecified, None),
+        ]);
+        let der = issue(&mut ca, &r);
+        let (published, entries) = published_crl_entries(&root(&ca), &der).unwrap();
+        assert_eq!(published.crl_number, 1);
+        assert_eq!(entries, r.entries().to_vec());
+        // Not signed by this CA, a delta, or an entry it cannot represent:
+        // nothing is returned.
+        let other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        assert_eq!(
+            published_crl_entries(&root(&other), &der),
+            Err(CrlError::VerificationFailure)
+        );
+        let delta_der = issue(&mut ca, &delta());
+        assert_eq!(
+            published_crl_entries(&root(&ca), &delta_der),
+            Err(CrlError::VerificationFailure)
+        );
+        let removed = resigned(&mut ca, &der, |tbs| {
+            let list = tbs.revoked_certificates.as_mut().unwrap();
+            list[0].crl_entry_extensions = Some(vec![extension_from_der(
+                REASON_CODE_OID,
+                CrlReason::RemoveFromCRL.to_der().unwrap(),
+            )
+            .unwrap()]);
+        });
+        assert_eq!(
+            published_crl_entries(&root(&ca), &removed),
+            Err(CrlError::VerificationFailure)
+        );
+        let unknown = resigned(&mut ca, &der, |tbs| {
+            let list = tbs.revoked_certificates.as_mut().unwrap();
+            list[0].crl_entry_extensions = Some(vec![extension_from_der(
+                "1.3.6.1.4.1.55555.98",
+                vec![0x05, 0x00],
+            )
+            .unwrap()]);
+        });
+        assert_eq!(
+            published_crl_entries(&root(&ca), &unknown),
+            Err(CrlError::VerificationFailure)
+        );
+        let doubled = resigned(&mut ca, &der, |tbs| {
+            let list = tbs.revoked_certificates.as_mut().unwrap();
+            let first = list[0].clone();
+            list.push(first);
+        });
+        assert_eq!(
+            published_crl_entries(&root(&ca), &doubled),
+            Err(CrlError::VerificationFailure)
+        );
     }
 
     /// RFC 5280 5.2: a CRL with an unrecognised critical extension must not

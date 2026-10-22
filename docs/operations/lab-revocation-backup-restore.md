@@ -105,6 +105,72 @@ Choosing the number is the operator's decision. A floor that is too low
 does not prevent reuse, and the database cannot know the right number.
 Tested by `tests/crl_number_floor.sql`, which simulates the rollback.
 
+## After restoring an older backup: re-applying revocations
+
+A database restored from a backup older than the last published CRL has
+lost every status change made since. A certificate revoked since then reads
+`VALID` again, and the next CRL would leave it out. Since migration 0060,
+the last published CRL is used to put those revocations back. That CRL is
+signed evidence of the decisions, and the operator takes it from the
+distribution point or a relying party's copy. Run this **before** any new
+CRL is signed on the restored database:
+
+```sh
+TRUST_DATABASE_URL=postgresql://<superuser>@db.lab.invalid/trust \
+TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+  cargo run -p trust-management-api --bin crl_restore_revocations -- \
+  <ca-uuid> last-published.crl --reason "restore of <backup> on <date>"
+```
+
+How it works:
+
+- The Rust core verifies the CRL against the CA's registered issuer
+  certificate (`crl::published_crl_entries`): signature, canonical DER, a
+  complete CRL, and only entry extensions it can represent. The database
+  cannot check the signature, so `restore_revocations_from_crl` has no
+  grant: the binary requires a superuser login and refuses any other.
+- A CRL that is not newer than the database's latest stored complete CRL is
+  refused. An old CRL would re-apply holds that were released since.
+- The CRL bytes are kept in `crl_restore` (append-only). The CRL number
+  floor is raised to the CRL's number (0058), and a
+  `revocation.restored_from_crl` audit event records the counts.
+
+It prints one line per certificate:
+
+| Outcome | Meaning | Database change |
+| --- | --- | --- |
+| `RESTORED` | Not revoked here | Inserted with the CRL's date and reason (actor `crl-restore:<number>`, no status change record) |
+| `UPGRADED` | On hold here, definitive on the CRL | Reason changed, original date kept |
+| `PRESENT` | Same reason here | None |
+| `CONFLICT` | Definitive here with another reason, or definitive here and on hold on the CRL | None: definitive revocations are irreversible |
+| `UNKNOWN_CERTIFICATE` | Not in this database (issued after the backup) | None |
+| `HOLD_NOT_ON_CRL` | On hold here, absent from the CRL (perhaps released since) | None: a release needs dual control |
+
+The exit status is 0 when nothing is left to do, 2 when an operator must act
+on at least one certificate, and 1 on an error (nothing changed).
+
+Until a new CRL is signed, the distribution point serves the restored
+database's latest stored CRL. That CRL is older than the one relying parties
+already hold, so sign a new complete CRL right after the restore. It is
+numbered above the restored one and lists the re-applied revocations.
+
+Check `UNKNOWN_CERTIFICATE` with particular care. The database lost both the
+certificate and its revocation, so no new CRL will list it, and it
+disappears for relying parties. Recovering lost certificates is not
+automated: it needs the issuance records from outside the database.
+
+Tested by:
+
+- `tests/crl_revocation_restore.sql`: every outcome, idempotence, evidence,
+  audit, floor and grants;
+- `revocations_lost_in_a_restore_are_reapplied_from_the_published_crl`
+  (PostgreSQL, real lab signatures): a forged CRL is refused, and the next
+  CRL lists the restored revocations and goes through the usual signing
+  pipeline;
+- `tests/crl_restore_revocations.sh`: the binary itself, with a service
+  login and a forged CRL refused and exit status 2 for the unknown
+  certificate.
+
 ## Limits
 
 - Same cluster only. Restoring into a fresh cluster needs the trust roles
@@ -119,8 +185,13 @@ Tested by `tests/crl_number_floor.sql`, which simulates the rollback.
     database backup, or a matching rollback of both goes undetected);
   - the CRL distribution point's cached CRLs.
 - After a restore from an older backup, everything recorded after the
-  backup is gone, revocations included: a certificate revoked since then
-  would be listed as good again. The external checkpoint detects the
-  rollback. There is no tool yet to re-apply revocations from the last
-  published CRL, and no runbook.
+  backup is gone. The external checkpoint detects the rollback, and the
+  revocations can be re-applied from the last published CRL (above).
+  Changes not on any published CRL are lost: status changes after that CRL,
+  rejected or withdrawn proposals, signed evidence and audit events. So are
+  certificates issued after the backup. Delta CRLs are not used for the
+  restore.
+- The restore tool is not rehearsed against an actual `pg_restore` of an
+  older dump. The tests simulate the loss with a CRL the database never
+  stored.
 - RTO and RPO need a human-designed recovery exercise.
