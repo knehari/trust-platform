@@ -235,6 +235,12 @@ jobs:
           TRUST_REQUIRE_DATABASE=1 \
           TRUST_API_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
             cargo test -p trust-management-api --bin trust-management-api history_pagination_reads_all_scoped_rows --locked -- --nocapture
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -f tests/management_history_filter_plan_seed.sql >/dev/null
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -v ca_id=eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee \
+            -v issuer=https://issuer.example.test -v subject=operator \
+            -f tests/management_history_filter_plan.sql
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_ca_pagination_seed.sql >/dev/null
           TRUST_REQUIRE_DATABASE=1 \
           TRUST_API_CA_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
