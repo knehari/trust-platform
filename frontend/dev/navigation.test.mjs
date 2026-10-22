@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { navigationUrl, readNavigation } from '../src/navigation.ts';
+import { canonicalProfileRevision } from '../src/profile-revision.ts';
 
 const ca = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
@@ -42,4 +43,11 @@ test('profile revision links validate the slug, revision and CA before routing',
     `?view=certificates&ca=${ca}&profile=server-lab&revision=2`,
     '?view=profiles&profile=server-lab&revision=2',
   ]) assert.equal(readNavigation(search).detail, null, search);
+});
+
+test('exact profile lookup uses the same canonical identifier limits as links', () => {
+  assert.deepEqual(canonicalProfileRevision('server-lab', '1000000'), { id: 'server-lab', revision: 1000000 });
+  for (const [id, revision] of [['Server-Lab', '2'], ['a', '2'], ['server-lab', '0'], ['server-lab', '02'], ['server-lab', '1000001'], ['server/lab', '2']]) {
+    assert.equal(canonicalProfileRevision(id, revision), null);
+  }
 });
