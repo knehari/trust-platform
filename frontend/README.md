@@ -1,0 +1,19 @@
+# Management console (laboratory)
+
+React/TypeScript console for the read-only [management API](../docs/architecture/management-api-readonly.md). The UI calls the real `/v1` endpoints through Vite's local proxy; it contains no CA fixtures or mocked API responses. It shows scoped CA inventory, CA details, certificate metadata and audit metadata with loading, error and empty states. The CA list loads at most 100 rows at a time with a "Load more authorities" action. Certificate and audit lists also load at most 100 rows at a time; a "Load older" action follows the server's CA-scoped cursor until no more rows remain.
+
+`npm ci && npm run build` typechecks and builds the app. For local development, copy `.env.example` to `.env.local` and run `npm run dev`. Use an OIDC public client with Authorization Code + PKCE and callback `http://127.0.0.1:5173/auth/callback`. The backend must accept access tokens from that issuer and the audience `trust-api`. Session data is stored by `oidc-client-ts` in browser session storage; the UI never handles CA keys. A production deployment requires a same-origin reverse proxy for `/v1`, a real IAM service, TLS and security review.
+
+## Disposable browser-to-database smoke test
+
+This repository includes `npm run test-issuer`, a **loopback-only OIDC fixture**. It auto-approves a single ephemeral `lab-operator` and signs access tokens with a freshly generated key. It performs no human authentication and must never be used for deployment or real users. It intentionally binds only `127.0.0.1:8080` and puts only the fixed laboratory CA UUID `eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee` in the signed scope. The API also requires a separate server-owned database grant for that CA.
+
+In a disposable PostgreSQL 16 database, apply migrations `0001`–`0013`, insert that CA and another CA, and as database owner insert `management_reader_grant('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')`. Create a separate login with `trust_api_reader` and verify `tests/management_api_readonly.sql`. The [Compose runbook](../docs/development/lab-compose.md) automates this disposable seed. Then start three processes in this order:
+
+1. `cd frontend && npm ci && npm run test-issuer`
+2. From the repository root, set `TRUST_DATABASE_URL` to the restricted login, `TRUST_OIDC_ISSUER=http://127.0.0.1:8080`, `TRUST_OIDC_AUDIENCE=trust-api`, then run `cargo run -p trust-management-api --locked`.
+3. `cd frontend`, set `VITE_OIDC_ISSUER=http://127.0.0.1:8080` and `VITE_OIDC_CLIENT_ID=trust-console`, then run `npm run dev`.
+
+Open `http://127.0.0.1:5173`, sign in, and verify that only the allowed CA appears. The console should show empty certificate/audit views until the laboratory database contains real records. The test issuer's key changes on restart; the API refreshes its JWKS when it sees the new key ID, subject to a five-second retry bound. Previously cached keys expire from the verifier within 60 seconds. Do not copy this fixture into production Compose.
+
+Browser smoke evidence on 2026-10-17: Authorization Code + PKCE exchanged once; dashboard displayed the single authorized `Allowed CA` from a populated two-CA PostgreSQL database; detail, certificate empty state, audit empty state, logout and fresh login were exercised. This does not prove production IAM or an HTTP issuance path.

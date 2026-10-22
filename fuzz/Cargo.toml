@@ -1,0 +1,59 @@
+[package]
+name = "trust-platform-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+sha2 = "=0.10.9"
+trust-pki-core = { path = "../crates/pki-core", features = ["lab-software"] }
+trust-pki-crypto = { path = "../crates/pki-crypto", features = ["lab-software"] }
+
+# Not a member of the main workspace: cargo-fuzz needs a nightly toolchain.
+[workspace]
+
+[[bin]]
+name = "csr_p256"
+path = "fuzz_targets/csr_p256.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csr_rsa_pkcs1_lab"
+path = "fuzz_targets/csr_rsa_pkcs1_lab.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ca_certificate"
+path = "fuzz_targets/ca_certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crl_verify"
+path = "fuzz_targets/crl_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webauthn_assertion"
+path = "fuzz_targets/webauthn_assertion.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_checkpoint"
+path = "fuzz_targets/audit_checkpoint.rs"
+test = false
+doc = false
+bench = false

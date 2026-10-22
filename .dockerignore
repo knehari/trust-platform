@@ -1,0 +1,7 @@
+.git
+.env.lab
+**/node_modules
+**/target
+**/dist
+**/.DS_Store
+

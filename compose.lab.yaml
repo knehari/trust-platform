@@ -1,0 +1,120 @@
+name: trust-lab
+
+services:
+  db:
+    image: postgres:16.15-bookworm
+    environment:
+      POSTGRES_USER: trust_lab
+      POSTGRES_DB: trust_lab
+      POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_HOUSEKEEPING_PASSWORD: ${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_AUDITOR_PASSWORD: ${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_SEALER_PASSWORD: ${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}
+    volumes:
+      - trust_lab_pg:/var/lib/postgresql/data
+      - ./migrations:/lab/migrations:ro
+      - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_lab -d trust_lab"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [lab]
+
+  issuer:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    command: ["node", "dev/oidc-fixture.mjs"]
+    environment:
+      TRUST_OIDC_LISTEN: 0.0.0.0
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081" # API shares this network namespace for exact loopback OIDC issuer URL.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/.well-known/openid-configuration').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [lab]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    network_mode: service:issuer
+    depends_on:
+      db: {condition: service_healthy}
+      issuer: {condition: service_healthy}
+    environment:
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8080
+      TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_API_BIND: 0.0.0.0:8081
+      # Plain HTTP on the Compose network only (lab opt-out, logged); the
+      # published port binds host loopback.
+      TRUST_HTTP_TLS: disable-lab
+      TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      # Disposable lab network only. Deployments must use the default verify-full
+      # mode with TRUST_DATABASE_CA_FILE (see docs/architecture/management-api-readonly.md).
+      TRUST_DATABASE_TLS: disable-lab
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Scheduled lab database jobs (scripts/lab/jobs.sh), each under its own
+  # non-privileged login. Output: one "job=<name> exit=<status>" line per job.
+  jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobs
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      TRUST_LAB_HOUSEKEEPING_URL: postgresql://trust_housekeeping_lab:${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_AUDITOR_URL: postgresql://trust_auditor_lab:${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_SEALER_URL: postgresql://trust_sealer_lab:${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_JOBS_INTERVAL_SECONDS: "300"
+      # Disposable lab network only (see the api service).
+      TRUST_DATABASE_TLS: disable-lab
+      TRUST_WEBAUTHN_RP_ID: officer.lab.invalid
+      TRUST_WEBAUTHN_ORIGIN: https://officer.lab.invalid
+    volumes:
+      # The audit chain checkpoints. Outside the database, but on the same
+      # host: a lab stand-in for a separate anchoring system.
+      - trust_lab_checkpoints:/var/lib/trust-jobs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/trust-lab-jobs", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [lab]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      TRUST_API_DEV_TARGET: http://issuer:8081
+      VITE_OIDC_ISSUER: http://127.0.0.1:8080
+      VITE_OIDC_CLIENT_ID: trust-console
+    ports:
+      - "127.0.0.1:5173:5173"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [lab]
+
+volumes:
+  trust_lab_pg:
+  trust_lab_checkpoints:
+
+networks:
+  lab:
+
