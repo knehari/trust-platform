@@ -297,6 +297,13 @@ jobs:
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test signed_status_change_postgres --features postgres-store,lab-software --locked
           # The offline audit covers every CA those tests signed for, altered ones included.
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/signed_evidence_audit_all.sh
+          # A logical backup of that populated database restores with rows, privileges,
+          # evidence and audit chain intact; a stale backup fails the later checkpoint.
+          psql "postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" -X -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE trust_revocation_restored' >/dev/null
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_revocation_restored" \
+            bash tests/revocation_backup_restore.sh
           cargo build -p trust-pki-core --example crash_recovery_lab --features postgres-store,lab-software --locked
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crash_recovery_sigkill.sh "$CONTAINER"
       - name: Page scoped management history beyond 100 rows

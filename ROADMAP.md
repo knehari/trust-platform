@@ -99,6 +99,7 @@ not an acceptance of either ADR.
 | Break-glass (minimal) | 0045–0046, 0048, 0051 | A DBA-enrolled emergency key whose custodian person never signs on the CA. It can only re-enrol admin keys, and only while the CA has fewer than two. Every use is audited and alerted until two other admins review it. Reviews require evidence that re-verifies, when the challenge is issued and again when the review is written, and a key from a use whose evidence does not re-verify signs nothing through the Rust core. Registry enrolments are serialised. |
 | Challenges | 0049, 0053 | At most 16 open challenges per actor and CA. Challenges that expired unused are purged after 30 days; consumed ones are kept as evidence. Concurrent consumption is tested. |
 | Audit and evidence | 0026–0027, 0041 | DDL and grants are audited by event triggers. A sealed hash chain with signed checkpoints is anchored outside the database (lab); the anchoring job uses verified TLS and refuses privileged logins. Offline re-verification of every signature (`signed_evidence_audit`, one CA or `--all`, exit 3 on failure). Database clock skew is checked against the Rust core. |
+| Backup and restore | `tests/revocation_backup_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster. Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
 | Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Per identity, they allow 60 requests per minute (the read API 300) and 64 KiB bodies; responses carry `no-store` and `nosniff`. The CRL distribution point reuses a verified CRL for 30 s. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`. |
 
 Progress against the historical proposed versions (labels only):
@@ -142,7 +143,11 @@ Engineering backlog:
   - server-side logging of role changes (pgaudit);
   - storage of the external audit anchor;
   - authenticated time (NTS);
-  - online upgrade and backup/restore of the revocation schema with RTO/RPO.
+  - online upgrade, RTO/RPO and restore into a fresh cluster (a
+    same-cluster logical restore is tested);
+  - after restoring an older backup: a CRL number floor and re-applying
+    revocations from the last published CRL (today the rollback is only
+    detected, by the external checkpoint).
 - **Residual lab risks:**
   - The database cannot verify ECDSA, so a holder of a service role could
     store a forged assertion. Re-verification exposes it; a forged break-glass
