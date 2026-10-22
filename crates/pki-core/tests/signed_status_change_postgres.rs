@@ -3138,3 +3138,93 @@ fn approvals_reverify_the_makers_stored_signature() {
         CertificateStatus::Valid
     );
 }
+
+/// The same for CA administration: a proposal stored with a forged maker
+/// signature (straight to the database) is not approved through the Rust
+/// core, which re-verifies the maker's stored evidence first.
+#[test]
+fn admin_approvals_reverify_the_makers_stored_signature() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let ca = lab.ca_id.clone();
+    let mut owner = Client::connect(&lab.url, NoTls).unwrap();
+    let mut boot = PgRevocationStore::connect_lab(&lab.url).unwrap();
+    let (mut admin_a, mut admin_b) = (Authenticator::new(), Authenticator::new());
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let (a_id, b_id) = (credential(3), credential(4));
+    boot.enroll_admin_credential(
+        &ca,
+        &a_id,
+        &ADMIN_A,
+        "person-admin-a",
+        &admin_a.public_key(),
+    )
+    .unwrap();
+    boot.enroll_admin_credential(
+        &ca,
+        &b_id,
+        &ADMIN_B,
+        "person-admin-b",
+        &admin_b.public_key(),
+    )
+    .unwrap();
+    owner
+        .execute(
+            "UPDATE ca_revocation_policy SET signed_admin_required = true
+             WHERE ca_id = $1::text::uuid",
+            &[&ca],
+        )
+        .unwrap();
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    let digest = lab
+        .admin
+        .admin_challenge(&challenge)
+        .unwrap()
+        .claim
+        .digest();
+    let (data, client, _) = admin_a.sign(&digest);
+    let (_, _, forged) = Authenticator::new().sign(&digest);
+    let mut direct = Client::connect(&url_as(&url, "trust_ca_admin"), NoTls).unwrap();
+    let change: String = direct
+        .query_one(
+            "SELECT propose_signed_admin_change($1::text::uuid, $2, $3, $4, $5,
+                                                NULL, NULL, $6, $7, NULL, NULL)::text",
+            &[
+                &challenge,
+                &a_id,
+                &data,
+                &client,
+                &forged,
+                &THIRD.issuer,
+                &THIRD.subject,
+            ],
+        )
+        .unwrap()
+        .get(0);
+    let approval = lab
+        .admin
+        .issue_admin_approval_challenge(AdminFamily::CaAdmin, &change, &ADMIN_B, 120)
+        .unwrap();
+    let refused = admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap_err();
+    assert!(
+        matches!(refused, RevocationStoreError::InvalidAssertion(_)),
+        "{refused:?}"
+    );
+    let granted: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM revocation_officer_grant
+             WHERE ca_id = $1::text::uuid AND subject = 'third'",
+            &[&ca],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(granted, 0);
+}

@@ -1488,6 +1488,24 @@ impl PgRevocationStore {
             stored_count,
         )
         .map_err(RevocationStoreError::InvalidAssertion)?;
+        // As for status changes: the maker's stored signature is re-verified
+        // before a checker's approval completes the change (the database
+        // cannot verify ECDSA).
+        if challenge.purpose == SignedStep::Approve {
+            let family = match challenge.claim.family {
+                "CA_ADMIN" => AdminFamily::CaAdmin,
+                "CREDENTIAL" => AdminFamily::Credential,
+                "ADMIN_CREDENTIAL" => AdminFamily::AdminCredential,
+                _ => return Err(RevocationStoreError::InconsistentResult),
+            };
+            let change_id = challenge
+                .claim
+                .change_id
+                .as_ref()
+                .map(hex_uuid)
+                .ok_or(RevocationStoreError::InconsistentResult)?;
+            self.reverify_admin_evidence(family, &change_id, rp, true)?;
+        }
         match params {
             Some(p) => {
                 let row = self.client.query_one(
