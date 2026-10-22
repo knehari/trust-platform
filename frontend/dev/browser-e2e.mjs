@@ -107,15 +107,23 @@ try {
 
   // Profile drafts are readable only under the signed and granted CA scope.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).waitFor();
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.getByText('These proposals are not approved or active.').waitFor();
-  await page.getByRole('button', { name: 'View proposal detail' }).click();
+  await page.getByRole('button', { name: 'View proposal detail' }).first().click();
   const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
   await profileDialog.waitFor();
   await profileDialog.getByText('SNAPSHOT SHA-256').waitFor();
   assert.match(await profileDialog.textContent(), /[0-9a-f]{64}/);
   await profileDialog.getByRole('button', { name: 'Close proposal detail' }).click();
   await profileDialog.waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: 'Select for comparison' }).first().click();
+  await page.getByRole('button', { name: 'Select for comparison' }).click();
+  await page.getByRole('button', { name: 'Compare selected revisions' }).click();
+  const comparison = page.getByRole('dialog', { name: 'Revision comparison' });
+  await comparison.waitFor();
+  await comparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
+  await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
+  await comparison.waitFor({ state: 'hidden' });
   assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
   await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}`);
   await page.getByRole('alert').first().waitFor();
