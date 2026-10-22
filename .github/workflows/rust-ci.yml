@@ -187,7 +187,9 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0013_management_reader_grants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0014_certificate_subject_cn.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0015_verified_certificate_metadata.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0016_profile_draft_catalogue.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_draft.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
@@ -225,7 +227,7 @@ jobs:
           test -n "$CONTAINER"
           docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
           DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
-          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql; do
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql; do
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null
