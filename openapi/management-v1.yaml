@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Sovereign Trust Platform management API
   version: 0.1.0-lab
-  description: Read-only laboratory API. No issuance or production qualification is implied. Every HTTP response carries a generated X-Request-Id header for diagnostic correlation; it is not signed audit evidence.
+  description: Read-only laboratory API. No issuance or production qualification is implied. Every HTTP response carries a generated X-Request-Id header for diagnostic correlation; it is not signed audit evidence. Each verified reader identity may make 300 data requests per minute; beyond that data routes answer 429 before any database access.
 servers:
   - url: http://127.0.0.1:8081
 security:

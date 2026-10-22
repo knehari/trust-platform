@@ -3,6 +3,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 mod auth;
 mod database;
+// Shared with the lab write APIs; this binary uses its own budget.
+#[allow(dead_code)]
+mod rate_limit;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -43,6 +46,17 @@ struct AppState {
     http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
     readiness_cache: Arc<Mutex<ReadinessCache>>,
+    /// Per-identity request budget (READS_PER_MINUTE), before any database
+    /// access.
+    limiter: Arc<rate_limit::RateLimiter>,
+}
+
+/// Requests one reader identity may make per minute; larger than the
+/// write APIs' budget because the console pages through history.
+const READS_PER_MINUTE: u32 = 300;
+
+fn reads_limiter() -> rate_limit::RateLimiter {
+    rate_limit::RateLimiter::new(READS_PER_MINUTE, std::time::Duration::from_secs(60))
 }
 
 #[derive(Default)]
@@ -166,6 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        limiter: Arc::new(reads_limiter()),
     });
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -296,7 +311,7 @@ fn restricted_reader_role(db: &mut Client) -> Result<bool, postgres::Error> {
     .map(|row| row.get::<_, bool>(0))
 }
 
-async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+async fn authorize(headers: &HeaderMap, state: &AppState) -> Result<Claims, StatusCode> {
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -304,12 +319,16 @@ async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claim
     let token = raw
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let claims = verifier
+    let claims = state
+        .verifier
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
         return Err(StatusCode::FORBIDDEN);
+    }
+    if !state.limiter.allow(&claims.iss, &claims.sub) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     Ok(claims)
 }
@@ -349,7 +368,7 @@ async fn list_cas(
     headers: HeaderMap,
     Query(page): Query<CaPaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let after = page
         .after
         .map(|value| {
@@ -410,7 +429,7 @@ async fn get_ca(
     headers: HeaderMap,
     Path(ca_id): Path<String>,
 ) -> Result<Json<Ca>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -439,7 +458,7 @@ async fn list_certificates(
     Path(ca_id): Path<String>,
     Query(page): Query<PaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Certificate>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let cursor = parse_history_cursor(page.before)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
@@ -487,7 +506,7 @@ async fn list_audit(
     Path(ca_id): Path<String>,
     Query(page): Query<PaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Audit>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let cursor = parse_history_cursor(page.before)?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
@@ -632,6 +651,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
         });
         let mut valid_cursor = None;
         for (suffix, id_field) in [("certificates", "request_id"), ("audit", "event_id")] {
@@ -716,6 +736,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
         });
         let (status, cursor, first) = history_page(&app, &token, "/v1/cas").await;
         assert_eq!(status, StatusCode::OK);
@@ -833,6 +854,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
         };
         let app = router(state.clone());
         let held_http = state
@@ -911,6 +933,7 @@ mod tests {
                 "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing",
             ),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
             ..state.clone()
         });
         let liveness = unavailable_app
@@ -1118,5 +1141,73 @@ mod tests {
                 .iter()
                 .all(|ca| ca["ca_id"] == "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"));
         }
+    }
+
+    /// One reader identity gets at most READS_PER_MINUTE requests per
+    /// minute (429 beyond), counted after authentication and before any
+    /// database access; another identity is unaffected.
+    #[tokio::test]
+    async fn reads_are_rate_limited_per_identity() {
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"rate-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("rate-test".into());
+        let now = jsonwebtoken::get_current_timestamp();
+        let token = |subject: &str| {
+            encode(
+                &header,
+                &json!({
+                    "iss":"https://issuer.example.test", "aud":"trust-api", "sub":subject,
+                    "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                    "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
+                }),
+                &signer,
+            )
+            .unwrap()
+        };
+        let app = router(AppState {
+            verifier,
+            database: Database::lab_plaintext("host=/nonexistent/trust-db-socket"),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
+        });
+        // Another CA: refused (403) before the database, so none is needed.
+        let uri = "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff";
+        let call = |token: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        let reader = token("reader");
+        for _ in 0..300 {
+            assert_eq!(call(reader.clone()).await, StatusCode::FORBIDDEN);
+        }
+        assert_eq!(call(reader).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(call(token("another-reader")).await, StatusCode::FORBIDDEN);
     }
 }
