@@ -80,6 +80,34 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/profile-drafts:
+    get:
+      summary: List inert profile-draft revisions for one scoped CA, at most 100 per page
+      description: Draft records are unapproved proposals and cannot authorize issuance. Both signed CA scope and the current server-managed reader grant are required.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: query
+          name: after
+          required: false
+          description: Pass X-Next-Cursor from the preceding page unchanged; malformed cursors return 400.
+          schema: { type: string, maxLength: 72 }
+      responses:
+        '200':
+          description: Profile-draft revisions ordered by profile ID and revision.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileDraft'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -297,6 +325,22 @@ components:
         display_name: { type: string }
         policy_version: { type: string }
         created_at: { type: string, format: date-time }
+    ProfileDraft:
+      type: object
+      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        display_name: { type: string }
+        policy_version: { type: string }
+        max_validity_days: { type: integer }
+        max_dns_sans: { type: integer }
+        proposed_dns_zones: { type: array, items: { type: string } }
+        proposed_signature_suites: { type: array, items: { type: string } }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        status: { type: string, const: DRAFT }
     Certificate:
       type: object
       required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
