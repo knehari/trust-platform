@@ -35,6 +35,8 @@ Each verified identity (token issuer and subject) may make 60 requests per minut
 
 A proposal older than the CA's `admin_proposal_max_age_hours` (default 168 hours, migration 0052) is listed with `expired: true`, and no approval challenge is issued for it (409, before anyone signs); reject it and propose it again.
 
+The pending list also shows `maker_evidence_verified`. An approval challenge for a proposal whose stored maker signature does not re-verify in the Rust core is refused (409) before anyone signs; such a proposal can still be rejected.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);

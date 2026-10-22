@@ -148,6 +148,8 @@ struct PendingResponse {
     maker_signed: bool,
     /// Past the CA's maximum proposal age (0052): it can only be rejected.
     expired: bool,
+    /// The maker's stored signature re-verifies in the Rust core.
+    maker_evidence_verified: bool,
 }
 
 #[derive(Serialize)]
@@ -507,6 +509,7 @@ async fn decision_challenge(
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let (challenge_id, challenge) = with_store(&state, move |store| {
         let ca = store.admin_change_ca(family, &change_id)?;
         in_scope(ca.clone(), &ca_ids)?;
@@ -520,6 +523,20 @@ async fn decision_challenge(
                 {
                     return Err(Failure::Refused(StatusCode::CONFLICT));
                 }
+            }
+            // Nobody signs an approval of a proposal whose stored maker
+            // signature does not re-verify (the database cannot check it).
+            let rp = RelyingParty {
+                rp_id: &rp_id,
+                origin: &origin,
+            };
+            if store
+                .verify_pending_admin_maker(family, &change_id, &rp)
+                .is_err()
+            {
+                write_log(serde_json::json!({"event":"maker_evidence_refused",
+                                             "change_id":change_id}));
+                return Err(Failure::Refused(StatusCode::CONFLICT));
             }
         }
         let checker = OfficerIdentity {
@@ -597,15 +614,29 @@ async fn pending_admin_changes(
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let pending = with_store(
-        &state,
-        move |store| Ok(store.pending_admin_changes(&ca_id)?),
-    )
+    let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
+    let pending = with_store(&state, move |store| {
+        let rp = RelyingParty {
+            rp_id: &rp_id,
+            origin: &origin,
+        };
+        let changes = store.pending_admin_changes(&ca_id)?;
+        Ok(changes
+            .into_iter()
+            .map(|change| {
+                let verified = change.maker_signed
+                    && store
+                        .verify_pending_admin_maker(change.family, &change.change_id, &rp)
+                        .is_ok();
+                (change, verified)
+            })
+            .collect::<Vec<_>>())
+    })
     .await?;
     let encode = |bytes: &Option<Vec<u8>>| bytes.as_ref().map(|b| URL_SAFE_NO_PAD.encode(b));
     let body: Vec<PendingResponse> = pending
         .into_iter()
-        .map(|change| PendingResponse {
+        .map(|(change, maker_evidence_verified)| PendingResponse {
             family: family_path(change.family),
             kind: change.kind,
             certificate_der: encode(&change.certificate_der),
@@ -621,6 +652,7 @@ async fn pending_admin_changes(
             proposed_at_unix: change.proposed_at_unix,
             maker_signed: change.maker_signed,
             expired: change.expired,
+            maker_evidence_verified,
         })
         .collect();
     Ok((StatusCode::OK, Json(body)).into_response())
@@ -1278,6 +1310,7 @@ mod tests {
         assert_eq!(pending[0]["officer_subject"], "officer-1");
         assert_eq!(pending[0]["maker_subject"], "admin-a");
         assert_eq!(pending[0]["maker_signed"], true);
+        assert_eq!(pending[0]["maker_evidence_verified"], true);
         let expected = trust_pki_core::revocation_store::officer_grant_digest(
             OfficerGrantAction::Grant,
             &OfficerIdentity {
@@ -1986,6 +2019,101 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{issued}");
+        drop(app);
+        tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
+            .await
+            .unwrap();
+    }
+
+    /// A checker sees whether the maker's stored signature of a CA-admin
+    /// proposal re-verifies, and gets no approval challenge (409) for a
+    /// proposal stored with a forged one; it can still be rejected.
+    #[tokio::test]
+    async fn forged_admin_maker_evidence_is_flagged_and_not_offered_for_approval() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, change) = tokio::task::spawn_blocking(move || {
+            let (ca, a_id, _, mut a, _) = setup(&setup_url);
+            let mut store = PgRevocationStore::connect_lab(&setup_url).unwrap();
+            let officer = OfficerIdentity {
+                issuer: ISSUER,
+                subject: "officer-forged",
+            };
+            let grant = AdminChange::Officer(OfficerGrantAction::Grant, &officer);
+            let admin_a = OfficerIdentity {
+                issuer: ISSUER,
+                subject: "admin-a",
+            };
+            let id = store
+                .issue_admin_proposal_challenge(&ca, &grant, &admin_a, 120)
+                .unwrap();
+            let (data, client, _) = store_sign(&mut store, &mut a, &a_id, &id);
+            let (_, _, forged) = store_sign(&mut store, &mut Authenticator::new(), &a_id, &id);
+            let mut direct = postgres::Client::connect(
+                &format!("{setup_url}?options=-crole%3Dtrust_ca_admin"),
+                postgres::NoTls,
+            )
+            .unwrap();
+            let change: String = direct
+                .query_one(
+                    "SELECT propose_signed_admin_change($1::text::uuid, $2, $3, $4, $5,
+                                                        NULL, NULL, $6, $7, NULL, NULL)::text",
+                    &[
+                        &id,
+                        &a_id,
+                        &data,
+                        &client,
+                        &forged,
+                        &ISSUER,
+                        &"officer-forged",
+                    ],
+                )
+                .unwrap()
+                .get(0);
+            (ca, change)
+        })
+        .await
+        .unwrap();
+        let oidc = oidc();
+        let (app, session) = app_with_session(
+            oidc.verifier.clone(),
+            &url_with_login(&url, "trust_ca_admin_api_ci"),
+        );
+        let b_token = oidc.token("admin-b", &[ADMIN_ROLE], &[&ca]);
+        let (status, pending) = get(
+            &app,
+            &format!("/v1/cas/{ca}/pending-admin-changes"),
+            &b_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{pending}");
+        assert_eq!(pending[0]["change_id"], change.as_str());
+        assert_eq!(pending[0]["maker_signed"], true);
+        assert_eq!(pending[0]["maker_evidence_verified"], false);
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/admin-changes/ca-admin/{change}/approval-challenges"),
+                Some(&b_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(
+                &app,
+                &format!("/v1/admin-changes/ca-admin/{change}/rejection-challenges"),
+                Some(&b_token),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
         drop(app);
         tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
             .await

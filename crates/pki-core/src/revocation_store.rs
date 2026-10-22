@@ -1985,6 +1985,18 @@ impl PgRevocationStore {
         self.reverify_admin_evidence(family, change_id, rp, false)
     }
 
+    /// Re-verifies a pending CA-admin proposal's stored maker signature (as
+    /// before an approval is written), so a checker can be told before
+    /// signing.
+    pub fn verify_pending_admin_maker(
+        &mut self,
+        family: AdminFamily,
+        change_id: &str,
+        rp: &RelyingParty<'_>,
+    ) -> Result<(), RevocationStoreError> {
+        self.reverify_admin_evidence(family, change_id, rp, true)
+    }
+
     /// `reverify_admin_change`, or for a still-open proposal (`pending`)
     /// its maker signature alone.
     fn reverify_admin_evidence(
