@@ -52,7 +52,10 @@ It cannot revoke, issue, grant officers, remove keys or approve anything. Its
    (`GET /v1/cas/{ca}/breakglass-uses`,
    `POST /v1/breakglass-uses/{use}/review-challenges`, then the assertion
    route). Their `REVIEW` claim names the use and its
-   claim digest. The use is closed at the second review.
+   claim digest. The use is closed at the second review. Before a review is
+   written, the Rust core re-verifies the use's stored evidence, including
+   earlier reviews, so a forged first review cannot be completed by an
+   honest second one.
 
 ## Alerts and audit
 
