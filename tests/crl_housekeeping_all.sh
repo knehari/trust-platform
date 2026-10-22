@@ -9,7 +9,7 @@ set -euo pipefail
 db="$TRUST_CI_DATABASE_URL"
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
-fail() { echo "FAIL: $*" >&2; cat "$temp/out" "$temp/err" 2>/dev/null >&2; exit 1; }
+fail() { echo "FAIL: $*" >&2; cat "$temp/out" "$temp/err" >&2 2>/dev/null; exit 1; }
 sql() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" -c "$1"; }
 
 # A CA with a registered issuer and no CRL yet: due, so the job must alert.

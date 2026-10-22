@@ -169,11 +169,11 @@ Engineering backlog:
   - server-side logging of role changes (pgaudit);
   - storage of the external audit anchor;
   - authenticated time (NTS);
-  - online upgrade, RTO/RPO and restore into a fresh cluster (a
-    same-cluster logical restore is tested);
-  - after restoring an older backup: re-applying revocations from the last
-    published CRL, and a runbook (the rollback is detected by the external
-    checkpoint; 0058 lets a superuser raise the CRL number floor).
+  - online upgrade and RTO/RPO (logical restores into the same cluster and
+    into a fresh cluster are rehearsed; re-applying revocations from the
+    last published CRL after an older backup has a tool and a runbook);
+  - recovering certificates issued after the backup a database was
+    restored from (reported by the restore tool, not recovered).
 - **Residual lab risks:**
   - The database cannot verify ECDSA, so a holder of a service role could
     store a forged assertion. Re-verification exposes it; a forged break-glass

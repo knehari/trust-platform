@@ -31,7 +31,7 @@ restore_bin=${TRUST_PG_RESTORE_BIN:-pg_restore}
 umask 077
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
-fail() { echo "FAIL: $*" >&2; cat "$temp/out" 2>/dev/null >&2; exit 1; }
+fail() { echo "FAIL: $*" >&2; cat "$temp/out" >&2 2>/dev/null; exit 1; }
 sql() { local db="$1"; shift; psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" -c "$1"; }
 
 [ "$(sql "$src" 'SELECT current_database()')" != "$(sql "$dst" 'SELECT current_database()')" ] \

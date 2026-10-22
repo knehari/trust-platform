@@ -67,6 +67,41 @@ target cluster.
 7. **Working store:** the restored database seals a new record and extends
    its own checkpoint.
 
+## Restoring into a fresh cluster
+
+`pg_dump` does not carry roles, and this schema depends on them. The NOLOGIN
+owner roles own the `SECURITY DEFINER` functions, and each capability role
+holds its grants. Part of the schema (core tables such as `ca`,
+`certificate` and `audit_event`, about 50 functions, and the two
+schema-change event triggers) is owned by the login that ran the
+migrations. None of those functions is `SECURITY DEFINER`.
+`tests/revocation_fresh_cluster_restore.sh` rehearses the restore into a
+fresh PostgreSQL 16 cluster (a second container in CI):
+
+1. It lists the roles the dump needs from the source catalog: owners of
+   public objects and event triggers, and ACL grantees.
+2. A restore without them must fail as a whole (`role ... does not
+   exist`), and the target must stay empty.
+3. Each missing role is created `NOLOGIN`, including one named after the
+   migration login: ownership needs the name, not a login. No credential
+   is copied. PostgreSQL requires an event trigger's owner to be a
+   superuser, so the owner of the event triggers is created
+   `NOLOGIN SUPERUSER`. The script checks that no other provisioned role
+   can log in or is privileged.
+4. `pg_restore --single-transaction --exit-on-error` runs with owners and
+   ACLs. The fingerprint must then match the source (pgcrypto's functions
+   are recreated by `CREATE EXTENSION` and owned by the restoring
+   superuser, so they are compared as extension versions instead). The
+   privilege invariants must pass, and `reserve_crl` must work under the
+   restored definer owners.
+
+Mutations: `TRUST_PG_RESTORE_BIN` wrappers adding `--no-owner` or
+`--no-acl` both fail with `restored database differs from the source`.
+
+Choosing which superuser owns the event triggers, and which login runs
+future migrations, is an operator decision. In the rehearsal it is a
+NOLOGIN role with the old login's name.
+
 ## Evidence that it detects a bad restore
 
 The checks were mutated without changing the script, by substituting
@@ -173,11 +208,9 @@ Tested by:
 
 ## Limits
 
-- Same cluster only. Restoring into a fresh cluster needs the trust roles
-  and logins first (`pg_dumpall --globals-only` or the role migrations).
-  That is not exercised for the revocation schema. The management schema
-  rehearsal covers it for its reader role
-  (`docs/operations/lab-management-backup-restore.md`).
+- Logins are not restored. Service logins (with their passwords or
+  certificates) are created again in the new cluster and granted their
+  capability roles.
 - Not covered:
   - point-in-time recovery, or a backup taken under concurrent signing;
   - encryption, off-site retention or custody of the archive;

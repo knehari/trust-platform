@@ -454,6 +454,28 @@ jobs:
           TRUST_RESTORE_ADMIN_URL="$TARGET_URL" \
           TRUST_RESTORE_READER_URL="postgresql://trust_restore_login_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh" \
             bash tests/management_restored_login.sh
+      - name: Restore populated revocation database into fresh cluster
+        run: |
+          set -euo pipefail
+          FRESH="trust-revocation-fresh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --rm --name "$FRESH" \
+            -e POSTGRES_USER=trust_restore_ci \
+            -e POSTGRES_PASSWORD=test-only-not-secret \
+            -e POSTGRES_DB=trust_revocation_fresh \
+            -p 127.0.0.1:55434:5432 postgres:16 >/dev/null
+          trap 'docker rm -f "$FRESH" >/dev/null 2>&1 || true' EXIT
+          TARGET_URL="postgresql://trust_restore_ci:test-only-not-secret@127.0.0.1:55434/trust_revocation_fresh"
+          for attempt in $(seq 1 30); do
+            if docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_revocation_fresh >/dev/null 2>&1 \
+               && psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          test "$(psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1')" = 1
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+          TRUST_FRESH_TARGET_URL="$TARGET_URL" \
+            bash tests/revocation_fresh_cluster_restore.sh
       - name: Management API requires verified TLS to PostgreSQL
         run: bash tests/management_db_tls.sh
       - name: Roll back interrupted management restore

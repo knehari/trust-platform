@@ -21,7 +21,7 @@ dir="${1:?usage: $0 <export dir>}/restore"
 umask 077
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
-fail() { echo "FAIL: $*" >&2; cat "$temp/out" "$temp/err" 2>/dev/null >&2; exit 1; }
+fail() { echo "FAIL: $*" >&2; cat "$temp/out" "$temp/err" >&2 2>/dev/null; exit 1; }
 sql() { local db="$1"; shift; psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" -c "$1"; }
 read -r ca s3 lost <"$dir/ids"
 
