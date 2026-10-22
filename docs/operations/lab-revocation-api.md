@@ -90,6 +90,8 @@ The pending list shows `maker_evidence_verified`: whether the maker's stored sig
 
 An assertion is refused with 503 while the database clock and the Rust core's disagree beyond 2 seconds (`ClockSkew`): challenge expiry and deadlines use the database clock.
 
+Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` (`response_headers.rs`): challenges and evidence are not kept by browsers or proxies.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);

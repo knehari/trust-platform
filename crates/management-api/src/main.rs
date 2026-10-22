@@ -6,6 +6,7 @@ mod database;
 // Shared with the lab write APIs; this binary uses its own budget.
 #[allow(dead_code)]
 mod rate_limit;
+mod response_headers;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -203,6 +204,7 @@ fn router(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/ready", get(ready))
         .merge(data_routes)
+        .layer(middleware::from_fn(response_headers::security_headers))
         .layer(middleware::from_fn(log_request))
         .with_state(state)
 }
@@ -1209,5 +1211,42 @@ mod tests {
         }
         assert_eq!(call(reader).await, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(call(token("another-reader")).await, StatusCode::FORBIDDEN);
+    }
+
+    /// Every response forbids caching and content sniffing (CA data).
+    #[tokio::test]
+    async fn responses_forbid_caching_and_sniffing() {
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"headers-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let app = router(AppState {
+            verifier,
+            database: Database::lab_plaintext("host=/nonexistent/trust-db-socket"),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
+        });
+        for uri in ["/v1/cas", "/v1/health"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.headers()["cache-control"], "no-store", "{uri}");
+            assert_eq!(
+                response.headers()["x-content-type-options"],
+                "nosniff",
+                "{uri}"
+            );
+        }
     }
 }

@@ -39,6 +39,8 @@ The pending list also shows `maker_evidence_verified`. An approval challenge for
 
 An assertion is refused with 503 while the database clock and the Rust core's disagree beyond 2 seconds (`ClockSkew`): challenge expiry and deadlines use the database clock.
 
+Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff` (`response_headers.rs`): challenges and evidence are not kept by browsers or proxies.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);

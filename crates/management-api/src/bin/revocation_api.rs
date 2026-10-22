@@ -47,6 +47,8 @@ mod auth;
 mod database;
 #[path = "../rate_limit.rs"]
 mod rate_limit;
+#[path = "../response_headers.rs"]
+mod response_headers;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -186,6 +188,9 @@ fn router(state: AppState) -> Router {
             "/v1/cas/{ca_id}/precautionary-holds",
             get(precautionary_holds),
         )
+        .layer(axum::middleware::from_fn(
+            response_headers::security_headers,
+        ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -1725,5 +1730,23 @@ mod tests {
         tokio::task::spawn_blocking(move || drop(session.lock().unwrap().take()))
             .await
             .unwrap();
+    }
+
+    /// Every response forbids caching and content sniffing: challenges,
+    /// evidence and CA data must not be kept by browsers or proxies.
+    #[tokio::test]
+    async fn responses_forbid_caching_and_sniffing() {
+        let app = app(oidc().verifier.clone(), "postgresql://unused.invalid/none");
+        let response = app
+            .oneshot(
+                Request::get("/v1/cas/5eedc0de-0000-4000-8000-000000000001/pending-status-changes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     }
 }
