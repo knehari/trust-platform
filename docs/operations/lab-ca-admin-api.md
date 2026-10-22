@@ -37,6 +37,8 @@ A proposal older than the CA's `admin_proposal_max_age_hours` (default 168 hours
 
 The pending list also shows `maker_evidence_verified`. An approval challenge for a proposal whose stored maker signature does not re-verify in the Rust core is refused (409) before anyone signs; such a proposal can still be rejected.
 
+An assertion is refused with 503 while the database clock and the Rust core's disagree beyond 2 seconds (`ClockSkew`): challenge expiry and deadlines use the database clock.
+
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);

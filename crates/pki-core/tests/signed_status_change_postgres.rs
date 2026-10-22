@@ -3369,3 +3369,69 @@ fn auditor_lists_the_cas_with_signed_evidence() {
     assert!(cas.contains(&signed.ca_id));
     assert!(!cas.contains(&quiet.ca_id));
 }
+
+/// Signed submissions fail closed on an untrusted clock (ADR-0006
+/// condition 6): when the database clock and the Rust core's disagree
+/// beyond the bound, nothing is signed into the database (challenge
+/// expiry, hold deadlines and review deadlines use the database clock).
+#[test]
+fn signed_submissions_refuse_a_skewed_database_clock() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    fn a_minute_ahead() -> i64 {
+        trust_pki_core::clock::system_clock_us() + 60_000_000
+    }
+    let challenge = lab.propose_challenge();
+    lab.officer.set_clock_source(a_minute_ahead);
+    let refused = lab.submit(&challenge, true, None).unwrap_err();
+    assert!(
+        matches!(refused, RevocationStoreError::ClockSkew),
+        "{refused:?}"
+    );
+    assert!(lab
+        .officer
+        .pending_status_changes(&lab.ca_id)
+        .unwrap()
+        .is_empty());
+    // With the clocks agreeing again, the same challenge is still usable.
+    lab.officer
+        .set_clock_source(trust_pki_core::clock::system_clock_us);
+    lab.submit(&challenge, true, None).unwrap();
+
+    let grant = AdminChange::Officer(OfficerGrantAction::Grant, &THIRD);
+    let ca = lab.ca_id.clone();
+    let mut admin_a = Authenticator::new();
+    let credential = |tag: u8| {
+        let mut id = ca.replace('-', "").into_bytes();
+        id.push(tag);
+        id
+    };
+    let a_id = credential(3);
+    PgRevocationStore::connect_lab(&lab.url)
+        .unwrap()
+        .enroll_admin_credential(
+            &ca,
+            &a_id,
+            &ADMIN_A,
+            "person-admin-a",
+            &admin_a.public_key(),
+        )
+        .unwrap();
+    let challenge = lab
+        .admin
+        .issue_admin_proposal_challenge(&ca, &grant, &ADMIN_A, 120)
+        .unwrap();
+    lab.admin.set_clock_source(a_minute_ahead);
+    let refused = admin_submit(
+        &mut lab.admin,
+        &mut admin_a,
+        &a_id,
+        &challenge,
+        Some(&grant),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(refused, RevocationStoreError::ClockSkew),
+        "{refused:?}"
+    );
+}

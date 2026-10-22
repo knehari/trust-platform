@@ -88,6 +88,8 @@ Each verified identity (token issuer and subject) may make 60 requests per minut
 
 The pending list shows `maker_evidence_verified`: whether the maker's stored signature re-verifies in the Rust core. An approval challenge for a proposal whose maker signature does not re-verify is refused (409) before anyone signs, and an approval is never written for one.
 
+An assertion is refused with 503 while the database clock and the Rust core's disagree beyond 2 seconds (`ClockSkew`): challenge expiry and deadlines use the database clock.
+
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);

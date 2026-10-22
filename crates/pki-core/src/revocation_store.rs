@@ -982,6 +982,7 @@ impl PgRevocationStore {
         assertion: &Assertion<'_>,
         rp: &RelyingParty<'_>,
     ) -> Result<String, RevocationStoreError> {
+        self.require_trusted_clock()?;
         let challenge = self.signed_challenge(challenge_id)?;
         let credential = self.stored_credential(&challenge.claim.ca_id, credential_id)?;
         if challenge.consumed
@@ -1481,6 +1482,7 @@ impl PgRevocationStore {
         rp: &RelyingParty<'_>,
         change: Option<&AdminChange<'_>>,
     ) -> Result<String, RevocationStoreError> {
+        self.require_trusted_clock()?;
         let challenge = self.admin_challenge(challenge_id)?;
         let credential = self.admin_signer(&challenge, credential_id, rp)?;
         // A proposal must carry exactly the content that was signed.
@@ -1719,6 +1721,7 @@ impl PgRevocationStore {
         rp: &RelyingParty<'_>,
         content: &CredentialContent<'_>,
     ) -> Result<String, RevocationStoreError> {
+        self.require_trusted_clock()?;
         let challenge = self.admin_challenge(challenge_id)?;
         let ca_text = hex_uuid(&challenge.claim.ca_id);
         let rows = self.client.query(
@@ -1792,6 +1795,7 @@ impl PgRevocationStore {
         assertion: &Assertion<'_>,
         rp: &RelyingParty<'_>,
     ) -> Result<bool, RevocationStoreError> {
+        self.require_trusted_clock()?;
         let challenge = self.admin_challenge(challenge_id)?;
         if challenge.purpose != SignedStep::Review {
             return Err(RevocationStoreError::SignedApprovalRefused);
@@ -2416,6 +2420,19 @@ impl PgRevocationStore {
     /// (default `clock::DEFAULT_MAX_CLOCK_SKEW_US`).
     pub fn set_max_clock_skew_us(&mut self, max_skew_us: i64) {
         self.max_clock_skew_us = max_skew_us;
+    }
+
+    /// Fails closed (`ClockSkew`) when the database clock disagrees with the
+    /// Rust core's beyond the bound: challenge expiry and the hold and
+    /// review deadlines are measured with the database clock, so nothing is
+    /// signed into the database while it is untrusted (ADR-0006 cond. 6).
+    fn require_trusted_clock(&mut self) -> Result<(), RevocationStoreError> {
+        let reading = self.database_clock()?;
+        if reading.within(self.max_clock_skew_us) {
+            Ok(())
+        } else {
+            Err(RevocationStoreError::ClockSkew)
+        }
     }
 
     /// One database clock reading bracketed by two readings of the Rust
