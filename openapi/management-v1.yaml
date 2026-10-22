@@ -108,6 +108,32 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}:
+    get:
+      summary: Read one exact inert profile-draft revision in a scoped CA
+      description: Rechecks the signed CA scope and current server-owned reader grant. The returned digest identifies proposed content; it is not an approval.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+      responses:
+        '200':
+          description: One exact DRAFT revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileDraft'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No such revision in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
