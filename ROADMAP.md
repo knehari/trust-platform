@@ -8,7 +8,7 @@
 
 > **CA inventory checkpoint:** Draft #70 removes the silent 100-CA ceiling from the read-only API and console. A separate 102-CA fixture checks stable pages and exclusion of a CA named in the token but lacking a server-managed grant. Review and production data benchmarks remain open.
 
-> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0056 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all 15 jobs at `b76bbcd`. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP, no delta CRLs, no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
+> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0058 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all 15 jobs at `b76bbcd`. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP, no delta CRLs, no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
 
 > **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
 
@@ -91,7 +91,7 @@ not an acceptance of either ADR.
 | Area | Migrations / code | What it enforces in the lab |
 | --- | --- | --- |
 | Status lifecycle | 0014, 0018–0019, 0025, 0034 | Maker-checker suspend, release and revoke (RFC 5280 reasons). Definitive revocation is irreversible. Invalidity dates are bounded. Lock order is fixed (deadlock test). Pending changes can be read. |
-| CRL pipeline | 0015–0017, 0020–0022, 0031–0033, 0055 | The CRL number is reserved before signing and never reused. The signing intent is bound to entries, number and times. The CRL is verified independently before it is stored. Ambiguous outcomes are quarantined, and a held DER can be reconciled. One issuer certificate per CA. Expired entries can be pruned (opt-in, refused for ETSI EN 319 411-2); housekeeping backfills `notAfter` from the stored DER for certificates stored before 0031. Operator CA list. OpenSSL interop and a fuzz target. |
+| CRL pipeline | 0015–0017, 0020–0022, 0031–0033, 0055, 0058 | The CRL number is reserved before signing and never reused. The signing intent is bound to entries, number and times. The CRL is verified independently before it is stored. Ambiguous outcomes are quarantined, and a held DER can be reconciled. One issuer certificate per CA. After a restore from an older backup, a superuser raises a CRL number floor so no published number is reused (0058). Expired entries can be pruned (opt-in, refused for ETSI EN 319 411-2); housekeeping backfills `notAfter` from the stored DER for certificates stored before 0031. Operator CA list. OpenSSL interop and a fuzz target. |
 | CRL distribution | 0030 | Lab read-only HTTP distribution point; it re-verifies each CRL before serving it. Issued lab certificates can carry an opt-in CDP extension. |
 | Least privilege | 0023, 0035, 0043 | Tables are owned by NOLOGIN roles. Service functions are `SECURITY DEFINER` with a pinned `search_path`. Capability roles are EXECUTE-only (officer API, CRL signer and operator, CA admin, issuance, policy admin, reconciliation, audit). Service connections refuse privileged logins. |
 | CA administration | 0024, 0037, 0040, 0042, 0044, 0050, 0052, 0054 | Issuer registration, officer grants and credential changes need two admins. Once a CA opts in, they are WebAuthn-signed with distinct keys and persons, and so are admin keys and rejections. Checkers see the signed content (digest recomputed in Rust) and whether the maker's stored signature re-verifies; an approval is never written, and no approval challenge is issued, for a proposal whose maker signature does not re-verify. Proposals expire after 7 days by default: the API flags them and issues no approval challenge, and housekeeping alerts on them. |
@@ -145,9 +145,9 @@ Engineering backlog:
   - authenticated time (NTS);
   - online upgrade, RTO/RPO and restore into a fresh cluster (a
     same-cluster logical restore is tested);
-  - after restoring an older backup: a CRL number floor and re-applying
-    revocations from the last published CRL (today the rollback is only
-    detected, by the external checkpoint).
+  - after restoring an older backup: re-applying revocations from the last
+    published CRL, and a runbook (the rollback is detected by the external
+    checkpoint; 0058 lets a superuser raise the CRL number floor).
 - **Residual lab risks:**
   - The database cannot verify ECDSA, so a holder of a service role could
     store a forged assertion. Re-verification exposes it; a forged break-glass

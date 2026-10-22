@@ -83,6 +83,28 @@ mutation fails with
 The stale-backup refusal is part of the normal run: the script expects
 exit 3.
 
+## After restoring an older backup: CRL number floor
+
+The next CRL number is the CA's highest stored number plus one. After
+restoring a backup older than the last published CRL, the next CRL would
+reuse a number that relying parties already hold with other content
+(RFC 5280 section 5.2.3 requires increasing numbers). Since migration 0058,
+before any CRL is signed on the restored database, a superuser raises the
+floor of each CA to the highest number known to be published (from the
+distribution point or a relying party's copy):
+
+```sql
+SELECT raise_crl_number_floor('<ca>', <highest published number>,
+                              'restore of <backup> on <date>');
+```
+
+`reserve_crl` then numbers above the floor. The floor only rises, is
+append-only (`crl_number_floor`), and each raise writes a
+`crl.number_floor.raised` audit event. No service role can call it.
+Choosing the number is the operator's decision. A floor that is too low
+does not prevent reuse, and the database cannot know the right number.
+Tested by `tests/crl_number_floor.sql`, which simulates the rollback.
+
 ## Limits
 
 - Same cluster only. Restoring into a fresh cluster needs the trust roles
@@ -98,8 +120,7 @@ exit 3.
   - the CRL distribution point's cached CRLs.
 - After a restore from an older backup, everything recorded after the
   backup is gone, revocations included: a certificate revoked since then
-  would be listed as good again, and the next CRL would reuse a number
-  already published. The external checkpoint detects the rollback. There
-  is no tool yet to set a CRL number floor or to re-apply revocations from
-  the last published CRL, and no runbook.
+  would be listed as good again. The external checkpoint detects the
+  rollback. There is no tool yet to re-apply revocations from the last
+  published CRL, and no runbook.
 - RTO and RPO need a human-designed recovery exercise.
