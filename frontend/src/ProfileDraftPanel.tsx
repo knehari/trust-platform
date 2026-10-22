@@ -5,6 +5,7 @@ import { requireScopedRows } from './scope';
 import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
 import type { DetailLink } from './navigation';
+import { canonicalProfileRevision } from './profile-revision';
 
 interface Props {
   caId: string;
@@ -22,6 +23,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [moreLoading, setMoreLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const [lookupProfileId, setLookupProfileId] = useState('');
+  const [lookupRevision, setLookupRevision] = useState('');
+  const [lookupError, setLookupError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ProfileDraft | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -39,6 +43,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setCursor(null);
     setLoading(true);
     setError(null);
+    setLookupError(null);
+    setLookupProfileId('');
+    setLookupRevision('');
     setSelected(null);
     setDetailError(null);
     setComparisonIds([]);
@@ -86,7 +93,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         if (controller.signal.aborted) return;
         if (error instanceof ApiError && error.status === 401) onUnauthorizedRef.current();
         else {
-          setDetailError(error instanceof Error ? error.message : 'Could not load profile proposal detail.');
+          setDetailError(error instanceof ApiError && error.status === 404
+            ? 'No proposal with that profile ID and revision was found for this authority.'
+            : error instanceof Error ? error.message : 'Could not load profile proposal detail.');
           onCloseDetailRef.current();
         }
       })
@@ -96,6 +105,17 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
 
   function openDetail(item: ProfileDraft) {
     onOpenDetail({ kind: 'profile', id: item.profile_id, revision: item.revision });
+  }
+
+  function findRevision() {
+    const target = canonicalProfileRevision(lookupProfileId.trim(), lookupRevision.trim());
+    if (!target) {
+      setLookupError('Enter a lowercase profile ID (2–64 letters, digits or hyphens) and a revision from 1 to 1000000.');
+      return;
+    }
+    setLookupError(null);
+    setDetailError(null);
+    onOpenDetail({ kind: 'profile', ...target });
   }
 
   async function loadMore() {
@@ -134,6 +154,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
+    <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
+    {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}
     {loading ? <p className="profile-draft-message">Loading scoped profile proposals…</p>
       : error && items.length === 0 ? <p className="profile-draft-message" role="alert">{error} <button className="link-button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>
       : items.length === 0 ? <p className="profile-draft-message">No profile proposals recorded for this authority.</p>

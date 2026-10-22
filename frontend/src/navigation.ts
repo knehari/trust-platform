@@ -1,4 +1,5 @@
 import { canonicalUuid } from './uuid.ts';
+import { canonicalProfileRevision } from './profile-revision.ts';
 
 export type Section = 'overview' | 'authorities' | 'profiles' | 'certificates' | 'audit';
 export type DetailLink = { kind: 'certificate' | 'audit'; id: string } | { kind: 'profile'; id: string; revision: number };
@@ -11,15 +12,13 @@ export function readNavigation(search: string): { section: Section; caId: string
     ? view : caId ? 'authorities' : 'overview';
   const certificateId = canonicalUuid(params.get('certificate') ?? '');
   const auditId = canonicalUuid(params.get('event') ?? '');
-  const profileId = params.get('profile') ?? '';
-  const revisionText = params.get('revision') ?? '';
-  const revision = /^(?:[1-9][0-9]{0,5})$/.test(revisionText) ? Number(revisionText) : null;
+  const profile = canonicalProfileRevision(params.get('profile') ?? '', params.get('revision') ?? '');
   const detail = caId && section === 'certificates' && certificateId
     ? { kind: 'certificate' as const, id: certificateId }
     : caId && section === 'audit' && auditId
       ? { kind: 'audit' as const, id: auditId }
-      : caId && section === 'profiles' && /^[a-z][a-z0-9-]{1,63}$/.test(profileId) && revision !== null && revision <= 1_000_000
-        ? { kind: 'profile' as const, id: profileId, revision }
+      : caId && section === 'profiles' && profile
+        ? { kind: 'profile' as const, ...profile }
         : null;
   return { section, caId, detail };
 }
