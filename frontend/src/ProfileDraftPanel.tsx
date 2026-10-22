@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { ApiError, apiGetPage, type ProfileDraft } from './api';
+import { ApiError, apiGet, apiGetPage, type ProfileDraft } from './api';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireScopedRows } from './scope';
+import { ProfileDraftDialog } from './ProfileDraftDialog';
 
 interface Props {
   caId: string;
@@ -16,6 +17,10 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
   const [moreLoading, setMoreLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const [selected, setSelected] = useState<ProfileDraft | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
   onUnauthorizedRef.current = onUnauthorized;
@@ -25,6 +30,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
     setCursor(null);
     setLoading(true);
     setError(null);
+    setSelected(null);
+    setDetailError(null);
+    detailController.current?.abort();
     moreController.current?.abort();
     const controller = new AbortController();
     void apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts`, token, controller.signal)
@@ -39,8 +47,31 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
         else setError(error instanceof Error ? error.message : 'Could not load profile drafts.');
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => { controller.abort(); moreController.current?.abort(); };
+    return () => { controller.abort(); moreController.current?.abort(); detailController.current?.abort(); };
   }, [caId, token, retry]);
+
+  async function openDetail(item: ProfileDraft) {
+    detailController.current?.abort();
+    const controller = new AbortController();
+    detailController.current = controller;
+    setSelected(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const detail = await apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(item.profile_id)}/${item.revision}`, token, controller.signal);
+      if (controller.signal.aborted) return;
+      if (detail.ca_id !== caId || detail.profile_id !== item.profile_id || detail.revision !== item.revision || detail.status !== 'DRAFT') {
+        throw new Error('The profile proposal detail did not match the selected revision.');
+      }
+      setSelected(detail);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof ApiError && error.status === 401) onUnauthorizedRef.current();
+      else setDetailError(error instanceof Error ? error.message : 'Could not load profile proposal detail.');
+    } finally {
+      if (!controller.signal.aborted) setDetailLoading(false);
+    }
+  }
 
   async function loadMore() {
     if (!cursor || moreLoading) return;
@@ -72,8 +103,12 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
       : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
+        <button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button>
       </article>)}</div>}
     {error && items.length > 0 && <p className="profile-draft-message" role="alert">{error}</p>}
+    {detailLoading && <p className="profile-draft-message" role="status">Loading proposal detail…</p>}
+    {detailError && <p className="profile-draft-message" role="alert">{detailError}</p>}
     {cursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadMore()}>{moreLoading ? 'Loading…' : 'Load more proposals'}</button>}
+    {selected && <ProfileDraftDialog draft={selected} onClose={() => setSelected(null)} />}
   </div>;
 }

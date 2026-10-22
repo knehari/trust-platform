@@ -42,6 +42,8 @@ export interface ProfileDraft {
   created_by: string;
   created_at: string;
   status: 'DRAFT';
+  proposal_warnings: string[];
+  snapshot_sha256: string;
 }
 
 export class ApiError extends Error {
