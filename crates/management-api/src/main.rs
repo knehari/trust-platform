@@ -106,24 +106,27 @@ struct ProfileDraftQuery {
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
     let Some(raw) = raw else { return Ok(None) };
     let (profile_id, revision) = raw.split_once('|').ok_or(StatusCode::BAD_REQUEST)?;
-    if !(2..=64).contains(&profile_id.len())
-        || !profile_id
-            .bytes()
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase())
-        || !profile_id
+    if !valid_profile_id(profile_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let revision = valid_profile_revision(revision)?;
+    Ok(Some((profile_id.to_owned(), revision)))
+}
+
+fn valid_profile_id(raw: &str) -> bool {
+    (2..=64).contains(&raw.len())
+        && raw.bytes().next().is_some_and(|c| c.is_ascii_lowercase())
+        && raw
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-    {
+}
+
+fn valid_profile_revision(raw: &str) -> Result<i32, StatusCode> {
+    let revision = raw.parse::<i32>().map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !(1..=1_000_000).contains(&revision) || revision.to_string() != raw {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let revision = revision
-        .parse::<i32>()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-    if !(1..=1_000_000).contains(&revision) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(Some((profile_id.to_owned(), revision)))
+    Ok(revision)
 }
 
 #[derive(Deserialize)]
@@ -379,6 +382,10 @@ fn router(state: AppState) -> Router {
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
         .route("/v1/cas/{ca_id}/profile-drafts", get(list_profile_drafts))
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}",
+            get(get_profile_draft_revision),
+        )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
             "/v1/cas/{ca_id}/certificates/by-serial/{serial_hex}",
@@ -754,6 +761,37 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
     };
     draft.snapshot_sha256 = profile_proposal::snapshot_sha256(&draft);
     draft
+}
+
+async fn get_profile_draft_revision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((ca_id, profile_id, revision)): Path<(String, String, String)>,
+) -> Result<Json<ProfileDraft>, StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    if !valid_profile_id(&profile_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let revision = valid_profile_revision(&revision)?;
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer, &subject, &ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query_opt(
+            "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at \
+             FROM management_profile_draft WHERE ca_id=$1 AND profile_id=$2 AND revision=$3 \
+             AND EXISTS (SELECT 1 FROM management_reader_scope WHERE issuer=$4 AND subject=$5 AND ca_id=$1)",
+            &[&ca_id, &profile_id, &revision, &issuer, &subject],
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?
+      .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(profile_draft_from_row(row)))
 }
 
 async fn list_certificates(
@@ -1146,6 +1184,38 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let exact = format!("{draft_base}/server-001/1");
+        let (status, revision) = detail_response(&app, &token, &exact).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(revision["profile_id"], "server-001");
+        assert_eq!(revision["revision"], 1);
+        assert_eq!(revision["snapshot_sha256"], first[0]["snapshot_sha256"]);
+        for bad in [
+            format!("{draft_base}/server-001/0"),
+            format!("{draft_base}/server-001/01"),
+            format!("{draft_base}/Server-001/1"),
+        ] {
+            assert_eq!(
+                detail_response(&app, &token, &bad).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        assert_eq!(
+            detail_response(&app, &token, &format!("{draft_base}/server-001/2"))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            detail_response(
+                &app,
+                &token,
+                "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/profile-drafts/hidden-server/1"
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
         let mut valid_cursor = None;
         for (suffix, id_field) in [("certificates", "request_id"), ("audit", "event_id")] {
             let base = format!("/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/{suffix}");
@@ -1738,6 +1808,7 @@ mod tests {
             "/v1/cas",
             "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
             "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates",
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/profile-drafts/server-001/1",
             "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/audit",
         ] {
             let overloaded = app

@@ -58,7 +58,12 @@ assert.equal((await fetch(`${api}/v1/cas/${allowedCa}`, { headers })).status, 20
 const drafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts`, { headers });
 assert.equal(drafts.status, 200);
 assert.deepEqual((await drafts.json()).map(draft => [draft.profile_id, draft.status]), [['server-lab', 'DRAFT']]);
+const draftDetail = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts/server-lab/1`, { headers });
+assert.equal(draftDetail.status, 200);
+assert.match((await draftDetail.json()).snapshot_sha256, /^[0-9a-f]{64}$/);
+assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts/server-lab/2`, { headers })).status, 404);
 assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}/profile-drafts`, { headers })).status, 403);
+assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}/profile-drafts/hidden-lab/1`, { headers })).status, 403);
 for (const [kind, knownId, hiddenId, idField, sensitiveField] of [
   ['certificates', allowedRequest, hiddenRequest, 'request_id', 'certificate_der'],
   ['audit', allowedEvent, hiddenEvent, 'event_id', 'actor_id'],
