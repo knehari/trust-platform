@@ -105,6 +105,15 @@ try {
   await page.getByText('No certificates recorded').waitFor();
   await page.getByRole('button', { name: 'Clear date' }).click();
 
+  // Profile drafts are readable only under the signed and granted CA scope.
+  await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).waitFor();
+  await page.getByText('These proposals are not approved or active.').waitFor();
+  assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
+  await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}`);
+  await page.getByRole('alert').first().waitFor();
+  assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
+
   // The same browser session must deny a CA outside the signed scope. A forged
   // deep link must not surface the hidden certificate.
   await page.goto(`${origin}/?view=certificates&ca=${hiddenCa}&certificate=${hiddenRequest}`);
