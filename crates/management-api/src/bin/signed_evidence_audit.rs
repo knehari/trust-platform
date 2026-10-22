@@ -8,8 +8,12 @@
 //! verify ECDSA, so this is what exposes an assertion stored without the
 //! Rust core.
 //!
+//! With `--all` instead of a CA, every CA carrying signed evidence
+//! (`evidence_cas`, migration 0056) is audited in turn; one CA failing to
+//! load does not hide the others.
+//!
 //! Exit status: 0 all evidence verifies, 3 at least one change fails, 1
-//! error. The database URL is read from TRUST_DATABASE_URL and must be a
+//! error (with `--all`, an error on any CA). The database URL is read from TRUST_DATABASE_URL and must be a
 //! non-privileged login holding trust_audit_verifier. The relying party is
 //! TRUST_WEBAUTHN_RP_ID and TRUST_WEBAUTHN_ORIGIN, as for the revocation API.
 //! The database connection follows the management API's policy: TLS 1.3
@@ -19,7 +23,7 @@
 //! Usage:
 //!   TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=ca.pem \
 //!   TRUST_WEBAUTHN_RP_ID=... TRUST_WEBAUTHN_ORIGIN=https://... \
-//!     cargo run -p trust-management-api --bin signed_evidence_audit -- <ca-uuid>
+//!     cargo run -p trust-management-api --bin signed_evidence_audit -- <ca-uuid>|--all
 
 #![forbid(unsafe_code)]
 
@@ -38,10 +42,17 @@ const NAME: &str = "signed_evidence_audit";
 /// Re-verification reads a few rows per change; bound each statement.
 const STATEMENT_TIMEOUT_MS: u64 = 60_000;
 
-fn run() -> Result<bool, String> {
-    let ca_id = env::args()
+/// What one run found, worst first.
+enum Outcome {
+    Verified,
+    Failed,
+    Error,
+}
+
+fn run() -> Result<Outcome, String> {
+    let target = env::args()
         .nth(1)
-        .ok_or("usage: signed_evidence_audit <ca-uuid>")?;
+        .ok_or("usage: signed_evidence_audit <ca-uuid>|--all")?;
     let url = env::var("TRUST_DATABASE_URL").map_err(|_| "TRUST_DATABASE_URL is not set")?;
     let rp_id = env::var("TRUST_WEBAUTHN_RP_ID").map_err(|_| "TRUST_WEBAUTHN_RP_ID is not set")?;
     let origin =
@@ -58,14 +69,44 @@ fn run() -> Result<bool, String> {
     // Refuses a privileged login: an auditor that could also act is not one.
     let mut store = PgRevocationStore::from_service_client(client)
         .map_err(|e| format!("database connection refused: {e:?}"))?;
+    let rp = RelyingParty {
+        rp_id: &rp_id,
+        origin: &origin,
+    };
+    let cas = if target == "--all" {
+        store
+            .evidence_cas()
+            .map_err(|e| format!("CA list unavailable: {e:?}"))?
+    } else {
+        vec![target]
+    };
+    let mut outcome = Outcome::Verified;
+    for ca_id in &cas {
+        match audit_ca(&mut store, ca_id, &rp) {
+            Ok(true) => {}
+            Ok(false) => {
+                if !matches!(outcome, Outcome::Error) {
+                    outcome = Outcome::Failed;
+                }
+            }
+            Err(message) => {
+                println!("ca={ca_id} ERROR {message}");
+                outcome = Outcome::Error;
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Prints one line per signed change of the CA and a summary; false if
+/// any change fails to re-verify.
+fn audit_ca(
+    store: &mut PgRevocationStore,
+    ca_id: &str,
+    rp: &RelyingParty<'_>,
+) -> Result<bool, String> {
     let findings = store
-        .audit_signed_evidence(
-            &ca_id,
-            &RelyingParty {
-                rp_id: &rp_id,
-                origin: &origin,
-            },
-        )
+        .audit_signed_evidence(ca_id, rp)
         .map_err(|e| format!("evidence index unavailable: {e:?}"))?;
     let mut all_ok = true;
     for finding in &findings {
@@ -77,10 +118,16 @@ fn run() -> Result<bool, String> {
             EvidenceFamily::BreakGlass => "break_glass",
         };
         match &finding.result {
-            Ok(()) => println!("family={family} change={} verified", finding.change_id),
+            Ok(()) => println!(
+                "ca={ca_id} family={family} change={} verified",
+                finding.change_id
+            ),
             Err(e) => {
                 all_ok = false;
-                println!("family={family} change={} FAILED {e:?}", finding.change_id);
+                println!(
+                    "ca={ca_id} family={family} change={} FAILED {e:?}",
+                    finding.change_id
+                );
             }
         }
     }
@@ -93,8 +140,9 @@ fn run() -> Result<bool, String> {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::from(3),
+        Ok(Outcome::Verified) => ExitCode::SUCCESS,
+        Ok(Outcome::Failed) => ExitCode::from(3),
+        Ok(Outcome::Error) => ExitCode::from(1),
         Err(message) => {
             eprintln!("signed_evidence_audit: {message}");
             ExitCode::from(1)

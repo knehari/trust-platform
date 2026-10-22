@@ -229,6 +229,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0053_purge_expired_challenges.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0054_stale_admin_proposals.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0055_backfill_certificate_not_after.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0056_evidence_cas.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/revocation_lifecycle.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/crl_pipeline.sql
@@ -293,6 +294,8 @@ jobs:
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test policy_decisions --features postgres-store,lab-software --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test audit_chain_postgres --features postgres-store --locked
           TRUST_REQUIRE_DATABASE=1 TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test signed_status_change_postgres --features postgres-store,lab-software --locked
+          # The offline audit covers every CA those tests signed for, altered ones included.
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/signed_evidence_audit_all.sh
           cargo build -p trust-pki-core --example crash_recovery_lab --features postgres-store,lab-software --locked
           TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crash_recovery_sigkill.sh "$CONTAINER"
       - name: Page scoped management history beyond 100 rows

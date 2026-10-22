@@ -1121,6 +1121,16 @@ impl PgRevocationStore {
             .ok_or(RevocationStoreError::SignedApprovalRefused)
     }
 
+    /// Every CA carrying signed evidence (migration 0056,
+    /// `trust_audit_verifier`), for an audit job covering them all.
+    pub fn evidence_cas(&mut self) -> Result<Vec<String>, RevocationStoreError> {
+        self.client
+            .query("SELECT ca_id::text FROM evidence_cas()", &[])?
+            .iter()
+            .map(|row| column(row, 0))
+            .collect()
+    }
+
     /// Every change of `ca_id` that carries signatures (status changes and
     /// CA administration), each re-verified offline like
     /// `reverify_signed_change` / `reverify_admin_change` (migration 0041:

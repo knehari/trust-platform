@@ -3353,3 +3353,19 @@ fn breakglass_reviews_reverify_the_stored_evidence() {
     let uses = lab.admin.breakglass_uses(&ca).unwrap();
     assert!(!uses[0].reviewed);
 }
+
+/// The audit role lists every CA carrying signed evidence (migration
+/// 0056), so one scheduled `signed_evidence_audit --all` covers them; a CA
+/// without signatures is not listed.
+#[test]
+fn auditor_lists_the_cas_with_signed_evidence() {
+    let Some(url) = database_url() else { return };
+    let quiet = lab(&url);
+    let mut signed = lab(&url);
+    signed.signed_proposal();
+    let mut auditor =
+        PgRevocationStore::connect_lab(&url_as(&url, "trust_audit_verifier")).unwrap();
+    let cas = auditor.evidence_cas().unwrap();
+    assert!(cas.contains(&signed.ca_id));
+    assert!(!cas.contains(&quiet.ca_id));
+}

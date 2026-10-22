@@ -122,7 +122,7 @@ BEGIN
           'issue_breakglass_review_challenge', 'review_breakglass_use', 'breakglass_uses',
           'breakglass_evidence', 'admin_change_ca', 'breakglass_use_ca', 'purge_expired_challenges',
           'stale_admin_proposals', 'certificates_without_not_after',
-          'record_certificate_not_after')
+          'record_certificate_not_after', 'evidence_cas')
       AND (NOT p.prosecdef
            OR p.proowner <> 'trust_revocation_owner'::regrole
            OR NOT coalesce(p.proconfig, '{}') @> ARRAY['search_path=pg_catalog, public, pg_temp']);

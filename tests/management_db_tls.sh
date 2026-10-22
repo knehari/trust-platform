@@ -114,7 +114,8 @@ expect_error "ca_admin_api untrusted CA" "connection or TLS failed" \
   ca_admin_api "$work/untrusted-ca.pem" "$tls_url"
 # The lab jobs apply the same policy: verified TLS reaches the login check
 # (this superuser is refused), an unrelated CA gets no session.
-for job in "crl_housekeeping --all" "signed_evidence_audit 00000000-0000-4000-8000-000000000000"; do
+for job in "crl_housekeeping --all" "signed_evidence_audit 00000000-0000-4000-8000-000000000000" \
+           "signed_evidence_audit --all"; do
   set -- $job
   expect_job_error "$1 verified TLS" "PrivilegedSession" "$1" "$work/ca.pem" "$tls_url" "$2"
   expect_job_error "$1 untrusted CA" "connection or TLS failed" \
