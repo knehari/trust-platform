@@ -1,36 +1,50 @@
-> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
-
-> **Later laboratory checkpoint:** Draft #54 adds diagnostic request IDs, Draft #55 a lockfile SBOM, [Draft #56](https://github.com/knehari/trust-platform/pull/56) requires server-owned CA reader grants, [Draft #57](https://github.com/knehari/trust-platform/pull/57) adds bounded OIDC signing-key rotation, [Draft #58](https://github.com/knehari/trust-platform/pull/58) bounds management SQL statements, [Draft #59](https://github.com/knehari/trust-platform/pull/59) separates database readiness from process liveness, and [Draft #60](https://github.com/knehari/trust-platform/pull/60) bounds in-flight data requests before OIDC verification. #57–#60 passed exact-head CI and targeted Codex Security diff scans with no reportable findings. The dependent migration branch tests 0012–0013 against populated disposable data. These Drafts do not satisfy G0, human IAM, independent review or policy-controlled HTTP issuance.
-
-> **Management database checkpoint — 18 October 2026:** Drafts [#61–#68](https://github.com/knehari/trust-platform/pulls) exercise populated management migration, logical restore within and across disposable PostgreSQL clusters, rollback after injected restore/migration failures, a restricted reader login, a transactional 0012–0013 migration ledger, and ledger continuity after restore. #67 and #68 passed CI on their code commits. These tests do not establish production backup, online upgrade, CA key recovery, RTO/RPO, or permission to merge the Draft stack.
-
-> **Read-only application checkpoint:** Draft #69 adds bounded cursor pagination to certificate and audit history in the Rust API and React console. A local restricted PostgreSQL fixture proves two pages with equal timestamps and CA-scope denial. Its CI status is recorded on the PR; it does not add issuance, human IAM or a production history snapshot.
-
-> **CA inventory checkpoint:** Draft #70 removes the silent 100-CA ceiling from the read-only API and console. A separate 102-CA fixture checks stable pages and exclusion of a CA named in the token but lacking a server-managed grant. Review and production data benchmarks remain open.
-
-> **Read-only console checkpoint — 19 October 2026:** Drafts #71–#93 add scoped certificate/audit detail routes, metadata modals, independent loading/retry, filters over loaded rows, stale-inventory clearing and a local API route preflight. All seven checks passed on [Draft #93](https://github.com/knehari/trust-platform/pull/93) at `bb6c6b569bad5ec3134aa54f967fbefd2a4872c2`. These unmerged changes improve the laboratory consultation path only; HTTP issuance, real IAM, independent security review and G0 remain open.
-
-> **Read-only console continuation — 20 October 2026:** Stacked Drafts #95–#106 add exact CA/certificate/audit ID lookups, page deduplication, independent history pagination, stale-request cancellation, request-ID error correlation and API route preflight. All seven checks passed on [Draft #106](https://github.com/knehari/trust-platform/pull/106) at `64d6bce4de728cfd792507e97b7fdf25f0e9b531` after GitHub Actions resumed scheduling. Earlier Drafts affected by the billing block are not retroactively validated. This remains a read-only laboratory console; see [execution status](docs/recovery/EXECUTION_STATUS.md) for tested paths and remaining limits.
-
-> **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**
-
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-14 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-10-22 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
 
-- **LAB-VALIDATED**: code and relevant tests evidenced in a draft PR; not merged, deployed or production approved.
+- **LAB-VALIDATED**: code and relevant tests evidenced on an exact laboratory tree; the change may still be in a Draft PR and is not production approved.
 - **LAB-PROTOTYPE**: scoped code/contract and tests available; full integration, CI and independent review may remain open.
 - **PLANNED**: proposed scope, no implementation claim. Future version numbers are planning labels, subject to architecture review.
 - **G0 BLOCKED**: legal/employment/IP separation and independent security review required before merge or commercialization.
 
 ## Current baseline and release hygiene
 
-- **`main` is documentation/baseline, not a shipped CA.** Implementation is spread across sequential, stacked draft PRs #1–#41 and recovery Draft PRs, with explicit no-merge restrictions. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #135](https://github.com/knehari/trust-platform/pull/135) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
+
+## MVP: controlled single-tenant PKI pilot
+
+The first viable version means an authorized operator can create a CA and a certificate profile, issue and revoke a certificate through authenticated application routes, inspect durable evidence, and recover the service and its protected keys in a controlled pilot. It is **not** a qualified trust service or a general-availability release.
+
+**Progression: 4/12 criteria evidenced (33%)** · `████░░░░░░░░` · **MVP not reached**.
+
+Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the nearest whole percent. A checked foundation means implemented and tested **in the laboratory**, including code still in a Draft PR; it does not mean merged, independently reviewed or production-approved. An unchecked criterion may have partial prototypes, but its full MVP acceptance condition remains open.
+
+- [x] **CA core and safe issuance foundations:** policy checks, issuer-scoped serial/idempotency, durable intent, independent signature verification and ambiguity-safe recovery in laboratory paths ([PRs #1–#9](https://github.com/knehari/trust-platform/pulls), [recovery status](docs/recovery/EXECUTION_STATUS.md)).
+- [x] **Scoped read API:** OIDC-token and server-owned CA-grant checks, bounded reads, readiness and cursor pagination are exercised against disposable PostgreSQL ([Drafts #50–#70](https://github.com/knehari/trust-platform/pulls)). The test issuer is not human IAM.
+- [x] **Read-only operator console:** CA/certificate/audit consultation, detail dialogs, search, export and recorded-date filters are exercised in the laboratory; the latest increment is [Draft #135](https://github.com/knehari/trust-platform/pull/135). These views do not issue or revoke certificates.
+- [x] **Reproducible laboratory stack and data checks:** disposable Compose/browser flow, restricted database role, migrations and logical restore regressions ([Drafts #53, #61–#69 and PR #129](https://github.com/knehari/trust-platform/pulls)). This is not operational disaster recovery.
+- [ ] **Human IAM and authorization:** real IdP, workload identity, least-privilege roles and independently authenticated maker/checker actors, with negative access tests.
+- [ ] **CA and profile lifecycle:** policy-controlled API and console workflows to create, approve, activate and retire CAs and versioned certificate profiles; no direct database bypass.
+- [ ] **Application issuance:** authenticated CSR submission and approval, profile enforcement, Core orchestration, idempotent API result and end-to-end negative/fault tests.
+- [ ] **Revocation and publication:** authorized revocation with durable audit evidence and verifiable CRL publication; OCSP and broader path validation require a separate design decision.
+- [ ] **Protected signing keys:** real HSM/PKCS#11 integration, key ceremony, custody and tested ambiguous-outcome reconciliation; software laboratory keys do not meet this criterion.
+- [ ] **Durable audit evidence:** persisted authenticated event chain, integrity/tamper checks, exportable verification manifest and governed retention.
+- [ ] **Operational recovery:** protected database and key backup/restore, migration rollback, incident runbooks and measured pilot RTO/RPO.
+- [ ] **Release gates:** G0 legal/IP clearance, independent PKI/security review, final-commit CI and an explicitly approved controlled-pilot release decision.
+
+### Next implementation sequence
+
+- [x] Add an exclusive server-side filter on recorded certificate validity end, keep it across pages and exercise it in the browser ([Draft #135](https://github.com/knehari/trust-platform/pull/135); all six checks green on `9a640193b7e67d77b0770a3516a8ae369afeed82`).
+- [ ] Measure filtered-history query plans and load through the security-barrier views; add only justified indexes or query changes.
+- [ ] Specify CA and profile lifecycle, actor permissions, approval states and immutable policy/version binding before adding write routes.
+- [ ] Implement versioned profile management and then CA creation with denial, concurrency and recovery tests.
+- [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
+- [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.
 
 ## Implemented laboratory versions (not released)
 
@@ -63,7 +77,9 @@
 
 **Caveat for v2.1–v2.4:** unit-tested domain contracts are not end-to-end integrated, externally attested, or deployment-ready; full CI and independent assurance remain gates.
 
-## Historical proposed engineering versions — not current delivery statuses
+## Archived version proposals — not the active checklist
+
+The labels below are retained for traceability. Some read-only parts of v3.1/v3.2 exist in the laboratory, but neither version's full exit criteria are met. Use the checked MVP criteria and next implementation sequence above for current status.
 
 | Proposed version | Theme | Exit criteria / deliverable | Dependencies |
 | --- | --- | --- | --- |
@@ -89,22 +105,14 @@
 
 ## Cross-cutting quality gates before any production claim
 
-The unmerged laboratory stack now includes a reproducible Rust/npm lockfile
-SBOM in [Draft #55](https://github.com/knehari/trust-platform/pull/55). This
-addresses source dependency inventory only; container contents, provenance,
-secret scanning, SAST and independent review remain open gates.
-
-The next management increment requires a server-owned issuer/subject/CA read
-grant in addition to the signed OIDC role and CA scope. It narrows read access
-for the laboratory console; authenticated issuance still needs its own policy
-and actor authorization design before any HTTP route is added.
-
-1. **G0 legal and IP:** confirm ownership, employment/contractual separation and release authorization before integrating or commercializing work.
-2. **Cryptographic design review:** independent PKI review including keys, algorithms, HSM boundary, certificate profile, CP/CPS authority and secure defaults.
-3. **Security controls:** IAM/mTLS, RBAC, maker-checker, least-privilege PostgreSQL grants, secrets, rate limiting, logging, anti-replay, tenant isolation.
-4. **Test evidence:** strict CI on final merged commit, PostgreSQL integration, OpenSSL interop, negative/fault tests, fuzzing, SAST/dependency scans, independent pentest.
-5. **Operations:** safe DB migration/rollback, protected key backup, CA restore, publication availability, reconciliation runbooks, capacity/SLO and incident response.
-6. **Regulatory discipline:** audit-by-design features can facilitate future assessments; never advertise eIDAS/ETSI/ANSSI certification or QTSP status without actual qualification.
+- [x] Source dependency inventory from Rust/npm lockfiles is reproducible in [Draft #55](https://github.com/knehari/trust-platform/pull/55); image contents and provenance are outside its scope.
+- [x] Laboratory reads require a signed role/CA scope and a server-owned issuer/subject/CA grant ([Draft #56](https://github.com/knehari/trust-platform/pull/56)); issuance needs separate policy and actor authorization.
+- [ ] G0 legal/IP ownership, contractual separation and release authorization.
+- [ ] Independent PKI/security review of keys, algorithms, profiles, HSM boundary, CP/CPS authority and secure defaults.
+- [ ] Production IAM/mTLS, RBAC, maker/checker, secrets, rate limits, logging, anti-replay and tenant isolation.
+- [ ] Final merged-commit CI, PostgreSQL and OpenSSL integration, negative/fault tests, fuzzing, SAST/dependency/secret scans and independent penetration test.
+- [ ] Protected key and database recovery, safe migrations, publication availability, reconciliation, capacity/SLO and incident response.
+- [ ] Actual regulatory qualification before any eIDAS/ETSI/ANSSI or QTSP claim; laboratory evidence alone is insufficient.
 
 ## References
 
@@ -120,3 +128,21 @@ and actor authorization design before any HTTP route is added.
 - Update this file whenever a PR lands or scope changes; record actual status, test evidence, reviewer and merged commit.
 - A version is **released** only after the release checklist, approved tag and documentation are published; draft PR numbers alone do not imply release.
 - Keep roadmap features, design proposals and implementation evidence separately traceable.
+
+## Historical execution notes (archive)
+
+> **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](docs/recovery/EXECUTION_STATUS.md).
+
+> **Later laboratory checkpoint:** Draft #54 adds diagnostic request IDs, Draft #55 a lockfile SBOM, [Draft #56](https://github.com/knehari/trust-platform/pull/56) requires server-owned CA reader grants, [Draft #57](https://github.com/knehari/trust-platform/pull/57) adds bounded OIDC signing-key rotation, [Draft #58](https://github.com/knehari/trust-platform/pull/58) bounds management SQL statements, [Draft #59](https://github.com/knehari/trust-platform/pull/59) separates database readiness from process liveness, and [Draft #60](https://github.com/knehari/trust-platform/pull/60) bounds in-flight data requests before OIDC verification. #57–#60 passed exact-head CI and targeted Codex Security diff scans with no reportable findings. The dependent migration branch tests 0012–0013 against populated disposable data. These Drafts do not satisfy G0, human IAM, independent review or policy-controlled HTTP issuance.
+
+> **Management database checkpoint — 18 October 2026:** Drafts [#61–#68](https://github.com/knehari/trust-platform/pulls) exercise populated management migration, logical restore within and across disposable PostgreSQL clusters, rollback after injected restore/migration failures, a restricted reader login, a transactional 0012–0013 migration ledger, and ledger continuity after restore. #67 and #68 passed CI on their code commits. These tests do not establish production backup, online upgrade, CA key recovery, RTO/RPO, or permission to merge the Draft stack.
+
+> **Read-only application checkpoint:** Draft #69 adds bounded cursor pagination to certificate and audit history in the Rust API and React console. A local restricted PostgreSQL fixture proves two pages with equal timestamps and CA-scope denial. Its CI status is recorded on the PR; it does not add issuance, human IAM or a production history snapshot.
+
+> **CA inventory checkpoint:** Draft #70 removes the silent 100-CA ceiling from the read-only API and console. A separate 102-CA fixture checks stable pages and exclusion of a CA named in the token but lacking a server-managed grant. Review and production data benchmarks remain open.
+
+> **Read-only console checkpoint — 19 October 2026:** Drafts #71–#93 add scoped certificate/audit detail routes, metadata modals, independent loading/retry, filters over loaded rows, stale-inventory clearing and a local API route preflight. All seven checks passed on [Draft #93](https://github.com/knehari/trust-platform/pull/93) at `bb6c6b569bad5ec3134aa54f967fbefd2a4872c2`. These unmerged changes improve the laboratory consultation path only; HTTP issuance, real IAM, independent security review and G0 remain open.
+
+> **Read-only console continuation — 20 October 2026:** Stacked Drafts #95–#106 add exact CA/certificate/audit ID lookups, page deduplication, independent history pagination, stale-request cancellation, request-ID error correlation and API route preflight. All seven checks passed on [Draft #106](https://github.com/knehari/trust-platform/pull/106) at `64d6bce4de728cfd792507e97b7fdf25f0e9b531` after GitHub Actions resumed scheduling. Earlier Drafts affected by the billing block are not retroactively validated. This remains a read-only laboratory console; see [execution status](docs/recovery/EXECUTION_STATUS.md) for tested paths and remaining limits.
+
+> **Recovery update — 2026-10-17:** This roadmap was originally written on 2026-10-14 and is preserved from `main` on the R1 consolidation branch. Its status through PR #24 and its subsequent *planned* version labels are **historical**, not a current release state. Draft PRs #25–#41 contain additional laboratory contracts and classical crypto lab code; see the [technical audit (PR #42)](https://github.com/knehari/trust-platform/pull/42) and its [feature matrix](https://github.com/knehari/trust-platform/blob/codex/technical-recovery-audit/docs/recovery/FEATURE_MATRIX.md). **No version is released, no deployed PKI is claimed, and G0/security gates remain pending.**

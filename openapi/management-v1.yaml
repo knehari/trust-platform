@@ -88,6 +88,7 @@ paths:
         - $ref: '#/components/parameters/HistoryCursor'
         - $ref: '#/components/parameters/CertificateCnPrefix'
         - $ref: '#/components/parameters/CertificateSanDns'
+        - $ref: '#/components/parameters/CertificateNotAfterBefore'
         - $ref: '#/components/parameters/HistoryOrder'
       responses:
         '200':
@@ -238,6 +239,12 @@ components:
       required: false
       description: Exact, case-insensitive ASCII DNS SAN over metadata recorded after independent certificate verification. Historical null SANs do not match. May be combined with cn; keep both filters on each cursor page.
       schema: { type: string, minLength: 1, maxLength: 253, pattern: '^[A-Za-z0-9.*_-]+$' }
+    CertificateNotAfterBefore:
+      in: query
+      name: not_after_before
+      required: false
+      description: Exclusive UTC cutoff for recorded X.509 notAfter metadata. Historical null dates do not match. This is not a trust or revocation decision. Keep the cutoff on each cursor page.
+      schema: { type: string, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
     AuditFrom:
       in: query
       name: from

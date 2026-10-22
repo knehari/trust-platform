@@ -84,6 +84,7 @@ struct PaginationQuery {
     before: Option<String>,
     cn: Option<String>,
     san_dns: Option<String>,
+    not_after_before: Option<String>,
     from: Option<String>,
     until: Option<String>,
     event_type: Option<String>,
@@ -187,6 +188,27 @@ fn valid_utc_timestamp(raw: &str) -> Result<String, StatusCode> {
             matches!(index, 4 | 7 | 10 | 13 | 16 | 19 | 23) || byte.is_ascii_digit()
         });
     if !valid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let part = |start: usize, end: usize| raw[start..end].parse::<u32>().unwrap_or(0);
+    let year = part(0, 4);
+    let month = part(5, 7);
+    let day = part(8, 10);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if year == 0
+        || day == 0
+        || day > days
+        || part(11, 13) > 23
+        || part(14, 16) > 59
+        || part(17, 19) > 59
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(raw.to_owned())
@@ -626,6 +648,11 @@ async fn list_certificates(
     let cursor = parse_history_cursor(page.before)?;
     let cn_prefix = literal_prefix(page.cn)?;
     let san_dns = exact_san_dns(page.san_dns)?;
+    let not_after_before = page
+        .not_after_before
+        .as_deref()
+        .map(valid_utc_timestamp)
+        .transpose()?;
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -648,6 +675,10 @@ async fn list_certificates(
         if let Some(dns) = san_dns.as_ref() {
             query.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = ${})", params.len() + 1));
             params.push(dns);
+        }
+        if let Some(cutoff) = not_after_before.as_ref() {
+            query.push_str(&format!(" AND not_after < ${}", params.len() + 1));
+            params.push(cutoff);
         }
         query.push_str(&format!(" ORDER BY signed_at {direction}, request_id {direction} LIMIT 101"));
         db.query(&query, &params).map(Some)
@@ -840,6 +871,22 @@ mod tests {
     use serde_json::json;
     use std::collections::HashSet;
     use tower::ServiceExt;
+
+    #[test]
+    fn utc_filter_timestamp_checks_calendar_date() {
+        for valid in ["2028-02-29T00:00:00.000Z", "2026-12-31T23:59:59.999Z"] {
+            assert_eq!(valid_utc_timestamp(valid), Ok(valid.to_owned()));
+        }
+        for invalid in [
+            "2027-02-29T00:00:00.000Z",
+            "2026-04-31T00:00:00.000Z",
+            "2026-13-01T00:00:00.000Z",
+            "2026-01-01T24:00:00.000Z",
+            "2026-01-01T00:60:00.000Z",
+        ] {
+            assert_eq!(valid_utc_timestamp(invalid), Err(StatusCode::BAD_REQUEST));
+        }
+    }
 
     async fn history_page(
         app: &Router,
@@ -1078,6 +1125,48 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(combined.len(), 1);
+        let (status, _, expiring) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?not_after_before=2028-01-01T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(expiring.len(), 1);
+        assert_eq!(
+            expiring[0]["request_id"],
+            "11111111-1111-4111-8111-000000000066"
+        );
+        let (status, _, combined_expiry) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?san_dns=paged-0102.lab.invalid&not_after_before=2028-01-01T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(combined_expiry.len(), 1);
+        let (status, _, earlier) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?not_after_before=2027-10-01T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(earlier.is_empty());
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            &format!("{cert_base}?not_after_before=2027-02-29T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/certificates?not_after_before=2028-01-01T00%3A00%3A00.000Z",
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, no_san) = history_page(
             &app,
             &token,
