@@ -37,6 +37,13 @@ write path either:
     answer is given only after re-verification, so a client holding a CRL
     whose stored copy was altered gets 503, not 304.
 - At most 16 requests run concurrently; the others get 503.
+- A CRL that re-verified is reused for 30 seconds (never past its
+  nextUpdate) without querying the database or re-verifying, so a flood of
+  requests costs neither. A newly stored CRL is served at most that much
+  later, and a CRL altered in the database is refused (and logged) at most
+  that much later, the verified copy being served meanwhile.
+  `TRUST_CRL_REUSE_SECONDS` sets the window (0 disables it, at most 300;
+  anything else refuses to start).
 
 ```
 TRUST_CRL_DATABASE_URL=postgresql://publisher@db.lab.invalid/trust \

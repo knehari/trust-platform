@@ -39,6 +39,7 @@ use axum::{
 };
 use postgres::Client;
 use std::{
+    collections::HashMap,
     env,
     io::{self, Write},
     sync::{Arc, Mutex},
@@ -112,6 +113,33 @@ struct AppState {
     source: Arc<dyn CrlSource>,
     slots: Arc<Semaphore>,
     now_unix: fn() -> i64,
+    /// CRLs that re-verified, with when they were read (per CA).
+    verified: Arc<Mutex<HashMap<String, (i64, StoredCrl)>>>,
+    reuse_seconds: i64,
+}
+
+/// How long a verified CRL is reused without asking the database again
+/// (never past its nextUpdate): a flood of requests then costs neither
+/// database queries nor signature checks. A CRL stored meanwhile is served
+/// at most this much later, and a CRL altered in the database is noticed
+/// (logged and refused) at most this much later; the copy served meanwhile
+/// is the one that verified. TRUST_CRL_REUSE_SECONDS overrides it (0
+/// disables reuse, at most MAX_CRL_REUSE_SECONDS).
+const CRL_REUSE_SECONDS: i64 = 30;
+const MAX_CRL_REUSE_SECONDS: i64 = 300;
+/// CAs whose verified CRL is kept at once (the map is emptied when full).
+const MAX_REUSED_CRLS: usize = 1024;
+
+impl AppState {
+    fn new(source: Arc<dyn CrlSource>, slots: usize, now_unix: fn() -> i64) -> Self {
+        Self {
+            source,
+            slots: Arc::new(Semaphore::new(slots)),
+            now_unix,
+            verified: Arc::new(Mutex::new(HashMap::new())),
+            reuse_seconds: CRL_REUSE_SECONDS,
+        }
+    }
 }
 
 fn system_now() -> i64 {
@@ -182,25 +210,17 @@ fn not_modified(request: &HeaderMap, etag: &str, this_update_unix: i64) -> bool 
         .is_some_and(|since| this_update_unix <= since)
 }
 
-async fn serve_crl(
-    State(state): State<AppState>,
-    Path(file): Path<String>,
-    request: HeaderMap,
-) -> Response {
-    let Some(ca_id) = ca_from_path(&file).map(str::to_owned) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Ok(_permit) = state.slots.clone().try_acquire_owned() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
+/// The CA's latest stored CRL, served only if it re-verifies against the
+/// registered issuer certificate and agrees with its stored metadata.
+async fn fetch_verified(state: &AppState, ca_id: &str) -> Result<StoredCrl, StatusCode> {
     let source = state.source.clone();
-    let lookup = ca_id.clone();
+    let lookup = ca_id.to_owned();
     let stored = match tokio::task::spawn_blocking(move || source.latest(&lookup)).await {
         Ok(Ok(Some(stored))) => stored,
-        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(None)) => return Err(StatusCode::NOT_FOUND),
         _ => {
             write_log(serde_json::json!({"event":"crl_source_unavailable","ca_id":ca_id}));
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
     };
     let checked = Certificate::from_der(&stored.issuer_certificate_der)
@@ -218,8 +238,47 @@ async fn serve_crl(
             "ca_id":ca_id,
             "crl_number":stored.crl_number
         }));
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
+    Ok(stored)
+}
+
+async fn serve_crl(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    request: HeaderMap,
+) -> Response {
+    let Some(ca_id) = ca_from_path(&file).map(str::to_owned) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(_permit) = state.slots.clone().try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let now = (state.now_unix)();
+    let reused = state.verified.lock().ok().and_then(|cache| {
+        cache
+            .get(&ca_id)
+            .filter(|(read_at, crl)| {
+                now - *read_at < state.reuse_seconds
+                    && crl.next_update_unix.is_none_or(|next| now < next)
+            })
+            .map(|(_, crl)| crl.clone())
+    });
+    let stored = match reused {
+        Some(stored) => stored,
+        None => match fetch_verified(&state, &ca_id).await {
+            Ok(stored) => {
+                if let Ok(mut cache) = state.verified.lock() {
+                    if cache.len() >= MAX_REUSED_CRLS {
+                        cache.clear();
+                    }
+                    cache.insert(ca_id.clone(), (now, stored.clone()));
+                }
+                stored
+            }
+            Err(status) => return status.into_response(),
+        },
+    };
     let etag = format!("\"{}\"", stored.crl_number);
     // Only after the CRL re-verified: a 304 never vouches for a tampered CRL.
     let mut response = if not_modified(&request, &etag, stored.this_update_unix) {
@@ -296,14 +355,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !isolated {
         return Err("CRL database login must hold only trust_crl_publisher".into());
     }
+    let reuse_seconds = match env::var("TRUST_CRL_REUSE_SECONDS") {
+        Ok(value) => value
+            .parse::<i64>()
+            .ok()
+            .filter(|seconds| (0..=MAX_CRL_REUSE_SECONDS).contains(seconds))
+            .ok_or("TRUST_CRL_REUSE_SECONDS must be 0 to 300")?,
+        Err(_) => CRL_REUSE_SECONDS,
+    };
     let state = AppState {
-        source: Arc::new(PgSource {
-            url,
-            tls,
-            client: Mutex::new(None),
-        }),
-        slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
-        now_unix: system_now,
+        reuse_seconds,
+        ..AppState::new(
+            Arc::new(PgSource {
+                url,
+                tls,
+                client: Mutex::new(None),
+            }),
+            MAX_CONCURRENT_REQUESTS,
+            system_now,
+        )
     };
     let bind = env::var("TRUST_CRL_BIND").unwrap_or_else(|_| "127.0.0.1:8082".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -359,14 +429,10 @@ mod tests {
     }
 
     async fn get(source: Result<Option<StoredCrl>, ()>, path: &str, now: fn() -> i64) -> Response {
-        router(AppState {
-            source: Arc::new(Fixed(source)),
-            slots: Arc::new(Semaphore::new(1)),
-            now_unix: now,
-        })
-        .oneshot(Request::get(path).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
+        router(AppState::new(Arc::new(Fixed(source)), 1, now))
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -434,19 +500,15 @@ mod tests {
         header_name: header::HeaderName,
         value: &str,
     ) -> (StatusCode, HeaderMap, usize) {
-        let response = router(AppState {
-            source: Arc::new(Fixed(Ok(Some(crl)))),
-            slots: Arc::new(Semaphore::new(1)),
-            now_unix: system_now,
-        })
-        .oneshot(
-            Request::get(format!("/crl/{CA}.crl"))
-                .header(header_name, value)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let response = router(AppState::new(Arc::new(Fixed(Ok(Some(crl)))), 1, system_now))
+            .oneshot(
+                Request::get(format!("/crl/{CA}.crl"))
+                    .header(header_name, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let status = response.status();
         let headers = response.headers().clone();
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -485,11 +547,11 @@ mod tests {
             assert_eq!(length, crl.crl_der.len());
         }
         // If-None-Match decides over If-Modified-Since.
-        let response = router(AppState {
-            source: Arc::new(Fixed(Ok(Some(crl.clone())))),
-            slots: Arc::new(Semaphore::new(1)),
-            now_unix: system_now,
-        })
+        let response = router(AppState::new(
+            Arc::new(Fixed(Ok(Some(crl.clone())))),
+            1,
+            system_now,
+        ))
         .oneshot(
             Request::get(format!("/crl/{CA}.crl"))
                 .header(header::IF_NONE_MATCH, "\"6\"")
@@ -514,5 +576,60 @@ mod tests {
         assert_eq!(cache_control(100, Some(100_000)), "public, max-age=3600");
         assert_eq!(cache_control(100, Some(100)), "no-cache");
         assert_eq!(cache_control(100, None), "no-cache");
+    }
+
+    /// A source that counts its lookups.
+    struct Counting(StoredCrl, std::sync::atomic::AtomicUsize);
+
+    impl CrlSource for Counting {
+        fn latest(&self, _ca_id: &str) -> Result<Option<StoredCrl>, ()> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(self.0.clone()))
+        }
+    }
+
+    /// A verified CRL is reused for CRL_REUSE_SECONDS: repeated requests
+    /// neither query the database nor re-verify; after that, or for a CRL
+    /// that failed verification, the source is asked again.
+    #[tokio::test]
+    async fn verified_crls_are_reused_briefly() {
+        let counting = Arc::new(Counting(stored(), std::sync::atomic::AtomicUsize::new(0)));
+        let state = AppState::new(counting.clone(), 1, system_now);
+        let path = format!("/crl/{CA}.crl");
+        for _ in 0..3 {
+            let response = router(state.clone())
+                .oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        fn later() -> i64 {
+            system_now() + CRL_REUSE_SECONDS + 1
+        }
+        let response = router(AppState {
+            now_unix: later,
+            ..state
+        })
+        .oneshot(Request::get(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let mut flipped = stored();
+        let last = flipped.crl_der.len() - 1;
+        flipped.crl_der[last] ^= 1;
+        let tampered = Arc::new(Counting(flipped, std::sync::atomic::AtomicUsize::new(0)));
+        let state = AppState::new(tampered.clone(), 1, system_now);
+        for _ in 0..2 {
+            let response = router(state.clone())
+                .oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        assert_eq!(tampered.1.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

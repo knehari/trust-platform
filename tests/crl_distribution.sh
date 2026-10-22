@@ -61,8 +61,17 @@ if TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$db" TRUST_CRL_BIND="1
 fi
 grep -q "trust_crl_publisher" "$temp/refused.log" || fail "superuser refusal not reported"
 
+# An out-of-range reuse window is refused at start.
+if TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="127.0.0.1:$port" \
+   TRUST_CRL_REUSE_SECONDS=301 timeout 10 target/debug/crl_distribution 2>"$temp/reuse.log"; then
+  fail "an out-of-range reuse window was accepted"
+fi
+grep -q "TRUST_CRL_REUSE_SECONDS" "$temp/reuse.log" || fail "reuse window refusal not reported"
+# Reuse disabled here: the database copy is re-read and re-verified on
+# every request, so the alteration below is refused at once (the default
+# 30-second reuse is covered by the binary's unit tests).
 TRUST_DATABASE_TLS=disable-lab TRUST_CRL_DATABASE_URL="$publisher_url" TRUST_CRL_BIND="127.0.0.1:$port" \
-  target/debug/crl_distribution 2>"$temp/server.log" &
+  TRUST_CRL_REUSE_SECONDS=0 target/debug/crl_distribution 2>"$temp/server.log" &
 server=$!
 for _ in $(seq 1 100); do
   curl -s -o /dev/null "http://127.0.0.1:$port/crl/$ca.crl" && break
