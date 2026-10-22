@@ -7,6 +7,12 @@ DO $test$ BEGIN
     PERFORM subject_cn FROM management_certificate LIMIT 1;
     PERFORM count(*) FROM management_audit;
     PERFORM count(*) FROM management_reader_scope;
+    PERFORM count(*) FROM management_profile_draft;
+    BEGIN
+        PERFORM count(*) FROM certificate_profile_draft;
+        RAISE EXCEPTION 'API role unexpectedly reads raw profile drafts';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
     BEGIN
         PERFORM count(*) FROM management_reader_grant;
         RAISE EXCEPTION 'API role unexpectedly reads raw reader grants';

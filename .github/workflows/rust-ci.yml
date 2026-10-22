@@ -231,6 +231,7 @@ jobs:
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_profile_draft_api_seed.sql >/dev/null
           # Simulate an existing disposable fixture whose CN metadata predates 0014.
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "UPDATE certificate SET subject_cn=NULL WHERE ca_id='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'" >/dev/null
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f scripts/lab/restore-pagination-fixture-cn.sql >/dev/null

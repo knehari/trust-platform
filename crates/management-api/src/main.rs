@@ -79,6 +79,50 @@ struct Audit {
     recorded_at: String,
 }
 
+#[derive(Serialize)]
+struct ProfileDraft {
+    ca_id: String,
+    profile_id: String,
+    revision: i32,
+    display_name: String,
+    policy_version: String,
+    max_validity_days: i32,
+    max_dns_sans: i32,
+    proposed_dns_zones: Vec<String>,
+    proposed_signature_suites: Vec<String>,
+    created_by: String,
+    created_at: String,
+    status: &'static str,
+}
+
+#[derive(Deserialize)]
+struct ProfileDraftQuery {
+    after: Option<String>,
+}
+
+fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
+    let Some(raw) = raw else { return Ok(None) };
+    let (profile_id, revision) = raw.split_once('|').ok_or(StatusCode::BAD_REQUEST)?;
+    if !(2..=64).contains(&profile_id.len())
+        || !profile_id
+            .bytes()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase())
+        || !profile_id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let revision = revision
+        .parse::<i32>()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !(1..=1_000_000).contains(&revision) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(Some((profile_id.to_owned(), revision)))
+}
+
 #[derive(Deserialize)]
 struct PaginationQuery {
     before: Option<String>,
@@ -331,6 +375,7 @@ fn router(state: AppState) -> Router {
     let data_routes = Router::new()
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
+        .route("/v1/cas/{ca_id}/profile-drafts", get(list_profile_drafts))
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
             "/v1/cas/{ca_id}/certificates/by-serial/{serial_hex}",
@@ -432,7 +477,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             // scanning or returning any CA, certificate, audit or grant rows.
             db.query(
                 "SELECT 1 FROM management_ca, management_certificate, \
-                 management_audit, management_reader_scope LIMIT 0",
+                 management_audit, management_reader_scope, management_profile_draft LIMIT 0",
                 &[],
             )?;
             Ok(true)
@@ -634,6 +679,60 @@ async fn get_ca(
         policy_version: row.get(3),
         created_at: row.get(4),
     }))
+}
+
+async fn list_profile_drafts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(ca_id): Path<String>,
+    Query(page): Query<ProfileDraftQuery>,
+) -> Result<(HeaderMap, Json<Vec<ProfileDraft>>), StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    let (after_id, after_revision) = profile_draft_cursor(page.after)?
+        .map_or((None, None), |(id, revision)| (Some(id), Some(revision)));
+    let issuer = claims.iss;
+    let subject = claims.sub;
+    let rows = query_db(state.database_url, state.database_slots, move |db| {
+        let granted: bool = db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
+            &[&issuer, &subject, &ca_id],
+        )?.get(0);
+        if !granted { return Ok(None); }
+        db.query(
+            "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at \
+             FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
+             AND ($4::text IS NULL OR (profile_id,revision)>($4,$5)) \
+             ORDER BY profile_id,revision LIMIT 101",
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision],
+        ).map(Some)
+    }).await?.ok_or(StatusCode::FORBIDDEN)?;
+    let has_more = rows.len() > HISTORY_PAGE_SIZE;
+    let items: Vec<ProfileDraft> = rows
+        .into_iter()
+        .take(HISTORY_PAGE_SIZE)
+        .map(|row| ProfileDraft {
+            ca_id: row.get(0),
+            profile_id: row.get(1),
+            revision: row.get(2),
+            display_name: row.get(3),
+            policy_version: row.get(4),
+            max_validity_days: row.get(5),
+            max_dns_sans: row.get(6),
+            proposed_dns_zones: row.get(7),
+            proposed_signature_suites: row.get(8),
+            created_by: row.get(9),
+            created_at: row.get(10),
+            status: "DRAFT",
+        })
+        .collect();
+    let next = has_more.then(|| {
+        let last = items.last().expect("nonempty page has a final item");
+        format!("{}|{}", last.profile_id, last.revision)
+    });
+    Ok((history_headers(next), Json(items)))
 }
 
 async fn list_certificates(
@@ -996,6 +1095,30 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
         });
+        let draft_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/profile-drafts";
+        let (status, cursor, first) = history_page(&app, &token, draft_base).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first.len(), 100);
+        assert!(first.iter().all(|row| row["status"] == "DRAFT"));
+        let (status, next, second) = history_page(
+            &app,
+            &token,
+            &format!("{draft_base}?after={}", cursor.unwrap().replace('|', "%7C")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(second.len(), 2);
+        assert!(next.is_none());
+        let (status, _, _) =
+            history_page(&app, &token, &format!("{draft_base}?after=invalid")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _, _) = history_page(
+            &app,
+            &token,
+            "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/profile-drafts",
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let mut valid_cursor = None;
         for (suffix, id_field) in [("certificates", "request_id"), ("audit", "event_id")] {
             let base = format!("/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/{suffix}");
@@ -1482,6 +1605,25 @@ mod tests {
             scoped_ca_id("../../ca", &claims),
             Err(StatusCode::BAD_REQUEST)
         );
+    }
+
+    #[test]
+    fn profile_draft_cursor_rejects_malformed_positions() {
+        assert_eq!(
+            profile_draft_cursor(Some("server-lab|2".into())).unwrap(),
+            Some(("server-lab".into(), 2))
+        );
+        for invalid in [
+            "server-lab",
+            "Server|1",
+            "server|0",
+            "server|1000001",
+            "server|x",
+            "server|1|2",
+            "../x|1",
+        ] {
+            assert!(profile_draft_cursor(Some(invalid.into())).is_err());
+        }
     }
 
     #[tokio::test]
