@@ -1,13 +1,13 @@
 import { canonicalUuid } from './uuid.ts';
 
-export type Section = 'overview' | 'authorities' | 'certificates' | 'audit';
+export type Section = 'overview' | 'authorities' | 'profiles' | 'certificates' | 'audit';
 export type DetailLink = { kind: 'certificate' | 'audit'; id: string };
 
 export function readNavigation(search: string): { section: Section; caId: string | null; detail: DetailLink | null } {
   const params = new URLSearchParams(search);
   const view = params.get('view');
   const caId = canonicalUuid(params.get('ca') ?? '');
-  const section: Section = view === 'authorities' || view === 'certificates' || view === 'audit' || view === 'overview'
+  const section: Section = view === 'authorities' || view === 'profiles' || view === 'certificates' || view === 'audit' || view === 'overview'
     ? view : caId ? 'authorities' : 'overview';
   const certificateId = canonicalUuid(params.get('certificate') ?? '');
   const auditId = canonicalUuid(params.get('event') ?? '');

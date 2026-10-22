@@ -29,6 +29,21 @@ export interface AuditEvent {
   recorded_at: string;
 }
 
+export interface ProfileDraft {
+  ca_id: string;
+  profile_id: string;
+  revision: number;
+  display_name: string;
+  policy_version: string;
+  max_validity_days: number;
+  max_dns_sans: number;
+  proposed_dns_zones: string[];
+  proposed_signature_suites: string[];
+  created_by: string;
+  created_at: string;
+  status: 'DRAFT';
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly requestId: string | null;

@@ -7,6 +7,7 @@ const event = '33333333-3333-4333-8333-000000000001';
 export async function checkApi(base = 'http://127.0.0.1:8081') {
   const routes = [
     `/v1/cas/${ca}`,
+    `/v1/cas/${ca}/profile-drafts`,
     `/v1/cas/${ca}/certificates/${request}`,
     `/v1/cas/${ca}/certificates/by-serial/010001`,
     `/v1/cas/${ca}/audit/${event}`,

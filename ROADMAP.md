@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #135](https://github.com/knehari/trust-platform/pull/135) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #140](https://github.com/knehari/trust-platform/pull/140) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -26,7 +26,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 
 - [x] **CA core and safe issuance foundations:** policy checks, issuer-scoped serial/idempotency, durable intent, independent signature verification and ambiguity-safe recovery in laboratory paths ([PRs #1–#9](https://github.com/knehari/trust-platform/pulls), [recovery status](docs/recovery/EXECUTION_STATUS.md)).
 - [x] **Scoped read API:** OIDC-token and server-owned CA-grant checks, bounded reads, readiness and cursor pagination are exercised against disposable PostgreSQL ([Drafts #50–#70](https://github.com/knehari/trust-platform/pulls)). The test issuer is not human IAM.
-- [x] **Read-only operator console:** CA/certificate/audit consultation, detail dialogs, search, export and recorded-date filters are exercised in the laboratory; the latest increment is [Draft #135](https://github.com/knehari/trust-platform/pull/135). These views do not issue or revoke certificates.
+- [x] **Read-only operator console:** CA/certificate/audit consultation, detail dialogs, search, export and recorded-date filters are exercised in the laboratory; profile-draft consultation is proposed through [Draft #140](https://github.com/knehari/trust-platform/pull/140). These views do not issue or revoke certificates.
 - [x] **Reproducible laboratory stack and data checks:** disposable Compose/browser flow, restricted database role, migrations and logical restore regressions ([Drafts #53, #61–#69 and PR #129](https://github.com/knehari/trust-platform/pulls)). This is not operational disaster recovery.
 - [ ] **Human IAM and authorization:** real IdP, workload identity, least-privilege roles and independently authenticated maker/checker actors, with negative access tests.
 - [ ] **CA and profile lifecycle:** policy-controlled API and console workflows to create, approve, activate and retire CAs and versioned certificate profiles; no direct database bypass.
@@ -40,9 +40,10 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 ### Next implementation sequence
 
 - [x] Add an exclusive server-side filter on recorded certificate validity end, keep it across pages and exercise it in the browser ([Draft #135](https://github.com/knehari/trust-platform/pull/135); all six checks green on `9a640193b7e67d77b0770a3516a8ae369afeed82`).
-- [ ] Measure filtered-history query plans and load through the security-barrier views; add only justified indexes or query changes.
-- [ ] Specify CA and profile lifecycle, actor permissions, approval states and immutable policy/version binding before adding write routes.
-- [ ] Implement versioned profile management and then CA creation with denial, concurrency and recovery tests.
+- [x] Capture a reproducible 10k-row filtered-history query-plan rehearsal ([Draft #136](https://github.com/knehari/trust-platform/pull/136)); further load and index decisions remain open.
+- [x] Specify CA and profile lifecycle, actor permissions, approval states and immutable policy/version binding before adding write routes ([Draft #137](https://github.com/knehari/trust-platform/pull/137)).
+- [x] Add an inert immutable profile-draft catalogue, scoped read API and read-only console ([Drafts #138–#140](https://github.com/knehari/trust-platform/pulls)); these do not activate profiles or issue certificates.
+- [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.
 

@@ -55,6 +55,10 @@ const cas = await scoped.json();
 assert.deepEqual(cas.map((ca) => ca.ca_id), [allowedCa]);
 assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}`, { headers })).status, 403);
 assert.equal((await fetch(`${api}/v1/cas/${allowedCa}`, { headers })).status, 200);
+const drafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts`, { headers });
+assert.equal(drafts.status, 200);
+assert.deepEqual((await drafts.json()).map(draft => [draft.profile_id, draft.status]), [['server-lab', 'DRAFT']]);
+assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}/profile-drafts`, { headers })).status, 403);
 for (const [kind, knownId, hiddenId, idField, sensitiveField] of [
   ['certificates', allowedRequest, hiddenRequest, 'request_id', 'certificate_der'],
   ['audit', allowedEvent, hiddenEvent, 'event_id', 'actor_id'],
