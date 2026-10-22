@@ -1004,6 +1004,13 @@ impl PgRevocationStore {
             stored_count,
         )
         .map_err(RevocationStoreError::InvalidAssertion)?;
+        // The database cannot verify ECDSA: before a checker's approval
+        // completes a change, the maker's stored signature is re-verified
+        // here, so a proposal stored with a forged maker signature cannot
+        // be completed through the Rust core.
+        if challenge.purpose == SignedStep::Approve {
+            self.reverify_status_evidence(&hex_uuid(&challenge.claim.change_id), rp, true)?;
+        }
         let function = match challenge.purpose {
             SignedStep::Propose => "propose_signed_status_change",
             SignedStep::Approve => "approve_signed_status_change",

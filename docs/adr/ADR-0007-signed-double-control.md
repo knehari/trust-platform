@@ -78,7 +78,7 @@ Only the Rust core holds `trust_revocation_officer_api` and `trust_ca_admin`. It
   - Distinct keys and persons for maker and checker.
   - Removal of the maker's credential voids a pending proposal.
   - A per-CA, one-way `signed_approvals_required` setting.
-  - Offline re-verification (`reverify_signed_change`).
+  - Offline re-verification (`reverify_signed_change`). Since 22 October 2026 the Rust core also re-verifies the maker's stored signature before writing a checker's approval, so a proposal stored with a forged maker signature cannot be completed through it.
   - Tests cover every case in the evidence list below except "same person with two credentials", which the registry refuses at enrolment (0028). `removed_credentials_never_sign_again` covers "a credential removed mid-flow" and the counter of a removed credential, for officer, admin and break-glass keys. A challenge issued before the removal cannot be answered afterwards, either in the Rust core or, for officers, straight at the database (42501). A removed key's counter refuses even a superuser's UPDATE. Mutation: with the officer credential guard disabled, the counter advances and the test fails.
 - **Precautionary hold (migration 0036, section 6):**
   - Opt-in per CA (`precautionary_hold_hours`, 1-72), only where suspension is allowed under a CPS reference.

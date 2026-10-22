@@ -3095,3 +3095,46 @@ fn keys_from_unverifiable_breakglass_uses_cannot_sign() {
         .unwrap();
     admin_submit(&mut lab.admin, &mut admin_b, &b_id, &approval, None).unwrap();
 }
+
+/// A proposal stored with a forged maker signature (sent straight to the
+/// database, which cannot verify ECDSA) cannot be completed by an honest
+/// checker: the Rust core re-verifies the maker's stored evidence before
+/// the approval is written, and the change stays PROPOSED.
+#[test]
+fn approvals_reverify_the_makers_stored_signature() {
+    let Some(url) = database_url() else { return };
+    let mut lab = lab(&url);
+    let challenge = lab.propose_challenge();
+    let digest = lab
+        .officer
+        .signed_challenge(&challenge)
+        .unwrap()
+        .digest()
+        .unwrap();
+    let (data, client, _) = lab.maker.sign(&digest);
+    let (_, _, forged) = Authenticator::new().sign(&digest);
+    let mut direct = Client::connect(&url_as(&url, "trust_revocation_officer_api"), NoTls).unwrap();
+    let change: String = direct
+        .query_one(
+            "SELECT propose_signed_status_change($1::text::uuid, $2, $3, $4, $5)::text",
+            &[&challenge, &lab.maker_credential, &data, &client, &forged],
+        )
+        .unwrap()
+        .get(0);
+    let approval = challenge_for(&mut lab, &change);
+    let refused = lab.submit(&approval, false, None).unwrap_err();
+    assert!(
+        matches!(refused, RevocationStoreError::InvalidAssertion(_)),
+        "{refused:?}"
+    );
+    assert!(lab
+        .officer
+        .pending_status_changes(&lab.ca_id)
+        .unwrap()
+        .iter()
+        .any(|pending| pending.change_id == change));
+    assert_eq!(
+        lab.officer.status(&lab.ca_id, &lab.serial).unwrap(),
+        CertificateStatus::Valid
+    );
+}
