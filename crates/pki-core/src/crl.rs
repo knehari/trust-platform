@@ -17,8 +17,9 @@ use x509_cert::{
     },
     ext::{
         pkix::{
-            crl::CrlNumber, AuthorityKeyIdentifier, BasicConstraints, CrlReason, KeyUsage,
-            KeyUsages, SubjectKeyIdentifier,
+            crl::{BaseCrlNumber, CrlNumber},
+            AuthorityKeyIdentifier, BasicConstraints, CrlReason, KeyUsage, KeyUsages,
+            SubjectKeyIdentifier,
         },
         Extension,
     },
@@ -84,6 +85,27 @@ pub struct CrlEntry {
     pub invalidity_at_unix: Option<i64>,
 }
 
+/// A certificate taken off the CRL since the base CRL (a released hold): a
+/// delta CRL lists it with reason removeFromCRL (RFC 5280 5.3.1), dated
+/// when it was released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasedEntry {
+    pub serial: SerialNumber,
+    pub released_at_unix: i64,
+}
+
+/// One revokedCertificates element, complete or delta: reason code 8
+/// (removeFromCRL) for a released entry.
+struct Listed<'a> {
+    serial: &'a SerialNumber,
+    at_unix: i64,
+    reason_code: i16,
+    invalidity_at_unix: Option<i64>,
+}
+
+/// reasonCode removeFromCRL, valid only in a delta CRL.
+const REMOVE_FROM_CRL: i16 = 8;
+
 /// A reserved CRL: number, times and the frozen entry set. Sealed: the fields
 /// are private and only [`CrlReservation::new`] (used by the store from the
 /// database snapshot, and by lab examples and tests) builds one, so a
@@ -98,6 +120,12 @@ pub struct CrlReservation {
     next_update_unix: i64,
     entries: Vec<CrlEntry>,
     expired_certs_on_crl_since_unix: Option<i64>,
+    /// Delta CRLs (RFC 5280 5.2.4) only: the complete CRL this one updates,
+    /// and the entries removed since it.
+    base_crl_number: Option<u64>,
+    released: Vec<ReleasedEntry>,
+    /// Complete CRLs only: where the delta CRLs are (freshestCRL, 5.2.6).
+    freshest_crl_url: Option<String>,
 }
 
 fn encodable(unix_seconds: i64) -> bool {
@@ -144,7 +172,108 @@ impl CrlReservation {
             next_update_unix,
             entries,
             expired_certs_on_crl_since_unix,
+            base_crl_number: None,
+            released: Vec::new(),
+            freshest_crl_url: None,
         })
+    }
+
+    /// Advertises where delta CRLs are published (freshestCRL, RFC 5280
+    /// 5.2.6, non-critical). Relying parties such as OpenSSL look for a
+    /// delta only when the complete CRL or the certificate carries it. Fails
+    /// closed on a delta CRL (5.2.6: it MUST NOT appear there) and on a URL
+    /// `x509_extensions::freshest_crl` refuses.
+    pub fn with_freshest_crl(mut self, url: &str) -> Result<Self, CrlError> {
+        if self.base_crl_number.is_some() {
+            return Err(CrlError::Encoding);
+        }
+        crate::x509_extensions::freshest_crl(url).map_err(|_| CrlError::Encoding)?;
+        self.freshest_crl_url = Some(url.to_owned());
+        Ok(self)
+    }
+
+    pub fn freshest_crl_url(&self) -> Option<&str> {
+        self.freshest_crl_url.as_deref()
+    }
+
+    /// A delta CRL (RFC 5280 5.2.4) updating the complete CRL
+    /// `base_crl_number`: `entries` are the revocations and holds added since
+    /// it, `released` the entries removed since it. Same checks as `new`,
+    /// and fails closed unless 1 <= base < crl_number, the released entries
+    /// are encodable and unique, and no serial is both revoked and released.
+    /// It never carries ExpiredCertsOnCRL.
+    pub fn new_delta(
+        ca_id: impl Into<String>,
+        crl_number: u64,
+        base_crl_number: u64,
+        this_update_unix: i64,
+        next_update_unix: i64,
+        entries: Vec<CrlEntry>,
+        mut released: Vec<ReleasedEntry>,
+    ) -> Result<Self, CrlError> {
+        let mut reservation = Self::new(
+            ca_id,
+            crl_number,
+            this_update_unix,
+            next_update_unix,
+            entries,
+            None,
+        )?;
+        if base_crl_number == 0
+            || base_crl_number >= crl_number
+            || released.iter().any(|r| !encodable(r.released_at_unix))
+        {
+            return Err(CrlError::Encoding);
+        }
+        released.sort_by(|a, b| a.serial.cmp(&b.serial));
+        if released
+            .windows(2)
+            .any(|pair| pair[0].serial == pair[1].serial)
+            || released.iter().any(|r| {
+                reservation
+                    .entries
+                    .binary_search_by(|e| e.serial.cmp(&r.serial))
+                    .is_ok()
+            })
+        {
+            return Err(CrlError::Encoding);
+        }
+        reservation.base_crl_number = Some(base_crl_number);
+        reservation.released = released;
+        Ok(reservation)
+    }
+
+    /// The complete CRL a delta CRL updates; None for a complete CRL.
+    pub fn base_crl_number(&self) -> Option<u64> {
+        self.base_crl_number
+    }
+
+    /// Delta CRLs: entries removed since the base, sorted by serial.
+    pub fn released(&self) -> &[ReleasedEntry] {
+        &self.released
+    }
+
+    /// Every revokedCertificates element in serial order: the entries, and
+    /// for a delta CRL the released entries with reason removeFromCRL.
+    fn listed(&self) -> Vec<Listed<'_>> {
+        let mut listed: Vec<Listed<'_>> = self
+            .entries
+            .iter()
+            .map(|e| Listed {
+                serial: &e.serial,
+                at_unix: e.revoked_at_unix,
+                reason_code: e.reason.code(),
+                invalidity_at_unix: e.invalidity_at_unix,
+            })
+            .chain(self.released.iter().map(|r| Listed {
+                serial: &r.serial,
+                at_unix: r.released_at_unix,
+                reason_code: REMOVE_FROM_CRL,
+                invalidity_at_unix: None,
+            }))
+            .collect();
+        listed.sort_by(|a, b| a.serial.cmp(b.serial));
+        listed
     }
 
     pub fn ca_id(&self) -> &str {
@@ -178,16 +307,19 @@ impl CrlReservation {
     /// int2(reason) || int8(invalidity_at or -1)`, times in whole epoch
     /// seconds. Passed to `record_crl_intent`, which refuses the intent unless
     /// it equals the digest of the reserved snapshot.
+    /// A delta CRL's released entries take part in serial order with
+    /// reason 8 (removeFromCRL) and their release time; a complete CRL's
+    /// digest is unchanged.
     pub fn entries_sha256(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        for entry in &self.entries {
+        for entry in self.listed() {
             let serial = entry.serial.as_der_content();
             // Serials are at most 20 octets, so the length always fits.
             let len = i32::try_from(serial.len()).unwrap_or(i32::MAX);
             hasher.update(len.to_be_bytes());
             hasher.update(serial);
-            hasher.update(entry.revoked_at_unix.to_be_bytes());
-            hasher.update(entry.reason.code().to_be_bytes());
+            hasher.update(entry.at_unix.to_be_bytes());
+            hasher.update(entry.reason_code.to_be_bytes());
             hasher.update(entry.invalidity_at_unix.unwrap_or(-1).to_be_bytes());
         }
         hasher.finalize().into()
@@ -269,15 +401,20 @@ fn crl_reason(reason: RevocationReason) -> CrlReason {
     }
 }
 
-fn revoked_cert(entry: &CrlEntry) -> Result<RevokedCert, CrlError> {
+fn revoked_cert(entry: &Listed<'_>) -> Result<RevokedCert, CrlError> {
     let mut extensions = Vec::new();
     // RFC 5280 5.3.1: reasonCode unspecified SHOULD be omitted.
-    if entry.reason != RevocationReason::Unspecified {
+    if entry.reason_code != RevocationReason::Unspecified.code() {
+        let reason = if entry.reason_code == REMOVE_FROM_CRL {
+            CrlReason::RemoveFromCRL
+        } else {
+            crl_reason(
+                RevocationReason::from_code(entry.reason_code).map_err(|_| CrlError::Encoding)?,
+            )
+        };
         extensions.push(extension_from_der(
             REASON_CODE_OID,
-            crl_reason(entry.reason)
-                .to_der()
-                .map_err(|_| CrlError::Encoding)?,
+            reason.to_der().map_err(|_| CrlError::Encoding)?,
         )?);
     }
     if let Some(invalidity) = entry.invalidity_at_unix {
@@ -286,7 +423,7 @@ fn revoked_cert(entry: &CrlEntry) -> Result<RevokedCert, CrlError> {
     Ok(RevokedCert {
         serial_number: X509Serial::new(entry.serial.as_der_content())
             .map_err(|_| CrlError::Encoding)?,
-        revocation_date: rfc5280_time(entry.revoked_at_unix)?,
+        revocation_date: rfc5280_time(entry.at_unix)?,
         crl_entry_extensions: if extensions.is_empty() {
             None
         } else {
@@ -371,6 +508,16 @@ fn issuer_key_identifier(issuer: &Certificate) -> Result<OctetString, CrlError> 
     Ok(id)
 }
 
+/// A positive CRL number (or base CRL number) as a DER INTEGER.
+fn uint(number: u64) -> Result<Uint, CrlError> {
+    let bytes = number.to_be_bytes();
+    let first = bytes
+        .iter()
+        .position(|b| *b != 0)
+        .ok_or(CrlError::Encoding)?;
+    Uint::new(&bytes[first..]).map_err(|_| CrlError::Encoding)
+}
+
 /// Issuer name and authority key identifier come from `issuer`, which must
 /// pass `check_issuer`. Entries are sorted by serial bytes; duplicate serials,
 /// a non-increasing validity window or an out-of-range CRL number are
@@ -391,12 +538,7 @@ pub fn build_tbs_cert_list(
         authority_cert_issuer: None,
         authority_cert_serial_number: None,
     };
-    let number_bytes = reservation.crl_number.to_be_bytes();
-    let first = number_bytes
-        .iter()
-        .position(|b| *b != 0)
-        .ok_or(CrlError::Encoding)?;
-    let number = CrlNumber(Uint::new(&number_bytes[first..]).map_err(|_| CrlError::Encoding)?);
+    let number = CrlNumber(uint(reservation.crl_number)?);
     let mut crl_extensions = vec![
         extension_from_der(
             AUTHORITY_KEY_IDENTIFIER_OID,
@@ -410,19 +552,45 @@ pub fn build_tbs_cert_list(
     if let Some(since) = reservation.expired_certs_on_crl_since_unix {
         crl_extensions.push(generalized_time_extension(EXPIRED_CERTS_ON_CRL_OID, since)?);
     }
+    if let Some(url) = &reservation.freshest_crl_url {
+        if reservation.base_crl_number.is_some() {
+            return Err(CrlError::Encoding);
+        }
+        crl_extensions
+            .push(crate::x509_extensions::freshest_crl(url).map_err(|_| CrlError::Encoding)?);
+    }
+    // RFC 5280 5.2.4: the delta CRL indicator is critical and carries the
+    // base CRL number, which precedes this CRL's number.
+    if let Some(base) = reservation.base_crl_number {
+        if base == 0
+            || base >= reservation.crl_number
+            || reservation.expired_certs_on_crl_since_unix.is_some()
+        {
+            return Err(CrlError::Encoding);
+        }
+        let mut indicator = extension_from_der(
+            DELTA_CRL_INDICATOR_OID,
+            BaseCrlNumber(uint(base)?)
+                .to_der()
+                .map_err(|_| CrlError::Encoding)?,
+        )?;
+        indicator.critical = true;
+        crl_extensions.push(indicator);
+    } else if !reservation.released.is_empty() {
+        return Err(CrlError::Encoding);
+    }
 
     // Defence in depth (see builder_rejects_invalid_reservations): the
-    // sealed constructor already sorts and de-duplicates.
-    let mut entries: Vec<&CrlEntry> = reservation.entries.iter().collect();
-    entries.sort_by(|a, b| a.serial.cmp(&b.serial));
-    if entries
+    // sealed constructors already sort and de-duplicate.
+    let listed = reservation.listed();
+    if listed
         .windows(2)
         .any(|pair| pair[0].serial == pair[1].serial)
     {
         return Err(CrlError::Encoding);
     }
-    let revoked = entries
-        .into_iter()
+    let revoked = listed
+        .iter()
         .map(revoked_cert)
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -497,6 +665,51 @@ pub fn verify_published_crl(
     issuer: &Certificate,
     crl_der: &[u8],
 ) -> Result<PublishedCrl, CrlError> {
+    match verify_published(issuer, crl_der)? {
+        (published, None) => Ok(published),
+        (_, Some(_)) => Err(CrlError::VerificationFailure),
+    }
+}
+
+/// A stored delta CRL, re-checked like `verify_published_crl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedDeltaCrl {
+    pub crl: PublishedCrl,
+    pub base_crl_number: u64,
+}
+
+/// `verify_published_crl` for a delta CRL (RFC 5280 5.2.4): exactly one
+/// delta CRL indicator, critical, naming a base CRL number below this
+/// CRL's number; no other critical extension.
+pub fn verify_published_delta_crl(
+    issuer: &Certificate,
+    crl_der: &[u8],
+) -> Result<PublishedDeltaCrl, CrlError> {
+    match verify_published(issuer, crl_der)? {
+        (crl, Some(base_crl_number)) if base_crl_number < crl.crl_number => Ok(PublishedDeltaCrl {
+            crl,
+            base_crl_number,
+        }),
+        _ => Err(CrlError::VerificationFailure),
+    }
+}
+
+/// A CRL number or base CRL number INTEGER as u64 below 2^63.
+fn number_from(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() > 8 {
+        return None;
+    }
+    let mut buffer = [0u8; 8];
+    buffer[8 - bytes.len()..].copy_from_slice(bytes);
+    Some(u64::from_be_bytes(buffer)).filter(|n| *n < MAX_CRL_NUMBER)
+}
+
+/// The checks shared by complete and delta CRLs; also returns the base CRL
+/// number when the CRL is a delta.
+fn verify_published(
+    issuer: &Certificate,
+    crl_der: &[u8],
+) -> Result<(PublishedCrl, Option<u64>), CrlError> {
     let fail = CrlError::VerificationFailure;
     let crl = x509_cert::crl::CertificateList::from_der(crl_der).map_err(|_| fail.clone())?;
     if crl.to_der().map_err(|_| fail.clone())? != crl_der {
@@ -510,22 +723,29 @@ pub fn verify_published_crl(
     {
         return Err(fail);
     }
-    // RFC 5280 5.2 and 5.3: a critical extension (none of the lab's own is
-    // critical) may be one a relying party does not understand, and a delta
-    // CRL (5.2.4) is not a complete CRL. Neither is served as the CRL.
+    // RFC 5280 5.2 and 5.3: a critical extension may be one a relying party
+    // does not understand. The only critical one the lab issues is the delta
+    // CRL indicator (5.2.4), which must be critical and appear at most once.
     let entry_extensions = tbs
         .revoked_certificates
         .iter()
         .flatten()
         .flat_map(|entry| entry.crl_entry_extensions.iter().flatten());
-    if tbs
-        .crl_extensions
-        .iter()
-        .flatten()
-        .chain(entry_extensions)
-        .any(|e| e.critical || e.extn_id.to_string() == DELTA_CRL_INDICATOR_OID)
-    {
+    if entry_extensions.into_iter().any(|e| e.critical) {
         return Err(fail);
+    }
+    let mut base = None;
+    for extension in tbs.crl_extensions.iter().flatten() {
+        if extension.extn_id.to_string() == DELTA_CRL_INDICATOR_OID {
+            let number = BaseCrlNumber::from_der(extension.extn_value.as_bytes())
+                .map_err(|_| fail.clone())?;
+            if !extension.critical || base.is_some() {
+                return Err(fail);
+            }
+            base = Some(number_from(number.0.as_bytes()).ok_or_else(|| fail.clone())?);
+        } else if extension.critical {
+            return Err(fail);
+        }
     }
     let tbs_der = tbs.to_der().map_err(|_| fail.clone())?;
     let sec1 = issuer
@@ -548,25 +768,19 @@ pub fn verify_published_crl(
         }
         _ => return Err(fail),
     };
-    let bytes = number.0.as_bytes();
-    if bytes.len() > 8 {
-        return Err(fail);
-    }
-    let mut buffer = [0u8; 8];
-    buffer[8 - bytes.len()..].copy_from_slice(bytes);
-    let crl_number = u64::from_be_bytes(buffer);
-    if crl_number >= MAX_CRL_NUMBER {
-        return Err(fail);
-    }
+    let crl_number = number_from(number.0.as_bytes()).ok_or_else(|| fail.clone())?;
     let unix = |time: &Time| i64::try_from(time.to_unix_duration().as_secs()).ok();
-    Ok(PublishedCrl {
-        crl_number,
-        this_update_unix: unix(&tbs.this_update).ok_or_else(|| fail.clone())?,
-        next_update_unix: match &tbs.next_update {
-            Some(time) => Some(unix(time).ok_or(fail)?),
-            None => None,
+    Ok((
+        PublishedCrl {
+            crl_number,
+            this_update_unix: unix(&tbs.this_update).ok_or_else(|| fail.clone())?,
+            next_update_unix: match &tbs.next_update {
+                Some(time) => Some(unix(time).ok_or(fail)?),
+                None => None,
+            },
         },
-    })
+        base,
+    ))
 }
 
 #[cfg(feature = "lab-software")]
@@ -721,6 +935,16 @@ mod tests {
         list.to_der().unwrap()
     }
 
+    fn as_revoked(e: &CrlEntry) -> RevokedCert {
+        revoked_cert(&Listed {
+            serial: &e.serial,
+            at_unix: e.revoked_at_unix,
+            reason_code: e.reason.code(),
+            invalidity_at_unix: e.invalidity_at_unix,
+        })
+        .unwrap()
+    }
+
     fn ext_value<'a>(exts: &'a [Extension], oid: &str) -> Option<&'a [u8]> {
         exts.iter()
             .find(|e| e.extn_id.to_string() == oid)
@@ -844,6 +1068,207 @@ mod tests {
             verify_published_crl(&root(&ca), &renumbered),
             Err(CrlError::VerificationFailure)
         );
+    }
+
+    fn released(s: &[u8]) -> ReleasedEntry {
+        ReleasedEntry {
+            serial: serial(s),
+            released_at_unix: THIS_UPDATE - 50,
+        }
+    }
+
+    fn delta() -> CrlReservation {
+        CrlReservation::new_delta(
+            "lab-root",
+            3,
+            2,
+            THIS_UPDATE,
+            NEXT_UPDATE,
+            vec![entry(&[0x03], RevocationReason::Superseded, None)],
+            vec![released(&[0x02])],
+        )
+        .unwrap()
+    }
+
+    /// RFC 5280 5.2.4: a delta CRL carries a critical delta CRL indicator
+    /// with its base CRL number, lists what was added since the base, and
+    /// lists released holds with reason removeFromCRL (5.3.1).
+    #[test]
+    fn delta_crl_names_its_base_and_lists_releases() {
+        let mut ca = ca();
+        let r = delta();
+        let der = issue(&mut ca, &r);
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
+        let crl = CertificateList::from_der(&der).unwrap();
+        let extensions = crl.tbs_cert_list.crl_extensions.clone().unwrap();
+        let indicator = extensions
+            .iter()
+            .find(|e| e.extn_id.to_string() == DELTA_CRL_INDICATOR_OID)
+            .unwrap();
+        assert!(indicator.critical);
+        assert_eq!(
+            BaseCrlNumber::from_der(indicator.extn_value.as_bytes())
+                .unwrap()
+                .0
+                .as_bytes(),
+            &[2]
+        );
+        let listed = crl.tbs_cert_list.revoked_certificates.clone().unwrap();
+        assert_eq!(listed.len(), 2);
+        let reason = |i: usize| {
+            CrlReason::from_der(
+                ext_value(
+                    listed[i].crl_entry_extensions.as_ref().unwrap(),
+                    REASON_CODE_OID,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(listed[0].serial_number.as_bytes(), &[0x02]);
+        assert_eq!(reason(0), CrlReason::RemoveFromCRL);
+        assert_eq!(listed[1].serial_number.as_bytes(), &[0x03]);
+        assert_eq!(reason(1), CrlReason::Superseded);
+
+        // Served only as a delta, never as the complete CRL.
+        assert_eq!(
+            verify_published_delta_crl(&root(&ca), &der).unwrap(),
+            PublishedDeltaCrl {
+                crl: PublishedCrl {
+                    crl_number: 3,
+                    this_update_unix: THIS_UPDATE,
+                    next_update_unix: Some(NEXT_UPDATE),
+                },
+                base_crl_number: 2,
+            }
+        );
+        assert_eq!(
+            verify_published_crl(&root(&ca), &der),
+            Err(CrlError::VerificationFailure)
+        );
+        let complete = issue(&mut ca, &reservation(vec![]));
+        assert_eq!(
+            verify_published_delta_crl(&root(&ca), &complete),
+            Err(CrlError::VerificationFailure)
+        );
+        // A non-critical indicator, or a base not below the number, is refused.
+        let soft = resigned(&mut ca, &der, |tbs| {
+            for e in tbs.crl_extensions.as_mut().unwrap() {
+                if e.extn_id.to_string() == DELTA_CRL_INDICATOR_OID {
+                    e.critical = false;
+                }
+            }
+        });
+        assert_eq!(
+            verify_published_delta_crl(&root(&ca), &soft),
+            Err(CrlError::VerificationFailure)
+        );
+        let late_base = resigned(&mut ca, &der, |tbs| {
+            for e in tbs.crl_extensions.as_mut().unwrap() {
+                if e.extn_id.to_string() == DELTA_CRL_INDICATOR_OID {
+                    e.extn_value = OctetString::new(vec![0x02, 0x01, 0x03]).unwrap();
+                }
+            }
+        });
+        assert_eq!(
+            verify_published_delta_crl(&root(&ca), &late_base),
+            Err(CrlError::VerificationFailure)
+        );
+        // The independent verifier refuses a delta whose release was dropped.
+        let dropped = resigned(&mut ca, &der, |tbs| {
+            tbs.revoked_certificates.as_mut().unwrap().remove(0);
+        });
+        assert_eq!(
+            LabCrlVerifier::new(root(&ca)).verify(&r, &dropped),
+            Err(CrlError::VerificationFailure)
+        );
+    }
+
+    #[test]
+    fn freshest_crl_is_advertised_on_complete_crls_only() {
+        let mut ca = ca();
+        let url = "http://crl.lab.invalid/delta/lab-root.crl";
+        let r = reservation(vec![]).with_freshest_crl(url).unwrap();
+        assert_eq!(r.freshest_crl_url(), Some(url));
+        let der = issue(&mut ca, &r);
+        LabCrlVerifier::new(root(&ca)).verify(&r, &der).unwrap();
+        verify_published_crl(&root(&ca), &der).unwrap();
+        let crl = CertificateList::from_der(&der).unwrap();
+        let freshest = crl
+            .tbs_cert_list
+            .crl_extensions
+            .unwrap()
+            .into_iter()
+            .find(|e| e.extn_id.to_string() == "2.5.29.46")
+            .unwrap();
+        assert!(!freshest.critical);
+        // The plain reservation's CRL differs: the extension is signed.
+        assert_ne!(
+            build_tbs_cert_list(&root(&ca), &r).unwrap(),
+            build_tbs_cert_list(&root(&ca), &reservation(vec![])).unwrap()
+        );
+        assert_eq!(delta().with_freshest_crl(url), Err(CrlError::Encoding));
+        for bad in [
+            "https://crl.lab.invalid/d.crl",
+            "http://",
+            "ldap://x/y",
+            "http://a b/c",
+        ] {
+            assert_eq!(
+                reservation(vec![]).with_freshest_crl(bad),
+                Err(CrlError::Encoding),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn delta_reservation_rejects_invalid_input() {
+        let new = |number: u64, base: u64, entries: Vec<CrlEntry>, rel: Vec<ReleasedEntry>| {
+            CrlReservation::new_delta(
+                "lab-root",
+                number,
+                base,
+                THIS_UPDATE,
+                NEXT_UPDATE,
+                entries,
+                rel,
+            )
+        };
+        let reject = Err(CrlError::Encoding);
+        assert_eq!(new(3, 0, vec![], vec![]), reject);
+        assert_eq!(new(3, 3, vec![], vec![]), reject);
+        assert_eq!(new(3, 4, vec![], vec![]), reject);
+        assert_eq!(
+            new(3, 2, vec![], vec![released(&[1]), released(&[1])]),
+            reject
+        );
+        assert_eq!(
+            new(
+                3,
+                2,
+                vec![entry(&[1], RevocationReason::KeyCompromise, None)],
+                vec![released(&[1])]
+            ),
+            reject
+        );
+        let mut late = released(&[1]);
+        late.released_at_unix = MAX_CRL_TIME_UNIX + 1;
+        assert_eq!(new(3, 2, vec![], vec![late]), reject);
+        // A complete CRL's digest ignores the delta fields; a delta's covers
+        // its releases (reason 8).
+        let complete = reservation(vec![entry(&[0x03], RevocationReason::Superseded, None)]);
+        assert_ne!(delta().entries_sha256(), complete.entries_sha256());
+        let plain = new(
+            3,
+            2,
+            vec![entry(&[0x03], RevocationReason::Superseded, None)],
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(plain.entries_sha256(), complete.entries_sha256());
+        assert_eq!(plain.base_crl_number(), Some(2));
+        assert_eq!(complete.base_crl_number(), None);
     }
 
     /// RFC 5280 5.2: a CRL with an unrecognised critical extension must not
@@ -1036,6 +1461,9 @@ mod tests {
             next_update_unix,
             entries,
             expired_certs_on_crl_since_unix: None,
+            base_crl_number: None,
+            released: Vec::new(),
+            freshest_crl_url: None,
         };
         let reject = Err(CrlError::Encoding);
         assert_eq!(
@@ -1175,7 +1603,11 @@ mod tests {
         assert_eq!(verifier.verify(&r, &bad_next), reject);
         let added = resigned(&mut ca, &good, |t| {
             let list = t.revoked_certificates.as_mut().unwrap();
-            list.push(revoked_cert(&entry(&[0x09], RevocationReason::Unspecified, None)).unwrap());
+            list.push(as_revoked(&entry(
+                &[0x09],
+                RevocationReason::Unspecified,
+                None,
+            )));
         });
         assert_eq!(verifier.verify(&r, &added), reject);
         let removed = resigned(&mut ca, &good, |t| {
@@ -1184,7 +1616,7 @@ mod tests {
         assert_eq!(verifier.verify(&r, &removed), reject);
         let other_reason = resigned(&mut ca, &good, |t| {
             t.revoked_certificates.as_mut().unwrap()[0] =
-                revoked_cert(&entry(&[0x01], RevocationReason::Superseded, None)).unwrap();
+                as_revoked(&entry(&[0x01], RevocationReason::Superseded, None));
         });
         assert_eq!(verifier.verify(&r, &other_reason), reject);
         let v1 = resigned(&mut ca, &good, |t| t.version = Version::V1);

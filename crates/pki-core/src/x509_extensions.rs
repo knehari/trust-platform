@@ -130,6 +130,7 @@ pub fn certificate_policies(binding: &ApprovedPolicyBinding) -> Result<Extension
 }
 
 pub const CRL_DISTRIBUTION_POINTS_OID: &str = "2.5.29.31";
+pub const FRESHEST_CRL_OID: &str = "2.5.29.46";
 
 /// The lab distribution point URL of a CA (`crl_distribution` binary,
 /// migration 0030): `<base>/crl/<ca-uuid>.crl`.
@@ -175,6 +176,15 @@ pub fn crl_distribution_points(url: &str) -> Result<Extension, ExtensionError> {
         false,
         points.to_der().map_err(|_| invalid)?,
     )
+}
+
+/// RFC 5280 4.2.1.15 / 5.2.6 freshestCRL: where delta CRLs are published.
+/// Same syntax and URL rules as `crl_distribution_points`; non-critical.
+pub fn freshest_crl(url: &str) -> Result<Extension, ExtensionError> {
+    let mut extension = crl_distribution_points(url)?;
+    extension.extn_id = ObjectIdentifier::new(FRESHEST_CRL_OID)
+        .map_err(|_| ExtensionError::InvalidDistributionPoint)?;
+    Ok(extension)
 }
 
 #[cfg(test)]

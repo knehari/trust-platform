@@ -7,7 +7,9 @@
 //! `revocation_crl_postgres` integration test.
 //!
 //! Scenario: CRL 1 = {leaf1 keyCompromise, leaf2 certificateHold}; CRL 2 = {leaf1}
-//! (the hold on leaf2 is released). Leaf 3 is never revoked.
+//! (the hold on leaf2 is released). Leaf 3 is never revoked by a complete CRL.
+//! CRL 3 is a delta CRL on base 1 (RFC 5280 5.2.4): leaf3 superseded, and
+//! leaf2 removeFromCRL; it is written as crl3_delta.der.
 //! Usage: cargo run -p trust-pki-core --features lab-software --example issue_crl_lab -- /tmp/lab-crl
 
 use std::{
@@ -16,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use trust_pki_core::{
-    crl::{CrlEntry, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier},
+    crl::{CrlEntry, CrlError, CrlReservation, LabCrlAssembler, LabCrlVerifier, ReleasedEntry},
     crl_orchestrator::{crl_once, CrlJournal, CrlPlan},
     csr::verify_pkcs10_p256,
     lab_ca::EphemeralLabCa,
@@ -147,8 +149,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 entry(1, RevocationReason::KeyCompromise)?,
                 entry(2, RevocationReason::CertificateHold)?,
             ],
-        )?,
+        )?
+        // Example URL only: OpenSSL applies delta CRLs only to a base that
+        // advertises them.
+        .with_freshest_crl("http://crl.lab.invalid/delta/lab-root.crl")
+        .map_err(|e| format!("invalid freshest CRL: {e:?}"))?,
         reservation(2, vec![entry(1, RevocationReason::KeyCompromise)?])?,
+        CrlReservation::new_delta(
+            "lab-root",
+            3,
+            1,
+            now,
+            now + CRL_VALIDITY_SECONDS,
+            vec![entry(3, RevocationReason::Superseded)?],
+            vec![ReleasedEntry {
+                serial: serial(2)?,
+                released_at_unix: now,
+            }],
+        )
+        .map_err(|e| format!("invalid delta CRL reservation: {e:?}"))?,
     ];
 
     let root = ca.root_certificate().clone();
@@ -173,8 +192,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, leaf) in leaves.iter().enumerate() {
         fs::write(output.join(format!("leaf{}.der", i + 1)), leaf)?;
     }
-    for (i, crl) in crls.iter().enumerate() {
-        fs::write(output.join(format!("crl{}.der", i + 1)), crl)?;
+    for (reservation, crl) in reservations.iter().zip(&crls) {
+        let name = match reservation.base_crl_number() {
+            None => format!("crl{}.der", reservation.crl_number()),
+            Some(_) => format!("crl{}_delta.der", reservation.crl_number()),
+        };
+        fs::write(output.join(name), crl)?;
     }
 
     println!(
