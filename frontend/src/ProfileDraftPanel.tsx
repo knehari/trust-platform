@@ -4,14 +4,18 @@ import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireScopedRows } from './scope';
 import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
+import type { DetailLink } from './navigation';
 
 interface Props {
   caId: string;
   token: string;
   onUnauthorized: () => void;
+  linkedDetail: Extract<DetailLink, { kind: 'profile' }> | null;
+  onOpenDetail: (detail: Extract<DetailLink, { kind: 'profile' }>) => void;
+  onCloseDetail: () => void;
 }
 
-export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
+export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, onOpenDetail, onCloseDetail }: Props) {
   const [items, setItems] = useState<ProfileDraft[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,6 +31,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
   onUnauthorizedRef.current = onUnauthorized;
+  const onCloseDetailRef = useRef(onCloseDetail);
+  onCloseDetailRef.current = onCloseDetail;
 
   useEffect(() => {
     setItems([]);
@@ -55,27 +61,41 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
     return () => { controller.abort(); moreController.current?.abort(); detailController.current?.abort(); };
   }, [caId, token, retry]);
 
-  async function openDetail(item: ProfileDraft) {
+  useEffect(() => {
+    if (!linkedDetail) {
+      detailController.current?.abort();
+      setDetailLoading(false);
+      setSelected(null);
+      return;
+    }
     detailController.current?.abort();
     const controller = new AbortController();
     detailController.current = controller;
     setSelected(null);
     setDetailError(null);
     setDetailLoading(true);
-    try {
-      const detail = await apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(item.profile_id)}/${item.revision}`, token, controller.signal);
-      if (controller.signal.aborted) return;
-      if (detail.ca_id !== caId || detail.profile_id !== item.profile_id || detail.revision !== item.revision || detail.status !== 'DRAFT') {
-        throw new Error('The profile proposal detail did not match the selected revision.');
-      }
-      setSelected(detail);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      if (error instanceof ApiError && error.status === 401) onUnauthorizedRef.current();
-      else setDetailError(error instanceof Error ? error.message : 'Could not load profile proposal detail.');
-    } finally {
-      if (!controller.signal.aborted) setDetailLoading(false);
-    }
+    void apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(linkedDetail.id)}/${linkedDetail.revision}`, token, controller.signal)
+      .then(detail => {
+        if (controller.signal.aborted) return;
+        if (detail.ca_id !== caId || detail.profile_id !== linkedDetail.id || detail.revision !== linkedDetail.revision || detail.status !== 'DRAFT') {
+          throw new Error('The profile proposal detail did not match the linked revision.');
+        }
+        setSelected(detail);
+      })
+      .catch(error => {
+        if (controller.signal.aborted) return;
+        if (error instanceof ApiError && error.status === 401) onUnauthorizedRef.current();
+        else {
+          setDetailError(error instanceof Error ? error.message : 'Could not load profile proposal detail.');
+          onCloseDetailRef.current();
+        }
+      })
+      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    return () => controller.abort();
+  }, [caId, token, linkedDetail?.id, linkedDetail?.revision]);
+
+  function openDetail(item: ProfileDraft) {
+    onOpenDetail({ kind: 'profile', id: item.profile_id, revision: item.revision });
   }
 
   async function loadMore() {
@@ -127,7 +147,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized }: Props) {
     {detailLoading && <p className="profile-draft-message" role="status">Loading proposal detail…</p>}
     {detailError && <p className="profile-draft-message" role="alert">{detailError}</p>}
     {cursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadMore()}>{moreLoading ? 'Loading…' : 'Load more proposals'}</button>}
-    {selected && <ProfileDraftDialog draft={selected} onClose={() => setSelected(null)} />}
+    {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog draft={selected} onClose={() => { setSelected(null); onCloseDetail(); }} />}
     {showComparison && compared.length === 2 && <ProfileCompareDialog first={compared[0]} second={compared[1]} onClose={() => setShowComparison(false)} />}
   </div>;
 }

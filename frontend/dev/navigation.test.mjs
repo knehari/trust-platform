@@ -30,3 +30,16 @@ test('detail links accept only a scoped, canonical UUID for the active view', ()
   assert.equal(readNavigation(`?view=certificates&ca=${ca}&certificate=../../secret`).detail, null);
   assert.equal(readNavigation(`?view=certificates&certificate=${id}`).detail, null);
 });
+
+test('profile revision links validate the slug, revision and CA before routing', () => {
+  const detail = { kind: 'profile', id: 'server-lab', revision: 2 };
+  assert.deepEqual(readNavigation(navigationUrl('profiles', ca, detail).slice(1)), { section: 'profiles', caId: ca, detail });
+  for (const search of [
+    `?view=profiles&ca=${ca}&profile=../hidden&revision=1`,
+    `?view=profiles&ca=${ca}&profile=server-lab&revision=0`,
+    `?view=profiles&ca=${ca}&profile=server-lab&revision=01`,
+    `?view=profiles&ca=${ca}&profile=server-lab&revision=1000001`,
+    `?view=certificates&ca=${ca}&profile=server-lab&revision=2`,
+    '?view=profiles&profile=server-lab&revision=2',
+  ]) assert.equal(readNavigation(search).detail, null, search);
+});

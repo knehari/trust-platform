@@ -114,8 +114,24 @@ try {
   await profileDialog.waitFor();
   await profileDialog.getByText('SNAPSHOT SHA-256').waitFor();
   assert.match(await profileDialog.textContent(), /[0-9a-f]{64}/);
+  assert.equal(new URL(page.url()).searchParams.get('profile'), 'server-lab');
+  assert.equal(new URL(page.url()).searchParams.get('revision'), '1');
   await profileDialog.getByRole('button', { name: 'Close proposal detail' }).click();
   await profileDialog.waitFor({ state: 'hidden' });
+  assert.equal(new URL(page.url()).searchParams.has('profile'), false);
+  await page.goto(`${origin}/?view=profiles&ca=${allowedCa}&profile=server-lab&revision=2`);
+  const linkedProfileDialog = page.getByRole('dialog', { name: 'Revision 2' });
+  await linkedProfileDialog.waitFor();
+  await linkedProfileDialog.getByText('v2', { exact: true }).waitFor();
+  await linkedProfileDialog.getByRole('button', { name: 'Close proposal detail' }).click();
+  await linkedProfileDialog.waitFor({ state: 'hidden' });
+  const freshPage = await browser.newPage();
+  freshPage.setDefaultTimeout(15_000);
+  await freshPage.goto(`${origin}/?view=profiles&ca=${allowedCa}&profile=server-lab&revision=2`);
+  await freshPage.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await freshPage.getByRole('dialog', { name: 'Revision 2' }).waitFor();
+  assert.equal(new URL(freshPage.url()).searchParams.get('profile'), 'server-lab');
+  await freshPage.close();
   await page.getByRole('button', { name: 'Select for comparison' }).first().click();
   await page.getByRole('button', { name: 'Select for comparison' }).click();
   await page.getByRole('button', { name: 'Compare selected revisions' }).click();
@@ -125,9 +141,10 @@ try {
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
   assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
-  await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}`);
+  await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}&profile=hidden-lab&revision=1`);
   await page.getByRole('alert').first().waitFor();
   assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
+  assert.equal(await page.getByRole('dialog', { name: 'Revision 1' }).count(), 0);
 
   // The same browser session must deny a CA outside the signed scope. A forged
   // deep link must not surface the hidden certificate.
