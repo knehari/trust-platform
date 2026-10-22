@@ -95,6 +95,7 @@ struct ProfileDraft {
     created_at: String,
     status: &'static str,
     proposal_warnings: Vec<&'static str>,
+    snapshot_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -735,7 +736,7 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
         &proposed_dns_zones,
         &proposed_signature_suites,
     );
-    ProfileDraft {
+    let mut draft = ProfileDraft {
         ca_id: row.get(0),
         profile_id: row.get(1),
         revision: row.get(2),
@@ -749,7 +750,10 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
         created_at: row.get(10),
         status: "DRAFT",
         proposal_warnings,
-    }
+        snapshot_sha256: String::new(),
+    };
+    draft.snapshot_sha256 = profile_proposal::snapshot_sha256(&draft);
+    draft
 }
 
 async fn list_certificates(
@@ -1120,6 +1124,9 @@ mod tests {
         assert!(first
             .iter()
             .all(|row| row["proposal_warnings"] == json!([])));
+        assert!(first.iter().all(|row| row["snapshot_sha256"]
+            .as_str()
+            .is_some_and(|digest| digest.len() == 64)));
         let (status, next, second) = history_page(
             &app,
             &token,

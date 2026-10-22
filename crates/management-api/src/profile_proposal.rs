@@ -1,6 +1,38 @@
 //! Advisory syntax checks for inert profile proposals. These never authorize issuance.
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+
+use crate::ProfileDraft;
+
+/// Hashes an unambiguous v1 envelope of the proposed policy snapshot.
+/// Creator and recording time are provenance, not policy semantics.
+pub(super) fn snapshot_sha256(draft: &ProfileDraft) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"trust-platform/profile-draft/v1\0");
+    write_text(&mut hash, &draft.ca_id);
+    write_text(&mut hash, &draft.profile_id);
+    hash.update(draft.revision.to_be_bytes());
+    write_text(&mut hash, &draft.display_name);
+    write_text(&mut hash, &draft.policy_version);
+    hash.update(draft.max_validity_days.to_be_bytes());
+    hash.update(draft.max_dns_sans.to_be_bytes());
+    write_list(&mut hash, &draft.proposed_dns_zones);
+    write_list(&mut hash, &draft.proposed_signature_suites);
+    format!("{:x}", hash.finalize())
+}
+
+fn write_text(hash: &mut Sha256, value: &str) {
+    hash.update((value.len() as u64).to_be_bytes());
+    hash.update(value.as_bytes());
+}
+
+fn write_list(hash: &mut Sha256, values: &[String]) {
+    hash.update((values.len() as u64).to_be_bytes());
+    for value in values {
+        write_text(hash, value);
+    }
+}
 
 pub(super) fn syntax_warnings(
     display_name: &str,
@@ -125,5 +157,38 @@ mod tests {
             assert!(!valid_dns_zone(invalid), "{invalid}");
         }
         assert!(!valid_dns_zone(&format!("{}.invalid", "a".repeat(64))));
+    }
+
+    #[test]
+    fn snapshot_digest_binds_policy_fields_and_ignores_provenance() {
+        let mut draft = ProfileDraft {
+            ca_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into(),
+            profile_id: "server-lab".into(),
+            revision: 1,
+            display_name: "Server proposal".into(),
+            policy_version: "v1".into(),
+            max_validity_days: 90,
+            max_dns_sans: 5,
+            proposed_dns_zones: vec!["lab.invalid".into()],
+            proposed_signature_suites: vec!["P256-SHA256".into()],
+            created_by: "editor-one".into(),
+            created_at: "2026-10-22T00:00:00.000Z".into(),
+            status: "DRAFT",
+            proposal_warnings: vec![],
+            snapshot_sha256: String::new(),
+        };
+        let initial = snapshot_sha256(&draft);
+        assert_eq!(initial.len(), 64);
+        draft.created_by = "editor-two".into();
+        draft.created_at = "2026-10-23T00:00:00.000Z".into();
+        assert_eq!(snapshot_sha256(&draft), initial);
+        draft.max_validity_days = 60;
+        assert_ne!(snapshot_sha256(&draft), initial);
+        draft.max_validity_days = 90;
+        draft.proposed_dns_zones.push("other.invalid".into());
+        assert_ne!(snapshot_sha256(&draft), initial);
+        draft.proposed_dns_zones.pop();
+        draft.revision += 1;
+        assert_ne!(snapshot_sha256(&draft), initial);
     }
 }

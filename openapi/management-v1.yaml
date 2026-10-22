@@ -327,7 +327,7 @@ components:
         created_at: { type: string, format: date-time }
     ProfileDraft:
       type: object
-      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, proposal_warnings]
+      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, proposal_warnings, snapshot_sha256]
       properties:
         ca_id: { type: string, format: uuid }
         profile_id: { type: string }
@@ -345,6 +345,10 @@ components:
           type: array
           description: Advisory syntax findings only. An empty array is not an approval, provider capability check or issuance authorization.
           items: { type: string, enum: [blank_display_name, blank_policy_version, invalid_dns_zone, duplicate_dns_zone, invalid_suite_id, duplicate_suite_id] }
+        snapshot_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the v1 length-prefixed proposal-policy envelope. It is not signed, approved or bound to an issued certificate.
     Certificate:
       type: object
       required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
