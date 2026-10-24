@@ -25,6 +25,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [retry, setRetry] = useState(0);
   const [filterInput, setFilterInput] = useState('');
   const [profileFilter, setProfileFilter] = useState('');
+  const [profileOrder, setProfileOrder] = useState<'oldest' | 'newest'>('oldest');
   const [filterError, setFilterError] = useState<string | null>(null);
   const [lookupProfileId, setLookupProfileId] = useState('');
   const [lookupRevision, setLookupRevision] = useState('');
@@ -51,7 +52,12 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setShowComparison(false);
     moreController.current?.abort();
     const controller = new AbortController();
-    const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${profileFilter ? `?profile_id=${encodeURIComponent(profileFilter)}` : ''}`;
+    const params = new URLSearchParams();
+    if (profileFilter) {
+      params.set('profile_id', profileFilter);
+      params.set('order', profileOrder);
+    }
+    const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
     void apiGetPage<ProfileDraft>(listUrl, token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
@@ -65,7 +71,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); moreController.current?.abort(); };
-  }, [caId, token, retry, profileFilter]);
+  }, [caId, token, retry, profileFilter, profileOrder]);
 
   useEffect(() => {
     if (!linkedDetail) {
@@ -135,7 +141,10 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setError(null);
     try {
       const params = new URLSearchParams({ after: cursor });
-      if (profileFilter) params.set('profile_id', profileFilter);
+      if (profileFilter) {
+        params.set('profile_id', profileFilter);
+        params.set('order', profileOrder);
+      }
       const page = await apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireScopedRows(page.items, caId);
@@ -165,7 +174,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
-    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileFilter(''); }}>Clear filter</button>}</div></form>
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileOrder('oldest'); setProfileFilter(''); }}>Clear filter</button>}</div>{profileFilter && <label className="profile-order-label" htmlFor="profile-draft-order">Revision order <select id="profile-draft-order" value={profileOrder} onChange={event => setProfileOrder(event.target.value as 'oldest' | 'newest')}><option value="oldest">Oldest first</option><option value="newest">Newest first</option></select></label>}</form>
     {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
     {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}

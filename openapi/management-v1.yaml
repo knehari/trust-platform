@@ -92,13 +92,18 @@ paths:
           description: Exact lowercase profile ID. Keep this filter on each cursor page; a cursor for another profile returns 400.
           schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
         - in: query
+          name: order
+          required: false
+          description: Oldest (default) or newest revision first. Newest requires profile_id. Keep this order on each cursor page.
+          schema: { type: string, enum: [oldest, newest] }
+        - in: query
           name: after
           required: false
           description: Pass X-Next-Cursor from the preceding page unchanged; malformed cursors return 400.
           schema: { type: string, maxLength: 72 }
       responses:
         '200':
-          description: Profile-draft revisions ordered by profile ID and revision.
+          description: Profile-draft revisions ordered by profile ID and revision; a filtered profile may be ordered by revision descending.
           headers:
             X-Next-Cursor:
               description: Cursor for the next page; absent on the final page.

@@ -61,11 +61,16 @@ assert.deepEqual((await drafts.json()).map(draft => [draft.profile_id, draft.rev
 const filteredDrafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=server-lab`, { headers });
 assert.equal(filteredDrafts.status, 200);
 assert.deepEqual((await filteredDrafts.json()).map(draft => draft.revision), [1, 2]);
+const newestDrafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=server-lab&order=newest`, { headers });
+assert.equal(newestDrafts.status, 200);
+assert.deepEqual((await newestDrafts.json()).map(draft => draft.revision), [2, 1]);
 const missingDrafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=missing-profile`, { headers });
 assert.equal(missingDrafts.status, 200);
 assert.deepEqual(await missingDrafts.json(), []);
 assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=Server-Lab`, { headers })).status, 400);
 assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=server-lab&after=other-profile%7C1`, { headers })).status, 400);
+assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=server-lab&order=invalid`, { headers })).status, 400);
+assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?order=newest`, { headers })).status, 400);
 const draftDetail = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts/server-lab/1`, { headers });
 assert.equal(draftDetail.status, 200);
 assert.match((await draftDetail.json()).snapshot_sha256, /^[0-9a-f]{64}$/);
