@@ -124,7 +124,11 @@ try {
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await profileFilter;
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  const unfilteredProfiles = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).pathname.endsWith('/profile-drafts')
+    && !new URL(response.url()).searchParams.has('profile_id'));
   await page.getByRole('button', { name: 'Clear filter' }).click();
+  await unfilteredProfiles;
   await page.getByRole('button', { name: 'View proposal detail' }).first().click();
   const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
   await profileDialog.waitFor();
