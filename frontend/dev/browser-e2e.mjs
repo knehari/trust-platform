@@ -109,6 +109,22 @@ try {
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.getByText('These proposals are not approved or active.').waitFor();
+  await page.locator('#profile-draft-id-filter').fill('Server-Lab');
+  await page.getByRole('button', { name: 'Filter revisions' }).click();
+  await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();
+  await page.locator('#profile-draft-id-filter').fill('missing-profile');
+  const missingProfileFilter = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('profile_id') === 'missing-profile');
+  await page.getByRole('button', { name: 'Filter revisions' }).click();
+  await missingProfileFilter;
+  await page.getByText('No revisions recorded for missing-profile').waitFor();
+  await page.locator('#profile-draft-id-filter').fill('server-lab');
+  const profileFilter = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('profile_id') === 'server-lab');
+  await page.getByRole('button', { name: 'Filter revisions' }).click();
+  await profileFilter;
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByRole('button', { name: 'Clear filter' }).click();
   await page.getByRole('button', { name: 'View proposal detail' }).first().click();
   const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
   await profileDialog.waitFor();

@@ -101,6 +101,7 @@ struct ProfileDraft {
 #[derive(Deserialize)]
 struct ProfileDraftQuery {
     after: Option<String>,
+    profile_id: Option<String>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -699,8 +700,21 @@ async fn list_profile_drafts(
 ) -> Result<(HeaderMap, Json<Vec<ProfileDraft>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
+    if page
+        .profile_id
+        .as_deref()
+        .is_some_and(|id| !valid_profile_id(id))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let (after_id, after_revision) = profile_draft_cursor(page.after)?
         .map_or((None, None), |(id, revision)| (Some(id), Some(revision)));
+    if let (Some(filter), Some(cursor_id)) = (page.profile_id.as_deref(), after_id.as_deref()) {
+        if filter != cursor_id {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let profile_id = page.profile_id;
     let issuer = claims.iss;
     let subject = claims.sub;
     let rows = query_db(state.database_url, state.database_slots, move |db| {
@@ -715,8 +729,9 @@ async fn list_profile_drafts(
              FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (profile_id,revision)>($4,$5)) \
+             AND ($6::text IS NULL OR profile_id=$6) \
              ORDER BY profile_id,revision LIMIT 101",
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1174,6 +1189,32 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(second.len(), 2);
         assert!(next.is_none());
+        let (status, filtered_cursor, filtered) =
+            history_page(&app, &token, &format!("{draft_base}?profile_id=server-101")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(filtered_cursor.is_none());
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["profile_id"], "server-101");
+        let (status, _, missing) = history_page(
+            &app,
+            &token,
+            &format!("{draft_base}?profile_id=missing-profile"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(missing.is_empty());
+        for query in [
+            "profile_id=Server-001".to_owned(),
+            "profile_id=x".to_owned(),
+            "profile_id=server-101&after=server-001%7C1".to_owned(),
+        ] {
+            assert_eq!(
+                history_page(&app, &token, &format!("{draft_base}?{query}"))
+                    .await
+                    .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
         let (status, _, _) =
             history_page(&app, &token, &format!("{draft_base}?after=invalid")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);

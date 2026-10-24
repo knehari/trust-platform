@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { navigationUrl, readNavigation } from '../src/navigation.ts';
-import { canonicalProfileRevision } from '../src/profile-revision.ts';
+import { canonicalProfileId, canonicalProfileRevision } from '../src/profile-revision.ts';
 
 const ca = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
@@ -49,5 +49,12 @@ test('exact profile lookup uses the same canonical identifier limits as links', 
   assert.deepEqual(canonicalProfileRevision('server-lab', '1000000'), { id: 'server-lab', revision: 1000000 });
   for (const [id, revision] of [['Server-Lab', '2'], ['a', '2'], ['server-lab', '0'], ['server-lab', '02'], ['server-lab', '1000001'], ['server/lab', '2']]) {
     assert.equal(canonicalProfileRevision(id, revision), null);
+  }
+});
+
+test('profile history filter accepts only canonical identifiers', () => {
+  assert.equal(canonicalProfileId('server-lab'), true);
+  for (const id of ['Server-Lab', 'a', 'server/lab', 'server_lAB', 'x'.repeat(65)]) {
+    assert.equal(canonicalProfileId(id), false);
   }
 });
