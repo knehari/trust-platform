@@ -5,7 +5,7 @@ import { requireScopedRows } from './scope';
 import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
 import type { DetailLink } from './navigation';
-import { canonicalProfileRevision } from './profile-revision';
+import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
 
 interface Props {
   caId: string;
@@ -23,6 +23,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [moreLoading, setMoreLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const [filterInput, setFilterInput] = useState('');
+  const [profileFilter, setProfileFilter] = useState('');
+  const [filterError, setFilterError] = useState<string | null>(null);
   const [lookupProfileId, setLookupProfileId] = useState('');
   const [lookupRevision, setLookupRevision] = useState('');
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -42,18 +45,14 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setItems([]);
     setCursor(null);
     setLoading(true);
+    setMoreLoading(false);
     setError(null);
-    setLookupError(null);
-    setLookupProfileId('');
-    setLookupRevision('');
-    setSelected(null);
-    setDetailError(null);
     setComparisonIds([]);
     setShowComparison(false);
-    detailController.current?.abort();
     moreController.current?.abort();
     const controller = new AbortController();
-    void apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts`, token, controller.signal)
+    const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${profileFilter ? `?profile_id=${encodeURIComponent(profileFilter)}` : ''}`;
+    void apiGetPage<ProfileDraft>(listUrl, token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
         setItems(requireScopedRows(page.items, caId));
@@ -65,8 +64,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         else setError(error instanceof Error ? error.message : 'Could not load profile drafts.');
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => { controller.abort(); moreController.current?.abort(); detailController.current?.abort(); };
-  }, [caId, token, retry]);
+    return () => { controller.abort(); moreController.current?.abort(); };
+  }, [caId, token, retry, profileFilter]);
 
   useEffect(() => {
     if (!linkedDetail) {
@@ -118,6 +117,16 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     onOpenDetail({ kind: 'profile', ...target });
   }
 
+  function applyProfileFilter() {
+    const id = filterInput.trim();
+    if (!canonicalProfileId(id)) {
+      setFilterError('Enter a lowercase profile ID (2–64 letters, digits or hyphens).');
+      return;
+    }
+    setFilterError(null);
+    setProfileFilter(id);
+  }
+
   async function loadMore() {
     if (!cursor || moreLoading) return;
     const controller = new AbortController();
@@ -125,7 +134,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setMoreLoading(true);
     setError(null);
     try {
-      const page = await apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?after=${encodeURIComponent(cursor)}`, token, controller.signal);
+      const params = new URLSearchParams({ after: cursor });
+      if (profileFilter) params.set('profile_id', profileFilter);
+      const page = await apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireScopedRows(page.items, caId);
       setItems(current => appendUniquePage(current, rows, row => `${row.profile_id}/${row.revision}`));
@@ -154,11 +165,13 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileFilter(''); }}>Clear filter</button>}</div></form>
+    {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
     {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}
     {loading ? <p className="profile-draft-message">Loading scoped profile proposals…</p>
       : error && items.length === 0 ? <p className="profile-draft-message" role="alert">{error} <button className="link-button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>
-      : items.length === 0 ? <p className="profile-draft-message">No profile proposals recorded for this authority.</p>
+      : items.length === 0 ? <p className="profile-draft-message">{profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : 'No profile proposals recorded for this authority.'}</p>
       : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>

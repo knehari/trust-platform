@@ -87,6 +87,11 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CaId'
         - in: query
+          name: profile_id
+          required: false
+          description: Exact lowercase profile ID. Keep this filter on each cursor page; a cursor for another profile returns 400.
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: query
           name: after
           required: false
           description: Pass X-Next-Cursor from the preceding page unchanged; malformed cursors return 400.
