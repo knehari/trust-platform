@@ -124,6 +124,12 @@ try {
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await profileFilter;
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  const newestProfilePage = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('profile_id') === 'server-lab'
+    && new URL(response.url()).searchParams.get('order') === 'newest');
+  await page.getByRole('combobox', { name: 'Revision order' }).selectOption('newest');
+  await newestProfilePage;
+  await page.waitForFunction(() => document.querySelector('.profile-draft-card .mono')?.textContent?.includes('revision 2'));
   const unfilteredProfiles = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).pathname.endsWith('/profile-drafts')
     && !new URL(response.url()).searchParams.has('profile_id'));

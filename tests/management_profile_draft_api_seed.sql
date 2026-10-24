@@ -9,6 +9,17 @@ SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
        ARRAY['lab.invalid'], ARRAY['P256-SHA256'], 'synthetic-editor'
 FROM generate_series(1, 102) AS n;
 
+-- One profile spans two cursor pages so order and filter preservation are exercised.
+INSERT INTO certificate_profile_draft
+  (ca_id, profile_id, revision, display_name, policy_version,
+   max_validity_days, max_dns_sans, proposed_dns_zones,
+   proposed_signature_suites, created_by)
+SELECT 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+       'server-999', n,
+       'Synthetic versioned proposal ' || n, 'v' || n, 90, 5,
+       ARRAY['lab.invalid'], ARRAY['P256-SHA256'], 'synthetic-editor'
+FROM generate_series(1, 101) AS n;
+
 INSERT INTO certificate_profile_draft
   (ca_id, profile_id, revision, display_name, policy_version,
    max_validity_days, max_dns_sans, proposed_dns_zones,

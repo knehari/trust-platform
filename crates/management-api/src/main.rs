@@ -102,6 +102,7 @@ struct ProfileDraft {
 struct ProfileDraftQuery {
     after: Option<String>,
     profile_id: Option<String>,
+    order: Option<String>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -707,6 +708,10 @@ async fn list_profile_drafts(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
+    if direction == "DESC" && page.profile_id.is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let (after_id, after_revision) = profile_draft_cursor(page.after)?
         .map_or((None, None), |(id, revision)| (Some(id), Some(revision)));
     if let (Some(filter), Some(cursor_id)) = (page.profile_id.as_deref(), after_id.as_deref()) {
@@ -723,14 +728,15 @@ async fn list_profile_drafts(
             &[&issuer, &subject, &ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        db.query(
-            "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
+        let query = format!("SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
              proposed_dns_zones,proposed_signature_suites,created_by,created_at \
              FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
-             AND ($4::text IS NULL OR (profile_id,revision)>($4,$5)) \
+             AND ($4::text IS NULL OR (profile_id,revision){comparison}($4,$5)) \
              AND ($6::text IS NULL OR profile_id=$6) \
-             ORDER BY profile_id,revision LIMIT 101",
+             ORDER BY profile_id {direction},revision {direction} LIMIT 101");
+        db.query(
+            &query,
             &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
@@ -1187,8 +1193,54 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(second.len(), 2);
-        assert!(next.is_none());
+        assert_eq!(second.len(), 100);
+        let (status, last_cursor, last) = history_page(
+            &app,
+            &token,
+            &format!("{draft_base}?after={}", next.unwrap().replace('|', "%7C")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(last.len(), 3);
+        assert!(last_cursor.is_none());
+        let filtered_base = format!("{draft_base}?profile_id=server-999");
+        let (status, oldest_cursor, oldest) = history_page(&app, &token, &filtered_base).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(oldest.len(), 100);
+        assert_eq!(oldest[0]["revision"], 1);
+        assert_eq!(oldest[99]["revision"], 100);
+        let (status, oldest_next, oldest_last) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{filtered_base}&after={}",
+                oldest_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(oldest_last.len(), 1);
+        assert_eq!(oldest_last[0]["revision"], 101);
+        assert!(oldest_next.is_none());
+        let newest_base = format!("{filtered_base}&order=newest");
+        let (status, newest_cursor, newest) = history_page(&app, &token, &newest_base).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(newest.len(), 100);
+        assert_eq!(newest[0]["revision"], 101);
+        assert_eq!(newest[99]["revision"], 2);
+        let (status, newest_next, newest_last) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{newest_base}&after={}",
+                newest_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(newest_last.len(), 1);
+        assert_eq!(newest_last[0]["revision"], 1);
+        assert!(newest_next.is_none());
         let (status, filtered_cursor, filtered) =
             history_page(&app, &token, &format!("{draft_base}?profile_id=server-101")).await;
         assert_eq!(status, StatusCode::OK);
@@ -1207,6 +1259,8 @@ mod tests {
             "profile_id=Server-001".to_owned(),
             "profile_id=x".to_owned(),
             "profile_id=server-101&after=server-001%7C1".to_owned(),
+            "profile_id=server-999&order=invalid".to_owned(),
+            "order=newest".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))
