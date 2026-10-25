@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-22 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-10-25 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -81,26 +81,32 @@ Laboratory parts of the *revocation and publication*, *durable audit evidence* a
 
 ## Revocation, CRL and signed administration lab slice (Draft #94)
 
-Status on 22 October 2026: full CI green at `b349e56` (migrations up to 0058, restore rehearsal, scheduled lab jobs); later commits verified locally (`claude/friendly-hopper-3l9y56`).
+Status on 25 October 2026: full CI green at `5a7cac6` (all eight workflows, migrations up to 0064, fresh-cluster restore rehearsal, Compose stack with the migration runner); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
 Integration Draft [#94](https://github.com/knehari/trust-platform/pull/94) is marked
 do-not-merge and only runs CI. Maturity: **LAB-PROTOTYPE / G0 BLOCKED**. Nothing
 below is released, deployed or accepted. ADR-0006 and ADR-0007 are **Proposed**:
 the lab implementation was made at the repository owner's request, and that is
 not an acceptance of either ADR.
 
-**Evidence at `b76bbcd`**
-- GitHub Actions: all 15 jobs green: rust, schema, compose-smoke, six fuzz
-  targets, cargo-deny, gitleaks, lockfile-sbom, build, gate-race and
-  preservation.
-- Local run (Rust 1.99.0, PostgreSQL 16):
+**Evidence at `5a7cac6`** (full CI) **and `a200b55`** (local)
+- GitHub Actions at `5a7cac6`: all eight workflows green (Rust CI with the
+  rust and schema jobs, laboratory-compose, six fuzz targets, supply chain
+  with cargo-deny and gitleaks, lockfile SBOM, frontend, policy gate
+  concurrency, recovery inventory).
+- Local run at `a200b55` (Rust 1.99.0, PostgreSQL 16):
   - `cargo fmt`; clippy with `-D warnings`, with all features and with default
     features;
-  - workspace tests: 360 passed, 0 failed;
+  - workspace tests: 415 passed, 0 failed;
   - every SQL suite, and the PostgreSQL integration and API tests with
     `TRUST_REQUIRE_DATABASE=1`;
-  - OpenSSL interoperability;
-  - populated upgrade from 0013 to 0054;
-  - verified TLS 1.3 to PostgreSQL in Docker.
+  - OpenSSL interoperability (complete and delta CRLs, RFC 5280 suite);
+  - populated upgrade from 0013 to 0064, the migration runner, the restore
+    rehearsals into the same cluster and into a fresh one;
+  - the OpenAPI contract check;
+  - `cargo deny check` (0.20.2): advisories, bans, licenses and sources ok,
+    with the two reasoned exceptions in `deny.toml`.
+  The Docker-only steps (Compose stack, verified TLS 1.3 to PostgreSQL in a
+  container) run in CI only.
 - Each security change since migration 0035 has a RED test, failing on the
   previous schema or code, or a mutation that the test detects.
 
@@ -109,7 +115,7 @@ not an acceptance of either ADR.
 | Area | Migrations / code | What it enforces in the lab |
 | --- | --- | --- |
 | Status lifecycle | 0014, 0018–0019, 0025, 0034 | Maker-checker suspend, release and revoke (RFC 5280 reasons). Definitive revocation is irreversible. Invalidity dates are bounded. Lock order is fixed (deadlock test). Pending changes can be read. |
-| CRL pipeline | 0015–0017, 0020–0022, 0031–0033, 0055, 0058–0060 | The CRL number is reserved before signing and never reused. The signing intent is bound to entries, number and times. The CRL is verified independently before it is stored. Ambiguous outcomes are quarantined, and a held DER can be reconciled. One issuer certificate per CA. After a restore from an older backup, a superuser raises a CRL number floor so no published number is reused (0058). Delta CRLs (0059) list what changed since the latest complete CRL, including released holds as removeFromCRL. They share the numbering, are served only at a separate `/delta` path, and never count as a complete CRL for publication deadlines; OpenSSL applies them with `-extended_crl -use_deltas`. After a restore from an older backup, `crl_restore_revocations` (0060) re-applies the revocations listed on the last published CRL, once the CRL verifies against the registered issuer. Expired entries can be pruned (opt-in, refused for ETSI EN 319 411-2); housekeeping backfills `notAfter` from the stored DER for certificates stored before 0031. Operator CA list. OpenSSL interop and a fuzz target. |
+| CRL pipeline | 0015–0017, 0020–0022, 0031–0033, 0055, 0058–0061 | The CRL number is reserved before signing and never reused. The signing intent is bound to entries, number and times. The CRL is verified independently before it is stored. Ambiguous outcomes are quarantined; a quarantined CRL is stored from its DER with the `crl_reconcile` tool, under a signer login, after re-verification. The entries digest has one definition, an ordered aggregate (0061). One issuer certificate per CA. After a restore from an older backup, a superuser raises a CRL number floor so no published number is reused (0058). Delta CRLs (0059) list what changed since the latest complete CRL, including released holds as removeFromCRL. They share the numbering, are served only at a separate `/delta` path, and never count as a complete CRL for publication deadlines; OpenSSL applies them with `-extended_crl -use_deltas`. After a restore from an older backup, `crl_restore_revocations` (0060) re-applies the revocations listed on the last published CRL, once the CRL verifies against the registered issuer. Expired entries can be pruned (opt-in, refused for ETSI EN 319 411-2); housekeeping backfills `notAfter` from the stored DER for certificates stored before 0031. Operator CA list. OpenSSL interop and a fuzz target. |
 | CRL distribution | 0030 | Lab read-only HTTP distribution point; it re-verifies each CRL before serving it. Issued lab certificates can carry an opt-in CDP extension. |
 | Least privilege | 0023, 0035, 0043 | Tables are owned by NOLOGIN roles. Service functions are `SECURITY DEFINER` with a pinned `search_path`. Capability roles are EXECUTE-only (officer API, CRL signer and operator, CA admin, issuance, policy admin, reconciliation, audit). Service connections refuse privileged logins. |
 | CA administration | 0024, 0037, 0040, 0042, 0044, 0050, 0052, 0054 | Issuer registration, officer grants and credential changes need two admins. Once a CA opts in, they are WebAuthn-signed with distinct keys and persons, and so are admin keys and rejections. Checkers see the signed content (digest recomputed in Rust) and whether the maker's stored signature re-verifies; an approval is never written, and no approval challenge is issued, for a proposal whose maker signature does not re-verify. Proposals expire after 7 days by default: the API flags them and issues no approval challenge, and housekeeping alerts on them. |
@@ -117,7 +123,8 @@ not an acceptance of either ADR.
 | Break-glass (minimal) | 0045–0046, 0048, 0051 | A DBA-enrolled emergency key whose custodian person never signs on the CA. It can only re-enrol admin keys, and only while the CA has fewer than two. Every use is audited and alerted until two other admins review it. Reviews require evidence that re-verifies, when the challenge is issued and again when the review is written, and a key from a use whose evidence does not re-verify signs nothing through the Rust core. Registry enrolments are serialised. |
 | Challenges | 0049, 0053 | At most 16 open challenges per actor and CA. Challenges that expired unused are purged after 30 days; consumed ones are kept as evidence. Concurrent consumption is tested. |
 | Audit and evidence | 0026–0027, 0041 | DDL and grants are audited by event triggers. A sealed hash chain with signed checkpoints is anchored outside the database (lab); the anchoring job uses verified TLS and refuses privileged logins. Offline re-verification of every signature (`signed_evidence_audit`, one CA or `--all`, exit 3 on failure). Database clock skew is checked against the Rust core. |
-| Backup and restore | `tests/revocation_backup_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster. Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
+| Backup and restore | `tests/revocation_backup_restore.sh`, `tests/revocation_fresh_cluster_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster, and into a fresh cluster once its NOLOGIN roles are provisioned (no credential copied). Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
+| Lab migrations | `scripts/lab/migrate.sh`, 0064 | An existing lab database is brought up to the checkout, one transaction per file, stopping at the first failure. Refused: pre-0026 or newer databases, gaps, non-superusers, and migration files changed or removed after they were applied (SHA-256 digests since 0064; digests of files applied earlier are adopted only with `--adopt`). |
 | Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Before the token is read, each client address may make 600 requests per minute (per process); per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401, 429 and (with a body) 413. |
 
 Progress against the historical proposed versions (labels only):
@@ -263,7 +270,7 @@ The labels below are retained for traceability. Some read-only parts of v3.1/v3.
 
 ## Historical execution notes (archive)
 
-> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0064 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP, no delta CRLs, no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
+> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0064 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`, and at `5a7cac6` on 25 October. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP (complete and delta CRLs only), no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
 
 > **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/recovery/EXECUTION_STATUS.md).
 
