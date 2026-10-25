@@ -2,7 +2,7 @@
 
 Collected from the per-task and whole-branch reviews of
 `2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
-25 October 2026 for migrations up to 0062. None blocks the lab slice;
+25 October 2026 for migrations up to 0063. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.

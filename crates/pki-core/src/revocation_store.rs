@@ -619,6 +619,10 @@ impl CrlHousekeepingReport {
 /// purges them (migration 0053; at least 7 days).
 pub const CHALLENGE_RETENTION_DAYS: i32 = 30;
 
+/// How long an identity's request budget may stay idle before housekeeping
+/// deletes it (migration 0063; at least one day, the longest budget window).
+pub const API_BUDGET_IDLE_SECONDS: i32 = 7 * 86_400;
+
 pub struct PgRevocationStore {
     client: Client,
     clock: ClockSource,
@@ -2478,6 +2482,17 @@ impl PgRevocationStore {
             "SELECT consume_api_budget($1, $2, $3, $4)",
             &[&scope, &&identity[..], &limit, &window],
         )?;
+        column(&row, 0)
+    }
+
+    /// Deletes the request budgets (migration 0062) idle for more than
+    /// `API_BUDGET_IDLE_SECONDS` (migration 0063) and returns how many;
+    /// housekeeping only. Their windows are over, so no spent budget comes
+    /// back early.
+    pub fn purge_api_budgets(&mut self) -> Result<i64, RevocationStoreError> {
+        let row = self
+            .client
+            .query_one("SELECT purge_api_budgets($1)", &[&API_BUDGET_IDLE_SECONDS])?;
         column(&row, 0)
     }
 

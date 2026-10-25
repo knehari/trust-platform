@@ -63,4 +63,4 @@ definitive revocations never changed.
 - `crl_entry_snapshot`: the revoked entries frozen when a CRL number is reserved, keyed by (CA, CRL number, serial); immutable.
 - `audit_event`: actor, request correlation, policy version, decision, timestamp and integrity metadata.
 
-Lab migrations 0001-0062 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.
+Lab migrations 0001-0063 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.

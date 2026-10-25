@@ -165,7 +165,7 @@ Engineering backlog:
     serve TLS 1.3 when given a certificate and refuse plain HTTP off
     loopback unless the logged lab opt-out is set);
   - a per-IP or per-client limit (the per-identity budget is shared across
-    replicas in the database since 0062; the read API's stays per process).
+    replicas in the database since 0062, idle budgets purged after 7 days since 0063; the read API's stays per process).
 - **Database assurance:**
   - server-side logging of role changes (pgaudit);
   - storage of the external audit anchor;
@@ -258,7 +258,7 @@ The labels below are retained for traceability. Some read-only parts of v3.1/v3.
 
 ## Historical execution notes (archive)
 
-> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0062 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP, no delta CRLs, no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
+> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0063 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP, no delta CRLs, no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
 
 > **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/recovery/EXECUTION_STATUS.md).
 

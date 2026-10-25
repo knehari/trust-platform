@@ -79,6 +79,13 @@ review reference: `SELECT acknowledge_schema_changes('0026_manual_review_x');`.
 Role changes are not in this audit; enable server logging (pgaudit, `ROLE`
 class) for them.
 
+Once per run, after the CAs, it deletes the write APIs' request budgets
+(migration 0062) idle for more than 7 days (`purge_api_budgets`, migration
+0063; `purged_api_budgets` on the summary line). A deleted budget's window
+is over (windows last at most a day, and the function refuses a shorter
+idle period), so no spent budget comes back early. Only digests of
+identities and window times are stored there.
+
 Both thresholds default to 3600 seconds. Since 0017/0020 a stale or
 superseded reservation can no longer be signed, so the sweep is for hygiene
 and evidence. It is not what keeps old CRLs from being signed.

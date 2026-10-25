@@ -129,8 +129,12 @@ fn run() -> Result<Outcome, String> {
     let role_changes = store
         .unreviewed_role_changes()
         .map_err(|e| format!("role-change report failed: {e:?}"))?;
+    let purged_budgets = store
+        .purge_api_budgets()
+        .map_err(|e| format!("request budget purge failed: {e:?}"))?;
     println!(
-        "cas={} unreviewed_schema_changes={schema_changes} unreviewed_role_changes={role_changes}",
+        "cas={} unreviewed_schema_changes={schema_changes} unreviewed_role_changes={role_changes} \
+         purged_api_budgets={purged_budgets}",
         cas.len()
     );
     if (schema_changes > 0 || role_changes > 0) && matches!(outcome, Outcome::Quiet) {

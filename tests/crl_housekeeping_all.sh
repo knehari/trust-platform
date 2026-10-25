@@ -2,7 +2,8 @@
 # Disposable PostgreSQL 16 (lab only): the crl_housekeeping job with
 # --all covers every CA with a registered issuer (migration 0033), under a
 # login holding only trust_crl_operator, and alerts (exit 2) when one of them
-# needs attention. Needs migrations 0001..0033, a superuser URL and psql:
+# needs attention; it also purges request budgets idle for a week (0063).
+# Needs migrations 0001..0063, a superuser URL and psql:
 #   TRUST_CI_DATABASE_URL=postgresql://... bash tests/crl_housekeeping_all.sh
 set -euo pipefail
 : "${TRUST_CI_DATABASE_URL:?TRUST_CI_DATABASE_URL is required}"
@@ -16,6 +17,11 @@ sql() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$db" -c "$1"; }
 ca="$(sql "INSERT INTO ca(ca_id, display_name, policy_version)
            VALUES (gen_random_uuid(), 'Housekeeping All CA', 'v1') RETURNING ca_id")"
 sql "SELECT register_ca_issuer('$ca', convert_to('issuer of ' || '$ca', 'UTF8'), 'bootstrap')" >/dev/null
+# An idle request budget (8 days) and a recent one (6 days): only the first goes.
+sql "INSERT INTO api_request_budget(scope, identity_sha256, window_start, used)
+     VALUES ('revocation', sha256('housekeeping idle'), clock_timestamp() - interval '8 days', 1),
+            ('revocation', sha256('housekeeping recent'), clock_timestamp() - interval '6 days', 1)
+     ON CONFLICT DO NOTHING" >/dev/null
 # A login holding only trust_crl_operator (test-only password, lab only).
 sql "DO \$\$BEGIN
        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trust_crl_operator_ci') THEN
@@ -53,10 +59,15 @@ grep -q "^ca=$ca .*crl_due=true" "$temp/out" || fail "the new CA was not covered
 expected="$(sql "SELECT count(*) FROM ca_issuer_certificate")"
 grep -q "^cas=$expected " "$temp/out" || fail "not every issuing CA was covered"
 [ "$(grep -c '^ca=' "$temp/out")" = "$expected" ] || fail "per-CA lines missing"
+grep -Eq '^cas=.* purged_api_budgets=[1-9]' "$temp/out" || fail "idle request budget not purged"
+[ "$(sql "SELECT count(*) FROM api_request_budget WHERE identity_sha256 = sha256('housekeeping idle')")" = 0 ] \
+  || fail "idle request budget still stored"
+[ "$(sql "SELECT count(*) FROM api_request_budget WHERE identity_sha256 = sha256('housekeeping recent')")" = 1 ] \
+  || fail "a budget idle for less than a week was purged"
 # A privileged login is refused (exit 1).
 set +e
 TRUST_DATABASE_URL="$db" "$bin" --all >"$temp/out" 2>"$temp/err"
 status=$?
 set -e
 [ "$status" = 1 ] || fail "a superuser login was accepted"
-echo "PASS: housekeeping covers every CRL-issuing CA under the operator login"
+echo "PASS: housekeeping covers every CRL-issuing CA under the operator login and purges idle request budgets"
