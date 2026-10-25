@@ -2,7 +2,7 @@
 
 Collected from the per-task and whole-branch reviews of
 `2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
-25 October 2026 for migrations up to 0063. None blocks the lab slice;
+25 October 2026 for migrations up to 0064. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
@@ -43,7 +43,9 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   `tests/revocation_populated_upgrade.sh`). From 0026 on,
   `scripts/lab/migrate.sh` applies only the missing migrations to an
   existing database and refuses gaps, newer databases and pre-0026 ones
-  (`tests/revocation_migration_runner.sh`); it keeps no checksums.
+  (`tests/revocation_migration_runner.sh`). Since 0064 it keeps the SHA-256
+  of each applied file and refuses a changed or missing one; digests of
+  files applied before are adopted only with `--adopt` (trust on first use).
 - Rerunning on a reused database: `revocation_lifecycle.sql` and
   `lab_policy_gate` (a fresh CA per run since 22 October 2026) pass again,
   as do `audit_chain_postgres` and `signed_status_change_postgres`. The

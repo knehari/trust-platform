@@ -59,6 +59,10 @@ Bring an existing volume up to this checkout's migrations, keeping its data:
 docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh
 ```
 
+On a volume created before migration 0064, or by the entrypoint, the first
+run refuses until the operator adopts the digests of the applied files
+(`sh /lab/migrate.sh --adopt`, see below).
+
 `scripts/lab/migrate.sh` reads which migrations are applied from
 `schema_change_review`: since 0026, each migration records its file name
 there. It applies only the missing ones, in order, one transaction per file,
@@ -66,14 +70,25 @@ and stops at the first failure. It refuses:
 - a database that predates 0026;
 - a database that records a migration newer than this checkout;
 - a gap in the sequence;
-- a login that is not a superuser.
+- a login that is not a superuser;
+- a migration file that differs from the one applied, or that was applied
+  and is missing here. Since 0064, `migration_file_digest` (append-only)
+  keeps the SHA-256 of every applied file;
+- applied files without a recorded digest, unless `--adopt` is given. The
+  entrypoint and runs before 0064 kept none. With `--adopt` the operator
+  states that this checkout holds the files that were applied; their
+  digests are taken from it and recorded as `adopted` (trust on first use:
+  an edit made before adoption goes unnoticed). The runner never adopts on
+  its own, like the historical management ledger, which does not infer
+  applied migrations from the schema.
 
-Two limits apply. It does not compare file contents with what was applied
-(no checksums), and two runners started at once are not serialised. It does
+The runner records the digest of each file it applies (`applied`). A run that
+fails leaves the files it applied without a digest, so the next run needs
+`--adopt`. Two runners started at once are not serialised. It does
 not add the job logins of `init-db.sh` to an older volume; reset the volume
 for those. Tested by `tests/revocation_migration_runner.sh`, and in the
-`laboratory-compose` job, which runs it on the fresh volume (it must report
-`up to date`).
+`laboratory-compose` job, which runs it on the fresh volume: it must refuse
+without `--adopt`, adopt with it, then report `up to date`.
 
 Reset **only this laboratory stack** after a seed change, or for a volume the
 runner refuses:
@@ -83,7 +98,7 @@ docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 ```
 
-PostgreSQL's entrypoint runs every migration in `migrations/` (`0001`–`0063`) and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system; the runner above upgrades an existing volume, without rollback. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
+PostgreSQL's entrypoint runs every migration in `migrations/` (`0001`–`0064`) and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system; the runner above upgrades an existing volume, without rollback. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
 
 The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a separate empty PostgreSQL database. It seeds data after migration 0011, applies 0012–0013 and checks row preservation and reader privileges. This is an upgrade regression for those two migrations only; it does not upgrade an existing Compose volume or provide a repeatable production migration runner.
 

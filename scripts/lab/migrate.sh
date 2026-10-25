@@ -3,8 +3,8 @@
 # migrations of this checkout (an existing Compose volume, a restored
 # backup), instead of recreating it. POSIX sh, so it also runs inside the
 # Compose db container:
-#   docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh
-#   TRUST_MIGRATE_DATABASE_URL=postgresql://... sh scripts/lab/migrate.sh
+#   docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh [--adopt]
+#   TRUST_MIGRATE_DATABASE_URL=postgresql://... sh scripts/lab/migrate.sh [--adopt]
 #
 # Which migrations are applied comes from schema_change_review: from 0026 on,
 # every migration records its file name there (acknowledge_schema_changes)
@@ -16,17 +16,34 @@
 #   every file here (the database is ahead of this checkout);
 # * refuses a gap: a migration file from 0026 up to the newest recorded one
 #   that is not recorded (applied out of order, or acknowledged by hand);
+# * refuses a migration file that differs from the one applied, or that
+#   was applied but is missing here: since 0064, migration_file_digest
+#   keeps the SHA-256 of every applied file;
+# * refuses, before applying anything, a database holding applied files
+#   without a digest (applied by the Compose entrypoint, or before 0064)
+#   unless --adopt is given. With --adopt the operator states that this
+#   checkout holds the files that were applied: their digests are taken from
+#   it and recorded as 'adopted' (trust on first use, never inferred
+#   silently; an edit made before adoption goes unnoticed);
 # * applies the remaining files in order, one psql run per file (each file
 #   is its own transaction), checks that each recorded its reference, and
 #   stops at the first failure: that migration rolled back, the later ones
-#   are not attempted.
+#   are not attempted;
+# * then records the digest of each file it applied ('applied'). A run that
+#   fails leaves the files it applied without a digest: the next run needs
+#   --adopt.
 # It needs a superuser (the migrations create roles and SECURITY DEFINER
-# functions). It does not compare file contents with what was applied
-# (no checksums), and two runners started at once are not serialised: the
-# second fails on the first object that already exists.
+# functions). Two runners started at once are not serialised: the second
+# fails on the first object that already exists.
 # Exit status: 0 up to date (applied or nothing to do), 1 refused or failed.
 set -eu
 
+adopt=no
+case "${1:-}" in
+  --adopt) adopt=yes ;;
+  "") ;;
+  *) echo "usage: migrate.sh [--adopt]" >&2; exit 1 ;;
+esac
 migrations_dir=${TRUST_MIGRATIONS_DIR:-/lab/migrations}
 [ -d "$migrations_dir" ] || migrations_dir="$(dirname "$0")/../../migrations"
 [ -d "$migrations_dir" ] || { echo "migrate: no migrations directory" >&2; exit 1; }
@@ -38,6 +55,7 @@ else
          -d "${POSTGRES_DB:?set TRUST_MIGRATE_DATABASE_URL or POSTGRES_DB}"
 fi
 q() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$@"; }
+digest() { sha256sum "$1" | cut -c1-64; }
 sql() { q "$@" -c "$SQL"; }
 refuse() { echo "migrate: refused: $*" >&2; exit 1; }
 
@@ -75,7 +93,44 @@ else
   done
 fi
 
+# Applied files must not have changed since (digests kept since 0064).
+SQL="SELECT to_regclass('public.migration_file_digest') IS NOT NULL"
+if [ "$(sql "$@")" = t ]; then
+  SQL="SELECT migration_ref || ' ' || encode(file_sha256, 'hex') FROM migration_file_digest ORDER BY 1"
+  recorded=$(sql "$@")
+  while read -r ref hex; do
+    [ -n "$ref" ] || continue
+    [ -f "$migrations_dir/$ref.sql" ] || refuse "$ref was applied but its file is missing here"
+    [ "$(digest "$migrations_dir/$ref.sql")" = "$hex" ] \
+      || refuse "$ref.sql differs from the file applied to this database"
+  done <<EOF
+$recorded
+EOF
+  SQL="SELECT migration_ref FROM migration_file_digest"
+  known=$(sql "$@")
+else
+  known=""
+fi
+# Applied files without a digest are adopted only on request.
+unknown=0
+first_unknown=""
+if [ "$relations" != 0 ]; then
+  for f in $files; do
+    n=$(echo "$f" | cut -c1-4)
+    ref=${f%.sql}
+    [ "$n" \> "$newest_recorded" ] && continue
+    echo "$known" | grep -qx "$ref" && continue
+    unknown=$((unknown + 1))
+    [ -n "$first_unknown" ] || first_unknown=$ref
+  done
+fi
+if [ "$unknown" != 0 ] && [ "$adopt" != yes ]; then
+  refuse "$unknown applied migration file(s) have no recorded digest (first: $first_unknown);" \
+         "check that this checkout holds the files that were applied, then rerun with --adopt"
+fi
+
 count=0
+applied_now=""
 for f in $files; do
   n=$(echo "$f" | cut -c1-4)
   ref=${f%.sql}
@@ -86,6 +141,7 @@ for f in $files; do
     continue
   fi
   echo "migrate: applying $ref"
+  applied_now="$applied_now $ref"
   if ! q "$@" -f "$migrations_dir/$f" >/dev/null; then
     echo "migrate: $ref failed and was rolled back; later migrations not attempted" >&2
     exit 1
@@ -96,6 +152,23 @@ for f in $files; do
   fi
   count=$((count + 1))
 done
+
+# Record the digest of every file without one: all of them are applied now,
+# by this run or (with --adopt) before it.
+adopted=0
+SQL="SELECT to_regclass('public.migration_file_digest') IS NOT NULL"
+[ "$(sql "$@")" = t ] || refuse "migration_file_digest is missing (is 0064 in $migrations_dir?)"
+for f in $files; do
+  ref=${f%.sql}
+  echo "$known" | grep -qx "$ref" && continue
+  how=adopted
+  case " $applied_now " in *" $ref "*) how=applied ;; esac
+  [ "$how" = adopted ] && adopted=$((adopted + 1))
+  SQL="INSERT INTO migration_file_digest (migration_ref, file_sha256, recorded_how)
+       VALUES ('$ref', decode('$(digest "$migrations_dir/$f")', 'hex'), '$how')"
+  sql "$@" >/dev/null
+done
+[ "$adopted" = 0 ] || echo "migrate: adopted the digests of $adopted file(s) applied before digests were kept"
 if [ "$count" = 0 ]; then
   echo "migrate: up to date ($newest_file)"
 else

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Lab-only: scripts/lab/migrate.sh brings an existing database up to this
-# checkout's migrations and refuses the cases it cannot handle safely.
+# checkout's migrations and refuses the cases it cannot handle safely,
+# including a migration file changed or removed after it was applied (0064).
 # Needs a superuser URL to a cluster where it may create and drop databases
 # named trust_migrate_*, psql and the migrations:
 #   TRUST_CI_DATABASE_URL=postgresql://.../any bash tests/revocation_migration_runner.sh
@@ -27,9 +28,13 @@ fresh() { # <database> [last migration prefix]: a new database, migrated up to t
   fi
 }
 refs() { psql -X -q -A -t -v ON_ERROR_STOP=1 "$(url_for "$1")" -c "SELECT count(*) FROM schema_change_review"; }
-migrate() { # <database> [migrations dir]
+digests() { # <database> <recorded_how>
+  psql -X -q -A -t -v ON_ERROR_STOP=1 "$(url_for "$1")" \
+    -c "SELECT count(*) FROM migration_file_digest WHERE recorded_how = '$2'"
+}
+migrate() { # <database> [migrations dir] [--adopt]
   TRUST_MIGRATE_DATABASE_URL="$(url_for "$1")" TRUST_MIGRATIONS_DIR="${2:-migrations}" \
-    sh scripts/lab/migrate.sh >"$temp/out" 2>&1
+    sh scripts/lab/migrate.sh ${3:-} >"$temp/out" 2>&1
 }
 expect_refused() { # <database> <message> [migrations dir]
   local before; before="$(refs "$1" 2>/dev/null || echo none)"
@@ -38,6 +43,8 @@ expect_refused() { # <database> <message> [migrations dir]
   [ "$(refs "$1" 2>/dev/null || echo none)" = "$before" ] || fail "$1: a refused run changed the database"
 }
 newest="$(ls migrations | grep -E '^[0-9]{4}_' | sort | tail -n 1 | cut -c1-4)"
+all_files="$(ls migrations | grep -Ec '^[0-9]{4}_[a-z0-9_]+\.sql$')"
+files_to_0057="$(ls migrations | grep -E '^[0-9]{4}_' | awk '$0 < "0058"' | wc -l)"
 files_from_0026="$(ls migrations | grep -E '^[0-9]{4}_' | awk '$0 >= "0026"' | wc -l)"
 
 # An empty database gets every migration; a second run changes nothing.
@@ -48,13 +55,35 @@ grep -q "now at $newest" "$temp/out" || fail "empty database not brought to $new
 migrate trust_migrate_empty || fail "second run"
 grep -q "up to date" "$temp/out" || fail "second run was not a no-op"
 [ "$(refs trust_migrate_empty)" = "$files_from_0026" ] || fail "second run recorded something"
+# The runner applied every file, so it recorded every digest as applied.
+[ "$(digests trust_migrate_empty applied)" = "$all_files" ] || fail "digests of applied files not recorded"
+[ "$(digests trust_migrate_empty adopted)" = 0 ] || fail "applied files recorded as adopted"
 
 # A database left at 0057 gets the later migrations only.
 fresh trust_migrate_0057 0057
-migrate trust_migrate_0057 || fail "upgrade from 0057"
+# Its files were applied without digests: adopting them is an explicit step.
+expect_refused trust_migrate_0057 "$files_to_0057 applied migration file(s) have no recorded digest"
+grep -q "rerun with --adopt" "$temp/out" || fail "adoption not explained"
+migrate trust_migrate_0057 migrations --adopt || fail "upgrade from 0057"
 grep -q "applying 0058_" "$temp/out" || fail "0058 not applied"
 grep -q "applying 0057_" "$temp/out" && fail "0057 applied twice"
 [ "$(refs trust_migrate_0057)" = "$files_from_0026" ] || fail "upgrade from 0057 incomplete"
+# Files applied before digests were kept are adopted from this checkout;
+# later runs need no --adopt.
+[ "$(digests trust_migrate_0057 adopted)" = "$files_to_0057" ] || fail "earlier files not adopted"
+[ "$(digests trust_migrate_0057 applied)" = "$((all_files - files_to_0057))" ] || fail "upgrade digests not recorded"
+psql -X -q "$(url_for trust_migrate_0057)" -c "DELETE FROM migration_file_digest" >/dev/null 2>&1 \
+  && fail "migration_file_digest is not append-only"
+migrate trust_migrate_0057 || fail "run after adoption"
+grep -q "up to date" "$temp/out" || fail "run after adoption was not a no-op"
+
+# A migration file changed or removed after it was applied is refused.
+cp -r migrations "$temp/changed"
+printf -- '-- edited after it was applied\n' >>"$temp/changed/0030_crl_distribution.sql"
+expect_refused trust_migrate_empty "0030_crl_distribution.sql differs from the file applied" "$temp/changed"
+cp -r migrations "$temp/removed"
+rm "$temp/removed/0030_crl_distribution.sql"
+expect_refused trust_migrate_empty "0030_crl_distribution was applied but its file is missing" "$temp/removed"
 
 # Refusals, each leaving the database as it was.
 fresh trust_migrate_ahead 0057
@@ -95,4 +124,4 @@ grep -q "9990_broken failed and was rolled back" "$temp/out" || fail "failure no
 for db in empty 0057 ahead gap old; do
   psql -X -q "$admin" -c "DROP DATABASE IF EXISTS trust_migrate_$db" 2>/dev/null
 done
-echo "PASS: migrate.sh brings an existing database to $newest, is a no-op when current, and refuses newer, gapped, pre-0026 and non-superuser databases and stops on a failing migration"
+echo "PASS: migrate.sh brings an existing database to $newest, is a no-op when current, records file digests, and refuses changed or removed files, newer, gapped, pre-0026 and non-superuser databases and stops on a failing migration"
