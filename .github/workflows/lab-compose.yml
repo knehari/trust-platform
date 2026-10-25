@@ -32,6 +32,12 @@ jobs:
           docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
       - name: Build and start laboratory services
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 180
+      - name: The migration runner finds the fresh volume up to date
+        run: |
+          set -euo pipefail
+          output="$(docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q 'migrate: up to date' || { echo 'FAIL: runner not a no-op on a fresh volume' >&2; exit 1; }
       - name: Exercise code/PKCE and scoped database reads
         run: node frontend/dev/compose-smoke.mjs
       - name: Scheduled database jobs ran under their own logins

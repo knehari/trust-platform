@@ -186,7 +186,9 @@ Engineering backlog:
 - **Hygiene:**
   - Migrations copy whole function bodies, and the CRL entries digest and
     audit-decision helpers are duplicated.
-  - Migration-retry and ledger scripts stop at 0013.
+  - Migration-retry and ledger scripts stop at 0013; `scripts/lab/migrate.sh`
+    upgrades an existing database from 0026 on, without checksums of the
+    applied files.
   - Four historical issuance suites are not idempotent on a reused database
     (they rely on the CI-seeded CA; CI runs them on a fresh one).
   - See `docs/superpowers/plans/2026-10-18-revocation-crl-followups.md`.

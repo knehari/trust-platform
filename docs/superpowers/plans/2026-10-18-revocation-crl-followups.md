@@ -32,7 +32,10 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   conformance target through PostgreSQL).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
-  `tests/revocation_populated_upgrade.sh`).
+  `tests/revocation_populated_upgrade.sh`). From 0026 on,
+  `scripts/lab/migrate.sh` applies only the missing migrations to an
+  existing database and refuses gaps, newer databases and pre-0026 ones
+  (`tests/revocation_migration_runner.sh`); it keeps no checksums.
 - Rerunning on a reused database: `revocation_lifecycle.sql` and
   `lab_policy_gate` (a fresh CA per run since 22 October 2026) pass again,
   as do `audit_chain_postgres` and `signed_status_change_postgres`. The

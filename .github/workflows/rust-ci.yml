@@ -368,6 +368,11 @@ jobs:
           docker exec "$CONTAINER" createdb -U trust_ci trust_revocation_upgrade
           TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_revocation_upgrade" \
             bash tests/revocation_populated_upgrade.sh
+      - name: Migration runner upgrades existing databases and refuses unsafe ones
+        run: |
+          set -euo pipefail
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/postgres" \
+            bash tests/revocation_migration_runner.sh
       - name: Retry interrupted management migration
         run: |
           set -euo pipefail

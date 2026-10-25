@@ -53,14 +53,37 @@ Stop while retaining the disposable database:
 docker compose --env-file .env.lab -f compose.lab.yaml down
 ```
 
-Reset **only this laboratory stack** after a migration or seed change:
+Bring an existing volume up to this checkout's migrations, keeping its data:
+
+```sh
+docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh
+```
+
+`scripts/lab/migrate.sh` reads which migrations are applied from
+`schema_change_review`: since 0026, each migration records its file name
+there. It applies only the missing ones, in order, one transaction per file,
+and stops at the first failure. It refuses:
+- a database that predates 0026;
+- a database that records a migration newer than this checkout;
+- a gap in the sequence;
+- a login that is not a superuser.
+
+Two limits apply. It does not compare file contents with what was applied
+(no checksums), and two runners started at once are not serialised. It does
+not add the job logins of `init-db.sh` to an older volume; reset the volume
+for those. Tested by `tests/revocation_migration_runner.sh`, and in the
+`laboratory-compose` job, which runs it on the fresh volume (it must report
+`up to date`).
+
+Reset **only this laboratory stack** after a seed change, or for a volume the
+runner refuses:
 
 ```sh
 docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 ```
 
-PostgreSQL's entrypoint runs every migration in `migrations/` (`0001`–`0058`) and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
+PostgreSQL's entrypoint runs every migration in `migrations/` (`0001`–`0060`) and seed data only when its volume is first created; startup fails on a migration error. The seed grants the fixture operator access to one CA; a grant for the same subject under a different issuer does not authorize the hidden CA. This is a disposable bootstrap, not an online migration/rollback system; the runner above upgrades an existing volume, without rollback. Plaintext PostgreSQL transport (`TRUST_DATABASE_TLS=disable-lab`, logged at API startup) is confined to the Compose network, and the OIDC fixture has no human authentication. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
 
 The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a separate empty PostgreSQL database. It seeds data after migration 0011, applies 0012–0013 and checks row preservation and reader privileges. This is an upgrade regression for those two migrations only; it does not upgrade an existing Compose volume or provide a repeatable production migration runner.
 
