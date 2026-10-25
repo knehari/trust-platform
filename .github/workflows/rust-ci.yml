@@ -28,6 +28,8 @@ jobs:
         run: cargo test --workspace --all-targets --all-features --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: OpenAPI contracts match the served routes and their common statuses
+        run: python3 scripts/ci/openapi_routes.py
       - name: Lab API HTTP transport (TLS 1.3, no plaintext off loopback)
         run: bash tests/http_tls.sh
       - name: RFC 5280 path validation of platform certificates and CRLs (webpki and OpenSSL)

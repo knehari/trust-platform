@@ -62,6 +62,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}:
     get:
@@ -78,6 +79,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates:
     get:
@@ -101,6 +103,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/audit:
     get:
@@ -124,6 +127,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
@@ -185,4 +189,5 @@ components:
     BadRequest: { description: Invalid CA identifier }
     Unauthorized: { description: Missing or invalid access token }
     Forbidden: { description: Role, signed CA scope or server-managed grant denied }
+    TooManyRequests: { description: Request budget of this token identity spent (300 per minute, per process) }
     Unavailable: { description: Management data request capacity exhausted or read database unavailable }
