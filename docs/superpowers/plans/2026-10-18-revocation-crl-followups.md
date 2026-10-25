@@ -56,9 +56,12 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
 - Closed in 0025: `propose_` locked the grant before the certificate while
   `approve_`/`reject_`/`withdraw_` locked the certificate first, so a bulk grant
   deletion could deadlock (`tests/revocation_lock_order.sh`).
-- Migrations copy whole function bodies to change one line (0016-0020), and the
-  entries digest expression is repeated in `reserve_crl` and
-  `store_verified_crl`; shared helpers would reduce drift.
+- Migrations copy whole function bodies to change one line (0016-0020).
+  The entries digest has had one definition since 0061: the ordered
+  aggregate `crl_entries_sha256`, used by `reserve_crl`,
+  `reserve_delta_crl` and `crl_listed_digest`. `tests/crl_entries_digest.sql`
+  fails if another function body encodes entries, and checks the aggregate
+  against the 0015 expression.
 - The lifecycle audit decision format is built in four function bodies
   (0018/0019); a shared SQL helper would keep it in one place.
 - Reject path and approve's generic message still fold maker=checker wording;

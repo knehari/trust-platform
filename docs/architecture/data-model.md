@@ -42,7 +42,10 @@ Entities:
   removed since it, listed as removeFromCRL and dated at the delta's
   thisUpdate.
 - `crl_listed_digest` (snapshot plus releases) is what storage and
-  reconciliation re-check.
+  reconciliation re-check. Since 0061 every digest (reservations,
+  `crl_listed_digest`) goes through the ordered aggregate
+  `crl_entries_sha256`, the only function body that calls
+  `crl_entry_encoding`.
 - `published_crl`, `crl_due`, `crl_change_covered`, the pruning rule and
   `crl_pruned_entries` consider complete CRLs only. `published_delta_crl`
   serves deltas.
@@ -60,4 +63,4 @@ definitive revocations never changed.
 - `crl_entry_snapshot`: the revoked entries frozen when a CRL number is reserved, keyed by (CA, CRL number, serial); immutable.
 - `audit_event`: actor, request correlation, policy version, decision, timestamp and integrity metadata.
 
-Lab migrations 0001-0060 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.
+Lab migrations 0001-0061 exist; no production schema is implemented. Transactional consistency cannot encompass an external HSM signature. Persist intent and reconcile ambiguous outcomes.
