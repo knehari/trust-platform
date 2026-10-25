@@ -189,5 +189,5 @@ components:
     BadRequest: { description: Invalid CA identifier }
     Unauthorized: { description: Missing or invalid access token }
     Forbidden: { description: Role, signed CA scope or server-managed grant denied }
-    TooManyRequests: { description: Request budget of this token identity spent (300 per minute, per process) }
+    TooManyRequests: { description: 'Request budget spent: 600 per minute per client address before authentication, then 300 per minute per token identity (per process)' }
     Unavailable: { description: Management data request capacity exhausted or read database unavailable }

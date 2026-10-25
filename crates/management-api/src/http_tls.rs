@@ -12,8 +12,13 @@
 //!
 //! Handshakes run off the accept loop, at most `MAX_HANDSHAKES` at a time and
 //! each within `HANDSHAKE_TIMEOUT`, so a slow or silent client cannot hold up
-//! the others; connections beyond the limit are closed.
-use axum::{serve::Listener, Router};
+//! the others; connections beyond the limit are closed. Requests carry the
+//! client address (`ConnectInfo<ClientAddr>`), with or without TLS.
+use axum::{
+    extract::connect_info::Connected,
+    serve::{IncomingStream, Listener},
+    Router,
+};
 use rustls::{
     crypto::ring,
     pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
@@ -118,15 +123,35 @@ pub fn check_bind(tls: &HttpTls, listener: &TcpListener) -> io::Result<()> {
     ))
 }
 
+/// The TCP peer of a request, as `ConnectInfo<ClientAddr>`, for both the
+/// plaintext and the TLS listener.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientAddr(pub SocketAddr);
+
+impl Connected<IncomingStream<'_, TcpListener>> for ClientAddr {
+    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+impl Connected<IncomingStream<'_, TlsListener>> for ClientAddr {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
 /// Serves `router` on an already bound listener under the transport policy.
 pub async fn serve(listener: TcpListener, router: Router, tls: HttpTls) -> io::Result<()> {
     check_bind(&tls, &listener)?;
     let local = listener.local_addr()?;
+    // Handlers and middleware see the client address (ConnectInfo), which
+    // the per-address request budget counts.
+    let app = router.into_make_service_with_connect_info::<ClientAddr>();
     match tls {
         HttpTls::Enabled(config) => {
-            axum::serve(TlsListener::new(listener, config, local), router).await
+            axum::serve(TlsListener::new(listener, config, local), app).await
         }
-        _ => axum::serve(listener, router).await,
+        _ => axum::serve(listener, app).await,
     }
 }
 
@@ -245,6 +270,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handlers_see_the_client_address() {
+        use axum::{extract::ConnectInfo, routing::get};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("address");
+        let router = Router::new().route(
+            "/peer",
+            get(
+                |ConnectInfo(peer): ConnectInfo<ClientAddr>| async move { peer.0.ip().to_string() },
+            ),
+        );
+        tokio::spawn(serve(listener, router, HttpTls::LoopbackOnly));
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /peer HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
+            .await
+            .expect("request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("response");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("127.0.0.1"), "{response}");
+    }
+
+    #[tokio::test]
     async fn refuses_to_serve_plaintext_on_a_non_loopback_address() {
         let listener = TcpListener::bind("0.0.0.0:0").await.expect("bind");
         let tls = from_settings(None, None, None).expect("defaults");
@@ -276,7 +327,14 @@ mod tests {
             .expect("TLS settings");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("address");
-        let router = Router::new().route("/ping", get(|| async { "pong" }));
+        let router = Router::new().route(
+            "/ping",
+            get(
+                |axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<ClientAddr>| async move {
+                    format!("pong {}", peer.0.ip())
+                },
+            ),
+        );
         tokio::spawn(serve(listener, router, tls));
 
         // A client trusting the test CA gets the response over TLS 1.3.
@@ -307,7 +365,7 @@ mod tests {
         stream.read_to_end(&mut response).await.expect("response");
         let response = String::from_utf8_lossy(&response);
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        assert!(response.ends_with("pong"), "{response}");
+        assert!(response.ends_with("pong 127.0.0.1"), "{response}");
 
         // A client offering only TLS 1.2 is refused.
         let mut roots12 = RootCertStore::empty();

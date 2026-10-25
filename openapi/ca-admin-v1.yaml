@@ -32,7 +32,7 @@ paths:
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Non-canonical CA identifier}
         '413': {description: Request body larger than 64 KiB, refused before it is parsed or authenticated}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/cas/{ca_id}/pending-admin-changes:
     get:
@@ -70,7 +70,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable, busy, or stored content inconsistent with its digest}
   /v1/cas/{ca_id}/breakglass-uses:
     get:
@@ -101,7 +101,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/breakglass-uses/{use_id}:
     get:
@@ -131,7 +131,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not a CA admin or CA out of token scope}
         '404': {description: Unknown or non-canonical use identifier}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/breakglass-uses/{use_id}/review-challenges:
     post:
@@ -151,7 +151,7 @@ paths:
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Unknown or non-canonical use identifier}
         '409': {description: Already reviewed, the actor is the enrolled admin, already reviewed by the actor, or the use's evidence does not re-verify}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/approval-challenges:
     post:
@@ -165,7 +165,7 @@ paths:
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Unknown family, unknown change in that family, or non-canonical change}
         '409': {description: Closed change, the actor is the maker, the proposal is past the CA's maximum age (reject it instead), or the maker's stored signature does not re-verify}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/admin-changes/{family}/{change_id}/rejection-challenges:
     post:
@@ -179,7 +179,7 @@ paths:
         '403': {description: Not a CA admin, CA out of token scope, or no CA admin grant}
         '404': {description: Unknown family, unknown change in that family, or non-canonical change}
         '409': {description: Closed change, or the actor is the maker}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/admin-change-challenges/{challenge_id}/assertion:
     post:
@@ -224,7 +224,7 @@ paths:
         '404': {description: Non-canonical challenge identifier}
         '409': {description: Spent challenge, substituted content, same key or person, closed change}
         '413': {description: Request body larger than 64 KiB, refused before it is parsed or authenticated}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
 components:
   securitySchemes:

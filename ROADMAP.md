@@ -118,7 +118,7 @@ not an acceptance of either ADR.
 | Challenges | 0049, 0053 | At most 16 open challenges per actor and CA. Challenges that expired unused are purged after 30 days; consumed ones are kept as evidence. Concurrent consumption is tested. |
 | Audit and evidence | 0026–0027, 0041 | DDL and grants are audited by event triggers. A sealed hash chain with signed checkpoints is anchored outside the database (lab); the anchoring job uses verified TLS and refuses privileged logins. Offline re-verification of every signature (`signed_evidence_audit`, one CA or `--all`, exit 3 on failure). Database clock skew is checked against the Rust core. |
 | Backup and restore | `tests/revocation_backup_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster. Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
-| Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401, 429 and (with a body) 413. |
+| Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Before the token is read, each client address may make 600 requests per minute (per process); per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401, 429 and (with a body) 413. |
 
 Progress against the historical proposed versions (labels only):
 - **v2.5:** partial (audit chain, checkpoints, offline evidence audit).
@@ -164,8 +164,12 @@ Engineering backlog:
   - mTLS and certificate management for the HTTP side (the token APIs
     serve TLS 1.3 when given a certificate and refuse plain HTTP off
     loopback unless the logged lab opt-out is set);
-  - a per-IP or per-client limit (the per-identity budget is shared across
-    replicas in the database since 0062, idle budgets purged after 7 days since 0063; the read API's stays per process).
+  - a client-address limit shared across replicas, and client identity
+    behind a reverse proxy (since i74 each API counts 600 requests per
+    minute per client address before the token is read, per process and
+    without trusting forwarded headers; the per-identity budget is shared
+    across replicas in the database since 0062, idle budgets purged after
+    7 days since 0063; the read API's identity budget stays per process).
 - **Database assurance:**
   - server-side logging of role changes (pgaudit);
   - storage of the external audit anchor;

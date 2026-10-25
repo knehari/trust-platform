@@ -92,6 +92,8 @@ struct AppState {
     origin: Arc<String>,
     slots: Arc<Semaphore>,
     limiter: Arc<rate_limit::RateLimiter>,
+    /// Per client address, before the token is read (`limit_peers`).
+    peers: Arc<rate_limit::RateLimiter>,
     /// The same identity's budget across replicas, in the database (0062).
     budget: rate_limit::SharedBudget,
 }
@@ -192,6 +194,11 @@ fn router(state: AppState) -> Router {
             "/v1/cas/{ca_id}/precautionary-holds",
             get(precautionary_holds),
         )
+        // Per client address, before the token is read.
+        .layer(axum::middleware::from_fn_with_state(
+            state.peers.clone(),
+            rate_limit::limit_peers,
+        ))
         .layer(axum::middleware::from_fn(
             response_headers::security_headers,
         ))
@@ -846,6 +853,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         budget: rate_limit::SharedBudget::per_minute("revocation"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
@@ -933,6 +941,7 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             budget: rate_limit::SharedBudget::per_minute("revocation"),
         });
         (router, session)
@@ -954,6 +963,7 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             budget,
         });
         (router, session)
@@ -969,6 +979,7 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             budget: rate_limit::SharedBudget::per_minute("revocation"),
         })
     }
@@ -1721,6 +1732,83 @@ mod tests {
             .await
             .0,
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// Requests are counted per client address before the token is read: an
+    /// address that spent its budget gets 429 even without a token, other
+    /// addresses do not, and one IPv6 /64 counts as one address.
+    #[tokio::test]
+    async fn requests_are_limited_per_client_address_before_authentication() {
+        use axum::extract::connect_info::MockConnectInfo;
+        use std::{net::SocketAddr, time::Duration};
+        let oidc = oidc();
+        let router = router(AppState {
+            verifier: oidc.verifier.clone(),
+            store: Arc::new(Mutex::new(None)),
+            database_url: Arc::new("postgresql://unused.invalid/none".into()),
+            database_tls: database::DatabaseTls::DisabledForLab,
+            rp_id: Arc::new(RP_ID.into()),
+            origin: Arc::new(ORIGIN.into()),
+            slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::new(3, Duration::from_secs(60))),
+            budget: rate_limit::SharedBudget::per_minute("revocation"),
+        });
+        let from = |addr: &str| {
+            let addr: SocketAddr = addr.parse().unwrap();
+            router
+                .clone()
+                .layer(MockConnectInfo(http_tls::ClientAddr(addr)))
+        };
+        let path = format!("/v1/cas/{CA}/status-change-challenges");
+        let body = json!({"serial_hex":"01","action":"REVOKE","reason":1});
+        let client = from("192.0.2.7:40000");
+        for _ in 0..3 {
+            assert_eq!(
+                post(&client, &path, None, body.clone()).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        // Spent: refused before the (missing) token is even looked at, from
+        // any port of that address.
+        assert_eq!(
+            post(&from("192.0.2.7:40001"), &path, None, body.clone())
+                .await
+                .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let token = oidc.token("maker", &[OFFICER_ROLE], &[CA]);
+        assert_eq!(
+            post(&client, &path, Some(&token), body.clone()).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            post(&from("198.51.100.9:40000"), &path, None, body.clone())
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // One IPv6 /64 is one client.
+        for _ in 0..3 {
+            assert_eq!(
+                post(&from("[2001:db8:1:2::1]:443"), &path, None, body.clone())
+                    .await
+                    .0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            post(&from("[2001:db8:1:2::ffff]:443"), &path, None, body.clone())
+                .await
+                .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            post(&from("[2001:db8:1:3::1]:443"), &path, None, body)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
         );
     }
 

@@ -99,6 +99,8 @@ struct AppState {
     origin: Arc<String>,
     slots: Arc<Semaphore>,
     limiter: Arc<rate_limit::RateLimiter>,
+    /// Per client address, before the token is read (`limit_peers`).
+    peers: Arc<rate_limit::RateLimiter>,
     /// The same identity's budget across replicas, in the database (0062).
     budget: rate_limit::SharedBudget,
 }
@@ -332,6 +334,11 @@ fn router(state: AppState) -> Router {
             "/v1/breakglass-uses/{use_id}/review-challenges",
             post(breakglass_review_challenge),
         )
+        // Per client address, before the token is read.
+        .layer(axum::middleware::from_fn_with_state(
+            state.peers.clone(),
+            rate_limit::limit_peers,
+        ))
         .layer(axum::middleware::from_fn(
             response_headers::security_headers,
         ))
@@ -967,6 +974,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         budget: rate_limit::SharedBudget::per_minute("ca_admin"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
@@ -1049,9 +1057,51 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             budget: rate_limit::SharedBudget::per_minute("ca_admin"),
         });
         (router, session)
+    }
+
+    /// Counted per client address before the token is read (as in the
+    /// revocation API).
+    #[tokio::test]
+    async fn requests_are_limited_per_client_address_before_authentication() {
+        use axum::extract::connect_info::MockConnectInfo;
+        use std::{net::SocketAddr, time::Duration};
+        let router = router(AppState {
+            verifier: oidc().verifier.clone(),
+            store: Arc::new(Mutex::new(None)),
+            database_url: Arc::new("postgresql://unused.invalid/none".into()),
+            database_tls: database::DatabaseTls::DisabledForLab,
+            rp_id: Arc::new(RP_ID.into()),
+            origin: Arc::new(ORIGIN.into()),
+            slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(rate_limit::RateLimiter::new(2, Duration::from_secs(60))),
+            budget: rate_limit::SharedBudget::per_minute("ca_admin"),
+        });
+        let from = |addr: &str| {
+            let addr: SocketAddr = addr.parse().unwrap();
+            router
+                .clone()
+                .layer(MockConnectInfo(http_tls::ClientAddr(addr)))
+        };
+        let path = format!("/v1/cas/{CA}/pending-admin-changes");
+        for _ in 0..2 {
+            assert_eq!(
+                get(&from("192.0.2.7:1"), &path, "not-a-token").await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            get(&from("192.0.2.7:2"), &path, "not-a-token").await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            get(&from("198.51.100.9:1"), &path, "not-a-token").await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     async fn post(

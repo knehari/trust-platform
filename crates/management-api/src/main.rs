@@ -51,6 +51,8 @@ struct AppState {
     /// Per-identity request budget (READS_PER_MINUTE), before any database
     /// access.
     limiter: Arc<rate_limit::RateLimiter>,
+    /// Per client address, before the token is read (`limit_peers`).
+    peers: Arc<rate_limit::RateLimiter>,
 }
 
 /// Requests one reader identity may make per minute; larger than the
@@ -193,6 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
         limiter: Arc::new(reads_limiter()),
+        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
     });
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"management_api_started","bind":bind,"tls":tls}));
@@ -209,6 +212,11 @@ fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             limit_data_requests,
+        ))
+        // Per client address, before a capacity slot or the token.
+        .route_layer(middleware::from_fn_with_state(
+            state.peers.clone(),
+            rate_limit::limit_peers,
         ));
     Router::new()
         .route("/v1/health", get(health))
@@ -664,6 +672,7 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let mut valid_cursor = None;
         for (suffix, id_field) in [("certificates", "request_id"), ("audit", "event_id")] {
@@ -749,6 +758,7 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let (status, cursor, first) = history_page(&app, &token, "/v1/cas").await;
         assert_eq!(status, StatusCode::OK);
@@ -867,6 +877,7 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         };
         let app = router(state.clone());
         let held_http = state
@@ -946,6 +957,7 @@ mod tests {
             ),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             ..state.clone()
         });
         let liveness = unavailable_app
@@ -1197,6 +1209,7 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         // Another CA: refused (403) before the database, so none is needed.
         let uri = "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff";
@@ -1223,6 +1236,59 @@ mod tests {
         assert_eq!(call(token("another-reader")).await, StatusCode::FORBIDDEN);
     }
 
+    /// Data reads are counted per client address before the token is read;
+    /// health and readiness are not.
+    #[tokio::test]
+    async fn data_reads_are_limited_per_client_address_before_authentication() {
+        use axum::extract::connect_info::MockConnectInfo;
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"peer-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let app = router(AppState {
+            verifier,
+            database: Database::lab_plaintext("host=/nonexistent/trust-db-socket"),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::new(
+                2,
+                std::time::Duration::from_secs(60),
+            )),
+        });
+        let call = |addr: &str, uri: &str| {
+            let addr: std::net::SocketAddr = addr.parse().unwrap();
+            let app = app
+                .clone()
+                .layer(MockConnectInfo(http_tls::ClientAddr(addr)));
+            let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            async move { app.oneshot(request).await.unwrap().status() }
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                call("192.0.2.7:1", "/v1/cas").await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            call("192.0.2.7:2", "/v1/cas").await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            call("198.51.100.9:1", "/v1/cas").await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(call("192.0.2.7:3", "/v1/health").await, StatusCode::OK);
+    }
+
     /// Every response forbids caching and content sniffing (CA data).
     #[tokio::test]
     async fn responses_forbid_caching_and_sniffing() {
@@ -1244,6 +1310,7 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             limiter: Arc::new(reads_limiter()),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         for uri in ["/v1/cas", "/v1/health"] {
             let response = app

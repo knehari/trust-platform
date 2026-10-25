@@ -50,7 +50,7 @@ paths:
         '409': {description: Refused by policy (status, open change, suspension, issuer not registered)}
         '413': {description: Request body larger than 64 KiB, refused before it is parsed or authenticated}
         '422': {description: Unknown request field}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/approval-challenges:
     post:
@@ -66,7 +66,7 @@ paths:
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Non-canonical change identifier}
         '409': {description: Closed change, the checker is the maker, or the maker's stored signature does not re-verify}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-change-challenges/{challenge_id}/assertion:
     post:
@@ -110,7 +110,7 @@ paths:
         '403': {description: Challenge issued to another officer, or CA out of token scope}
         '409': {description: Challenge spent or expired, credential removed or not the officer's, distinctness or counter rule refused}
         '413': {description: Request body larger than 64 KiB, refused before it is parsed or authenticated}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/cas/{ca_id}/pending-status-changes:
     get:
@@ -142,7 +142,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not an officer or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/cas/{ca_id}/precautionary-hold-challenges:
     post:
@@ -171,7 +171,7 @@ paths:
         '404': {description: Non-canonical CA identifier}
         '409': {description: Precautionary holds not enabled for the CA, or the certificate is not valid}
         '413': {description: Request body larger than 64 KiB, refused before it is parsed or authenticated}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/cas/{ca_id}/precautionary-holds:
     get:
@@ -199,7 +199,7 @@ paths:
         '401': {description: Missing or invalid access token}
         '403': {description: Not an officer or CA out of token scope}
         '404': {description: Non-canonical CA identifier}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/rejection-challenges:
     post:
@@ -216,7 +216,7 @@ paths:
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Unknown or non-canonical change}
         '409': {description: Closed change, or the actor is the maker}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/withdrawal-challenges:
     post:
@@ -229,7 +229,7 @@ paths:
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Unknown or non-canonical change}
         '409': {description: Closed change, or the actor is not the maker}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/rejection:
     post:
@@ -242,7 +242,7 @@ paths:
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Unknown or non-canonical change}
         '409': {description: Closed change, or the actor is the maker}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
   /v1/status-changes/{change_id}/withdrawal:
     post:
@@ -255,7 +255,7 @@ paths:
         '403': {description: Not an officer, CA out of token scope, or no officer grant}
         '404': {description: Unknown or non-canonical change}
         '409': {description: Closed change, or the actor is not the maker}
-        '429': {description: Request budget of this token identity spent (60 per minute, shared by every replica)}
+        '429': {description: Request budget spent (600 per minute per client address before authentication, then 60 per minute per token identity, shared by every replica)}
         '503': {description: Database unavailable or busy}
 components:
   securitySchemes:
