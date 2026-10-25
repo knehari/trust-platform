@@ -3,7 +3,8 @@
 # (crates/management-api/src/http_tls.rs). Makes a throwaway CA and a
 # "localhost" server certificate with OpenSSL, then runs the transport
 # tests, the TLS one included (TRUST_REQUIRE_HTTP_TLS_TEST makes a skip
-# fail): TLS 1.3 served, a TLS 1.2 client and a plaintext request refused.
+# fail): TLS 1.3 served, a TLS 1.2 client and a plaintext request refused,
+# and handlers see the client address (ConnectInfo).
 # Then a real API binary must refuse a certificate without its key.
 #   bash tests/http_tls.sh
 set -euo pipefail
@@ -20,7 +21,7 @@ openssl x509 -req -in "$temp/server.csr" -CA "$temp/ca.pem" -CAkey "$temp/ca.key
 TRUST_HTTP_TLS_TEST_DIR="$temp" TRUST_REQUIRE_HTTP_TLS_TEST=1 \
   cargo test -q --locked -p trust-management-api --bin trust-management-api http_tls:: 2>&1 \
   | tee "$temp/test.log" | grep -E "^test result|FAILED|panicked"
-grep -q "test result: ok. 4 passed" "$temp/test.log" || { echo "FAIL: transport tests" >&2; exit 1; }
+grep -q "test result: ok. 5 passed" "$temp/test.log" || { echo "FAIL: transport tests" >&2; exit 1; }
 
 # A real API binary refuses plaintext off loopback before touching OIDC or
 # the database (settings and bind are checked first).
