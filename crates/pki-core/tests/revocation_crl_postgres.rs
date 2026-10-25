@@ -1207,6 +1207,46 @@ fn verified_crl_whose_storage_failed_is_reconciled() {
         ),
         Err(CrlError::ReplayedOrAmbiguousIntent)
     );
+
+    // For tests/crl_reconcile.sh, which runs the crl_reconcile tool: a
+    // second CRL left quarantined, its DER and the issuer certificate.
+    if let Ok(dir) = env::var("TRUST_CRL_EXPORT_DIR") {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let second = store
+            .reserve_crl(&ca_id, "crl-operator", "crl-lost-op-2")
+            .unwrap();
+        let plan = CrlPlan {
+            reservation: &second,
+            issuer: &root,
+            signer_key_ref: &key_ref,
+            operation_ref: "crl-lost-op-2",
+        };
+        let der = match crl_once(
+            &mut FailingStore(&mut store),
+            &mut ca,
+            &LabCrlAssembler,
+            &verifier,
+            &plan,
+        ) {
+            Err(CrlError::VerifiedButNotStored(der)) => der,
+            other => panic!("expected VerifiedButNotStored, got {other:?}"),
+        };
+        let dir = std::path::Path::new(&dir).join("reconcile");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("crl.der"), der).unwrap();
+        std::fs::write(dir.join("issuer.der"), root.to_der().unwrap()).unwrap();
+        let other = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        std::fs::write(
+            dir.join("other_issuer.der"),
+            other.root_certificate().to_der().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("ids"),
+            format!("{ca_id} {}\n", second.crl_number()),
+        )
+        .unwrap();
+    }
 }
 
 /// Scheduled housekeeping: a CA without a CRL is due; a reservation left by

@@ -36,6 +36,10 @@ name = "audit_chain_anchor"
 required-features = ["postgres-store", "lab-software"]
 
 [[example]]
+name = "crl_reconcile"
+required-features = ["postgres-store", "lab-software"]
+
+[[example]]
 name = "crash_recovery_lab"
 required-features = ["lab-software", "postgres-store"]
 

@@ -181,7 +181,8 @@ Engineering backlog:
     use cannot be reviewed, and its admin key signs nothing through the Rust
     core, but stays enrolled until two admins remove it.
   - The challenge table keeps consumed challenges and 30 days of unused ones.
-  - `reconcile_crl` needs the caller to still hold the DER.
+  - Reconciling a quarantined CRL (`crl_reconcile` tool) needs its DER; a
+    DER lost with its process cannot be recovered (no signer read-back).
   - Certificates stored before 0031 whose stored DER does not parse stay
     without `notAfter` (reported by housekeeping, never pruned).
 - **Hygiene:**

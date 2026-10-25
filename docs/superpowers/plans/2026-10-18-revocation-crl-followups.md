@@ -68,8 +68,10 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   (0021 reports the certain "reserve again" refusals as SQLSTATE 55000 /
   `CrlError::ReserveAgain`.)
 - `reconcile_crl` (0021) stores a quarantined CRL only when the caller still
-  holds its DER (`CrlError::VerifiedButNotStored`); a CRL lost with its
-  process stays `RECONCILIATION_REQUIRED` (no signer read-back exists).
+  holds its DER (`CrlError::VerifiedButNotStored`); the `crl_reconcile` lab
+  tool does it from a DER file under a signer login
+  (`tests/crl_reconcile.sh`). A CRL lost with its process stays
+  `RECONCILIATION_REQUIRED` (no signer read-back exists).
 - Expired-entry pruning (`keep_expired_on_crl = false`): implemented in 0031
   from `certificate.not_after` recorded at issuance; certificates stored
   before 0031 are backfilled by housekeeping from their stored DER (0055);

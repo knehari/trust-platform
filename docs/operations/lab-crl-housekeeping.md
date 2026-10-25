@@ -9,8 +9,24 @@ pass for one CA (ADR-0006 section D, proposed). It calls
    recorded an intent, so they were never signed. Their numbers stay taken.
 2. quarantines `INTENT_RECORDED` rows older than `--intent-older-than` seconds
    (`quarantine_stale_crl_intents`) as `RECONCILIATION_REQUIRED`. A signature
-   may exist for them; see `reconcile_crl` (migration 0021) when the DER is
-   still held.
+   may exist for them. When the signer still holds the DER (it got
+   `CrlError::VerifiedButNotStored`), store it with the `crl_reconcile` lab
+   tool:
+   ```sh
+   TRUST_DATABASE_URL=postgresql://<signer login>@db.lab.invalid/trust \
+   TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+     cargo run -p trust-pki-core --features postgres-store,lab-software \
+     --example crl_reconcile -- <ca-uuid> issuer.der crl.der --actor <name>
+   ```
+   It never signs. It refuses a privileged login, then re-verifies the DER
+   in the Rust core against the reservation rebuilt from the database and
+   against the issuer certificate file. The database also checks the TBS
+   hash journaled before signing and the registered issuer certificate, and
+   records a `crl.reconciled` audit event with the actor. It refuses a CRL
+   number that is not quarantined, including one already stored. A
+   quarantined CRL whose DER was lost with its process stays
+   `RECONCILIATION_REQUIRED`: no signer read-back exists. Tested by
+   `tests/crl_reconcile.sh`.
 3. reports `crl_due` and the number of `overdue_status_changes`, overdue
    precautionary holds, and break-glass uses not yet reviewed by two admins
    (`open_breakglass_uses`, `overdue_breakglass_uses`, migration 0045). Any

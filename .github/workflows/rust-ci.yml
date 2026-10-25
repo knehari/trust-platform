@@ -304,6 +304,8 @@ jobs:
           bash tests/crl_openssl_lab.sh "$RUNNER_TEMP/stored-crl"
           # A delta CRL stored through PostgreSQL applies to its base under OpenSSL.
           bash tests/crl_delta_openssl.sh "$RUNNER_TEMP/stored-crl/delta" crl1 crl_delta
+          # A quarantined CRL is stored from its DER by crl_reconcile (signer login).
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crl_reconcile.sh "$RUNNER_TEMP/stored-crl"
           # Rehearsal on a real pg_restore of a backup taken before CRL 7 (0060).
           psql "postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" -X -v ON_ERROR_STOP=1 \
             -c 'CREATE DATABASE trust_crl_restore_rehearsal' >/dev/null

@@ -2508,6 +2508,24 @@ impl PgRevocationStore {
         )
     }
 
+    /// The operation reference and status of a CRL number of the CA, if it
+    /// was reserved (e.g. to reconcile a quarantined CRL).
+    pub fn crl_publication_state(
+        &mut self,
+        ca_id: &str,
+        crl_number: u64,
+    ) -> Result<Option<(String, String)>, RevocationStoreError> {
+        let number =
+            i64::try_from(crl_number).map_err(|_| RevocationStoreError::InconsistentResult)?;
+        let row = self.client.query_opt(
+            "SELECT operation_ref, status FROM crl_publication
+             WHERE ca_id = $1::text::uuid AND crl_number = $2",
+            &[&ca_id, &number],
+        )?;
+        row.map(|r| Ok((column(&r, 0)?, column(&r, 1)?)))
+            .transpose()
+    }
+
     /// Rebuilds the sealed reservation of an existing CRL number from its
     /// publication row and frozen snapshot, e.g. to reconcile a quarantined
     /// CRL with `crl_orchestrator::reconcile_crl`.
