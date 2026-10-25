@@ -31,7 +31,7 @@ TRUST_WEBAUTHN_RP_ID=admin.lab.invalid TRUST_WEBAUTHN_ORIGIN=https://admin.lab.i
 
 Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
 
-Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies. Request bodies larger than 64 KiB are refused (413) before they are parsed or authenticated.
+Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). Since migration 0062 the same budget is also kept in the database (`consume_api_budget`, a SHA-256 of the identity, fixed one-minute windows on the database clock), counted once per request that reaches the database: it holds across replicas and restarts. A database error there fails closed (503). The 8-request concurrency bound still applies. Request bodies larger than 64 KiB are refused (413) before they are parsed or authenticated.
 
 A proposal older than the CA's `admin_proposal_max_age_hours` (default 168 hours, migration 0052) is listed with `expired: true`, and no approval challenge is issued for it (409, before anyone signs); reject it and propose it again.
 
@@ -44,7 +44,6 @@ Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: no
 Not covered:
 - the break-glass enrolment itself (0045): deliberately not over HTTP; see `lab-break-glass.md`;
 - the DBA bootstrap of the first admin keys (`enroll_ca_admin_credential`, closed once signed administration is required);
-- rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
 - mutual TLS, certificate reload or HTTP/2 on the HTTP side.
 
 - HTTP transport: with `TRUST_HTTP_TLS_CERT_FILE` and

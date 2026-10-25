@@ -84,7 +84,7 @@ Other endpoints:
 
 Challenge issuance answers 409 once the acting identity already holds 16 open (unexpired, unconsumed) challenges on the CA (migration 0049); they free up as they are used or expire.
 
-Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). The 8-request concurrency bound still applies. Request bodies larger than 64 KiB are refused (413) before they are parsed or authenticated.
+Each verified identity (token issuer and subject) may make 60 requests per minute; beyond that the API answers 429 before any database access (`rate_limit.rs`). Since migration 0062 the same budget is also kept in the database (`consume_api_budget`, a SHA-256 of the identity, fixed one-minute windows on the database clock), counted once per request that reaches the database: it holds across replicas and restarts. A database error there fails closed (503). The 8-request concurrency bound still applies. Request bodies larger than 64 KiB are refused (413) before they are parsed or authenticated.
 
 The pending list shows `maker_evidence_verified`: whether the maker's stored signature re-verifies in the Rust core. An approval challenge for a proposal whose maker signature does not re-verify is refused (409) before anyone signs, and an approval is never written for one.
 
@@ -103,7 +103,6 @@ Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: no
 Not covered:
 - CA-admin endpoints: they are in the separate `ca_admin_api` (`lab-ca-admin-api.md`);
 - break-glass (ADR-0007 section 6; the 0045 lab version only re-enrols CA-admin keys, see `lab-break-glass.md`);
-- rate limiting across replicas or restarts (the per-identity budget below is per process, in memory);
 - mutual TLS, certificate reload or HTTP/2 on the HTTP side;
 - a browser client.
 

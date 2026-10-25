@@ -5,7 +5,9 @@
 //! after authentication and before any database access. The concurrency
 //! semaphore bounds load; this bounds what one identity (or a stolen token)
 //! can do. It is per process and in memory: several replicas each allow the
-//! budget, and a restart resets it.
+//! budget, and a restart resets it. The write APIs therefore also consume a
+//! `SharedBudget` in the database (migration 0062) on every request that
+//! reaches it, which holds across replicas and restarts.
 use std::{
     collections::HashMap,
     sync::Mutex,
@@ -17,6 +19,25 @@ pub const REQUESTS_PER_MINUTE: u32 = 60;
 /// Identities tracked at once; past this, expired windows are dropped and,
 /// if none are, new identities are refused (fail closed).
 const MAX_TRACKED: usize = 10_000;
+
+/// The per-identity budget kept in the database for one write API (migration
+/// 0062), shared by all its replicas: `limit` requests per `window_seconds`.
+#[derive(Clone, Copy)]
+pub struct SharedBudget {
+    pub scope: &'static str,
+    pub limit: u32,
+    pub window_seconds: u32,
+}
+
+impl SharedBudget {
+    pub fn per_minute(scope: &'static str) -> Self {
+        Self {
+            scope,
+            limit: REQUESTS_PER_MINUTE,
+            window_seconds: 60,
+        }
+    }
+}
 
 pub struct RateLimiter {
     limit: u32,

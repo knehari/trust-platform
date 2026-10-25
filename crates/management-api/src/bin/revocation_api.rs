@@ -92,6 +92,8 @@ struct AppState {
     origin: Arc<String>,
     slots: Arc<Semaphore>,
     limiter: Arc<rate_limit::RateLimiter>,
+    /// The same identity's budget across replicas, in the database (0062).
+    budget: rate_limit::SharedBudget,
 }
 
 #[derive(Deserialize)]
@@ -266,9 +268,30 @@ impl From<RevocationStoreError> for Failure {
     }
 }
 
-/// Runs `work` on the officer API session, reconnecting after a failure.
+/// Runs `work` on the officer API session, reconnecting after a failure,
+/// after counting the request against the identity's shared budget.
 async fn with_store<T: Send + 'static>(
     state: &AppState,
+    claims: &Claims,
+    work: impl FnOnce(&mut PgRevocationStore) -> Result<T, Failure> + Send + 'static,
+) -> Result<T, StatusCode> {
+    on_session(state, Some((claims.iss.clone(), claims.sub.clone())), work).await
+}
+
+/// `with_store` for the second database call of a request whose first call
+/// (`change_in_scope`) already counted it against the shared budget.
+async fn with_counted_store<T: Send + 'static>(
+    state: &AppState,
+    work: impl FnOnce(&mut PgRevocationStore) -> Result<T, Failure> + Send + 'static,
+) -> Result<T, StatusCode> {
+    on_session(state, None, work).await
+}
+
+/// Runs `work` on the officer API session, reconnecting after a failure;
+/// with an identity, first counts the request against its shared budget.
+async fn on_session<T: Send + 'static>(
+    state: &AppState,
+    identity: Option<(String, String)>,
     work: impl FnOnce(&mut PgRevocationStore) -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, StatusCode> {
     let _permit = state
@@ -279,6 +302,7 @@ async fn with_store<T: Send + 'static>(
     let store = state.store.clone();
     let url = state.database_url.clone();
     let tls = state.database_tls.clone();
+    let budget = state.budget;
     tokio::task::spawn_blocking(move || {
         let mut slot = store.lock().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         if slot.is_none() {
@@ -290,6 +314,31 @@ async fn with_store<T: Send + 'static>(
             );
         }
         let session = slot.as_mut().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+        // The identity's budget across every replica (0062), before the
+        // work; an error fails closed.
+        let counted = match &identity {
+            None => Ok(true),
+            Some((issuer, subject)) => session.consume_api_budget(
+                budget.scope,
+                issuer,
+                subject,
+                budget.limit,
+                budget.window_seconds,
+            ),
+        };
+        match counted {
+            Ok(true) => {}
+            Ok(false) => {
+                write_log(serde_json::json!({"event":"rate_limited_shared"}));
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+            Err(error) => {
+                if matches!(&error, RevocationStoreError::Database(e) if e.code().is_none()) {
+                    *slot = None;
+                }
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
         match work(session) {
             Ok(value) => Ok(value),
             Err(Failure::Refused(status)) => Err(status),
@@ -355,7 +404,7 @@ async fn precaution_challenge(
     }
     let serial = parse_serial(&request.serial_hex)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_store(&state, &claims, move |store| {
         let officer = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -384,7 +433,10 @@ async fn precautionary_holds(
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let holds = with_store(&state, move |store| Ok(store.precautionary_holds(&ca_id)?)).await?;
+    let holds = with_store(&state, &claims, move |store| {
+        Ok(store.precautionary_holds(&ca_id)?)
+    })
+    .await?;
     let body: Vec<HoldResponse> = holds
         .into_iter()
         .map(|hold| HoldResponse {
@@ -425,7 +477,7 @@ async fn proposal_challenge(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let invalidity = request.invalidity_unix;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_store(&state, &claims, move |store| {
         let maker = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -460,7 +512,7 @@ async fn approval_challenge(
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_counted_store(&state, move |store| {
         // Nobody signs an approval of a proposal whose stored maker
         // signature does not re-verify (the database cannot check it).
         let rp = RelyingParty {
@@ -500,9 +552,11 @@ async fn change_in_scope(
     change_id: &str,
 ) -> Result<(), StatusCode> {
     let change = change_id.to_owned();
-    let ca = with_store(state, move |store| Ok(store.status_change_ca(&change)?))
-        .await?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let ca = with_store(state, claims, move |store| {
+        Ok(store.status_change_ca(&change)?)
+    })
+    .await?
+    .ok_or(StatusCode::NOT_FOUND)?;
     if claims.ca_ids.contains(&ca) {
         Ok(())
     } else {
@@ -536,7 +590,7 @@ async fn pending_changes(
         return Err(StatusCode::FORBIDDEN);
     }
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let pending = with_store(&state, move |store| {
+    let pending = with_store(&state, &claims, move |store| {
         let rp = RelyingParty {
             rp_id: &rp_id,
             origin: &origin,
@@ -584,7 +638,7 @@ async fn close_change(
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let change = change_id.clone();
-    with_store(&state, move |store| {
+    with_counted_store(&state, move |store| {
         let actor = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -617,7 +671,7 @@ async fn close_challenge(
     let change_id = canonical_uuid(&change_id).ok_or(StatusCode::NOT_FOUND)?;
     change_in_scope(&state, &claims, &change_id).await?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_counted_store(&state, move |store| {
         let actor = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -694,7 +748,7 @@ async fn submit_assertion(
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
-    let change_id = with_store(&state, move |store| {
+    let change_id = with_store(&state, &claims, move |store| {
         let challenge = store.signed_challenge(&challenge_id)?;
         // Only the officer the challenge was issued to may answer it, and
         // only within the token's CA scope.
@@ -792,6 +846,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+        budget: rate_limit::SharedBudget::per_minute("revocation"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"revocation_api_started","bind":bind,"tls":tls}));
@@ -878,6 +933,28 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            budget: rate_limit::SharedBudget::per_minute("revocation"),
+        });
+        (router, session)
+    }
+
+    /// Like `app_with_session`, with its own shared budget (one replica).
+    fn replica(
+        verifier: OidcVerifier,
+        database_url: &str,
+        budget: rate_limit::SharedBudget,
+    ) -> (Router, Session) {
+        let session: Session = Arc::new(Mutex::new(None));
+        let router = router(AppState {
+            verifier,
+            store: session.clone(),
+            database_url: Arc::new(database_url.to_owned()),
+            database_tls: database::DatabaseTls::DisabledForLab,
+            rp_id: Arc::new(RP_ID.into()),
+            origin: Arc::new(ORIGIN.into()),
+            slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            budget,
         });
         (router, session)
     }
@@ -892,6 +969,7 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            budget: rate_limit::SharedBudget::per_minute("revocation"),
         })
     }
 
@@ -1644,6 +1722,67 @@ mod tests {
             .0,
             StatusCode::BAD_REQUEST
         );
+    }
+
+    /// The budget holds across replicas (migration 0062): two API instances
+    /// on one database give an identity `limit` requests in all, not each.
+    /// The in-memory limit (60 per replica) is not what refuses here.
+    #[tokio::test]
+    async fn the_request_budget_is_shared_across_replicas() {
+        let Some(url) = test_database_url() else {
+            return;
+        };
+        let setup_url = url.clone();
+        let (ca, ..) = tokio::task::spawn_blocking(move || setup(&setup_url))
+            .await
+            .unwrap();
+        let oidc = oidc();
+        let api_url = url_with_login(&url, "trust_revocation_api_ci", "test-only-not-secret");
+        let budget = rate_limit::SharedBudget {
+            scope: "revocation",
+            limit: 3,
+            window_seconds: 60,
+        };
+        let (first, first_session) = replica(oidc.verifier.clone(), &api_url, budget);
+        let (second, second_session) = replica(oidc.verifier.clone(), &api_url, budget);
+        // A fresh identity per run: budgets outlive the test in the database.
+        let subject = format!(
+            "budget-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let token = oidc.token(&subject, &[OFFICER_ROLE], &[&ca]);
+        let path = format!("/v1/cas/{ca}/pending-status-changes");
+        let mut statuses = Vec::new();
+        for app in [&first, &first, &second, &second, &first] {
+            statuses.push(get(app, &path, &token).await.0);
+        }
+        assert!(
+            statuses[..3]
+                .iter()
+                .all(|s| *s != StatusCode::TOO_MANY_REQUESTS),
+            "{statuses:?}"
+        );
+        assert_eq!(
+            &statuses[3..],
+            &[StatusCode::TOO_MANY_REQUESTS, StatusCode::TOO_MANY_REQUESTS],
+            "{statuses:?}"
+        );
+        // Another identity still has its own budget.
+        let other = oidc.token(&format!("{subject}-other"), &[OFFICER_ROLE], &[&ca]);
+        assert_ne!(
+            get(&second, &path, &other).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        drop((first, second));
+        tokio::task::spawn_blocking(move || {
+            drop(first_session.lock().unwrap().take());
+            drop(second_session.lock().unwrap().take());
+        })
+        .await
+        .unwrap();
     }
 
     /// Request bodies are bounded (64 KiB, 413) before they are parsed or

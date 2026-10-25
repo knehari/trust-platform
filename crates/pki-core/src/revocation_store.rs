@@ -2454,6 +2454,33 @@ impl PgRevocationStore {
         Ok(outcomes)
     }
 
+    /// Counts one request of a verified identity against the budget shared
+    /// by every replica of a lab write API (migration 0062); false once the
+    /// window's budget is spent. `scope` is "revocation" or "ca_admin". Only
+    /// a digest of the identity reaches the database.
+    pub fn consume_api_budget(
+        &mut self,
+        scope: &str,
+        issuer: &str,
+        subject: &str,
+        limit: u32,
+        window_seconds: u32,
+    ) -> Result<bool, RevocationStoreError> {
+        let mut hasher = Sha256::new();
+        hasher.update(issuer.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(subject.as_bytes());
+        let identity: [u8; 32] = hasher.finalize().into();
+        let limit = i32::try_from(limit).map_err(|_| RevocationStoreError::InconsistentResult)?;
+        let window =
+            i32::try_from(window_seconds).map_err(|_| RevocationStoreError::InconsistentResult)?;
+        let row = self.client.query_one(
+            "SELECT consume_api_budget($1, $2, $3, $4)",
+            &[&scope, &&identity[..], &limit, &window],
+        )?;
+        column(&row, 0)
+    }
+
     /// Reserves a delta CRL (migration 0059, RFC 5280 5.2.4) on the CA's
     /// latest stored complete CRL, which must advertise delta CRLs
     /// (`ca_revocation_policy.delta_crl_url`). Same isolation and clock rules

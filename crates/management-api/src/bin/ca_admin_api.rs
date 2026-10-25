@@ -99,6 +99,8 @@ struct AppState {
     origin: Arc<String>,
     slots: Arc<Semaphore>,
     limiter: Arc<rate_limit::RateLimiter>,
+    /// The same identity's budget across replicas, in the database (0062).
+    budget: rate_limit::SharedBudget,
 }
 
 /// The change an admin proposes, as JSON. Which fields apply depends on
@@ -417,6 +419,7 @@ impl From<RevocationStoreError> for Failure {
 /// Runs `work` on the CA-admin session, reconnecting after a failure.
 async fn with_store<T: Send + 'static>(
     state: &AppState,
+    claims: &Claims,
     work: impl FnOnce(&mut PgRevocationStore) -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, StatusCode> {
     let _permit = state
@@ -427,6 +430,8 @@ async fn with_store<T: Send + 'static>(
     let store = state.store.clone();
     let url = state.database_url.clone();
     let tls = state.database_tls.clone();
+    let budget = state.budget;
+    let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     tokio::task::spawn_blocking(move || {
         let mut slot = store.lock().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         if slot.is_none() {
@@ -438,6 +443,27 @@ async fn with_store<T: Send + 'static>(
             );
         }
         let session = slot.as_mut().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+        // The identity's budget across every replica (0062), before the
+        // work; an error fails closed.
+        match session.consume_api_budget(
+            budget.scope,
+            &issuer,
+            &subject,
+            budget.limit,
+            budget.window_seconds,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                write_log(serde_json::json!({"event":"rate_limited_shared"}));
+                return Err(StatusCode::TOO_MANY_REQUESTS);
+            }
+            Err(error) => {
+                if matches!(&error, RevocationStoreError::Database(e) if e.code().is_none()) {
+                    *slot = None;
+                }
+                return Err(StatusCode::SERVICE_UNAVAILABLE);
+            }
+        }
         match work(session) {
             Ok(value) => Ok(value),
             Err(Failure::Refused(status)) => Err(status),
@@ -479,7 +505,7 @@ async fn proposal_challenge(
     }
     let change = OwnedChange::parse(&ca_id, &request)?;
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_store(&state, &claims, move |store| {
         let maker = OfficerIdentity {
             issuer: &issuer,
             subject: &subject,
@@ -517,7 +543,7 @@ async fn decision_challenge(
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_store(&state, &claims, move |store| {
         let ca = store.admin_change_ca(family, &change_id)?;
         in_scope(ca.clone(), &ca_ids)?;
         // An expired proposal is no longer approvable (0052): refuse before
@@ -622,7 +648,7 @@ async fn pending_admin_changes(
         return Err(StatusCode::FORBIDDEN);
     }
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let pending = with_store(&state, move |store| {
+    let pending = with_store(&state, &claims, move |store| {
         let rp = RelyingParty {
             rp_id: &rp_id,
             origin: &origin,
@@ -676,7 +702,10 @@ async fn breakglass_uses(
     if !claims.ca_ids.contains(&ca_id) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let uses = with_store(&state, move |store| Ok(store.breakglass_uses(&ca_id)?)).await?;
+    let uses = with_store(&state, &claims, move |store| {
+        Ok(store.breakglass_uses(&ca_id)?)
+    })
+    .await?;
     let body: Vec<BreakGlassUseResponse> = uses
         .into_iter()
         .map(|used| BreakGlassUseResponse {
@@ -705,7 +734,7 @@ async fn breakglass_use(
     let use_id = canonical_uuid(&use_id).ok_or(StatusCode::NOT_FOUND)?;
     let ca_ids = claims.ca_ids.clone();
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let (content, verified) = with_store(&state, move |store| {
+    let (content, verified) = with_store(&state, &claims, move |store| {
         in_scope(store.breakglass_use_ca(&use_id)?, &ca_ids)?;
         let rp = RelyingParty {
             rp_id: &rp_id,
@@ -747,7 +776,7 @@ async fn breakglass_review_challenge(
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
-    let (challenge_id, challenge) = with_store(&state, move |store| {
+    let (challenge_id, challenge) = with_store(&state, &claims, move |store| {
         in_scope(store.breakglass_use_ca(&use_id)?, &ca_ids)?;
         // Nobody reviews a use whose evidence does not re-verify (0051).
         let rp = RelyingParty {
@@ -804,7 +833,7 @@ async fn submit_assertion(
     let (rp_id, origin) = (state.rp_id.clone(), state.origin.clone());
     let (issuer, subject) = (claims.iss.clone(), claims.sub.clone());
     let ca_ids = claims.ca_ids.clone();
-    let result = with_store(&state, move |store| {
+    let result = with_store(&state, &claims, move |store| {
         let challenge = store.admin_challenge(&challenge_id)?;
         let ca = hex_uuid(&challenge.claim.ca_id);
         // Only the admin the challenge was issued to may answer it, and only
@@ -938,6 +967,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+        budget: rate_limit::SharedBudget::per_minute("ca_admin"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"ca_admin_api_started","bind":bind,"tls":tls}));
@@ -1019,6 +1049,7 @@ mod tests {
             origin: Arc::new(ORIGIN.into()),
             slots: Arc::new(Semaphore::new(4)),
             limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            budget: rate_limit::SharedBudget::per_minute("ca_admin"),
         });
         (router, session)
     }
