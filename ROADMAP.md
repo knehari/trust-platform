@@ -185,6 +185,9 @@ Engineering backlog:
     DER lost with its process cannot be recovered (no signer read-back).
   - Certificates stored before 0031 whose stored DER does not parse stay
     without `notAfter` (reported by housekeeping, never pruned).
+  - RUSTSEC-2026-0387 (crypto-bigint timing) is a reasoned `deny.toml`
+    exception: no fix compatible with p256/p384 0.13 exists, and P-256
+    private-key use is lab-only. tokio and ctutils were upgraded.
 - **Hygiene:**
   - Migrations copy whole function bodies, and the audit-decision helpers
     are duplicated (the CRL entries digest has one definition since 0061,

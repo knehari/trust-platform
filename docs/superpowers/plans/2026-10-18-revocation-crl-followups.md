@@ -2,7 +2,7 @@
 
 Collected from the per-task and whole-branch reviews of
 `2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
-22 October 2026 for migrations up to 0055. None blocks the lab slice;
+25 October 2026 for migrations up to 0062. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
@@ -22,6 +22,14 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   distinct keys and persons (ADR-0007, still Proposed); CAs that do not opt
   in keep the known deviation.
 - Authentication of revocation officers stays with the identity adapter.
+- Dependency advisory RUSTSEC-2026-0387 (timing variability in
+  crypto-bigint, 2026-10-23) is ignored in `deny.toml` with a reason:
+  only crypto-bigint 0.7.6+ is patched, elliptic-curve 0.13 (p256/p384 0.13,
+  also inside jsonwebtoken 10.3) pins 0.5.5, and P-256 private-key use is
+  confined to `lab-software` and tests (production paths verify with public
+  keys). Move to p256/p384 0.14 once jsonwebtoken supports it, and before any
+  ECDSA private key leaves the lab. tokio (RUSTSEC-2026-0386) and ctutils
+  (RUSTSEC-2026-0385) were upgraded to patched releases.
 - CA issuer binding (0022) has one immutable issuer certificate per CA; key
   rollover (several issuer certificates over time, CRLs signed by the new key
   for the old certificates) is not modelled.

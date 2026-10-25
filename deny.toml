@@ -14,6 +14,16 @@ ignore = [
     # management-api dev-dependencies. Revisit before any RSA private-key
     # operation leaves the lab (HSM/PKCS#11 signer expected instead).
     { id = "RUSTSEC-2023-0071", reason = "RSA private-key use is lab-only; production paths verify with public keys" },
+    # Timing variability in crypto-bigint operations meant to be constant-time
+    # (2026-10-23). Only crypto-bigint >= 0.7.6 is patched; it is pulled in at
+    # 0.5.5 by elliptic-curve 0.13 (p256/p384 0.13, also inside jsonwebtoken
+    # 10.3), and no 0.13-compatible fix exists. Production paths only verify
+    # ECDSA signatures (OIDC tokens, CSR proof of possession) with public keys;
+    # P-256 private-key signing is confined to the `lab-software` feature
+    # (pki-crypto ecdsa_p256_lab, lab, multi_algorithm_lab) and to tests.
+    # Revisit by moving to p256/p384 0.14 (crypto-bigint 0.7) once jsonwebtoken
+    # supports it, and before any ECDSA private key leaves the lab.
+    { id = "RUSTSEC-2026-0387", reason = "P-256 private-key use is lab-only; production paths verify with public keys; no elliptic-curve 0.13 fix" },
 ]
 
 [licenses]

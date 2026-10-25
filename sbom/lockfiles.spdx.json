@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-c96b06c3d8a03d0110e9bdf50121b8abd09d22801376a5b45854e529d982fa60",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-477d6e79621b5af26f0ce2a44e47eff24748bf6eb3b00b1fb8d81253e7908df0",
   "creationInfo": {
-    "created": "2026-10-22T11:35:46Z",
+    "created": "2026-10-25T15:52:42Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -1085,9 +1085,9 @@
       ]
     },
     {
-      "SPDXID": "SPDXRef-cargo-035f431c7144dd7f09a0",
+      "SPDXID": "SPDXRef-cargo-009362788d882c87b361",
       "name": "ctutils",
-      "versionInfo": "0.4.3",
+      "versionInfo": "0.4.5",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -1096,7 +1096,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+          "checksumValue": "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
         }
       ]
     },
@@ -3981,9 +3981,9 @@
       ]
     },
     {
-      "SPDXID": "SPDXRef-cargo-89093be52a8b127456ed",
+      "SPDXID": "SPDXRef-cargo-1948ef2566859dfc3cf1",
       "name": "tokio",
-      "versionInfo": "1.53.2",
+      "versionInfo": "1.53.3",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -3992,7 +3992,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+          "checksumValue": "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
         }
       ]
     },
@@ -5426,7 +5426,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-cargo-035f431c7144dd7f09a0"
+      "relatedSpdxElement": "SPDXRef-cargo-009362788d882c87b361"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -6331,7 +6331,7 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
-      "relatedSpdxElement": "SPDXRef-cargo-89093be52a8b127456ed"
+      "relatedSpdxElement": "SPDXRef-cargo-1948ef2566859dfc3cf1"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
