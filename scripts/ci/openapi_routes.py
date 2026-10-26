@@ -4,8 +4,10 @@ OpenAPI contracts: every route a service registers is documented with the
 same methods, and a contract documents no operation its service does not
 serve. Each operation also documents the statuses every service returns
 before its handler runs: 401 and 429 (token and request budget) unless the
-operation is public (`security: []`), and 413 (64 KiB body limit) when it
-takes a request body. Exit status 1 on any difference.
+operation is public (`security: []`), 429 on every operation of a service
+whose routes are all behind the per-address budget (the CRL distribution
+point), and 413 (64 KiB body limit) when it takes a request body. Exit
+status 1 on any difference.
 
 The contracts are read with a strict line parser (no YAML dependency): a
 path is a two-space-indented key under the top-level `paths:` and an
@@ -21,7 +23,11 @@ SERVICES = {
     "openapi/management-v1.yaml": "crates/management-api/src/main.rs",
     "openapi/revocation-v1.yaml": "crates/management-api/src/bin/revocation_api.rs",
     "openapi/ca-admin-v1.yaml": "crates/management-api/src/bin/ca_admin_api.rs",
+    "openapi/crl-distribution-v1.yaml": "crates/management-api/src/bin/crl_distribution.rs",
 }
+# Services whose every route is behind the per-client-address budget, public
+# or not: each of their operations documents 429.
+PEER_LIMITED_EVERYWHERE = {"openapi/crl-distribution-v1.yaml"}
 METHODS = ("get", "post", "put", "patch", "delete")
 ROUTE = re.compile(
     r'\.route\(\s*"([^"]+)"\s*,\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\)', re.S
@@ -82,10 +88,12 @@ def contract_operations(text: str, name: str) -> dict[tuple[str, str], dict]:
     return operations
 
 
-def missing_statuses(operations: dict) -> list[str]:
+def missing_statuses(operations: dict, peer_limited: bool = False) -> list[str]:
     problems = []
     for (method, path), operation in sorted(operations.items()):
         required = () if operation["public"] else AUTHENTICATED
+        if peer_limited and "429" not in required:
+            required += ("429",)
         if operation["body"]:
             required += WITH_BODY
         for status in required:
@@ -118,7 +126,10 @@ def main() -> int:
             f"{contract} documents {method} {path}, not served by {source}"
             for method, path in sorted(spec - code)
         ]
-        problems += [f"{contract}: {p}" for p in missing_statuses(operations)]
+        problems += [
+            f"{contract}: {p}"
+            for p in missing_statuses(operations, contract in PEER_LIMITED_EVERYWHERE)
+        ]
         for problem in problems:
             print(f"FAIL: {problem}")
         if problems:

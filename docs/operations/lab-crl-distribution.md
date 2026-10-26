@@ -108,3 +108,6 @@ A certificate revoked only in the base then verifies as valid. This was
 observed when the delta's thisUpdate was later than the base's. That is why
 the CDP never serves a delta: a client that fetches only the CDP gets the
 complete CRL. A client given both files must enable extended CRL support.
+
+The HTTP contract is `openapi/crl-distribution-v1.yaml`; CI checks it against
+the served routes (`scripts/ci/openapi_routes.py`).
