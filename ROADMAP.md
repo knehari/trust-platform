@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #150](https://github.com/knehari/trust-platform/pull/150) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #151](https://github.com/knehari/trust-platform/pull/151) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -49,6 +49,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] Filter the scoped proposal list by exact profile ID across cursor pages to browse its recorded revisions ([Draft #148](https://github.com/knehari/trust-platform/pull/148)); no profile becomes active.
 - [x] Show a filtered profile's revisions newest or oldest first across cursor pages ([Draft #149](https://github.com/knehari/trust-platform/pull/149)); ordering is by revision number, not an approval state.
 - [x] Compare two exact proposal revisions even when neither is loaded in the current page ([Draft #150](https://github.com/knehari/trust-platform/pull/150)); each detail read is reauthorized.
+- [x] Share a comparison link that reloads and reauthorizes both exact revisions after sign-in ([Draft #151](https://github.com/knehari/trust-platform/pull/151)); the URL carries no token or approval evidence.
 - [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.

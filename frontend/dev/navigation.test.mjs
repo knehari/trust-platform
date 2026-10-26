@@ -45,6 +45,14 @@ test('profile revision links validate the slug, revision and CA before routing',
   ]) assert.equal(readNavigation(search).detail, null, search);
 });
 
+test('profile comparison links require two different canonical revisions', () => {
+  const detail = { kind: 'profile', id: 'server-lab', revision: 1, compareRevision: 2 };
+  assert.deepEqual(readNavigation(navigationUrl('profiles', ca, detail).slice(1)), { section: 'profiles', caId: ca, detail });
+  for (const comparison of ['', '0', '02', '1000001', '1', 'other']) {
+    assert.equal(readNavigation(`?view=profiles&ca=${ca}&profile=server-lab&revision=1&compare_revision=${comparison}`).detail, null);
+  }
+});
+
 test('exact profile lookup uses the same canonical identifier limits as links', () => {
   assert.deepEqual(canonicalProfileRevision('server-lab', '1000000'), { id: 'server-lab', revision: 1000000 });
   for (const [id, revision] of [['Server-Lab', '2'], ['a', '2'], ['server-lab', '0'], ['server-lab', '02'], ['server-lab', '1000001'], ['server/lab', '2']]) {
