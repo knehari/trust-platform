@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compareProfileRevisions } from '../src/profile-compare.ts';
+import { compareProfileRevisions, profileComparisonCsv } from '../src/profile-compare.ts';
 
 const base = {
   ca_id: 'allowed', profile_id: 'server-lab', revision: 1, status: 'DRAFT',
@@ -22,4 +22,16 @@ test('comparison rejects different authorities, profiles and revisions', () => {
   for (const other of [{ ...base, ca_id: 'hidden', revision: 2 }, { ...base, profile_id: 'other', revision: 2 }, base]) {
     assert.throws(() => compareProfileRevisions(base, other));
   }
+});
+
+test('comparison CSV exports only allowlisted fields and neutralizes spreadsheet formulas', () => {
+  const older = { ...base, display_name: '=HYPERLINK("x")', private_key: 'never-export' };
+  const newer = { ...base, revision: 2, display_name: 'Server', policy_version: 'v2', snapshot_sha256: 'b'.repeat(64) };
+  const all = profileComparisonCsv(older, newer, false);
+  const changed = profileComparisonCsv(older, newer, true);
+  assert.match(all, /"'=HYPERLINK\(""x""\)"/);
+  assert.match(all, /"Proposed signature suites"/);
+  assert.equal(changed.includes('Proposed signature suites'), false);
+  assert.equal(changed.includes('never-export'), false);
+  assert.match(changed, /"allowed","server-lab","1","2"/);
 });

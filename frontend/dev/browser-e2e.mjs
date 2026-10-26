@@ -181,6 +181,9 @@ try {
   await comparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
   await comparison.getByRole('checkbox', { name: 'Show changed fields only' }).check();
   assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 0);
+  const comparisonDownload = page.waitForEvent('download');
+  await comparison.getByRole('button', { name: 'Export comparison CSV' }).click();
+  assert.equal((await comparisonDownload).suggestedFilename(), 'trust-profile-comparison-server-lab-1-2.csv');
   await comparison.getByRole('checkbox', { name: 'Show changed fields only' }).uncheck();
   assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 1);
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
