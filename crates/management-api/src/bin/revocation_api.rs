@@ -809,6 +809,8 @@ async fn submit_assertion(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Transport policy first, so bad TLS settings fail before any connection.
     let http_tls = http_tls::from_env()?;
+    // Reverse proxies whose X-Forwarded-For is read (none by default).
+    let trusted_proxies = rate_limit::trusted_proxies_from_env()?;
     if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
         write_log(serde_json::json!({"event":"revocation_http_tls_disabled_lab"}));
     }
@@ -853,7 +855,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
-        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
+        peers: Arc::new(
+            rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies.clone()),
+        ),
         budget: rate_limit::SharedBudget::per_minute("revocation"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
@@ -1809,6 +1813,71 @@ mod tests {
                 .await
                 .0,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// Behind a trusted reverse proxy each forwarded client has its own
+    /// budget; a client that is not a trusted proxy cannot pick its budget
+    /// with X-Forwarded-For.
+    #[tokio::test]
+    async fn forwarded_clients_are_counted_apart_only_behind_trusted_proxies() {
+        use axum::extract::connect_info::MockConnectInfo;
+        use std::{net::SocketAddr, time::Duration};
+        let oidc = oidc();
+        let router = router(AppState {
+            verifier: oidc.verifier.clone(),
+            store: Arc::new(Mutex::new(None)),
+            database_url: Arc::new("postgresql://unused.invalid/none".into()),
+            database_tls: database::DatabaseTls::DisabledForLab,
+            rp_id: Arc::new(RP_ID.into()),
+            origin: Arc::new(ORIGIN.into()),
+            slots: Arc::new(Semaphore::new(4)),
+            limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
+            peers: Arc::new(
+                rate_limit::RateLimiter::new(2, Duration::from_secs(60))
+                    .trusting(rate_limit::trusted_proxies(Some("10.0.0.0/8")).unwrap()),
+            ),
+            budget: rate_limit::SharedBudget::per_minute("revocation"),
+        });
+        let call = |peer: &str, forwarded: Option<&str>| {
+            let peer: SocketAddr = peer.parse().unwrap();
+            let app = router
+                .clone()
+                .layer(MockConnectInfo(rate_limit::ClientAddr(peer)));
+            let mut request = Request::get(format!("/v1/cas/{CA}/pending-status-changes"));
+            if let Some(forwarded) = forwarded {
+                request = request.header("x-forwarded-for", forwarded);
+            }
+            let request = request.body(Body::empty()).unwrap();
+            async move { app.oneshot(request).await.unwrap().status() }
+        };
+        let proxy = "10.0.0.2:5000";
+        for _ in 0..2 {
+            assert_eq!(
+                call(proxy, Some("198.51.100.1")).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            call(proxy, Some("198.51.100.1")).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        // Another client through the same proxy, even one that prepends the
+        // spent address itself, has its own budget.
+        assert_eq!(
+            call(proxy, Some("198.51.100.1, 198.51.100.2")).await,
+            StatusCode::UNAUTHORIZED
+        );
+        // A direct client is counted by its own address, whatever it claims.
+        for _ in 0..2 {
+            assert_eq!(
+                call("203.0.113.9:1", Some("198.51.100.3")).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            call("203.0.113.9:2", Some("198.51.100.4")).await,
+            StatusCode::TOO_MANY_REQUESTS
         );
     }
 

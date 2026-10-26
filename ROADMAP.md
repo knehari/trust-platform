@@ -171,10 +171,10 @@ Engineering backlog:
   - mTLS and certificate management for the HTTP side (the token APIs
     serve TLS 1.3 when given a certificate and refuse plain HTTP off
     loopback unless the logged lab opt-out is set);
-  - a client-address limit shared across replicas, and client identity
-    behind a reverse proxy (since i74 each API counts 600 requests per
-    minute per client address before the token is read, per process and
-    without trusting forwarded headers; the per-identity budget is shared
+  - a client-address limit shared across replicas (since i74 each API
+    counts 600 requests per minute per client address before the token is
+    read, per process; X-Forwarded-For is read only from the reverse
+    proxies listed in `TRUST_HTTP_TRUSTED_PROXIES`; the per-identity budget is shared
     across replicas in the database since 0062, idle budgets purged after
     7 days since 0063; the read API's identity budget stays per process).
 - **Database assurance:**

@@ -61,6 +61,9 @@ pub struct RateLimiter {
     limit: u32,
     window: Duration,
     windows: Mutex<HashMap<(String, String), (Instant, u32)>>,
+    /// For `limit_peers` only: reverse proxies whose X-Forwarded-For is
+    /// read (`TRUSTED_PROXIES_ENV`); empty, the header is ignored.
+    trusted_proxies: Vec<IpNet>,
 }
 
 impl RateLimiter {
@@ -69,7 +72,14 @@ impl RateLimiter {
             limit,
             window,
             windows: Mutex::new(HashMap::new()),
+            trusted_proxies: Vec::new(),
         }
+    }
+
+    /// The same limiter, reading X-Forwarded-For from these proxies only.
+    pub fn trusting(mut self, proxies: Vec<IpNet>) -> Self {
+        self.trusted_proxies = proxies;
+        self
     }
 
     pub fn per_minute() -> Self {
@@ -123,10 +133,107 @@ impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for ClientAddr {
     }
 }
 
+/// Comma-separated IP addresses or CIDR prefixes of the reverse proxies in
+/// front of a service. Unset or empty: forwarded headers are never read.
+pub const TRUSTED_PROXIES_ENV: &str = "TRUST_HTTP_TRUSTED_PROXIES";
+
+/// An IP prefix (an address is a /32 or /128).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IpNet {
+    addr: IpAddr,
+    prefix: u8,
+}
+
+impl IpNet {
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, ip.to_canonical()) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::str::FromStr for IpNet {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let invalid = || format!("{TRUSTED_PROXIES_ENV}: invalid address or prefix {text:?}");
+        let (addr, prefix) = match text.split_once('/') {
+            Some((addr, prefix)) => (addr, Some(prefix)),
+            None => (text, None),
+        };
+        let addr: IpAddr = addr.parse().map_err(|_| invalid())?;
+        let addr = addr.to_canonical();
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(prefix) if prefix.bytes().all(|b| b.is_ascii_digit()) && !prefix.is_empty() => {
+                prefix.parse::<u8>().map_err(|_| invalid())?
+            }
+            Some(_) => return Err(invalid()),
+            None => max,
+        };
+        if prefix > max {
+            return Err(invalid());
+        }
+        Ok(Self { addr, prefix })
+    }
+}
+
+/// Parses `TRUSTED_PROXIES_ENV`; any invalid entry refuses the whole
+/// setting (the service does not start).
+pub fn trusted_proxies(setting: Option<&str>) -> Result<Vec<IpNet>, String> {
+    setting
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::parse)
+        .collect()
+}
+
+pub fn trusted_proxies_from_env() -> Result<Vec<IpNet>, String> {
+    trusted_proxies(std::env::var(TRUSTED_PROXIES_ENV).ok().as_deref())
+}
+
+/// The address a request is counted under. The TCP peer, unless the peer is
+/// a trusted proxy: then the X-Forwarded-For entries (all header lines, in
+/// order) are read from the right, skipping trusted proxies, and the first
+/// other address is the client. Entries left of it were supplied by the
+/// client and are ignored. No header, only trusted hops, or any malformed
+/// entry on the way: the proxy's own address (its clients then share its
+/// budget, they never get a budget of their choosing).
+pub fn client_ip(peer: IpAddr, forwarded: &[&str], trusted: &[IpNet]) -> IpAddr {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|net| net.contains(ip));
+    if !is_trusted(peer) {
+        return peer;
+    }
+    let entries: Vec<&str> = forwarded.iter().flat_map(|line| line.split(',')).collect();
+    for entry in entries.iter().rev() {
+        let Ok(ip) = entry.trim().parse::<IpAddr>() else {
+            return peer;
+        };
+        if !is_trusted(ip) {
+            return ip.to_canonical();
+        }
+    }
+    peer
+}
+
 /// The key a client address is counted under: the IPv4 address, or the /64
 /// prefix of an IPv6 address (one host usually holds a whole /64; an
-/// IPv4-mapped address counts as IPv4). Forwarded headers are not trusted,
-/// so behind a reverse proxy every client shares the proxy's budget.
+/// IPv4-mapped address counts as IPv4). Forwarded headers are read only
+/// from trusted proxies (`client_ip`).
 /// Without a known address (in-process tests only: `http_tls::serve`
 /// always provides it) all requests share one key.
 pub fn peer_key(addr: Option<IpAddr>) -> String {
@@ -149,7 +256,15 @@ pub async fn limit_peers(
     request: Request,
     next: Next,
 ) -> Response {
-    let addr = client.ok().map(|ConnectInfo(addr)| addr.0.ip());
+    let forwarded: Vec<&str> = request
+        .headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .map(|value| value.to_str().unwrap_or("\u{0}"))
+        .collect();
+    let addr = client
+        .ok()
+        .map(|ConnectInfo(addr)| client_ip(addr.0.ip(), &forwarded, &peers.trusted_proxies));
     if !peers.allow("peer", &peer_key(addr)) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
@@ -182,6 +297,91 @@ mod tests {
         assert_eq!(key("2001:db8:1:2::1"), key("2001:db8:1:2:ffff::9"));
         assert_ne!(key("2001:db8:1:2::1"), key("2001:db8:1:3::1"));
         assert_eq!(peer_key(None), "unknown");
+    }
+
+    #[test]
+    fn trusted_proxy_settings_parse_strictly() {
+        let nets = trusted_proxies(Some(" 10.0.0.0/8, 192.0.2.1 ,2001:db8::/32,")).unwrap();
+        assert_eq!(nets.len(), 3);
+        assert!(nets[0].contains("10.200.0.1".parse().unwrap()));
+        assert!(!nets[0].contains("11.0.0.1".parse().unwrap()));
+        assert!(nets[1].contains("::ffff:192.0.2.1".parse().unwrap()));
+        assert!(nets[2].contains("2001:db8:ffff::1".parse().unwrap()));
+        assert!(!nets[2].contains("10.0.0.1".parse().unwrap()));
+        assert!(trusted_proxies(None).unwrap().is_empty());
+        assert!(trusted_proxies(Some("")).unwrap().is_empty());
+        for bad in [
+            "10.0.0.0/33",
+            "10.0.0.0/",
+            "10.0.0.0/-1",
+            "proxy.lab",
+            "10.0.0.0/8/8",
+            "2001:db8::/129",
+            "10.0.0.1, nope",
+        ] {
+            assert!(trusted_proxies(Some(bad)).is_err(), "{bad}");
+        }
+        assert!(
+            trusted_proxies(Some("0.0.0.0/0")).unwrap()[0].contains("203.0.113.9".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn forwarded_addresses_count_only_behind_trusted_proxies() {
+        let ip = |text: &str| -> IpAddr { text.parse().unwrap() };
+        let trusted = trusted_proxies(Some("10.0.0.0/8")).unwrap();
+        // Not from a trusted proxy: the header is the client's own claim.
+        assert_eq!(
+            client_ip(ip("203.0.113.9"), &["198.51.100.1"], &trusted),
+            ip("203.0.113.9")
+        );
+        assert_eq!(
+            client_ip(ip("10.0.0.2"), &["198.51.100.1"], &[]),
+            ip("10.0.0.2")
+        );
+        // From a trusted proxy: the rightmost address it did not add itself.
+        assert_eq!(
+            client_ip(ip("10.0.0.2"), &["198.51.100.1"], &trusted),
+            ip("198.51.100.1")
+        );
+        assert_eq!(
+            client_ip(
+                ip("10.0.0.2"),
+                &["6.6.6.6, 198.51.100.1, 10.0.0.7"],
+                &trusted
+            ),
+            ip("198.51.100.1"),
+            "a client-supplied entry left of the real client is ignored"
+        );
+        assert_eq!(
+            client_ip(
+                ip("10.0.0.2"),
+                &["6.6.6.6", "198.51.100.1 , 10.0.0.7"],
+                &trusted
+            ),
+            ip("198.51.100.1"),
+            "several header lines are read in order"
+        );
+        // No header, only trusted hops, or anything malformed: the proxy's
+        // own address (all such clients share its budget).
+        assert_eq!(client_ip(ip("10.0.0.2"), &[], &trusted), ip("10.0.0.2"));
+        assert_eq!(
+            client_ip(ip("10.0.0.2"), &["10.0.0.7"], &trusted),
+            ip("10.0.0.2")
+        );
+        for bad in [
+            "198.51.100.1, garbage",
+            "",
+            " , ",
+            "198.51.100.1:443",
+            "\u{0}",
+        ] {
+            assert_eq!(
+                client_ip(ip("10.0.0.2"), &[bad], &trusted),
+                ip("10.0.0.2"),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

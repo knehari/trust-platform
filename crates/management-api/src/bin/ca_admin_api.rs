@@ -930,6 +930,8 @@ async fn submit_assertion(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Transport policy first, so bad TLS settings fail before any connection.
     let http_tls = http_tls::from_env()?;
+    // Reverse proxies whose X-Forwarded-For is read (none by default).
+    let trusted_proxies = rate_limit::trusted_proxies_from_env()?;
     if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
         write_log(serde_json::json!({"event":"ca_admin_http_tls_disabled_lab"}));
     }
@@ -974,7 +976,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         origin: Arc::new(origin),
         slots: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         limiter: Arc::new(rate_limit::RateLimiter::per_minute()),
-        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
+        peers: Arc::new(
+            rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies.clone()),
+        ),
         budget: rate_limit::SharedBudget::per_minute("ca_admin"),
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));

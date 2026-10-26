@@ -424,6 +424,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !isolated {
         return Err("CRL database login must hold only trust_crl_publisher".into());
     }
+    // Reverse proxies whose X-Forwarded-For is read (none by default).
+    let trusted_proxies = rate_limit::trusted_proxies_from_env()?;
     let reuse_seconds = match env::var("TRUST_CRL_REUSE_SECONDS") {
         Ok(value) => value
             .parse::<i64>()
@@ -434,6 +436,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let state = AppState {
         reuse_seconds,
+        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies)),
         ..AppState::new(
             Arc::new(PgSource {
                 url,

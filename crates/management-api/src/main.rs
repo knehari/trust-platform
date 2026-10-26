@@ -147,6 +147,8 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Transport policy first, so bad TLS settings fail before any connection.
     let http_tls = http_tls::from_env()?;
+    // Reverse proxies whose X-Forwarded-For is read (none by default).
+    let trusted_proxies = rate_limit::trusted_proxies_from_env()?;
     if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
         write_log(serde_json::json!({"event":"management_http_tls_disabled_lab"}));
     }
@@ -195,7 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
         limiter: Arc::new(reads_limiter()),
-        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
+        peers: Arc::new(
+            rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies.clone()),
+        ),
     });
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"management_api_started","bind":bind,"tls":tls}));

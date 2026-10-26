@@ -51,4 +51,19 @@ for api in revocation_api:TRUST_REVOCATION_BIND ca_admin_api:TRUST_CA_ADMIN_BIND
     || { cat "$temp/plain.log" >&2; echo "FAIL: $bin served plaintext off loopback" >&2; exit 1; }
 done
 
-echo "PASS: lab APIs serve TLS 1.3 only with the configured certificate and refuse plaintext off loopback"
+# An invalid trusted-proxy setting refuses to start (never "trust nothing"
+# silently, never "trust everything").
+for api in revocation_api:TRUST_REVOCATION_BIND ca_admin_api:TRUST_CA_ADMIN_BIND \
+           trust-management-api:TRUST_API_BIND; do
+  bin="${api%%:*}"
+  set +e
+  env "${api#*:}=127.0.0.1:0" TRUST_HTTP_TRUSTED_PROXIES="10.0.0.0/8, proxy.lab" \
+    TRUST_OIDC_ISSUER=http://127.0.0.1:9 TRUST_OIDC_AUDIENCE=x \
+    timeout 20 "target/debug/$bin" >"$temp/proxy.log" 2>&1
+  status=$?
+  set -e
+  [ "$status" != 0 ] && [ "$status" != 124 ] && grep -q "TRUST_HTTP_TRUSTED_PROXIES: invalid" "$temp/proxy.log" \
+    || { cat "$temp/proxy.log" >&2; echo "FAIL: $bin started with an invalid trusted-proxy setting" >&2; exit 1; }
+done
+
+echo "PASS: lab APIs serve TLS 1.3 only with the configured certificate, refuse plaintext off loopback and refuse an invalid trusted-proxy setting"
