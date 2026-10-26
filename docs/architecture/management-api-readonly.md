@@ -55,3 +55,5 @@ The console can compare two exact revisions fetched through this route even when
 A comparison link carries only the selected CA UUID, profile ID and two canonical revision numbers. Opening it after sign-in performs two fresh scoped detail reads; malformed or duplicate revision parameters are rejected before routing. The link contains no credential, digest approval or cached proposal content.
 
 The console validates each proposal response before use: exact CA and optional requested revision, canonical profile ID, DRAFT status, bounded numeric fields and arrays, timestamp and digest syntax. It constructs an allowlisted client object, dropping unexpected response properties. This detects malformed API data and prevents accidental display or export of extra fields; it does not prove that the API or stored proposal is authentic or approved.
+
+The comparison dialog can temporarily hide unchanged fields for review. This is a local presentation filter; it neither changes the two validated snapshots nor the server's policy or approval state.

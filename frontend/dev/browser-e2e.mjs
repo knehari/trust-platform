@@ -179,6 +179,10 @@ try {
   const comparison = page.getByRole('dialog', { name: 'Revision comparison' });
   await comparison.waitFor();
   await comparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
+  await comparison.getByRole('checkbox', { name: 'Show changed fields only' }).check();
+  assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 0);
+  await comparison.getByRole('checkbox', { name: 'Show changed fields only' }).uncheck();
+  assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 1);
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
   await page.locator('#profile-draft-id-filter').fill('missing-profile');
