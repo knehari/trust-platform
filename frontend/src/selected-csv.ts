@@ -8,7 +8,7 @@ function cell(value: string | null): string {
   return `"${safe.replaceAll('"', '""')}"`;
 }
 
-function csv(header: string[], rows: (string | null)[][]): string {
+export function csv(header: string[], rows: (string | null)[][]): string {
   if (rows.length === 0 || rows.length > MAX_CSV_ROWS) throw new Error('Select 1–100 rows to export.');
   return [header, ...rows].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
 }

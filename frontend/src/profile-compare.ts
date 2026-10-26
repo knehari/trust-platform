@@ -1,4 +1,5 @@
 import type { ProfileDraft } from './api';
+import { csv } from './selected-csv.ts';
 
 export interface ProfileDifference {
   label: string;
@@ -25,4 +26,16 @@ export function compareProfileRevisions(first: ProfileDraft, second: ProfileDraf
     ['Snapshot SHA-256', before.snapshot_sha256, after.snapshot_sha256],
   ];
   return rows.map(([label, oldValue, newValue]) => ({ label, before: oldValue, after: newValue, changed: oldValue !== newValue }));
+}
+
+export function profileComparisonCsv(first: ProfileDraft, second: ProfileDraft, changesOnly: boolean): string {
+  const [earlier, later] = first.revision < second.revision ? [first, second] : [second, first];
+  const differences = compareProfileRevisions(first, second);
+  return csv(
+    ['ca_id', 'profile_id', 'earlier_revision', 'later_revision', 'field', 'earlier_value', 'later_value', 'changed'],
+    (changesOnly ? differences.filter(row => row.changed) : differences).map(row => [
+      first.ca_id, first.profile_id, String(earlier.revision), String(later.revision),
+      row.label, row.before, row.after, row.changed ? 'yes' : 'no',
+    ]),
+  );
 }

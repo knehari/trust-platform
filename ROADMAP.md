@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #153](https://github.com/knehari/trust-platform/pull/153) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #154](https://github.com/knehari/trust-platform/pull/154) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -52,6 +52,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] Share a comparison link that reloads and reauthorizes both exact revisions after sign-in ([Draft #151](https://github.com/knehari/trust-platform/pull/151)); the URL carries no token or approval evidence.
 - [x] Validate the shape, authority, revision and digest format of proposal responses before display or comparison ([Draft #152](https://github.com/knehari/trust-platform/pull/152)); this is defensive client validation, not proof of authenticity.
 - [x] Toggle a proposal comparison between all fields and changed fields only ([Draft #153](https://github.com/knehari/trust-platform/pull/153)); unchanged fields remain available in the full view.
+- [x] Export the visible comparison fields as a locally generated, formula-safe CSV ([Draft #154](https://github.com/knehari/trust-platform/pull/154)); the export contains no approval evidence or raw private data.
 - [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.
