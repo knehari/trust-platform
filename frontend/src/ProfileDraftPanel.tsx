@@ -33,7 +33,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [selected, setSelected] = useState<ProfileDraft | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
+  const [comparisonItems, setComparisonItems] = useState<ProfileDraft[]>([]);
   const [showComparison, setShowComparison] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
@@ -48,7 +48,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setLoading(true);
     setMoreLoading(false);
     setError(null);
-    setComparisonIds([]);
+    setComparisonItems([]);
     setShowComparison(false);
     moreController.current?.abort();
     const controller = new AbortController();
@@ -160,16 +160,16 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   function toggleComparison(item: ProfileDraft) {
-    const id = `${item.profile_id}/${item.revision}`;
+    if (item.ca_id !== caId || item.status !== 'DRAFT') return;
     setShowComparison(false);
-    setComparisonIds(current => {
-      if (current.includes(id)) return current.filter(value => value !== id);
-      if (current.length && current[0].split('/')[0] !== item.profile_id) return [id];
-      return [...current.slice(-1), id];
+    setComparisonItems(current => {
+      if (current.some(value => value.profile_id === item.profile_id && value.revision === item.revision)) return current.filter(value => value.profile_id !== item.profile_id || value.revision !== item.revision);
+      if (current.length && current[0].profile_id !== item.profile_id) return [item];
+      return [...current.slice(-1), item];
     });
   }
 
-  const compared = comparisonIds.map(id => items.find(item => `${item.profile_id}/${item.revision}` === id)).filter((item): item is ProfileDraft => Boolean(item));
+  const comparisonSelected = (item: ProfileDraft) => comparisonItems.some(value => value.profile_id === item.profile_id && value.revision === item.revision);
 
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
@@ -184,14 +184,14 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
-        <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonIds.includes(`${item.profile_id}/${item.revision}`)} onClick={() => toggleComparison(item)}>{comparisonIds.includes(`${item.profile_id}/${item.revision}`) ? 'Remove from comparison' : 'Select for comparison'}</button></div>
+        <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button></div>
       </article>)}</div>}
-    {comparisonIds.length > 0 && <div className="subtle-panel profile-compare-controls"><span>{comparisonIds.length}/2 revisions selected. Select two revisions of the same profile from loaded rows.</span>{compared.length === 2 && <button type="button" className="link-button" onClick={() => setShowComparison(true)}>Compare selected revisions</button>}</div>}
+    {comparisonItems.length > 0 && <div className="subtle-panel profile-compare-controls"><span>{comparisonItems.length}/2 revisions selected. Select another revision of the same profile from the list or its exact detail.</span>{comparisonItems.length === 2 && <button type="button" className="link-button" onClick={() => setShowComparison(true)}>Compare selected revisions</button>}</div>}
     {error && items.length > 0 && <p className="profile-draft-message" role="alert">{error}</p>}
     {detailLoading && <p className="profile-draft-message" role="status">Loading proposal detail…</p>}
     {detailError && <p className="profile-draft-message" role="alert">{detailError}</p>}
     {cursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadMore()}>{moreLoading ? 'Loading…' : 'Load more proposals'}</button>}
-    {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog draft={selected} onClose={() => { setSelected(null); onCloseDetail(); }} />}
-    {showComparison && compared.length === 2 && <ProfileCompareDialog first={compared[0]} second={compared[1]} onClose={() => setShowComparison(false)} />}
+    {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog draft={selected} comparisonSelected={comparisonSelected(selected)} onToggleComparison={() => toggleComparison(selected)} onClose={() => { setSelected(null); onCloseDetail(); }} />}
+    {showComparison && comparisonItems.length === 2 && <ProfileCompareDialog first={comparisonItems[0]} second={comparisonItems[1]} onClose={() => setShowComparison(false)} />}
   </div>;
 }

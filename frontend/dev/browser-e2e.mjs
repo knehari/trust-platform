@@ -181,6 +181,24 @@ try {
   await comparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
+  await page.locator('#profile-draft-id-filter').fill('missing-profile');
+  await page.getByRole('button', { name: 'Filter revisions' }).click();
+  await page.getByText('No revisions recorded for missing-profile').waitFor();
+  for (const revision of [1, 2]) {
+    await page.locator('#profile-draft-id-lookup').fill('server-lab');
+    await page.getByRole('textbox', { name: 'Profile revision number' }).fill(String(revision));
+    await page.getByRole('button', { name: 'Find revision' }).click();
+    const exactDialog = page.getByRole('dialog', { name: `Revision ${revision}` });
+    await exactDialog.waitFor();
+    await exactDialog.getByRole('button', { name: 'Select for comparison' }).click();
+    await exactDialog.getByRole('button', { name: 'Close proposal detail' }).click();
+    await exactDialog.waitFor({ state: 'hidden' });
+  }
+  await page.getByRole('button', { name: 'Compare selected revisions' }).click();
+  const exactComparison = page.getByRole('dialog', { name: 'Revision comparison' });
+  await exactComparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
+  await exactComparison.getByRole('button', { name: 'Close revision comparison' }).click();
+  await exactComparison.waitFor({ state: 'hidden' });
   assert.equal(await page.getByText('Hidden laboratory proposal').count(), 0);
   await page.goto(`${origin}/?view=profiles&ca=${hiddenCa}&profile=hidden-lab&revision=1`);
   await page.getByRole('alert').first().waitFor();

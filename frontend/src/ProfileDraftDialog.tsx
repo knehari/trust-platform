@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ProfileDraft } from './api';
 
-export function ProfileDraftDialog({ draft, onClose }: { draft: ProfileDraft; onClose: () => void }) {
+export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [copyFeedback, setCopyFeedback] = useState('');
   useEffect(() => {
@@ -37,6 +37,7 @@ export function ProfileDraftDialog({ draft, onClose }: { draft: ProfileDraft; on
       <div className="info-cell"><span>SNAPSHOT SHA-256</span><div className="metadata-value"><strong className="mono">{draft.snapshot_sha256}</strong><button type="button" className="link-button" onClick={() => void copyDigest()}>Copy</button></div></div>
     </div>
     {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
+    <button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected} onClick={onToggleComparison}>{comparisonSelected ? 'Remove from comparison' : 'Select for comparison'}</button>
     <p className="dialog-note">This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.</p>
   </dialog>;
 }
