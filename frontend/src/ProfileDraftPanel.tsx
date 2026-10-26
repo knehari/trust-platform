@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiGet, apiGetPage, type ProfileDraft } from './api';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
-import { requireScopedRows } from './scope';
+import { requireProfileDraft, requireProfileDraftPage } from './profile-draft-validation';
 import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
 import { navigationUrl, type DetailLink } from './navigation';
@@ -58,10 +58,10 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       params.set('order', profileOrder);
     }
     const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
-    void apiGetPage<ProfileDraft>(listUrl, token, controller.signal)
+    void apiGetPage<unknown>(listUrl, token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
-        setItems(requireScopedRows(page.items, caId));
+        setItems(requireProfileDraftPage(page.items, caId));
         setCursor(page.nextCursor);
       })
       .catch(error => {
@@ -88,12 +88,10 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setDetailError(null);
     setDetailLoading(true);
     const revisions = linkedDetail.compareRevision ? [linkedDetail.revision, linkedDetail.compareRevision] : [linkedDetail.revision];
-    void Promise.all(revisions.map(revision => apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(linkedDetail.id)}/${revision}`, token, controller.signal)))
+    void Promise.all(revisions.map(revision => apiGet<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(linkedDetail.id)}/${revision}`, token, controller.signal)
+      .then(value => requireProfileDraft(value, caId, { id: linkedDetail.id, revision }))))
       .then(details => {
         if (controller.signal.aborted) return;
-        if (details.some((detail, index) => detail.ca_id !== caId || detail.profile_id !== linkedDetail.id || detail.revision !== revisions[index] || detail.status !== 'DRAFT')) {
-          throw new Error('The profile proposal detail did not match the linked revision.');
-        }
         if (details.length === 2) {
           setComparisonItems(details);
           setShowComparison(true);
@@ -150,9 +148,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         params.set('profile_id', profileFilter);
         params.set('order', profileOrder);
       }
-      const page = await apiGetPage<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
+      const page = await apiGetPage<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
       if (controller.signal.aborted) return;
-      const rows = requireScopedRows(page.items, caId);
+      const rows = requireProfileDraftPage(page.items, caId);
       setItems(current => appendUniquePage(current, rows, row => `${row.profile_id}/${row.revision}`));
       setCursor(requireAdvancingCursor(cursor, page.nextCursor));
     } catch (error) {
