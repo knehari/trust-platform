@@ -55,6 +55,12 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   are left unchanged; run them on a fresh database (as CI does).
 
 ## Robustness and hygiene
+- Request budgets: per client address before the token (600 per minute,
+  per process, all HTTP services including the CRL distribution point;
+  X-Forwarded-For read only from proxies listed in
+  `TRUST_HTTP_TRUSTED_PROXIES`), and per identity for the write APIs,
+  shared by replicas in the database (0062, idle rows purged since 0063).
+  Open: an address budget shared across replicas.
 - `crl_housekeeping` (management-api binary, verified TLS,
   `docs/operations/lab-crl-housekeeping.md`) runs the sweeps and alerts
   through its exit status; deploying it, `signed_evidence_audit` and the
