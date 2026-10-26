@@ -200,9 +200,11 @@ Engineering backlog:
     exception: no fix compatible with p256/p384 0.13 exists, and P-256
     private-key use is lab-only. tokio and ctutils were upgraded.
 - **Hygiene:**
-  - Migrations copy whole function bodies, and the audit-decision helpers
-    are duplicated (the CRL entries digest has one definition since 0061,
-    guarded by `tests/crl_entries_digest.sql`).
+  - Older migrations copy whole function bodies to change one line. The CRL
+    entries digest (0061) and the status-change audit decision (0065) have
+    one definition each, guarded by `tests/crl_entries_digest.sql` and
+    `tests/status_change_audit_decision.sql`; 0065 rewrites the four
+    lifecycle bodies from the catalog instead of copying them.
   - Migration-retry and ledger scripts stop at 0013; `scripts/lab/migrate.sh`
     upgrades an existing database from 0026 on and, since 0064, refuses a
     migration file changed or removed after it was applied (digests of
@@ -270,7 +272,7 @@ The labels below are retained for traceability. Some read-only parts of v3.1/v3.
 
 ## Historical execution notes (archive)
 
-> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0064 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`, and at `5a7cac6` on 25 October. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP (complete and delta CRLs only), no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
+> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0065 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`, and at `5a7cac6` on 25 October. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP (complete and delta CRLs only), no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
 
 > **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/recovery/EXECUTION_STATUS.md).
 

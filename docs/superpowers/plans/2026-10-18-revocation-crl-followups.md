@@ -2,7 +2,7 @@
 
 Collected from the per-task and whole-branch reviews of
 `2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
-25 October 2026 for migrations up to 0064. None blocks the lab slice;
+26 October 2026 for migrations up to 0065. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
@@ -72,8 +72,11 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   `reserve_delta_crl` and `crl_listed_digest`. `tests/crl_entries_digest.sql`
   fails if another function body encodes entries, and checks the aggregate
   against the 0015 expression.
-- The lifecycle audit decision format is built in four function bodies
-  (0018/0019); a shared SQL helper would keep it in one place.
+- The lifecycle audit decision format has one definition since 0065,
+  `status_change_audit_decision`, called by the four lifecycle bodies. The
+  migration rewrites those bodies from `pg_get_functiondef` with an exact,
+  checked replacement instead of copying them;
+  `tests/status_change_audit_decision.sql` fails on a fifth copy.
 - Reject path and approve's generic message still fold maker=checker wording;
   (0021 reports the certain "reserve again" refusals as SQLSTATE 55000 /
   `CrlError::ReserveAgain`.)
