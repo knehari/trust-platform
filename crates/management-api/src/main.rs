@@ -1268,7 +1268,7 @@ mod tests {
             let addr: std::net::SocketAddr = addr.parse().unwrap();
             let app = app
                 .clone()
-                .layer(MockConnectInfo(http_tls::ClientAddr(addr)));
+                .layer(MockConnectInfo(rate_limit::ClientAddr(addr)));
             let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
             async move { app.oneshot(request).await.unwrap().status() }
         };

@@ -1759,7 +1759,7 @@ mod tests {
             let addr: SocketAddr = addr.parse().unwrap();
             router
                 .clone()
-                .layer(MockConnectInfo(http_tls::ClientAddr(addr)))
+                .layer(MockConnectInfo(rate_limit::ClientAddr(addr)))
         };
         let path = format!("/v1/cas/{CA}/status-change-challenges");
         let body = json!({"serial_hex":"01","action":"REVOKE","reason":1});

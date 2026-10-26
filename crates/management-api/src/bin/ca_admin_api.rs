@@ -1085,7 +1085,7 @@ mod tests {
             let addr: SocketAddr = addr.parse().unwrap();
             router
                 .clone()
-                .layer(MockConnectInfo(http_tls::ClientAddr(addr)))
+                .layer(MockConnectInfo(rate_limit::ClientAddr(addr)))
         };
         let path = format!("/v1/cas/{CA}/pending-admin-changes");
         for _ in 0..2 {

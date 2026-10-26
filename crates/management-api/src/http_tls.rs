@@ -14,6 +14,7 @@
 //! each within `HANDSHAKE_TIMEOUT`, so a slow or silent client cannot hold up
 //! the others; connections beyond the limit are closed. Requests carry the
 //! client address (`ConnectInfo<ClientAddr>`), with or without TLS.
+use crate::rate_limit::ClientAddr;
 use axum::{
     extract::connect_info::Connected,
     serve::{IncomingStream, Listener},
@@ -123,17 +124,8 @@ pub fn check_bind(tls: &HttpTls, listener: &TcpListener) -> io::Result<()> {
     ))
 }
 
-/// The TCP peer of a request, as `ConnectInfo<ClientAddr>`, for both the
-/// plaintext and the TLS listener.
-#[derive(Clone, Copy, Debug)]
-pub struct ClientAddr(pub SocketAddr);
-
-impl Connected<IncomingStream<'_, TcpListener>> for ClientAddr {
-    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
-        Self(*stream.remote_addr())
-    }
-}
-
+/// The TLS listener's connections carry their TCP peer too (the plaintext
+/// listener's is implemented next to `ClientAddr`).
 impl Connected<IncomingStream<'_, TlsListener>> for ClientAddr {
     fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
         Self(*stream.remote_addr())

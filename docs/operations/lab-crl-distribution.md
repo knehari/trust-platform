@@ -48,6 +48,10 @@ write path either:
   - Point the CA's `ca_revocation_policy.delta_crl_url` (the freshestCRL
     its complete CRLs carry) at this path.
 - At most 16 requests run concurrently; the others get 503.
+- Each client address (an IPv4 address, or an IPv6 /64) may make 600
+  requests per minute; beyond that it gets 429, so one client cannot keep
+  the 16 slots from the others. Forwarded headers are not trusted: behind
+  a reverse proxy every client shares the proxy's budget. Per process.
 - A CRL that re-verified is reused for 30 seconds (never past its
   nextUpdate) without querying the database or re-verifying, so a flood of
   requests costs neither. A newly stored CRL is served at most that much

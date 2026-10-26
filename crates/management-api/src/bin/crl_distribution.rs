@@ -19,6 +19,9 @@
 //! * Cache headers follow nextUpdate (at most one hour); a CRL past its
 //!   nextUpdate is still served, uncached, so relying parties see it is
 //!   stale rather than nothing.
+//! * Each client address (IPv4, or IPv6 /64) may make 600 requests per
+//!   minute (`rate_limit::limit_peers`, 429), so one client cannot hold the
+//!   request slots the others need. Forwarded headers are not trusted.
 //!
 //! The database connection follows the management API's policy: TLS 1.3
 //! with certificate and host name verification against
@@ -33,6 +36,11 @@
 #[allow(dead_code)]
 #[path = "../database.rs"]
 mod database;
+
+// Per-client-address request budget, shared with the token APIs.
+#[allow(dead_code)]
+#[path = "../rate_limit.rs"]
+mod rate_limit;
 
 use axum::{
     body::Body,
@@ -146,6 +154,8 @@ struct AppState {
     /// CRLs that re-verified, with when they were read (per CA).
     verified: Arc<Mutex<HashMap<String, (i64, StoredCrl)>>>,
     reuse_seconds: i64,
+    /// Per client address, before anything else (`limit_peers`).
+    peers: Arc<rate_limit::RateLimiter>,
 }
 
 /// How long a verified CRL is reused without asking the database again
@@ -168,6 +178,7 @@ impl AppState {
             now_unix,
             verified: Arc::new(Mutex::new(HashMap::new())),
             reuse_seconds: CRL_REUSE_SECONDS,
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         }
     }
 }
@@ -188,6 +199,10 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/crl/{file}", get(serve_crl))
         .route("/delta/{file}", get(serve_delta))
+        .layer(axum::middleware::from_fn_with_state(
+            state.peers.clone(),
+            rate_limit::limit_peers,
+        ))
         .with_state(state)
 }
 
@@ -432,8 +447,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = env::var("TRUST_CRL_BIND").unwrap_or_else(|_| "127.0.0.1:8082".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     write_log(serde_json::json!({"event":"crl_distribution_started","bind":bind}));
-    axum::serve(listener, router(state)).await?;
+    serve_on(listener, state).await?;
     Ok(())
+}
+
+/// Serves the distribution point, with each request's client address
+/// (`ConnectInfo<ClientAddr>`) for the per-address budget.
+async fn serve_on(listener: tokio::net::TcpListener, state: AppState) -> io::Result<()> {
+    let app = router(state).into_make_service_with_connect_info::<rate_limit::ClientAddr>();
+    axum::serve(listener, app).await
 }
 
 #[cfg(test)]
@@ -778,5 +800,41 @@ mod tests {
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         }
         assert_eq!(tampered.1.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// Requests are counted per client address over a real socket: an
+    /// address that spent its budget gets 429, another address does not.
+    #[tokio::test]
+    async fn requests_are_limited_per_client_address() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::{TcpListener, TcpSocket},
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = AppState {
+            peers: Arc::new(rate_limit::RateLimiter::new(2, Duration::from_secs(60))),
+            ..AppState::new(Arc::new(Fixed(Ok(None))), 1, system_now)
+        };
+        tokio::spawn(serve_on(listener, state));
+        // A malformed file name: 404 without touching the source.
+        let status_from = |source: &'static str| async move {
+            let socket = TcpSocket::new_v4().unwrap();
+            socket.bind(format!("{source}:0").parse().unwrap()).unwrap();
+            let mut stream = socket.connect(addr).await.unwrap();
+            stream
+                .write_all(
+                    b"GET /crl/not-a-ca.crl HTTP/1.1\r\nhost: cdp\r\nconnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            String::from_utf8_lossy(&response)[9..12].to_owned()
+        };
+        assert_eq!(status_from("127.0.0.1").await, "404");
+        assert_eq!(status_from("127.0.0.1").await, "404");
+        assert_eq!(status_from("127.0.0.1").await, "429");
+        assert_eq!(status_from("127.0.0.2").await, "404");
     }
 }

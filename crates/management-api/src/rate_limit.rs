@@ -13,14 +13,17 @@
 //! before the token is read: what a client can cost (token verification, a
 //! JWKS refresh) is bounded before any identity is known.
 use axum::{
-    extract::{rejection::ExtensionRejection, ConnectInfo, Request, State},
+    extract::{
+        connect_info::Connected, rejection::ExtensionRejection, ConnectInfo, Request, State,
+    },
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
+    serve::IncomingStream,
 };
 use std::{
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -108,6 +111,18 @@ impl RateLimiter {
     }
 }
 
+/// The TCP peer of a request, as `ConnectInfo<ClientAddr>` (served with
+/// `into_make_service_with_connect_info::<ClientAddr>()`); `http_tls`
+/// implements it for its TLS listener as well.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientAddr(pub SocketAddr);
+
+impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for ClientAddr {
+    fn connect_info(stream: IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
 /// The key a client address is counted under: the IPv4 address, or the /64
 /// prefix of an IPv6 address (one host usually holds a whole /64; an
 /// IPv4-mapped address counts as IPv4). Forwarded headers are not trusted,
@@ -130,7 +145,7 @@ pub fn peer_key(addr: Option<IpAddr>) -> String {
 /// before the token) runs.
 pub async fn limit_peers(
     State(peers): State<Arc<RateLimiter>>,
-    client: Result<ConnectInfo<crate::http_tls::ClientAddr>, ExtensionRejection>,
+    client: Result<ConnectInfo<ClientAddr>, ExtensionRejection>,
     request: Request,
     next: Next,
 ) -> Response {
