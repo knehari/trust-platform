@@ -51,3 +51,5 @@ The `snapshot_sha256` field is SHA-256 over a domain-separated `trust-platform/p
 `GET /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}` reads one exact revision after rechecking both signed CA scope and current server-owned grant. It returns 400 for malformed identifiers, 403 for denied scope/grant and 404 only for a missing revision within an authorized CA; it cannot retrieve raw source-table fields or turn a proposal into an active profile.
 
 The console can compare two exact revisions fetched through this route even when they are absent from the loaded list page. Selection is held only in memory and cleared when CA, session, list filter or sort changes; the comparison requires matching CA and profile IDs, different revision numbers and DRAFT status. It does not fetch or infer an active policy.
+
+A comparison link carries only the selected CA UUID, profile ID and two canonical revision numbers. Opening it after sign-in performs two fresh scoped detail reads; malformed or duplicate revision parameters are rejected before routing. The link contains no credential, digest approval or cached proposal content.

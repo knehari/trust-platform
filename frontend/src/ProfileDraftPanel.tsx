@@ -4,7 +4,7 @@ import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireScopedRows } from './scope';
 import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
-import type { DetailLink } from './navigation';
+import { navigationUrl, type DetailLink } from './navigation';
 import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
 
 interface Props {
@@ -78,6 +78,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       detailController.current?.abort();
       setDetailLoading(false);
       setSelected(null);
+      setShowComparison(false);
       return;
     }
     detailController.current?.abort();
@@ -86,13 +87,17 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setSelected(null);
     setDetailError(null);
     setDetailLoading(true);
-    void apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(linkedDetail.id)}/${linkedDetail.revision}`, token, controller.signal)
-      .then(detail => {
+    const revisions = linkedDetail.compareRevision ? [linkedDetail.revision, linkedDetail.compareRevision] : [linkedDetail.revision];
+    void Promise.all(revisions.map(revision => apiGet<ProfileDraft>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts/${encodeURIComponent(linkedDetail.id)}/${revision}`, token, controller.signal)))
+      .then(details => {
         if (controller.signal.aborted) return;
-        if (detail.ca_id !== caId || detail.profile_id !== linkedDetail.id || detail.revision !== linkedDetail.revision || detail.status !== 'DRAFT') {
+        if (details.some((detail, index) => detail.ca_id !== caId || detail.profile_id !== linkedDetail.id || detail.revision !== revisions[index] || detail.status !== 'DRAFT')) {
           throw new Error('The profile proposal detail did not match the linked revision.');
         }
-        setSelected(detail);
+        if (details.length === 2) {
+          setComparisonItems(details);
+          setShowComparison(true);
+        } else setSelected(details[0]);
       })
       .catch(error => {
         if (controller.signal.aborted) return;
@@ -106,7 +111,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       })
       .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
     return () => controller.abort();
-  }, [caId, token, linkedDetail?.id, linkedDetail?.revision]);
+  }, [caId, token, linkedDetail?.id, linkedDetail?.revision, linkedDetail?.compareRevision]);
 
   function openDetail(item: ProfileDraft) {
     onOpenDetail({ kind: 'profile', id: item.profile_id, revision: item.revision });
@@ -171,6 +176,17 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
 
   const comparisonSelected = (item: ProfileDraft) => comparisonItems.some(value => value.profile_id === item.profile_id && value.revision === item.revision);
 
+  function openComparison() {
+    if (comparisonItems.length !== 2) return;
+    onOpenDetail({ kind: 'profile', id: comparisonItems[0].profile_id, revision: comparisonItems[0].revision, compareRevision: comparisonItems[1].revision });
+  }
+
+  async function copyComparisonLink() {
+    if (comparisonItems.length !== 2) return;
+    const url = navigationUrl('profiles', caId, { kind: 'profile', id: comparisonItems[0].profile_id, revision: comparisonItems[0].revision, compareRevision: comparisonItems[1].revision });
+    await navigator.clipboard.writeText(new URL(url, window.location.origin).href);
+  }
+
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
@@ -186,12 +202,12 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
         <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button></div>
       </article>)}</div>}
-    {comparisonItems.length > 0 && <div className="subtle-panel profile-compare-controls"><span>{comparisonItems.length}/2 revisions selected. Select another revision of the same profile from the list or its exact detail.</span>{comparisonItems.length === 2 && <button type="button" className="link-button" onClick={() => setShowComparison(true)}>Compare selected revisions</button>}</div>}
+    {comparisonItems.length > 0 && <div className="subtle-panel profile-compare-controls"><span>{comparisonItems.length}/2 revisions selected. Select another revision of the same profile from the list or its exact detail.</span>{comparisonItems.length === 2 && <button type="button" className="link-button" onClick={openComparison}>Compare selected revisions</button>}</div>}
     {error && items.length > 0 && <p className="profile-draft-message" role="alert">{error}</p>}
     {detailLoading && <p className="profile-draft-message" role="status">Loading proposal detail…</p>}
     {detailError && <p className="profile-draft-message" role="alert">{detailError}</p>}
     {cursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadMore()}>{moreLoading ? 'Loading…' : 'Load more proposals'}</button>}
     {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog draft={selected} comparisonSelected={comparisonSelected(selected)} onToggleComparison={() => toggleComparison(selected)} onClose={() => { setSelected(null); onCloseDetail(); }} />}
-    {showComparison && comparisonItems.length === 2 && <ProfileCompareDialog first={comparisonItems[0]} second={comparisonItems[1]} onClose={() => setShowComparison(false)} />}
+    {showComparison && comparisonItems.length === 2 && <ProfileCompareDialog first={comparisonItems[0]} second={comparisonItems[1]} onCopyLink={copyComparisonLink} onClose={() => { setShowComparison(false); if (linkedDetail?.compareRevision) onCloseDetail(); }} />}
   </div>;
 }
