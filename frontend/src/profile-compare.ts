@@ -39,3 +39,20 @@ export function profileComparisonCsv(first: ProfileDraft, second: ProfileDraft, 
     ]),
   );
 }
+
+export function profileComparisonJson(first: ProfileDraft, second: ProfileDraft, changesOnly: boolean): string {
+  const [earlier, later] = first.revision < second.revision ? [first, second] : [second, first];
+  const differences = compareProfileRevisions(first, second);
+  return JSON.stringify({
+    kind: 'trust-profile-proposal-comparison',
+    ca_id: first.ca_id,
+    profile_id: first.profile_id,
+    earlier_revision: earlier.revision,
+    later_revision: later.revision,
+    earlier_snapshot_sha256: earlier.snapshot_sha256,
+    later_snapshot_sha256: later.snapshot_sha256,
+    changed_fields_only: changesOnly,
+    fields: (changesOnly ? differences.filter(row => row.changed) : differences)
+      .map(row => ({ field: row.label, earlier_value: row.before, later_value: row.after, changed: row.changed })),
+  }, null, 2);
+}
