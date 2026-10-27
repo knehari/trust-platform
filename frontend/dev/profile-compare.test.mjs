@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compareProfileRevisions, profileComparisonCsv } from '../src/profile-compare.ts';
+import { compareProfileRevisions, profileComparisonCsv, profileComparisonJson } from '../src/profile-compare.ts';
 
 const base = {
   ca_id: 'allowed', profile_id: 'server-lab', revision: 1, status: 'DRAFT',
@@ -34,4 +34,20 @@ test('comparison CSV exports only allowlisted fields and neutralizes spreadsheet
   assert.equal(changed.includes('Proposed signature suites'), false);
   assert.equal(changed.includes('never-export'), false);
   assert.match(changed, /"allowed","server-lab","1","2"/);
+});
+
+test('comparison JSON follows the visible field filter and excludes actor identity', () => {
+  const older = { ...base, private_key: 'never-export' };
+  const newer = { ...base, revision: 2, policy_version: 'v2', snapshot_sha256: 'b'.repeat(64) };
+  const all = JSON.parse(profileComparisonJson(newer, older, false));
+  const changed = JSON.parse(profileComparisonJson(newer, older, true));
+  assert.equal(changed.kind, 'trust-profile-proposal-comparison');
+  assert.equal(changed.earlier_revision, 1);
+  assert.equal(changed.later_revision, 2);
+  assert.equal(changed.earlier_snapshot_sha256, older.snapshot_sha256);
+  assert.ok(all.fields.length > changed.fields.length);
+  assert.ok(changed.fields.every(row => row.changed));
+  assert.equal(JSON.stringify(changed).includes('editor'), false);
+  assert.equal(JSON.stringify(changed).includes('never-export'), false);
+  assert.throws(() => profileComparisonJson(older, { ...newer, ca_id: 'hidden' }, true));
 });
