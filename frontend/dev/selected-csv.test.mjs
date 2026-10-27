@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { auditCsv, certificateCsv, MAX_CSV_ROWS } from '../src/selected-csv.ts';
+import { auditCsv, certificateCsv, profileDraftCsv, MAX_CSV_ROWS } from '../src/selected-csv.ts';
 
 const certificate = {
   ca_id: 'ca', request_id: 'request', serial_hex: '01', subject_cn: '=1+1',
@@ -23,5 +23,19 @@ test('audit CSV rejects empty or oversized selections and neutralizes formulas',
   assert.throws(() => auditCsv(Array(MAX_CSV_ROWS + 1).fill(event)), /Select 1–100/);
   const result = auditCsv([event]);
   assert.match(result, /"'\+cmd"/);
+  assert.equal(result.includes('never-export'), false);
+});
+
+test('profile proposal CSV exports an allowlist without actor identity and neutralizes formulas', () => {
+  const proposal = { ca_id: 'ca', profile_id: 'server-lab', revision: 2, display_name: '=HYPERLINK("x")',
+    policy_version: 'v1', max_validity_days: 90, max_dns_sans: 3, proposed_dns_zones: ['example.test'],
+    proposed_signature_suites: ['ecdsa-p256'], proposal_warnings: ['warning'], snapshot_sha256: 'a'.repeat(64),
+    created_at: '2026-10-01T00:00:00Z', status: 'DRAFT', created_by: 'private-actor', private_key: 'never-export' };
+  assert.throws(() => profileDraftCsv([]), /Select 1–100/);
+  assert.throws(() => profileDraftCsv(Array(MAX_CSV_ROWS + 1).fill(proposal)), /Select 1–100/);
+  const result = profileDraftCsv([proposal]);
+  assert.match(result, /"'=HYPERLINK\(""x""\)"/);
+  assert.match(result, /"server-lab"/);
+  assert.equal(result.includes('private-actor'), false);
   assert.equal(result.includes('never-export'), false);
 });
