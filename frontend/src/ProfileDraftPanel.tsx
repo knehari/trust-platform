@@ -7,6 +7,7 @@ import { ProfileCompareDialog } from './ProfileCompareDialog';
 import { navigationUrl, type DetailLink } from './navigation';
 import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
 import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
+import { visibleProfileDrafts } from './profile-draft-filter';
 
 interface Props {
   caId: string;
@@ -40,6 +41,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [comparisonItems, setComparisonItems] = useState<ProfileDraft[]>([]);
   const [showComparison, setShowComparison] = useState(false);
   const [exportSelection, setExportSelection] = useState<string[]>([]);
+  const [warningsOnly, setWarningsOnly] = useState(false);
   const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -222,6 +224,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  const visibleItems = visibleProfileDrafts(items, warningsOnly);
+
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
@@ -232,10 +236,12 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
     {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}
+    <label className="profile-compare-filter"><input type="checkbox" checked={warningsOnly} onChange={event => { setWarningsOnly(event.target.checked); setExportSelection([]); }} /> Show proposals with advisory syntax warnings among loaded revisions only ({visibleProfileDrafts(items, true).length}/{items.length})</label>
     {loading ? <p className="profile-draft-message">Loading scoped profile proposals…</p>
       : error && items.length === 0 ? <p className="profile-draft-message" role="alert">{error} <button className="link-button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>
       : items.length === 0 ? <p className="profile-draft-message">{searchTerm ? `No proposals match “${searchTerm}” in this authority.` : profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : 'No profile proposals recorded for this authority.'}</p>
-      : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
+      : visibleItems.length === 0 ? <p className="profile-draft-message">No advisory syntax warnings in the loaded revisions.{cursor ? ' Load more proposals to inspect further history.' : ''}</p>
+      : <div className="profile-draft-list">{visibleItems.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
         <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button><button type="button" className="link-button profile-draft-action" aria-pressed={exportSelection.includes(`${item.profile_id}/${item.revision}`)} disabled={exportSelection.length >= MAX_CSV_ROWS && !exportSelection.includes(`${item.profile_id}/${item.revision}`)} onClick={() => toggleExport(item)}>{exportSelection.includes(`${item.profile_id}/${item.revision}`) ? 'Remove from CSV' : 'Select for CSV'}</button></div>

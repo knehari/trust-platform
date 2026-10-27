@@ -109,6 +109,10 @@ try {
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.getByText('These proposals are not approved or active.').waitFor();
+  await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).check();
+  await page.getByText('No advisory syntax warnings in the loaded revisions.').waitFor();
+  await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).uncheck();
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.locator('#profile-draft-search').fill('server-lab');
   const proposalSearch = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).searchParams.get('q') === 'server-lab');
