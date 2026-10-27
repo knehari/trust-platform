@@ -6,6 +6,7 @@ import { ProfileDraftDialog } from './ProfileDraftDialog';
 import { ProfileCompareDialog } from './ProfileCompareDialog';
 import { navigationUrl, type DetailLink } from './navigation';
 import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
+import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
 
 interface Props {
   caId: string;
@@ -38,6 +39,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [detailError, setDetailError] = useState<string | null>(null);
   const [comparisonItems, setComparisonItems] = useState<ProfileDraft[]>([]);
   const [showComparison, setShowComparison] = useState(false);
+  const [exportSelection, setExportSelection] = useState<string[]>([]);
   const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -53,6 +55,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setError(null);
     setComparisonItems([]);
     setShowComparison(false);
+    setExportSelection([]);
     moreController.current?.abort();
     const controller = new AbortController();
     const params = new URLSearchParams();
@@ -200,9 +203,29 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     await navigator.clipboard.writeText(new URL(url, window.location.origin).href);
   }
 
+  function toggleExport(item: ProfileDraft) {
+    const key = `${item.profile_id}/${item.revision}`;
+    setExportSelection(current => current.includes(key) ? current.filter(value => value !== key)
+      : current.length < MAX_CSV_ROWS ? [...current, key] : current);
+  }
+
+  function downloadSelected() {
+    const rows = items.filter(item => exportSelection.includes(`${item.profile_id}/${item.revision}`));
+    if (rows.length === 0) return;
+    const url = URL.createObjectURL(new Blob(['\uFEFF', profileDraftCsv(rows)], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `trust-profile-proposals-${caId}.csv`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
+    <div className="subtle-panel profile-compare-controls"><span>{exportSelection.length}/{MAX_CSV_ROWS} loaded proposals selected for metadata CSV export.</span><button type="button" className="link-button" disabled={exportSelection.length === 0} onClick={downloadSelected}>Export selected proposals CSV</button>{exportSelection.length > 0 && <button type="button" className="link-button" onClick={() => setExportSelection([])}>Clear selection</button>}</div>
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySearch(); }}><label htmlFor="profile-draft-search">Search profile ID, display name or policy prefix across this authority’s history</label><div><input id="profile-draft-search" type="search" value={searchInput} onChange={event => { setSearchInput(event.target.value); setSearchError(null); }} placeholder="At least 2 characters" aria-describedby={searchError ? 'profile-draft-search-error' : undefined} /><button type="submit">Search proposals</button>{searchTerm && <button type="button" className="profile-filter-clear" onClick={() => { setSearchInput(''); setSearchTerm(''); setSearchError(null); }}>Clear search</button>}</div></form>
     {searchError && <p id="profile-draft-search-error" className="lookup-error" role="alert">{searchError}</p>}
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileOrder('oldest'); setProfileFilter(''); }}>Clear filter</button>}</div>{profileFilter && <label className="profile-order-label" htmlFor="profile-draft-order">Revision order <select id="profile-draft-order" value={profileOrder} onChange={event => setProfileOrder(event.target.value as 'oldest' | 'newest')}><option value="oldest">Oldest first</option><option value="newest">Newest first</option></select></label>}</form>
@@ -215,7 +238,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
-        <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button></div>
+        <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button><button type="button" className="link-button profile-draft-action" aria-pressed={exportSelection.includes(`${item.profile_id}/${item.revision}`)} disabled={exportSelection.length >= MAX_CSV_ROWS && !exportSelection.includes(`${item.profile_id}/${item.revision}`)} onClick={() => toggleExport(item)}>{exportSelection.includes(`${item.profile_id}/${item.revision}`) ? 'Remove from CSV' : 'Select for CSV'}</button></div>
       </article>)}</div>}
     {comparisonItems.length > 0 && <div className="subtle-panel profile-compare-controls"><span>{comparisonItems.length}/2 revisions selected. Select another revision of the same profile from the list or its exact detail.</span>{comparisonItems.length === 2 && <button type="button" className="link-button" onClick={openComparison}>Compare selected revisions</button>}</div>}
     {error && items.length > 0 && <p className="profile-draft-message" role="alert">{error}</p>}

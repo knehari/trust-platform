@@ -1,4 +1,4 @@
-import type { AuditEvent, Certificate } from './api';
+import type { AuditEvent, Certificate, ProfileDraft } from './api';
 
 export const MAX_CSV_ROWS = 100;
 
@@ -24,5 +24,15 @@ export function auditCsv(rows: AuditEvent[]): string {
   return csv(
     ['ca_id', 'event_id', 'event_type', 'decision', 'policy_version', 'recorded_at'],
     rows.map(row => [row.ca_id, row.event_id, row.event_type, row.decision, row.policy_version, row.recorded_at]),
+  );
+}
+
+export function profileDraftCsv(rows: ProfileDraft[]): string {
+  return csv(
+    ['ca_id', 'profile_id', 'revision', 'display_name', 'policy_version', 'max_validity_days', 'max_dns_sans', 'proposed_dns_zones', 'proposed_signature_suites', 'advisory_syntax_warnings', 'snapshot_sha256', 'recorded_at', 'status'],
+    rows.map(row => [row.ca_id, row.profile_id, String(row.revision), row.display_name, row.policy_version,
+      String(row.max_validity_days), String(row.max_dns_sans), row.proposed_dns_zones.join('; '),
+      row.proposed_signature_suites.join('; '), row.proposal_warnings.join('; '), row.snapshot_sha256,
+      row.created_at, row.status]),
   );
 }
