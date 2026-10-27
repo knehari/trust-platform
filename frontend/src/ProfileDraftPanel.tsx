@@ -27,6 +27,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [profileFilter, setProfileFilter] = useState('');
   const [profileOrder, setProfileOrder] = useState<'oldest' | 'newest'>('oldest');
   const [filterError, setFilterError] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [lookupProfileId, setLookupProfileId] = useState('');
   const [lookupRevision, setLookupRevision] = useState('');
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -57,6 +60,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       params.set('profile_id', profileFilter);
       params.set('order', profileOrder);
     }
+    if (searchTerm) params.set('q', searchTerm);
     const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
     void apiGetPage<unknown>(listUrl, token, controller.signal)
       .then(page => {
@@ -71,7 +75,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); moreController.current?.abort(); };
-  }, [caId, token, retry, profileFilter, profileOrder]);
+  }, [caId, token, retry, profileFilter, profileOrder, searchTerm]);
 
   useEffect(() => {
     if (!linkedDetail) {
@@ -136,6 +140,16 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setProfileFilter(id);
   }
 
+  function applySearch() {
+    const value = searchInput.trim();
+    if (value.length < 2 || value.length > 255 || [...value].some(char => /[\x00-\x1f\x7f]/u.test(char))) {
+      setSearchError('Enter 2–255 printable characters.');
+      return;
+    }
+    setSearchError(null);
+    setSearchTerm(value);
+  }
+
   async function loadMore() {
     if (!cursor || moreLoading) return;
     const controller = new AbortController();
@@ -148,6 +162,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         params.set('profile_id', profileFilter);
         params.set('order', profileOrder);
       }
+      if (searchTerm) params.set('q', searchTerm);
       const page = await apiGetPage<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireProfileDraftPage(page.items, caId);
@@ -188,13 +203,15 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
     <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySearch(); }}><label htmlFor="profile-draft-search">Search profile ID, display name or policy prefix across this authority’s history</label><div><input id="profile-draft-search" type="search" value={searchInput} onChange={event => { setSearchInput(event.target.value); setSearchError(null); }} placeholder="At least 2 characters" aria-describedby={searchError ? 'profile-draft-search-error' : undefined} /><button type="submit">Search proposals</button>{searchTerm && <button type="button" className="profile-filter-clear" onClick={() => { setSearchInput(''); setSearchTerm(''); setSearchError(null); }}>Clear search</button>}</div></form>
+    {searchError && <p id="profile-draft-search-error" className="lookup-error" role="alert">{searchError}</p>}
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileOrder('oldest'); setProfileFilter(''); }}>Clear filter</button>}</div>{profileFilter && <label className="profile-order-label" htmlFor="profile-draft-order">Revision order <select id="profile-draft-order" value={profileOrder} onChange={event => setProfileOrder(event.target.value as 'oldest' | 'newest')}><option value="oldest">Oldest first</option><option value="newest">Newest first</option></select></label>}</form>
     {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
     {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}
     {loading ? <p className="profile-draft-message">Loading scoped profile proposals…</p>
       : error && items.length === 0 ? <p className="profile-draft-message" role="alert">{error} <button className="link-button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>
-      : items.length === 0 ? <p className="profile-draft-message">{profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : 'No profile proposals recorded for this authority.'}</p>
+      : items.length === 0 ? <p className="profile-draft-message">{searchTerm ? `No proposals match “${searchTerm}” in this authority.` : profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : 'No profile proposals recorded for this authority.'}</p>
       : <div className="profile-draft-list">{items.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
