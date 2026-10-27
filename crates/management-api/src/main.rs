@@ -103,6 +103,7 @@ struct ProfileDraftQuery {
     after: Option<String>,
     profile_id: Option<String>,
     order: Option<String>,
+    q: Option<String>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -709,6 +710,7 @@ async fn list_profile_drafts(
         return Err(StatusCode::BAD_REQUEST);
     }
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
+    let search = literal_prefix(page.q)?;
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -734,10 +736,13 @@ async fn list_profile_drafts(
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (profile_id,revision){comparison}($4,$5)) \
              AND ($6::text IS NULL OR profile_id=$6) \
+             AND ($7::text IS NULL OR lower(profile_id) LIKE $7 ESCAPE '\\' \
+                 OR lower(display_name) LIKE $7 ESCAPE '\\' \
+                 OR lower(policy_version) LIKE $7 ESCAPE '\\') \
              ORDER BY profile_id {direction},revision {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1255,12 +1260,37 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(missing.is_empty());
+        let (status, search_cursor, search_page) =
+            history_page(&app, &token, &format!("{draft_base}?q=Synthetic%20server")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(search_page.len(), 100);
+        assert!(search_page.iter().all(|row| row["display_name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("Synthetic server"))));
+        let (status, _, search_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?q=Synthetic%20server&after={}",
+                search_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(search_tail.len(), 2);
+        let (_, _, literal_wildcard) =
+            history_page(&app, &token, &format!("{draft_base}?q=%25%25")).await;
+        assert!(literal_wildcard.is_empty());
+        let (_, _, hidden_search) =
+            history_page(&app, &token, &format!("{draft_base}?q=Hidden")).await;
+        assert!(hidden_search.is_empty());
         for query in [
             "profile_id=Server-001".to_owned(),
             "profile_id=x".to_owned(),
             "profile_id=server-101&after=server-001%7C1".to_owned(),
             "profile_id=server-999&order=invalid".to_owned(),
             "order=newest".to_owned(),
+            "q=x".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))

@@ -109,6 +109,20 @@ try {
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.getByText('These proposals are not approved or active.').waitFor();
+  await page.locator('#profile-draft-search').fill('server-lab');
+  const proposalSearch = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('q') === 'server-lab');
+  await page.getByRole('button', { name: 'Search proposals' }).click();
+  await proposalSearch;
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.locator('#profile-draft-search').fill('hidden');
+  const hiddenProposalSearch = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('q') === 'hidden');
+  await page.getByRole('button', { name: 'Search proposals' }).click();
+  await hiddenProposalSearch;
+  await page.getByText('No proposals match “hidden”').waitFor();
+  await page.getByRole('button', { name: 'Clear search' }).click();
+  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();
