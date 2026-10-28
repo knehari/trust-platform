@@ -53,7 +53,7 @@ write path either:
   the 16 slots from the others. Per process. Behind a reverse proxy, list
   it in `TRUST_HTTP_TRUSTED_PROXIES` (addresses or CIDR prefixes) so that
   each client is counted by its X-Forwarded-For address; from any other
-  peer the header is ignored.
+  peer the header is ignored. When 10,000 addresses are already in their window (a flood from many addresses, such as the /64s of one IPv6 /48), a new address is counted under its /48 (IPv4: /24) instead, so a flood spends its own prefix's budget; only if 10,000 prefixes are live as well is the request refused.
 - A CRL that re-verified is reused for 30 seconds (never past its
   nextUpdate) without querying the database or re-verifying, so a flood of
   requests costs neither. A newly stored CRL is served at most that much

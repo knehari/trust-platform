@@ -57,10 +57,16 @@ impl SharedBudget {
     }
 }
 
+/// Fixed windows per key: (window start, requests counted in it).
+type Windows = Mutex<HashMap<(String, String), (Instant, u32)>>;
+
 pub struct RateLimiter {
     limit: u32,
     window: Duration,
-    windows: Mutex<HashMap<(String, String), (Instant, u32)>>,
+    windows: Windows,
+    /// For `allow_peer` only: once `windows` is full, new addresses are
+    /// counted here under their /48 (IPv6) or /24 (IPv4), also bounded.
+    overflow: Windows,
     /// For `limit_peers` only: reverse proxies whose X-Forwarded-For is
     /// read (`TRUSTED_PROXIES_ENV`); empty, the header is ignored.
     trusted_proxies: Vec<IpNet>,
@@ -72,6 +78,7 @@ impl RateLimiter {
             limit,
             window,
             windows: Mutex::new(HashMap::new()),
+            overflow: Mutex::new(HashMap::new()),
             trusted_proxies: Vec::new(),
         }
     }
@@ -97,16 +104,41 @@ impl RateLimiter {
         self.allow_at(issuer, subject, Instant::now())
     }
 
+    /// Counts one request for a client address (`limit_peers`). When the
+    /// table is full of addresses still in their window (a flood from many
+    /// addresses, such as the /64s of one IPv6 /48), a new address is
+    /// counted under its aggregate prefix instead (IPv6 /48, IPv4 /24): the
+    /// flood then spends its own prefix's budget and other prefixes keep
+    /// theirs. Only when the prefix table is full too is the request
+    /// refused.
+    pub fn allow_peer(&self, addr: Option<IpAddr>) -> bool {
+        self.allow_peer_at(addr, Instant::now())
+    }
+
+    fn allow_peer_at(&self, addr: Option<IpAddr>, now: Instant) -> bool {
+        match self.count(&self.windows, ("peer".into(), peer_key(addr)), now) {
+            Count::Full => {
+                let key = ("prefix".into(), aggregate_key(addr));
+                matches!(self.count(&self.overflow, key, now), Count::Allowed)
+            }
+            outcome => matches!(outcome, Count::Allowed),
+        }
+    }
+
     fn allow_at(&self, issuer: &str, subject: &str, now: Instant) -> bool {
-        let Ok(mut windows) = self.windows.lock() else {
-            return false;
-        };
         let key = (issuer.to_owned(), subject.to_owned());
+        matches!(self.count(&self.windows, key, now), Count::Allowed)
+    }
+
+    fn count(&self, table: &Windows, key: (String, String), now: Instant) -> Count {
+        let Ok(mut windows) = table.lock() else {
+            return Count::Refused;
+        };
         if !windows.contains_key(&key) && windows.len() >= MAX_TRACKED {
             let window = self.window;
             windows.retain(|_, (start, _)| now.duration_since(*start) < window);
             if windows.len() >= MAX_TRACKED {
-                return false;
+                return Count::Full;
             }
         }
         let entry = windows.entry(key).or_insert((now, 0));
@@ -114,10 +146,10 @@ impl RateLimiter {
             *entry = (now, 0);
         }
         if entry.1 >= self.limit {
-            return false;
+            return Count::Refused;
         }
         entry.1 += 1;
-        true
+        Count::Allowed
     }
 }
 
@@ -230,6 +262,29 @@ pub fn client_ip(peer: IpAddr, forwarded: &[&str], trusted: &[IpNet]) -> IpAddr 
     peer
 }
 
+enum Count {
+    Allowed,
+    Refused,
+    /// The table is full of keys still in their window.
+    Full,
+}
+
+/// The coarser key a new address is counted under once the address table is
+/// full: the IPv4 /24 or the IPv6 /48.
+fn aggregate_key(addr: Option<IpAddr>) -> String {
+    match addr.map(|ip| ip.to_canonical()) {
+        Some(IpAddr::V4(ip)) => {
+            let o = ip.octets();
+            format!("{}.{}.{}.0/24", o[0], o[1], o[2])
+        }
+        Some(IpAddr::V6(ip)) => {
+            let s = ip.segments();
+            format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+        }
+        None => "unknown".to_owned(),
+    }
+}
+
 /// The key a client address is counted under: the IPv4 address, or the /64
 /// prefix of an IPv6 address (one host usually holds a whole /64; an
 /// IPv4-mapped address counts as IPv4). Forwarded headers are read only
@@ -265,7 +320,7 @@ pub async fn limit_peers(
     let addr = client
         .ok()
         .map(|ConnectInfo(addr)| client_ip(addr.0.ip(), &forwarded, &peers.trusted_proxies));
-    if !peers.allow("peer", &peer_key(addr)) {
+    if !peers.allow_peer(addr) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     next.run(request).await
@@ -382,6 +437,59 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    /// One IPv6 /48 holds 65,536 /64s: filling the table from them must not
+    /// lock every other client out. Once the table is full, a new address
+    /// is counted under its /48 (IPv4: /24) instead, so the flood only
+    /// spends its own prefix's budget.
+    #[test]
+    fn a_full_address_table_does_not_lock_out_other_prefixes() {
+        let limiter = RateLimiter::new(2, Duration::from_secs(60));
+        let start = Instant::now();
+        let ip = |text: String| -> Option<IpAddr> { Some(text.parse().unwrap()) };
+        for i in 0..MAX_TRACKED {
+            assert!(limiter.allow_peer_at(ip(format!("2001:db8:1:{i:x}::1")), start));
+        }
+        // Another prefix still gets its budget, then is refused as usual.
+        for _ in 0..2 {
+            assert!(limiter.allow_peer_at(ip("2001:db8:2::1".into()), start));
+        }
+        assert!(!limiter.allow_peer_at(ip("2001:db8:2::1".into()), start));
+        assert!(limiter.allow_peer_at(ip("192.0.2.7".into()), start));
+        // The flooding /48 shares one budget for its new /64s.
+        assert!(limiter.allow_peer_at(ip("2001:db8:1:ffff::1".into()), start));
+        assert!(limiter.allow_peer_at(ip("2001:db8:1:fffe::1".into()), start));
+        assert!(!limiter.allow_peer_at(ip("2001:db8:1:fffd::1".into()), start));
+        // Addresses already tracked keep their own budget.
+        assert!(limiter.allow_peer_at(ip("2001:db8:1:0::1".into()), start));
+        assert!(!limiter.allow_peer_at(ip("2001:db8:1:0::1".into()), start));
+        // Expired windows make room again.
+        let later = start + Duration::from_secs(61);
+        assert!(limiter.allow_peer_at(ip("2001:db8:3::1".into()), later));
+    }
+
+    /// Both tables full of live windows: refused, never unlimited.
+    #[test]
+    fn a_full_prefix_table_fails_closed() {
+        let limiter = RateLimiter::new(5, Duration::from_secs(60));
+        let start = Instant::now();
+        let v4 = |a: usize, b: usize| -> Option<IpAddr> {
+            Some(IpAddr::V4(std::net::Ipv4Addr::new(
+                10,
+                (a >> 8) as u8,
+                a as u8,
+                b as u8,
+            )))
+        };
+        for i in 0..MAX_TRACKED {
+            assert!(limiter.allow_peer_at(v4(i % 40, i / 40), start));
+        }
+        for i in 40..MAX_TRACKED + 40 {
+            assert!(limiter.allow_peer_at(v4(i, 1), start), "prefix {i}");
+        }
+        assert!(!limiter.allow_peer_at(v4(MAX_TRACKED + 41, 1), start));
+        assert!(limiter.allow_peer_at(v4(MAX_TRACKED + 41, 1), start + Duration::from_secs(61)));
     }
 
     #[test]
