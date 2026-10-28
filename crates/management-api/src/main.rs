@@ -626,12 +626,6 @@ async fn list_cas(
 ) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
     let claims = authorize(&headers, &state.verifier).await?;
     let search = literal_prefix(page.q)?;
-    let policy_version = page.policy_version.map(|value| value.trim().to_owned());
-    if policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
-    }) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
     let after = parse_ca_cursor(page.after)?;
     let (after_name, after_id) = after.map_or((None, None), |cursor| {
         (Some(cursor.display_name), Some(cursor.ca_id))
@@ -718,6 +712,12 @@ async fn list_profile_drafts(
     }
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
     let search = literal_prefix(page.q)?;
+    let policy_version = page.policy_version.map(|value| value.trim().to_owned());
+    if policy_version.as_ref().is_some_and(|value| {
+        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
