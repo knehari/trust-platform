@@ -104,6 +104,7 @@ struct ProfileDraftQuery {
     profile_id: Option<String>,
     order: Option<String>,
     q: Option<String>,
+    policy_version: Option<String>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -711,6 +712,12 @@ async fn list_profile_drafts(
     }
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
     let search = literal_prefix(page.q)?;
+    let policy_version = page.policy_version.map(|value| value.trim().to_owned());
+    if policy_version.as_ref().is_some_and(|value| {
+        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -739,10 +746,11 @@ async fn list_profile_drafts(
              AND ($7::text IS NULL OR lower(profile_id) LIKE $7 ESCAPE '\\' \
                  OR lower(display_name) LIKE $7 ESCAPE '\\' \
                  OR lower(policy_version) LIKE $7 ESCAPE '\\') \
+             AND ($8::text IS NULL OR policy_version=$8) \
              ORDER BY profile_id {direction},revision {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1278,6 +1286,25 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(search_tail.len(), 2);
+        let (status, policy_cursor, policy_page) =
+            history_page(&app, &token, &format!("{draft_base}?policy_version=v1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(policy_page.len(), 100);
+        assert!(policy_page.iter().all(|row| row["policy_version"] == "v1"));
+        let (status, _, policy_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?policy_version=v1&after={}",
+                policy_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(policy_tail.len(), 3);
+        let (_, _, other_policy) =
+            history_page(&app, &token, &format!("{draft_base}?policy_version=v101")).await;
+        assert_eq!(other_policy.len(), 1);
         let (_, _, literal_wildcard) =
             history_page(&app, &token, &format!("{draft_base}?q=%25%25")).await;
         assert!(literal_wildcard.is_empty());
@@ -1291,6 +1318,7 @@ mod tests {
             "profile_id=server-999&order=invalid".to_owned(),
             "order=newest".to_owned(),
             "q=x".to_owned(),
+            "policy_version=%0A".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))
