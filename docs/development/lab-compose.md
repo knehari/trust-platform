@@ -84,7 +84,9 @@ and stops at the first failure. It refuses:
 
 The runner records the digest of each file it applies (`applied`). A run that
 fails leaves the files it applied without a digest, so the next run needs
-`--adopt`. Two runners started at once are not serialised. It does
+`--adopt`. One runner works on a database at a time: it holds a session
+advisory lock until it exits, and a second runner is refused while the lock
+is held. It does
 not add the job logins of `init-db.sh` to an older volume; reset the volume
 for those. Tested by `tests/revocation_migration_runner.sh`, and in the
 `laboratory-compose` job, which runs it on the fresh volume: it must refuse

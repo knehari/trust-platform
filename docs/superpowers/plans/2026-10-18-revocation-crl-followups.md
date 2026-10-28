@@ -46,6 +46,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   (`tests/revocation_migration_runner.sh`). Since 0064 it keeps the SHA-256
   of each applied file and refuses a changed or missing one; digests of
   files applied before are adopted only with `--adopt` (trust on first use).
+  A second runner on the same database is refused (session advisory lock).
 - Rerunning on a reused database: `revocation_lifecycle.sql` and
   `lab_policy_gate` (a fresh CA per run since 22 October 2026) pass again,
   as do `audit_chain_postgres` and `signed_status_change_postgres`. The

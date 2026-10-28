@@ -8,7 +8,8 @@
 set -euo pipefail
 : "${TRUST_CI_DATABASE_URL:?TRUST_CI_DATABASE_URL is required}"
 temp="$(mktemp -d)"
-trap 'rm -rf "$temp"' EXIT
+holder=""
+trap 'rm -rf "$temp"; [ -z "$holder" ] || kill "$holder" 2>/dev/null || true' EXIT
 fail() { echo "FAIL: $*" >&2; cat "$temp/out" >&2 2>/dev/null; exit 1; }
 url_for() { # <database>
   python3 - "$TRUST_CI_DATABASE_URL" "$1" <<'PY'
@@ -19,7 +20,10 @@ PY
 }
 admin="$(url_for postgres)"
 fresh() { # <database> [last migration prefix]: a new database, migrated up to the prefix
-  psql -X -q -v ON_ERROR_STOP=1 "$admin" -c "DROP DATABASE IF EXISTS $1" -c "CREATE DATABASE $1" 2>/dev/null
+  psql -X -q -v ON_ERROR_STOP=1 "$admin" \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$1'" \
+    -c "DROP DATABASE IF EXISTS $1" -c "CREATE DATABASE $1" >/dev/null 2>"$temp/out" \
+    || fail "could not recreate $1"
   if [ -n "${2:-}" ]; then
     for m in migrations/*.sql; do
       [ "$(basename "$m" | cut -c1-4)" \> "$2" ] && continue
@@ -110,6 +114,28 @@ if TRUST_MIGRATE_DATABASE_URL="$plain_url" sh scripts/lab/migrate.sh >"$temp/out
 fi
 grep -q "not a superuser" "$temp/out" || fail "non-superuser: wrong refusal"
 
+# A second runner on the same database is refused while the first holds the
+# runner lock (pg_try_advisory_lock with the key in scripts/lab/migrate.sh),
+# and the lock is released when the holder ends.
+psql -X -q "$(url_for trust_migrate_empty)" \
+  -c "SELECT pg_advisory_lock(7426147730113041)" -c "SELECT pg_sleep(20)" >/dev/null 2>&1 &
+holder=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(psql -X -q -A -t "$admin" -c "SELECT count(*) FROM pg_locks
+        WHERE locktype = 'advisory' AND objid = (7426147730113041 & 4294967295)::oid
+          AND database = (SELECT oid FROM pg_database WHERE datname = 'trust_migrate_empty')")" = 1 ] && break
+  sleep 0.5
+done
+expect_refused trust_migrate_empty "another migration runner is working on this database"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null || true
+psql -X -q "$admin" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+    WHERE datname = 'trust_migrate_empty' AND pid <> pg_backend_pid()" >/dev/null
+migrate trust_migrate_empty || fail "runner after the lock holder ended"
+grep -q "up to date" "$temp/out" || fail "runner after the lock holder ended: not up to date"
+# The runner releases its own lock: nothing is left held after it.
+[ "$(psql -X -q -A -t "$admin" -c "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
+      AND objid = (7426147730113041 & 4294967295)::oid")" = 0 ] || fail "runner lock left held"
+
 # A failing migration stops the run; it rolled back and the next is not tried.
 cp -r migrations "$temp/migrations"
 printf 'BEGIN;\nCREATE TABLE runner_probe_ok (x int);\nSELECT 1/0;\nCOMMIT;\n' >"$temp/migrations/9990_broken.sql"
@@ -124,4 +150,4 @@ grep -q "9990_broken failed and was rolled back" "$temp/out" || fail "failure no
 for db in empty 0057 ahead gap old; do
   psql -X -q "$admin" -c "DROP DATABASE IF EXISTS trust_migrate_$db" 2>/dev/null
 done
-echo "PASS: migrate.sh brings an existing database to $newest, is a no-op when current, records file digests, and refuses changed or removed files, newer, gapped, pre-0026 and non-superuser databases and stops on a failing migration"
+echo "PASS: migrate.sh brings an existing database to $newest, is a no-op when current, records file digests, and refuses changed or removed files, a concurrent runner, newer, gapped, pre-0026 and non-superuser databases and stops on a failing migration"

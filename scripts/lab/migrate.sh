@@ -33,8 +33,11 @@
 #   fails leaves the files it applied without a digest: the next run needs
 #   --adopt.
 # It needs a superuser (the migrations create roles and SECURITY DEFINER
-# functions). Two runners started at once are not serialised: the second
-# fails on the first object that already exists.
+# functions). One runner works on a database at a time: right after the
+# superuser check it takes a session advisory lock (pg_try_advisory_lock,
+# RUNNER_LOCK_KEY) in a psql session it keeps open until it exits, and a
+# second runner is refused while the lock is held. The lock goes with that
+# session, so it is released however the runner ends.
 # Exit status: 0 up to date (applied or nothing to do), 1 refused or failed.
 set -eu
 
@@ -61,6 +64,27 @@ refuse() { echo "migrate: refused: $*" >&2; exit 1; }
 
 SQL="SELECT rolsuper FROM pg_roles WHERE rolname = session_user"
 [ "$(sql "$@")" = t ] || refuse "the login is not a superuser"
+
+# One runner at a time: hold the lock in a session that lives as long as
+# this script (its stdin is a FIFO this script keeps open).
+RUNNER_LOCK_KEY=7426147730113041
+lock_dir=$(mktemp -d)
+mkfifo "$lock_dir/in"
+q "$@" <"$lock_dir/in" >"$lock_dir/out" 2>&1 &
+lock_pid=$!
+exec 3>"$lock_dir/in"
+trap 'exec 3>&-; wait "$lock_pid" 2>/dev/null || true; rm -rf "$lock_dir"' EXIT
+echo "SELECT pg_try_advisory_lock($RUNNER_LOCK_KEY);" >&3
+waited=0
+while [ ! -s "$lock_dir/out" ] && [ "$waited" -lt 300 ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+case "$(head -n 1 "$lock_dir/out")" in
+  t) ;;
+  f) refuse "another migration runner is working on this database" ;;
+  *) refuse "could not take the migration runner lock" ;;
+esac
 
 files=$(ls "$migrations_dir" | grep -E '^[0-9]{4}_[a-z0-9_]+\.sql$' | sort)
 [ -n "$files" ] || refuse "no migration files in $migrations_dir"
