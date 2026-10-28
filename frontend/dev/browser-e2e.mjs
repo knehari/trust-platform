@@ -127,6 +127,13 @@ try {
   await page.getByText('No proposals match “hidden”').waitFor();
   await page.getByRole('button', { name: 'Clear search' }).click();
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.locator('#profile-draft-policy-filter').fill('v2');
+  const policyFilterResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('policy_version') === 'v2');
+  await page.getByRole('button', { name: 'Filter policy' }).click();
+  await policyFilterResponse;
+  await page.getByText('server-lab · revision 2').waitFor();
+  await page.getByRole('button', { name: 'Clear policy' }).click();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();

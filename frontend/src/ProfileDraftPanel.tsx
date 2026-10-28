@@ -32,6 +32,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [policyInput, setPolicyInput] = useState('');
+  const [policyFilter, setPolicyFilter] = useState('');
+  const [policyError, setPolicyError] = useState<string | null>(null);
   const [lookupProfileId, setLookupProfileId] = useState('');
   const [lookupRevision, setLookupRevision] = useState('');
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -66,6 +69,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       params.set('order', profileOrder);
     }
     if (searchTerm) params.set('q', searchTerm);
+    if (policyFilter) params.set('policy_version', policyFilter);
     const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
     void apiGetPage<unknown>(listUrl, token, controller.signal)
       .then(page => {
@@ -80,7 +84,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); moreController.current?.abort(); };
-  }, [caId, token, retry, profileFilter, profileOrder, searchTerm]);
+  }, [caId, token, retry, profileFilter, profileOrder, searchTerm, policyFilter]);
 
   useEffect(() => {
     if (!linkedDetail) {
@@ -155,6 +159,16 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setSearchTerm(value);
   }
 
+  function applyPolicyFilter() {
+    const value = policyInput.trim();
+    if (!value || value.length > 128 || [...value].some(char => /[\x00-\x1f\x7f]/u.test(char))) {
+      setPolicyError('Enter a policy version of 1–128 printable characters.');
+      return;
+    }
+    setPolicyError(null);
+    setPolicyFilter(value);
+  }
+
   async function loadMore() {
     if (!cursor || moreLoading) return;
     const controller = new AbortController();
@@ -168,6 +182,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
         params.set('order', profileOrder);
       }
       if (searchTerm) params.set('q', searchTerm);
+      if (policyFilter) params.set('policy_version', policyFilter);
       const page = await apiGetPage<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireProfileDraftPage(page.items, caId);
@@ -232,6 +247,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     <div className="subtle-panel profile-compare-controls"><span>{exportSelection.length}/{MAX_CSV_ROWS} loaded proposals selected for metadata CSV export.</span><button type="button" className="link-button" disabled={exportSelection.length === 0} onClick={downloadSelected}>Export selected proposals CSV</button>{exportSelection.length > 0 && <button type="button" className="link-button" onClick={() => setExportSelection([])}>Clear selection</button>}</div>
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySearch(); }}><label htmlFor="profile-draft-search">Search profile ID, display name or policy prefix across this authority’s history</label><div><input id="profile-draft-search" type="search" value={searchInput} onChange={event => { setSearchInput(event.target.value); setSearchError(null); }} placeholder="At least 2 characters" aria-describedby={searchError ? 'profile-draft-search-error' : undefined} /><button type="submit">Search proposals</button>{searchTerm && <button type="button" className="profile-filter-clear" onClick={() => { setSearchInput(''); setSearchTerm(''); setSearchError(null); }}>Clear search</button>}</div></form>
     {searchError && <p id="profile-draft-search-error" className="lookup-error" role="alert">{searchError}</p>}
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyPolicyFilter(); }}><label htmlFor="profile-draft-policy-filter">Filter the full authority history by exact policy version</label><div><input id="profile-draft-policy-filter" type="search" value={policyInput} onChange={event => { setPolicyInput(event.target.value); setPolicyError(null); }} placeholder="Policy version" aria-describedby={policyError ? 'profile-draft-policy-error' : undefined} /><button type="submit">Filter policy</button>{policyFilter && <button type="button" className="profile-filter-clear" onClick={() => { setPolicyInput(''); setPolicyFilter(''); setPolicyError(null); }}>Clear policy</button>}</div></form>
+    {policyError && <p id="profile-draft-policy-error" className="lookup-error" role="alert">{policyError}</p>}
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileOrder('oldest'); setProfileFilter(''); }}>Clear filter</button>}</div>{profileFilter && <label className="profile-order-label" htmlFor="profile-draft-order">Revision order <select id="profile-draft-order" value={profileOrder} onChange={event => setProfileOrder(event.target.value as 'oldest' | 'newest')}><option value="oldest">Oldest first</option><option value="newest">Newest first</option></select></label>}</form>
     {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>

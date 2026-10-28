@@ -30,6 +30,8 @@ Newest/oldest choices request the API's complete-history order and reset paginat
 
 The proposal search queries profile IDs, display names and policy versions by literal prefix across the full authorized CA history. It preserves the search term on later cursor pages and can be combined with an exact profile-ID filter.
 
+An exact policy-version filter narrows the authorized proposal history server-side and stays applied across cursor pages. It can be combined with the search and exact profile-ID filter.
+
 Readers may explicitly select up to 100 loaded proposals for a browser-generated, formula-safe metadata CSV. The selection clears when the CA or server-side filters change; the export omits actor identity, certificate material and approval evidence.
 
 An exact proposal detail can copy a field-allowlisted JSON metadata snapshot including its digest and advisory warnings. This copy is informational and contains no signed review or approval evidence.
