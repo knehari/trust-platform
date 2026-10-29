@@ -236,6 +236,7 @@ try {
   assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 1);
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
+  await page.getByText('Advanced filters (0 active)').click();
   await page.locator('#profile-draft-id-filter').fill('missing-profile');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByText('No revisions recorded for missing-profile').waitFor();
