@@ -121,12 +121,16 @@ pub fn check_bind(tls: &HttpTls, listener: &TcpListener) -> io::Result<()> {
 }
 
 /// Serves `router` on an already bound listener under the transport policy.
-pub async fn serve(listener: TcpListener, router: Router, tls: HttpTls) -> io::Result<()> {
+pub async fn serve(
+    listener: TcpListener,
+    router: Router,
+    tls: HttpTls,
+    limits: crate::http_serve::Limits,
+) -> io::Result<()> {
     check_bind(&tls, &listener)?;
     let local = listener.local_addr()?;
     // Connection limits and the client address (ConnectInfo, counted by
     // the per-address request budget) for both listeners.
-    let limits = crate::http_serve::Limits::default();
     match tls {
         HttpTls::Enabled(config) => {
             crate::http_serve::serve(TlsListener::new(listener, config, local), router, limits)
@@ -264,7 +268,12 @@ mod tests {
                 |ConnectInfo(peer): ConnectInfo<ClientAddr>| async move { peer.0.ip().to_string() },
             ),
         );
-        tokio::spawn(serve(listener, router, HttpTls::LoopbackOnly));
+        tokio::spawn(serve(
+            listener,
+            router,
+            HttpTls::LoopbackOnly,
+            crate::http_serve::Limits::default(),
+        ));
         let mut stream = TcpStream::connect(addr).await.expect("connect");
         stream
             .write_all(b"GET /peer HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
@@ -281,9 +290,14 @@ mod tests {
     async fn refuses_to_serve_plaintext_on_a_non_loopback_address() {
         let listener = TcpListener::bind("0.0.0.0:0").await.expect("bind");
         let tls = from_settings(None, None, None).expect("defaults");
-        let error = serve(listener, Router::new(), tls)
-            .await
-            .expect_err("plaintext off loopback must be refused");
+        let error = serve(
+            listener,
+            Router::new(),
+            tls,
+            crate::http_serve::Limits::default(),
+        )
+        .await
+        .expect_err("plaintext off loopback must be refused");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
@@ -318,7 +332,12 @@ mod tests {
                 },
             ),
         );
-        tokio::spawn(serve(listener, router, tls));
+        tokio::spawn(serve(
+            listener,
+            router,
+            tls,
+            crate::http_serve::Limits::default(),
+        ));
 
         // A client trusting the test CA gets the response over TLS 1.3.
         let mut roots = RootCertStore::empty();

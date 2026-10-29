@@ -985,7 +985,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"ca_admin_api_started","bind":bind,"tls":tls}));
-    http_tls::serve(listener, router(state), http_tls).await?;
+    let limits = http_serve::Limits {
+        trusted_proxies,
+        ..http_serve::Limits::default()
+    };
+    http_tls::serve(listener, router(state), http_tls, limits).await?;
     Ok(())
 }
 

@@ -439,7 +439,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let state = AppState {
         reuse_seconds,
-        peers: Arc::new(rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies)),
+        peers: Arc::new(
+            rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies.clone()),
+        ),
         ..AppState::new(
             Arc::new(PgSource {
                 url,
@@ -453,15 +455,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = env::var("TRUST_CRL_BIND").unwrap_or_else(|_| "127.0.0.1:8082".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     write_log(serde_json::json!({"event":"crl_distribution_started","bind":bind}));
-    serve_on(listener, state).await?;
+    let limits = http_serve::Limits {
+        trusted_proxies,
+        ..http_serve::Limits::default()
+    };
+    serve_on(listener, state, limits).await?;
     Ok(())
 }
 
 /// Serves the distribution point within the connection limits, with each
 /// request's client address (`ConnectInfo<ClientAddr>`) for the
 /// per-address budget.
-async fn serve_on(listener: tokio::net::TcpListener, state: AppState) -> io::Result<()> {
-    http_serve::serve(listener, router(state), http_serve::Limits::default()).await
+async fn serve_on(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+    limits: http_serve::Limits,
+) -> io::Result<()> {
+    http_serve::serve(listener, router(state), limits).await
 }
 
 #[cfg(test)]
@@ -822,7 +832,7 @@ mod tests {
             peers: Arc::new(rate_limit::RateLimiter::new(2, Duration::from_secs(60))),
             ..AppState::new(Arc::new(Fixed(Ok(None))), 1, system_now)
         };
-        tokio::spawn(serve_on(listener, state));
+        tokio::spawn(serve_on(listener, state, http_serve::Limits::default()));
         // A malformed file name: 404 without touching the source.
         let status_from = |source: &'static str| async move {
             let socket = TcpSocket::new_v4().unwrap();

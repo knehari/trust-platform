@@ -62,7 +62,7 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   `TRUST_HTTP_TRUSTED_PROXIES`), and per identity for the write APIs,
   shared by replicas in the database (0062, idle rows purged since 0063).
   A full address table falls back to /48 (IPv4 /24) prefixes. Connections
-  are capped (1,024 per process), with 10 s for a request header and 30 s
+  are capped (1,024 per process, 64 per client address), with 10 s for a request header and 30 s
   per request, body included. Open: an address budget shared across
   replicas.
 - `crl_housekeeping` (management-api binary, verified TLS,
