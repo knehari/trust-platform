@@ -32,6 +32,8 @@ The proposal search queries profile IDs, display names and policy versions by li
 
 An exact policy-version filter narrows the authorized proposal history server-side and stays applied across cursor pages. It can be combined with the search and exact profile-ID filter.
 
+The recorded-date filter uses UTC midnight boundaries: “from” is inclusive and “before” is exclusive. Both dates are applied server-side across the complete authorized CA history and preserved on subsequent cursor pages.
+
 Readers may explicitly select up to 100 loaded proposals for a browser-generated, formula-safe metadata CSV. The selection clears when the CA or server-side filters change; the export omits actor identity, certificate material and approval evidence.
 
 An exact proposal detail can copy a field-allowlisted JSON metadata snapshot including its digest and advisory warnings. This copy is informational and contains no signed review or approval evidence.
