@@ -3,6 +3,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 mod auth;
 mod database;
+mod http_serve;
 mod http_tls;
 // Shared with the lab write APIs; this binary uses its own budget.
 #[allow(dead_code)]

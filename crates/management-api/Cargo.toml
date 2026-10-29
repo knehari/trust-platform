@@ -8,6 +8,10 @@ publish = false
 
 [dependencies]
 axum = { version = "=0.8.9", features = ["json"] }
+# Direct use for the connection limits (http_serve.rs): same versions axum uses.
+hyper = { version = "=1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "service"] }
+tower = { version = "=0.5.3", features = ["util"] }
 jsonwebtoken = { version = "=10.3.0", features = ["rust_crypto"] }
 postgres = "=0.19.12"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }

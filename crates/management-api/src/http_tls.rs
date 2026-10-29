@@ -13,13 +13,9 @@
 //! Handshakes run off the accept loop, at most `MAX_HANDSHAKES` at a time and
 //! each within `HANDSHAKE_TIMEOUT`, so a slow or silent client cannot hold up
 //! the others; connections beyond the limit are closed. Requests carry the
-//! client address (`ConnectInfo<ClientAddr>`), with or without TLS.
-use crate::rate_limit::ClientAddr;
-use axum::{
-    extract::connect_info::Connected,
-    serve::{IncomingStream, Listener},
-    Router,
-};
+//! client address (`ConnectInfo<ClientAddr>`), with or without TLS, and
+//! connections are bounded in number and header-read time (`http_serve`).
+use axum::{serve::Listener, Router};
 use rustls::{
     crypto::ring,
     pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
@@ -124,26 +120,19 @@ pub fn check_bind(tls: &HttpTls, listener: &TcpListener) -> io::Result<()> {
     ))
 }
 
-/// The TLS listener's connections carry their TCP peer too (the plaintext
-/// listener's is implemented next to `ClientAddr`).
-impl Connected<IncomingStream<'_, TlsListener>> for ClientAddr {
-    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
-        Self(*stream.remote_addr())
-    }
-}
-
 /// Serves `router` on an already bound listener under the transport policy.
 pub async fn serve(listener: TcpListener, router: Router, tls: HttpTls) -> io::Result<()> {
     check_bind(&tls, &listener)?;
     let local = listener.local_addr()?;
-    // Handlers and middleware see the client address (ConnectInfo), which
-    // the per-address request budget counts.
-    let app = router.into_make_service_with_connect_info::<ClientAddr>();
+    // Connection limits and the client address (ConnectInfo, counted by
+    // the per-address request budget) for both listeners.
+    let limits = crate::http_serve::Limits::default();
     match tls {
         HttpTls::Enabled(config) => {
-            axum::serve(TlsListener::new(listener, config, local), app).await
+            crate::http_serve::serve(TlsListener::new(listener, config, local), router, limits)
+                .await
         }
-        _ => axum::serve(listener, app).await,
+        _ => crate::http_serve::serve(listener, router, limits).await,
     }
 }
 
@@ -263,6 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn handlers_see_the_client_address() {
+        use crate::rate_limit::ClientAddr;
         use axum::{extract::ConnectInfo, routing::get};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -302,6 +292,7 @@ mod tests {
     /// server.key for "localhost"). Skipped without it.
     #[tokio::test]
     async fn serves_tls13_only_with_the_configured_certificate() {
+        use crate::rate_limit::ClientAddr;
         let Ok(dir) = env::var("TRUST_HTTP_TLS_TEST_DIR") else {
             if env::var("TRUST_REQUIRE_HTTP_TLS_TEST").is_ok() {
                 panic!("TRUST_HTTP_TLS_TEST_DIR is required");

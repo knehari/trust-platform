@@ -13,13 +13,10 @@
 //! before the token is read: what a client can cost (token verification, a
 //! JWKS refresh) is bounded before any identity is known.
 use axum::{
-    extract::{
-        connect_info::Connected, rejection::ExtensionRejection, ConnectInfo, Request, State,
-    },
+    extract::{rejection::ExtensionRejection, ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
-    serve::IncomingStream,
 };
 use std::{
     collections::HashMap,
@@ -153,17 +150,10 @@ impl RateLimiter {
     }
 }
 
-/// The TCP peer of a request, as `ConnectInfo<ClientAddr>` (served with
-/// `into_make_service_with_connect_info::<ClientAddr>()`); `http_tls`
-/// implements it for its TLS listener as well.
+/// The TCP peer of a request, as `ConnectInfo<ClientAddr>` (inserted by
+/// `http_serve::serve` for every request).
 #[derive(Clone, Copy, Debug)]
 pub struct ClientAddr(pub SocketAddr);
-
-impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for ClientAddr {
-    fn connect_info(stream: IncomingStream<'_, tokio::net::TcpListener>) -> Self {
-        Self(*stream.remote_addr())
-    }
-}
 
 /// Comma-separated IP addresses or CIDR prefixes of the reverse proxies in
 /// front of a service. Unset or empty: forwarded headers are never read.

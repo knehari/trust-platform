@@ -48,6 +48,8 @@ mod auth;
 #[allow(dead_code)]
 #[path = "../database.rs"]
 mod database;
+#[path = "../http_serve.rs"]
+mod http_serve;
 #[path = "../http_tls.rs"]
 mod http_tls;
 #[path = "../rate_limit.rs"]

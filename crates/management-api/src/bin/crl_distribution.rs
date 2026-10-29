@@ -37,7 +37,10 @@
 #[path = "../database.rs"]
 mod database;
 
-// Per-client-address request budget, shared with the token APIs.
+// Connection limits and the per-client-address request budget, shared
+// with the token APIs.
+#[path = "../http_serve.rs"]
+mod http_serve;
 #[allow(dead_code)]
 #[path = "../rate_limit.rs"]
 mod rate_limit;
@@ -454,11 +457,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Serves the distribution point, with each request's client address
-/// (`ConnectInfo<ClientAddr>`) for the per-address budget.
+/// Serves the distribution point within the connection limits, with each
+/// request's client address (`ConnectInfo<ClientAddr>`) for the
+/// per-address budget.
 async fn serve_on(listener: tokio::net::TcpListener, state: AppState) -> io::Result<()> {
-    let app = router(state).into_make_service_with_connect_info::<rate_limit::ClientAddr>();
-    axum::serve(listener, app).await
+    http_serve::serve(listener, router(state), http_serve::Limits::default()).await
 }
 
 #[cfg(test)]
