@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-26 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-10-29 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -81,22 +81,22 @@ Laboratory parts of the *revocation and publication*, *durable audit evidence* a
 
 ## Revocation, CRL and signed administration lab slice (Draft #94)
 
-Status on 26 October 2026: full CI green at `ef79d30` (all fifteen jobs; migrations up to 0064); Rust CI green at `4e01cd5` (migration 0065); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
+Status on 29 October 2026: full CI green at `ebac3f3` (all eight workflows; migrations up to 0065); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
 Integration Draft [#94](https://github.com/knehari/trust-platform/pull/94) is marked
 do-not-merge and only runs CI. Maturity: **LAB-PROTOTYPE / G0 BLOCKED**. Nothing
 below is released, deployed or accepted. ADR-0006 and ADR-0007 are **Proposed**:
 the lab implementation was made at the repository owner's request, and that is
 not an acceptance of either ADR.
 
-**Evidence at `ef79d30`** (full CI) **and `3d3b4d1`** (local)
-- GitHub Actions at `ef79d30`: all fifteen jobs green (rust, schema,
-  compose-smoke, six fuzz targets, cargo-deny, gitleaks, lockfile-sbom,
-  build, gate-race, preservation); Rust CI also green at `c86bd33` and
-  `4e01cd5`.
-- Local run at `3d3b4d1` (Rust 1.99.0, PostgreSQL 16):
+**Evidence at `ebac3f3`** (full CI) **and `dc957aa`** (local)
+- GitHub Actions at `ebac3f3`: all eight workflows green (Rust CI with the
+  rust and schema jobs, laboratory-compose, six fuzz targets, supply chain
+  with cargo-deny and gitleaks, lockfile SBOM, frontend, policy gate
+  concurrency, recovery inventory); also at `24652f4` and `458e421`.
+- Local run at `dc957aa` (Rust 1.99.0, PostgreSQL 16):
   - `cargo fmt`; clippy with `-D warnings`, with all features and with default
     features;
-  - workspace tests: 428 passed, 0 failed;
+  - workspace tests: 448 passed, 0 failed;
   - every SQL suite, and the PostgreSQL integration and API tests with
     `TRUST_REQUIRE_DATABASE=1`;
   - OpenSSL interoperability (complete and delta CRLs, RFC 5280 suite);

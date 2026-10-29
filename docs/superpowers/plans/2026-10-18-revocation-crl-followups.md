@@ -2,7 +2,7 @@
 
 Collected from the per-task and whole-branch reviews of
 `2026-10-18-revocation-crl.md` (branch head cdfef84); statuses refreshed on
-26 October 2026 for migrations up to 0065. None blocks the lab slice;
+29 October 2026 for migrations up to 0065. None blocks the lab slice;
 items marked **before non-lab use** must be done before any non-ephemeral issuer
 or exposed service. The plan's Task 2 text still shows the original 4-argument
 `record_crl_intent`; spec §4 step 3 (8 arguments, content-bound) supersedes it.
@@ -61,7 +61,10 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   X-Forwarded-For read only from proxies listed in
   `TRUST_HTTP_TRUSTED_PROXIES`), and per identity for the write APIs,
   shared by replicas in the database (0062, idle rows purged since 0063).
-  Open: an address budget shared across replicas.
+  A full address table falls back to /48 (IPv4 /24) prefixes. Connections
+  are capped (1,024 per process), with 10 s for a request header and 30 s
+  per request, body included. Open: an address budget shared across
+  replicas.
 - `crl_housekeeping` (management-api binary, verified TLS,
   `docs/operations/lab-crl-housekeeping.md`) runs the sweeps and alerts
   through its exit status; deploying it, `signed_evidence_audit` and the
