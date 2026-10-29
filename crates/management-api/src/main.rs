@@ -105,6 +105,8 @@ struct ProfileDraftQuery {
     order: Option<String>,
     q: Option<String>,
     policy_version: Option<String>,
+    from: Option<String>,
+    until: Option<String>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -718,6 +720,15 @@ async fn list_profile_drafts(
     }) {
         return Err(StatusCode::BAD_REQUEST);
     }
+    let from = page.from.as_deref().map(valid_utc_timestamp).transpose()?;
+    let until = page.until.as_deref().map(valid_utc_timestamp).transpose()?;
+    if from
+        .as_ref()
+        .zip(until.as_ref())
+        .is_some_and(|(start, end)| start >= end)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -747,10 +758,12 @@ async fn list_profile_drafts(
                  OR lower(display_name) LIKE $7 ESCAPE '\\' \
                  OR lower(policy_version) LIKE $7 ESCAPE '\\') \
              AND ($8::text IS NULL OR policy_version=$8) \
+             AND ($9::text IS NULL OR created_at >= $9) \
+             AND ($10::text IS NULL OR created_at < $10) \
              ORDER BY profile_id {direction},revision {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version, &from, &until],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1305,6 +1318,29 @@ mod tests {
         let (_, _, other_policy) =
             history_page(&app, &token, &format!("{draft_base}?policy_version=v101")).await;
         assert_eq!(other_policy.len(), 1);
+        let range = "from=2020-01-01T00%3A00%3A00.000Z&until=2090-01-01T00%3A00%3A00.000Z";
+        let (status, range_cursor, range_page) =
+            history_page(&app, &token, &format!("{draft_base}?{range}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(range_page.len(), 100);
+        let (status, _, range_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?{range}&after={}",
+                range_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(range_tail.len(), 100);
+        let (_, _, old_range) = history_page(
+            &app,
+            &token,
+            &format!("{draft_base}?until=2020-01-01T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert!(old_range.is_empty());
         let (_, _, literal_wildcard) =
             history_page(&app, &token, &format!("{draft_base}?q=%25%25")).await;
         assert!(literal_wildcard.is_empty());
@@ -1319,6 +1355,8 @@ mod tests {
             "order=newest".to_owned(),
             "q=x".to_owned(),
             "policy_version=%0A".to_owned(),
+            "from=2026-02-30T00%3A00%3A00.000Z".to_owned(),
+            "from=2090-01-01T00%3A00%3A00.000Z&until=2020-01-01T00%3A00%3A00.000Z".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))

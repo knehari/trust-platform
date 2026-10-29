@@ -134,6 +134,13 @@ try {
   await policyFilterResponse;
   await page.getByText('server-lab · revision 2').waitFor();
   await page.getByRole('button', { name: 'Clear policy' }).click();
+  await page.getByLabel('Recorded before UTC date').fill('2020-01-01');
+  const recordedRangeResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('until') === '2020-01-01T00:00:00.000Z');
+  await page.getByRole('button', { name: 'Filter dates' }).click();
+  await recordedRangeResponse;
+  await page.getByText('No proposals match the active policy or date filters').waitFor();
+  await page.getByRole('button', { name: 'Clear dates' }).click();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();
