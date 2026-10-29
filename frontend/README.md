@@ -38,6 +38,8 @@ The minimum-validity filter finds draft policies whose proposed maximum certific
 
 The minimum DNS SAN limit filter similarly finds draft policies proposing a maximum count at or above 1–100. It remains CA scoped and is an informational review aid only.
 
+Advanced proposal filters are collapsed by default. The summary shows how many server-side filters are active; readers can expand them to edit or clear individual constraints, or clear all advanced filters together. Search and exact revision lookup remain directly visible.
+
 Readers may explicitly select up to 100 loaded proposals for a browser-generated, formula-safe metadata CSV. The selection clears when the CA or server-side filters change; the export omits actor identity, certificate material and approval evidence.
 
 An exact proposal detail can copy a field-allowlisted JSON metadata snapshot including its digest and advisory warnings. This copy is informational and contains no signed review or approval evidence.
