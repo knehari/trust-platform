@@ -127,6 +127,7 @@ try {
   await page.getByText('No proposals match “hidden”').waitFor();
   await page.getByRole('button', { name: 'Clear search' }).click();
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByText('Advanced filters (0 active)').click();
   await page.locator('#profile-draft-policy-filter').fill('v2');
   const policyFilterResponse = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).searchParams.get('policy_version') === 'v2');
@@ -179,8 +180,9 @@ try {
   const unfilteredProfiles = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).pathname.endsWith('/profile-drafts')
     && !new URL(response.url()).searchParams.has('profile_id'));
-  await page.getByRole('button', { name: 'Clear filter' }).click();
+  await page.getByRole('button', { name: 'Clear all advanced filters' }).click();
   await unfilteredProfiles;
+  await page.getByText('Advanced filters (0 active)').waitFor();
   await page.getByRole('button', { name: 'View proposal detail' }).first().click();
   const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
   await profileDialog.waitFor();
@@ -234,6 +236,7 @@ try {
   assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 1);
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
+  await page.getByText('Advanced filters (0 active)').click();
   await page.locator('#profile-draft-id-filter').fill('missing-profile');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByText('No revisions recorded for missing-profile').waitFor();
