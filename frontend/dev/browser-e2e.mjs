@@ -139,8 +139,15 @@ try {
     && new URL(response.url()).searchParams.get('until') === '2020-01-01T00:00:00.000Z');
   await page.getByRole('button', { name: 'Filter dates' }).click();
   await recordedRangeResponse;
-  await page.getByText('No proposals match the active policy or date filters').waitFor();
+  await page.getByText('No proposals match the active filters').waitFor();
   await page.getByRole('button', { name: 'Clear dates' }).click();
+  await page.locator('#profile-draft-validity-filter').fill('91');
+  const validityResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('min_validity_days') === '91');
+  await page.getByRole('button', { name: 'Filter validity' }).click();
+  await validityResponse;
+  await page.getByText('No proposals match the active filters').waitFor();
+  await page.getByRole('button', { name: 'Clear validity' }).click();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();

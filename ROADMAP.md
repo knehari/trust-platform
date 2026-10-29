@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #161](https://github.com/knehari/trust-platform/pull/161) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #162](https://github.com/knehari/trust-platform/pull/162) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -60,6 +60,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] Triage advisory syntax warnings among already loaded proposal revisions, with an explicit loaded-only count ([Draft #159](https://github.com/knehari/trust-platform/pull/159)).
 - [x] Filter the complete authorized proposal history by exact policy version with cursor continuity ([Draft #160](https://github.com/knehari/trust-platform/pull/160)).
 - [x] Filter proposal history by inclusive/exclusive UTC recorded dates while retaining CA scope and pagination ([Draft #161](https://github.com/knehari/trust-platform/pull/161)).
+- [x] Triage proposed maximum-validity lifetimes by a server-side minimum-days filter across authorized history ([Draft #162](https://github.com/knehari/trust-platform/pull/162)).
 - [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.

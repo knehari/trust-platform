@@ -107,6 +107,7 @@ struct ProfileDraftQuery {
     policy_version: Option<String>,
     from: Option<String>,
     until: Option<String>,
+    min_validity_days: Option<i32>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -729,6 +730,12 @@ async fn list_profile_drafts(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+    if page
+        .min_validity_days
+        .is_some_and(|value| !(1..=825).contains(&value))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -760,10 +767,11 @@ async fn list_profile_drafts(
              AND ($8::text IS NULL OR policy_version=$8) \
              AND ($9::text IS NULL OR created_at >= $9) \
              AND ($10::text IS NULL OR created_at < $10) \
+             AND ($11::integer IS NULL OR max_validity_days >= $11) \
              ORDER BY profile_id {direction},revision {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version, &from, &until],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version, &from, &until, &page.min_validity_days],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1341,6 +1349,24 @@ mod tests {
         )
         .await;
         assert!(old_range.is_empty());
+        let (status, validity_cursor, validity_page) =
+            history_page(&app, &token, &format!("{draft_base}?min_validity_days=90")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validity_page.len(), 100);
+        let (status, _, validity_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?min_validity_days=90&after={}",
+                validity_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validity_tail.len(), 100);
+        let (_, _, high_validity) =
+            history_page(&app, &token, &format!("{draft_base}?min_validity_days=91")).await;
+        assert!(high_validity.is_empty());
         let (_, _, literal_wildcard) =
             history_page(&app, &token, &format!("{draft_base}?q=%25%25")).await;
         assert!(literal_wildcard.is_empty());
@@ -1357,6 +1383,8 @@ mod tests {
             "policy_version=%0A".to_owned(),
             "from=2026-02-30T00%3A00%3A00.000Z".to_owned(),
             "from=2090-01-01T00%3A00%3A00.000Z&until=2020-01-01T00%3A00%3A00.000Z".to_owned(),
+            "min_validity_days=0".to_owned(),
+            "min_validity_days=826".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))
