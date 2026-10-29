@@ -148,6 +148,13 @@ try {
   await validityResponse;
   await page.getByText('No proposals match the active filters').waitFor();
   await page.getByRole('button', { name: 'Clear validity' }).click();
+  await page.locator('#profile-draft-san-filter').fill('6');
+  const sanResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('min_dns_sans') === '6');
+  await page.getByRole('button', { name: 'Filter SAN limit' }).click();
+  await sanResponse;
+  await page.getByText('No proposals match the active filters').waitFor();
+  await page.getByRole('button', { name: 'Clear SAN limit' }).click();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();
