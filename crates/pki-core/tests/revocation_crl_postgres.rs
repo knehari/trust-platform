@@ -381,6 +381,34 @@ fn status_changes_feed_a_signed_stored_crl_with_replay_and_failure_handling() {
         .unwrap();
     assert_eq!(row.get::<usize, Vec<u8>>(0), crl1);
     assert_eq!(row.get::<usize, String>(1), "STORED");
+    // The stored CRL carries the reserved times, and its nextUpdate follows
+    // the CA's crl_validity (0014), as the database recorded them.
+    let times = reader
+        .query_one(
+            "SELECT floor(extract(epoch FROM p.this_update))::bigint,
+                    floor(extract(epoch FROM p.next_update))::bigint,
+                    extract(epoch FROM r.crl_validity)::bigint,
+                    floor(extract(epoch FROM clock_timestamp()))::bigint
+             FROM crl_publication p JOIN ca_revocation_policy r USING (ca_id)
+             WHERE p.ca_id=$1::text::uuid AND p.crl_number=1",
+            &[&ca_id],
+        )
+        .unwrap();
+    let (this_db, next_db, validity, now_db): (i64, i64, i64, i64) =
+        (times.get(0), times.get(1), times.get(2), times.get(3));
+    let list = x509_cert::crl::CertificateList::from_der(&crl1).unwrap();
+    let unix = |t: &x509_cert::time::Time| t.to_unix_duration().as_secs() as i64;
+    assert_eq!(unix(&list.tbs_cert_list.this_update), this_db);
+    assert_eq!(
+        list.tbs_cert_list.next_update.as_ref().map(unix),
+        Some(next_db)
+    );
+    assert_eq!(
+        (r1.this_update_unix(), r1.next_update_unix()),
+        (this_db, next_db)
+    );
+    assert_eq!(next_db - this_db, validity);
+    assert!((0..300).contains(&(now_db - this_db)), "thisUpdate is now");
 
     // CRL 2: after releasing #2 only #1 remains.
     change(&mut store, &ca_id, &s2, StatusAction::Release, None);

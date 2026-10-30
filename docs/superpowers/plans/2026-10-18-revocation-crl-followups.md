@@ -35,9 +35,11 @@ reservation and `CrlPlan::issuer` (spec §4 step 2).
   for the old certificates) is not modelled.
 
 ## Test gaps
-- Integration test asserts no thisUpdate/nextUpdate values (OpenSSL now
-  checks the PostgreSQL-stored CRLs, and `ExpiredCertsOnCRL` is tested per
-  conformance target through PostgreSQL).
+- Closed: the PostgreSQL pipeline test checks that the stored CRL's
+  thisUpdate and nextUpdate are the reserved ones, that nextUpdate −
+  thisUpdate is the CA's `crl_validity`, and that thisUpdate is the
+  database's present (besides OpenSSL on the stored CRLs, `ExpiredCertsOnCRL`
+  per conformance target, and the `crl.rs` golden vector).
 - Migration-retry and ledger scripts stop at 0013 (the populated 0014/0015
   upgrade and its fail-closed aborts are covered by
   `tests/revocation_populated_upgrade.sh`). From 0026 on,
