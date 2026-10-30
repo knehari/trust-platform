@@ -186,8 +186,10 @@ fn schema_present(
              AND attname='recorded_at_window' AND NOT attisdropped)",
             &[],
         )?;
-        return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all)
-            && relations_present(tx, relations, require_all)?);
+        return Ok(
+            (0..2).all(|index| row.get::<usize, bool>(index) == require_all)
+                && relations_present(tx, relations, require_all)?,
+        );
     }
     relations_present(tx, relations, require_all)
 }

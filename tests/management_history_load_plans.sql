@@ -240,8 +240,8 @@ ORDER BY c.display_name,c.ca_id LIMIT 101;
 -- The API reads a page in time slices on the views' window columns (see
 -- docs/operations/lab-history-time-window.md): the same SELECT plus a range
 -- outward from the cursor. A bounded slice must reach the window index
--- through the barrier; the open last slice is the unsliced query above with
--- one more leakproof bound.
+-- through the barrier. When four bounded slices do not fill a page, the API
+-- runs the unsliced statement measured above (C1-C12, A1-A9).
 \set wslice ' AND signed_at_window <= ' :'cert_mid_t' '::text::timestamp - 0::float8 * interval ''1 second'' AND signed_at_window > ' :'cert_mid_t' '::text::timestamp - 3600::float8 * interval ''1 second'''
 \set aslice ' AND recorded_at_window <= ' :'audit_mid_t' '::text::timestamp - 0::float8 * interval ''1 second'' AND recorded_at_window > ' :'audit_mid_t' '::text::timestamp - 3600::float8 * interval ''1 second'''
 
@@ -259,13 +259,6 @@ EXPLAIN (ANALYZE, BUFFERS) :auditsel
   AND (NULL::text IS NULL OR decision = NULL) AND (NULL::text IS NULL OR policy_version = NULL)
   :aslice
   ORDER BY recorded_at DESC, event_id DESC LIMIT 101;
-
-\echo '### W3 certificates, SAN with no match, cursor in the middle, open last slice (beyond 85 hours)'
-EXPLAIN (ANALYZE, BUFFERS) :certsel
-  AND (:'cert_mid_t'::text IS NULL OR (signed_at, request_id) < (:'cert_mid_t', :'cert_mid_id'))
-  AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = 'absent.lab.invalid')
-  AND signed_at_window <= :'cert_mid_t'::text::timestamp - 306000::float8 * interval '1 second'
-  ORDER BY signed_at DESC, request_id DESC LIMIT 101;
 
 -- Fail if a bounded slice stops reaching its window index.
 SELECT :'certsel' || ' AND (signed_at, request_id) < (' || quote_literal(:'cert_mid_t') || ', '

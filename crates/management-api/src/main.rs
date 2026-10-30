@@ -29,6 +29,11 @@ const MAX_HTTP_DATA_REQUESTS: usize = 16;
 const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_SIZE: usize = 100;
+/// Every view and column the read routes use, including the history window
+/// columns of migration 0016; LIMIT 0 reads no row.
+const MANAGEMENT_VIEWS_CHECK: &str = "SELECT c.signed_at_window, a.recorded_at_window \
+     FROM management_ca, management_certificate c, management_audit a, management_reader_scope \
+     LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -283,7 +288,8 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 /// the whole authority; a leakproof range on the view's millisecond window
 /// column reaches its index instead. Slices are taken outward from an anchor
 /// (the cursor, or a start point when there is none) and partition the
-/// history, so concatenating their ordered rows keeps the page order.
+/// history, so concatenating their ordered rows keeps the page order. When
+/// they do not fill the page, the unsliced statement reads it instead.
 struct HistorySlices<'a> {
     window: &'static str,
     /// Projection, mandatory CA and grant predicates, cursor and filters.
@@ -301,10 +307,11 @@ struct HistorySlices<'a> {
 
 /// Width of a first slice, in seconds; later slices grow fourfold.
 const HISTORY_SLICE_SECONDS: i64 = 3_600;
-/// Bounded slices read before one open slice takes the rest (1, 4, 16 and
-/// 64 hours from the anchor). Each slice joins and sorts all its rows, so
-/// a sparse or empty filter, or an anchor far from the authority's rows,
-/// ends in that open slice: such a page costs about what one statement did.
+/// Bounded slices read before falling back to the unsliced statement (1, 4,
+/// 16 and 64 hours from the anchor). Each slice joins and sorts all its
+/// rows, so a sparse or empty filter, or an anchor far from the authority's
+/// rows, ends in that fallback: such a page costs what one statement did,
+/// plus these four small slices.
 const HISTORY_BOUNDED_SLICES: u32 = 4;
 
 impl HistorySlices<'_> {
@@ -344,8 +351,10 @@ impl HistorySlices<'_> {
         let (range, offsets) = self.range(self.params.len() + 1, inner, outer);
         let sql = format!("{}{range}{} LIMIT {limit}", self.select, self.order);
         let mut params = self.params.clone();
-        params.push(&self.anchor);
-        params.extend(offsets.iter().map(|offset| offset as &(dyn ToSql + Sync)));
+        if !offsets.is_empty() {
+            params.push(&self.anchor);
+            params.extend(offsets.iter().map(|offset| offset as &(dyn ToSql + Sync)));
+        }
         statement_budget(db, deadline)?;
         db.query(&sql, &params)
     }
@@ -359,18 +368,21 @@ impl HistorySlices<'_> {
         let mut rows = Vec::new();
         let mut inner = self.from_cursor.then_some(0_i64);
         let mut width = HISTORY_SLICE_SECONDS;
-        for bounded in 0..=HISTORY_BOUNDED_SLICES {
-            let start = inner.unwrap_or(0);
-            let outer = (bounded < HISTORY_BOUNDED_SLICES).then_some(start + width);
+        for _ in 0..HISTORY_BOUNDED_SLICES {
+            let outer = inner.unwrap_or(0) + width;
             let limit = HISTORY_PAGE_SIZE + 1 - rows.len();
-            rows.extend(self.slice(db, deadline, inner, outer, limit)?);
+            rows.extend(self.slice(db, deadline, inner, Some(outer), limit)?);
             if rows.len() > HISTORY_PAGE_SIZE {
-                break;
+                return Ok(rows);
             }
-            inner = outer;
+            inner = Some(outer);
             width *= 4;
         }
-        Ok(rows)
+        // The bounded slices did not fill the page: read it again with the
+        // unsliced statement. Its plan is the one used before slicing (a
+        // window bound on the remaining rows would cost a per-row time
+        // computation in that scan).
+        self.slice(db, deadline, None, None, HISTORY_PAGE_SIZE + 1)
     }
 }
 
@@ -446,6 +458,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await
     .map_err(|_| "management reader grants unavailable")?;
+    query_db(database_url.clone(), database_slots.clone(), |db| {
+        db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
+    })
+    .await
+    .map_err(|_| "management views unavailable or older than migration 0016")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -564,11 +581,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             }
             // Parse and authorize every view used by the read routes without
             // scanning or returning any CA, certificate, audit or grant rows.
-            db.query(
-                "SELECT 1 FROM management_ca, management_certificate, \
-                 management_audit, management_reader_scope LIMIT 0",
-                &[],
-            )?;
+            db.query(MANAGEMENT_VIEWS_CHECK, &[])?;
             Ok(true)
         })
         .await;
@@ -1737,13 +1750,13 @@ mod tests {
         // The expected order is one unsliced statement through the same views,
         // as the reader login (the full scan the slices replace).
         let cases = [
-            ("certificates", "", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at DESC, request_id DESC", 226),
-            ("certificates", "?order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at, request_id", 226),
-            ("certificates", "?cn=needle-", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at DESC, request_id DESC", 13),
-            ("certificates", "?cn=needle-&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at, request_id", 13),
-            ("audit", "", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC, event_id DESC", 226),
-            ("audit", "?order=oldest", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at, event_id", 226),
-            ("audit", "?event_type=certificate.revoked", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 AND event_type='certificate.revoked' ORDER BY recorded_at DESC, event_id DESC", 13),
+            ("certificates", "", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at DESC, request_id DESC", 376),
+            ("certificates", "?order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at, request_id", 376),
+            ("certificates", "?cn=needle-", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at DESC, request_id DESC", 22),
+            ("certificates", "?cn=needle-&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at, request_id", 22),
+            ("audit", "", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC, event_id DESC", 376),
+            ("audit", "?order=oldest", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at, event_id", 376),
+            ("audit", "?event_type=certificate.revoked", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 AND event_type='certificate.revoked' ORDER BY recorded_at DESC, event_id DESC", 22),
         ];
         let queries: Vec<&'static str> = cases.iter().map(|case| case.3).collect();
         let expected: Vec<Vec<String>> = tokio::task::spawn_blocking(move || {
