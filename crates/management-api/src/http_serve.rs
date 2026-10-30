@@ -21,6 +21,9 @@
 //!   The bound is above the database statement timeouts, so it only ends
 //!   requests that wait on the client (or hang).
 //!
+//! Every 429 carries `Retry-After: 60` (the request budgets use one-minute
+//! windows), whichever limit produced it.
+//!
 //! HTTP/1.1 only, as the TLS listener advertises with ALPN. Each request
 //! carries its client address as `ConnectInfo<ClientAddr>`.
 use crate::rate_limit::{ClientAddr, IpNet};
@@ -77,10 +80,12 @@ pub async fn serve<L>(mut listener: L, router: Router, limits: Limits) -> io::Re
 where
     L: Listener<Addr = SocketAddr>,
 {
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        limits.request_timeout,
-        request_deadline,
-    ));
+    let router = router
+        .layer(axum::middleware::from_fn_with_state(
+            limits.request_timeout,
+            request_deadline,
+        ))
+        .layer(axum::middleware::from_fn(retry_after));
     let connections = Arc::new(Semaphore::new(limits.max_connections));
     let per_address = Arc::new(PerAddress {
         limit: limits.max_per_address,
@@ -172,6 +177,25 @@ impl Drop for AddressSlot {
     }
 }
 
+/// Seconds a client refused with 429 should wait: the length of the
+/// request budgets' windows.
+const RETRY_AFTER_SECONDS: &str = "60";
+
+/// Adds `Retry-After` to every 429 that has none.
+async fn retry_after(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    if response.status() == axum::http::StatusCode::TOO_MANY_REQUESTS {
+        response
+            .headers_mut()
+            .entry(axum::http::header::RETRY_AFTER)
+            .or_insert(axum::http::HeaderValue::from_static(RETRY_AFTER_SECONDS));
+    }
+    response
+}
+
 /// Answers 408 (and closes the connection) once the request, its body
 /// included, has run for `deadline`.
 async fn request_deadline(
@@ -214,6 +238,10 @@ mod tests {
                 .route(
                     "/echo",
                     axum::routing::post(|body: String| async move { body }),
+                )
+                .route(
+                    "/busy",
+                    get(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
                 )
                 .route(
                     "/hang",
@@ -382,6 +410,28 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(get_peer(addr).await.starts_with("HTTP/1.1 200"));
         drop(held);
+    }
+
+    /// Every 429 tells the client when to retry (RFC 6585 section 4): the
+    /// request budgets use one-minute windows.
+    #[tokio::test]
+    async fn too_many_requests_carry_retry_after() {
+        let addr = start(Limits::default()).await;
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        stream
+            .write_all(b"GET /busy HTTP/1.1\r\nhost: lab\r\nconnection: close\r\n\r\n")
+            .await
+            .expect("request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("response");
+        let response = String::from_utf8_lossy(&response).to_ascii_lowercase();
+        assert!(response.starts_with("http/1.1 429"), "{response}");
+        assert!(response.contains("\r\nretry-after: 60\r\n"), "{response}");
+        // Other statuses carry none.
+        assert!(!get_peer(addr)
+            .await
+            .to_ascii_lowercase()
+            .contains("retry-after"));
     }
 
     #[tokio::test]

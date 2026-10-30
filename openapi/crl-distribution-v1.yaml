@@ -81,6 +81,6 @@ components:
     NotFound:
       description: Not a canonical CA file name, or no stored CRL of that kind for the CA.
     TooManyRequests:
-      description: Request budget spent (600 per minute per client address, per process).
+      description: Request budget spent (600 per minute per client address, per process); Retry-After gives 60 seconds.
     Unavailable:
       description: Request slots busy, database unavailable, or the stored CRL does not re-verify.
