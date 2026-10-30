@@ -157,8 +157,9 @@ fn cursor_for(database_url: &str, query: &str, position: &str) -> Option<String>
     Some(row.get(0))
 }
 
-fn percentile(sorted: &[f64], fraction: f64) -> f64 {
-    sorted[((sorted.len() - 1) as f64 * fraction).round() as usize]
+fn percentile(sorted: &[f64], fraction: f64) -> Option<f64> {
+    let last = sorted.len().checked_sub(1)?;
+    Some(sorted[(last as f64 * fraction).round() as usize])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

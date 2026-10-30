@@ -28,11 +28,16 @@ SELECT event_id::text AS event_id, ca_id::text AS ca_id,
        date_trunc('milliseconds', recorded_at AT TIME ZONE 'UTC') AS recorded_at_window
 FROM audit_event;
 
--- Both expressions are IMMUTABLE built-ins (timezone with a fixed zone,
--- date_trunc on timestamp without time zone, uuid to text).
+-- The expressions are IMMUTABLE built-ins (timezone with a fixed zone,
+-- date_trunc on timestamp without time zone). The indexes deliberately leave
+-- out ca_id::text: an index on that expression gives the planner exact
+-- statistics for the views' CA predicate, and with them it switches the
+-- unsliced SAN and combined filters to slower plans (measured: 1.7 s to
+-- 3.8 s on 800,000 rows). A slice's CA predicate is a filter on the few
+-- rows of its time range.
 CREATE INDEX certificate_management_history_window
-    ON certificate ((ca_id::text), (date_trunc('milliseconds', signed_at AT TIME ZONE 'UTC')));
+    ON certificate ((date_trunc('milliseconds', signed_at AT TIME ZONE 'UTC')));
 CREATE INDEX audit_event_management_history_window
-    ON audit_event ((ca_id::text), (date_trunc('milliseconds', recorded_at AT TIME ZONE 'UTC')));
+    ON audit_event ((date_trunc('milliseconds', recorded_at AT TIME ZONE 'UTC')));
 
 COMMIT;
