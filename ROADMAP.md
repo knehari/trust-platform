@@ -40,7 +40,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 ### Next implementation sequence
 
 - [x] Add an exclusive server-side filter on recorded certificate validity end, keep it across pages and exercise it in the browser ([Draft #135](https://github.com/knehari/trust-platform/pull/135); all six checks green on `9a640193b7e67d77b0770a3516a8ae369afeed82`).
-- [ ] Measure filtered-history query plans and load through the security-barrier views; add only justified indexes or query changes.
+- [x] Measure filtered-history query plans and load through the security-barrier views; add only justified indexes or query changes ([measurements](docs/operations/lab-history-load-query-plans.md)). On 306,000 certificates and events, a history page scans its authority's rows (about 300 ms per certificate page and 110 ms per audit page for 200,000 rows, 1.5 s and 0.5 s under 8 readers). No index or query change is justified while the views stay `security_barrier`. Lifting the barrier (the views filter no rows; isolation is enforced by the API) is an open security decision.
 - [ ] Specify CA and profile lifecycle, actor permissions, approval states and immutable policy/version binding before adding write routes.
 - [ ] Implement versioned profile management and then CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.

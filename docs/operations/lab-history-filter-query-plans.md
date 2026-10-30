@@ -33,3 +33,7 @@ Any change must retain the signed CA scope, database grant, cursor order and
 read-only role. Follow-up load tests should vary authority size, matching
 selectivity, concurrent readers and cold buffers; this rehearsal covers only
 one disposable dataset.
+
+The follow-up measurement on 306,000 certificates and 306,000 events across
+302 authorities, with cursors, combined filters and concurrent readers, is in
+[lab-history-load-query-plans.md](lab-history-load-query-plans.md).
