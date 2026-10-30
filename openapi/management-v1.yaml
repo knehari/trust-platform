@@ -219,7 +219,7 @@ components:
       in: query
       name: before
       required: false
-      description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
+      description: Pass the previous page's X-Next-Cursor unchanged. Malformed values, including impossible calendar times, return 400.
       schema: { type: string, maxLength: 61 }
     HistoryOrder:
       in: query

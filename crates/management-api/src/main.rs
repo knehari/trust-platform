@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use postgres::{Client, NoTls, Row};
+use postgres::{types::ToSql, Client, IsolationLevel, NoTls, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -29,6 +29,11 @@ const MAX_HTTP_DATA_REQUESTS: usize = 16;
 const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_SIZE: usize = 100;
+/// Every view and column the read routes use, including the history window
+/// columns of migration 0016; LIMIT 0 reads no row.
+const MANAGEMENT_VIEWS_CHECK: &str = "SELECT c.signed_at_window, a.recorded_at_window \
+     FROM management_ca, management_certificate c, management_audit a, management_reader_scope \
+     LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -256,22 +261,11 @@ fn encode_ca_cursor(ca: &Ca) -> String {
 fn parse_history_cursor(raw: Option<String>) -> Result<Option<(String, String)>, StatusCode> {
     let Some(raw) = raw else { return Ok(None) };
     let (timestamp, id) = raw.split_once('|').ok_or(StatusCode::BAD_REQUEST)?;
-    let bytes = timestamp.as_bytes();
-    let valid_timestamp = bytes.len() == 24
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes[10] == b'T'
-        && bytes[13] == b':'
-        && bytes[16] == b':'
-        && bytes[19] == b'.'
-        && bytes[23] == b'Z'
-        && bytes.iter().enumerate().all(|(index, byte)| {
-            matches!(index, 4 | 7 | 10 | 13 | 16 | 19 | 23) || byte.is_ascii_digit()
-        });
-    if !valid_timestamp
-        || uuid::Uuid::parse_str(id)
-            .map(|uuid| uuid.to_string() != id)
-            .unwrap_or(true)
+    // A real calendar time: the cursor time also anchors the page's slices.
+    valid_utc_timestamp(timestamp)?;
+    if uuid::Uuid::parse_str(id)
+        .map(|uuid| uuid.to_string() != id)
+        .unwrap_or(true)
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -287,6 +281,158 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
         );
     }
     headers
+}
+
+/// A history listing read in time slices. PostgreSQL does not push
+/// `ORDER BY … LIMIT` into a `security_barrier` view, so one query would scan
+/// the whole authority; a leakproof range on the view's millisecond window
+/// column reaches its index instead. Slices are taken outward from an anchor
+/// (the cursor, or a start point when there is none) and partition the
+/// history, so concatenating their ordered rows keeps the page order. When
+/// they do not fill the page, the unsliced statement reads it instead.
+struct HistorySlices<'a> {
+    window: &'static str,
+    /// Projection, mandatory CA and grant predicates, cursor and filters.
+    select: String,
+    order: String,
+    /// `$1` is the CA, `$2` and `$3` the reader's issuer and subject.
+    params: Vec<&'a (dyn ToSql + Sync)>,
+    newest: bool,
+    /// UTC timestamp text in the views' format.
+    anchor: String,
+    /// With a cursor the first slice starts at the anchor; without one it is
+    /// open on the far side, so rows beyond the start point are not missed.
+    from_cursor: bool,
+}
+
+/// Width of a first slice, in seconds; later slices grow fourfold.
+const HISTORY_SLICE_SECONDS: i64 = 3_600;
+/// Bounded slices read before falling back to the unsliced statement (1, 4,
+/// 16 and 64 hours from the anchor). Each slice joins and sorts all its
+/// rows, so a sparse or empty filter, or an anchor far from the authority's
+/// rows, ends in that fallback: such a page costs what one statement did,
+/// plus these four small slices.
+const HISTORY_BOUNDED_SLICES: u32 = 4;
+
+impl HistorySlices<'_> {
+    /// Predicates for rows whose distance from the anchor is in
+    /// `[inner, outer)`; `None` leaves that side open. Placeholders start at
+    /// `$first` (the anchor), followed by the offsets in seconds.
+    fn range(&self, first: usize, inner: Option<i64>, outer: Option<i64>) -> (String, Vec<f64>) {
+        let (sign, inner_op, outer_op) = if self.newest {
+            ("-", "<=", ">")
+        } else {
+            ("+", ">=", "<")
+        };
+        let mut sql = String::new();
+        let mut offsets = Vec::new();
+        for (offset, op) in [(inner, inner_op), (outer, outer_op)] {
+            if let Some(offset) = offset {
+                offsets.push(offset as f64);
+                sql.push_str(&format!(
+                    " AND {} {op} ${first}::text::timestamp {sign} ${}::float8 * interval '1 second'",
+                    self.window,
+                    first + offsets.len()
+                ));
+            }
+        }
+        (sql, offsets)
+    }
+
+    /// The page's rows at a distance in `[inner, outer)`, at most `limit`.
+    fn slice(
+        &self,
+        db: &mut Transaction<'_>,
+        deadline: Instant,
+        inner: Option<i64>,
+        outer: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<Row>, postgres::Error> {
+        let (range, offsets) = self.range(self.params.len() + 1, inner, outer);
+        let sql = format!("{}{range}{} LIMIT {limit}", self.select, self.order);
+        let mut params = self.params.clone();
+        if !offsets.is_empty() {
+            params.push(&self.anchor);
+            params.extend(offsets.iter().map(|offset| offset as &(dyn ToSql + Sync)));
+        }
+        statement_budget(db, deadline)?;
+        db.query(&sql, &params)
+    }
+
+    /// Up to `HISTORY_PAGE_SIZE + 1` rows in page order.
+    fn read(
+        &self,
+        db: &mut Transaction<'_>,
+        deadline: Instant,
+    ) -> Result<Vec<Row>, postgres::Error> {
+        let mut rows = Vec::new();
+        let mut inner = self.from_cursor.then_some(0_i64);
+        let mut width = HISTORY_SLICE_SECONDS;
+        for _ in 0..HISTORY_BOUNDED_SLICES {
+            let outer = inner.unwrap_or(0) + width;
+            let limit = HISTORY_PAGE_SIZE + 1 - rows.len();
+            rows.extend(self.slice(db, deadline, inner, Some(outer), limit)?);
+            if rows.len() > HISTORY_PAGE_SIZE {
+                return Ok(rows);
+            }
+            inner = Some(outer);
+            width *= 4;
+        }
+        // The bounded slices did not fill the page: read it again with the
+        // unsliced statement. Its plan is the one used before slicing (a
+        // window bound on the remaining rows would cost a per-row time
+        // computation in that scan).
+        self.slice(db, deadline, None, None, HISTORY_PAGE_SIZE + 1)
+    }
+}
+
+/// Gives the next statement what is left of the page's time budget (at
+/// least 1 ms, so an exhausted budget fails it instead of running on).
+fn statement_budget(db: &mut Transaction<'_>, deadline: Instant) -> Result<(), postgres::Error> {
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis()
+        .max(1)
+        .to_string();
+    db.execute(
+        "SELECT set_config('statement_timeout', $1, true)",
+        &[&remaining],
+    )?;
+    Ok(())
+}
+
+/// A read-only transaction with one snapshot for all the slices of a page.
+fn history_transaction(db: &mut Client) -> Result<Transaction<'_>, postgres::Error> {
+    db.build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+}
+
+/// Where the slices of a page start: the cursor's time, or, for a first
+/// page, the current time (newest first) or the authority's creation time
+/// (oldest first).
+fn history_anchor(
+    tx: &mut Transaction<'_>,
+    ca_id: &str,
+    cursor_time: Option<&String>,
+    newest: bool,
+) -> Result<String, postgres::Error> {
+    if let Some(time) = cursor_time {
+        return Ok(time.clone());
+    }
+    let row = if newest {
+        tx.query_one(
+            "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
+            &[],
+        )?
+    } else {
+        tx.query_one(
+            "SELECT created_at FROM management_ca WHERE ca_id=$1",
+            &[&ca_id],
+        )?
+    };
+    Ok(row.get(0))
 }
 
 #[tokio::main]
@@ -312,6 +458,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await
     .map_err(|_| "management reader grants unavailable")?;
+    query_db(database_url.clone(), database_slots.clone(), |db| {
+        db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
+    })
+    .await
+    .map_err(|_| "management views unavailable or older than migration 0016")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -430,11 +581,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             }
             // Parse and authorize every view used by the read routes without
             // scanning or returning any CA, certificate, audit or grant rows.
-            db.query(
-                "SELECT 1 FROM management_ca, management_certificate, \
-                 management_audit, management_reader_scope LIMIT 0",
-                &[],
-            )?;
+            db.query(MANAGEMENT_VIEWS_CHECK, &[])?;
             Ok(true)
         })
         .await;
@@ -657,31 +804,46 @@ async fn list_certificates(
     let issuer = claims.iss;
     let subject = claims.sub;
     let rows = query_db(state.database_url, state.database_slots, move |db| {
-        let granted: bool = db.query_one(
+        let deadline = Instant::now() + Duration::from_millis(DATABASE_STATEMENT_TIMEOUT_MS);
+        // One snapshot for every slice of the page, as for a single statement.
+        let mut tx = history_transaction(db)?;
+        let granted: bool = tx.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let mut query = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
+        let mut select = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5))");
-        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+        let mut params: Vec<&(dyn ToSql + Sync)> =
             vec![&ca_id, &issuer, &subject, &before_time, &before_id];
         if let Some(prefix) = cn_prefix.as_ref() {
-            query.push_str(&format!(" AND lower(subject_cn) LIKE ${} ESCAPE '\\'", params.len() + 1));
+            select.push_str(&format!(" AND lower(subject_cn) LIKE ${} ESCAPE '\\'", params.len() + 1));
             params.push(prefix);
         }
         if let Some(dns) = san_dns.as_ref() {
-            query.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = ${})", params.len() + 1));
+            select.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = ${})", params.len() + 1));
             params.push(dns);
         }
         if let Some(cutoff) = not_after_before.as_ref() {
-            query.push_str(&format!(" AND not_after < ${}", params.len() + 1));
+            select.push_str(&format!(" AND not_after < ${}", params.len() + 1));
             params.push(cutoff);
         }
-        query.push_str(&format!(" ORDER BY signed_at {direction}, request_id {direction} LIMIT 101"));
-        db.query(&query, &params).map(Some)
+        let newest = direction == "DESC";
+        let anchor = history_anchor(&mut tx, &ca_id, before_time.as_ref(), newest)?;
+        let slices = HistorySlices {
+            window: "signed_at_window",
+            select,
+            order: format!(" ORDER BY signed_at {direction}, request_id {direction}"),
+            params,
+            newest,
+            anchor,
+            from_cursor: before_time.is_some(),
+        };
+        let rows = slices.read(&mut tx, deadline)?;
+        tx.commit()?;
+        Ok(Some(rows))
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
     let items: Vec<Certificate> = rows
@@ -783,12 +945,14 @@ async fn list_audit(
     let issuer = claims.iss;
     let subject = claims.sub;
     let rows = query_db(state.database_url, state.database_slots, move |db| {
-        let granted: bool = db.query_one(
+        let deadline = Instant::now() + Duration::from_millis(DATABASE_STATEMENT_TIMEOUT_MS);
+        let mut tx = history_transaction(db)?;
+        let granted: bool = tx.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let query = format!("SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
+        let select = format!("SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
              FROM management_audit WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (recorded_at, event_id) {comparison} ($4, $5)) \
@@ -796,12 +960,21 @@ async fn list_audit(
              AND ($7::text IS NULL OR recorded_at < $7) \
              AND ($8::text IS NULL OR event_type = $8) \
              AND ($9::text IS NULL OR decision = $9) \
-             AND ($10::text IS NULL OR policy_version = $10) \
-             ORDER BY recorded_at {direction}, event_id {direction} LIMIT 101");
-        db.query(
-            &query,
-            &[&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type, &filters.decision, &filters.policy_version]
-        ).map(Some)
+             AND ($10::text IS NULL OR policy_version = $10)");
+        let newest = direction == "DESC";
+        let anchor = history_anchor(&mut tx, &ca_id, before_time.as_ref(), newest)?;
+        let slices = HistorySlices {
+            window: "recorded_at_window",
+            select,
+            order: format!(" ORDER BY recorded_at {direction}, event_id {direction}"),
+            params: vec![&ca_id, &issuer, &subject, &before_time, &before_id, &filters.from, &filters.until, &filters.event_type, &filters.decision, &filters.policy_version],
+            newest,
+            anchor,
+            from_cursor: before_time.is_some(),
+        };
+        let rows = slices.read(&mut tx, deadline)?;
+        tx.commit()?;
+        Ok(Some(rows))
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
     let items: Vec<Audit> = rows
@@ -857,6 +1030,9 @@ async fn get_audit_event(
 }
 
 #[cfg(test)]
+mod history_timing;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
@@ -886,6 +1062,50 @@ mod tests {
         ] {
             assert_eq!(valid_utc_timestamp(invalid), Err(StatusCode::BAD_REQUEST));
         }
+    }
+
+    #[test]
+    fn history_cursor_time_checks_calendar_date() {
+        let id = "11111111-1111-4111-8111-000000000001";
+        assert!(parse_history_cursor(Some(format!("2028-02-29T00:00:00.000Z|{id}"))).is_ok());
+        // Before the slices, an impossible date only compared as text; it now
+        // anchors a timestamp, so it must be refused as a bad request.
+        for time in ["2027-02-29T00:00:00.000Z", "0000-01-01T00:00:00.000Z"] {
+            assert_eq!(
+                parse_history_cursor(Some(format!("{time}|{id}"))),
+                Err(StatusCode::BAD_REQUEST)
+            );
+        }
+    }
+
+    #[test]
+    fn history_slices_partition_distances() {
+        let slices = HistorySlices {
+            window: "signed_at_window",
+            select: String::new(),
+            order: String::new(),
+            params: Vec::new(),
+            newest: true,
+            anchor: "2026-10-30T12:00:00.000Z".into(),
+            from_cursor: true,
+        };
+        let (sql, offsets) = slices.range(6, Some(0), Some(3_600));
+        assert_eq!(
+            sql,
+            " AND signed_at_window <= $6::text::timestamp - $7::float8 * interval '1 second' \
+             AND signed_at_window > $6::text::timestamp - $8::float8 * interval '1 second'"
+        );
+        assert_eq!(offsets, [0.0, 3_600.0]);
+        let oldest = HistorySlices {
+            newest: false,
+            ..slices
+        };
+        let (sql, offsets) = oldest.range(4, None, Some(60));
+        assert_eq!(
+            sql,
+            " AND signed_at_window < $4::text::timestamp + $5::float8 * interval '1 second'"
+        );
+        assert_eq!(offsets, [60.0]);
     }
 
     async fn history_page(
@@ -1451,6 +1671,122 @@ mod tests {
         assert_eq!(after_revocation, second);
         assert!(next.is_none());
     }
+    /// Every id of a history listing, following `x-next-cursor` to the end.
+    async fn all_history_ids(
+        app: &Router,
+        token: &str,
+        base: &str,
+        id_field: &str,
+    ) -> (Vec<String>, usize) {
+        let separator = if base.contains('?') { '&' } else { '?' };
+        let mut ids = Vec::new();
+        let mut pages = 0;
+        let mut cursor: Option<String> = None;
+        loop {
+            let path = match &cursor {
+                Some(cursor) => format!("{base}{separator}before={}", cursor.replace('|', "%7C")),
+                None => base.to_owned(),
+            };
+            let (status, next, items) = history_page(app, token, &path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(items.len() <= HISTORY_PAGE_SIZE);
+            pages += 1;
+            ids.extend(
+                items
+                    .iter()
+                    .map(|item| item[id_field].as_str().unwrap().to_owned()),
+            );
+            match next {
+                Some(next) => cursor = Some(next),
+                None => return (ids, pages),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn history_slices_read_every_row_in_order() {
+        let database_url = match env::var("TRUST_API_WINDOW_DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("SKIP: sliced-history PostgreSQL fixture not configured; CI runs this test with tests/management_history_window_seed.sql");
+                return;
+            }
+        };
+        const CA: &str = "abababab-0000-4000-8000-0000000000ab";
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"window-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier =
+            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("window-test".into());
+        let now = jsonwebtoken::get_current_timestamp();
+        let token = encode(
+            &header,
+            &json!({
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+                "nbf":now-1, "exp":now+120, "roles":["trust-ca-reader"], "ca_ids":[CA]
+            }),
+            &signer,
+        )
+        .unwrap();
+        let app = router(AppState {
+            verifier,
+            database_url: database_url.clone(),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        // The expected order is one unsliced statement through the same views,
+        // as the reader login (the full scan the slices replace).
+        let cases = [
+            ("certificates", "", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at DESC, request_id DESC", 376),
+            ("certificates", "?order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at, request_id", 376),
+            ("certificates", "?cn=needle-", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at DESC, request_id DESC", 22),
+            ("certificates", "?cn=needle-&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at, request_id", 22),
+            ("audit", "", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC, event_id DESC", 376),
+            ("audit", "?order=oldest", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at, event_id", 376),
+            ("audit", "?event_type=certificate.revoked", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 AND event_type='certificate.revoked' ORDER BY recorded_at DESC, event_id DESC", 22),
+        ];
+        let queries: Vec<&'static str> = cases.iter().map(|case| case.3).collect();
+        let expected: Vec<Vec<String>> = tokio::task::spawn_blocking(move || {
+            let mut db = Client::connect(&database_url, NoTls).unwrap();
+            queries
+                .iter()
+                .map(|query| {
+                    db.query(*query, &[&CA])
+                        .unwrap()
+                        .iter()
+                        .map(|row| row.get(0))
+                        .collect()
+                })
+                .collect()
+        })
+        .await
+        .unwrap();
+        for ((suffix, query, id_field, _, count), expected) in cases.into_iter().zip(expected) {
+            let base = format!("/v1/cas/{CA}/{suffix}{query}");
+            let (ids, pages) = all_history_ids(&app, &token, &base, id_field).await;
+            assert_eq!(
+                expected.len(),
+                count,
+                "{base}: fixture not loaded as expected"
+            );
+            assert_eq!(ids, expected, "{base}");
+            assert_eq!(pages, count.div_ceil(HISTORY_PAGE_SIZE), "{base}");
+        }
+    }
+
     #[test]
     fn ca_cursor_round_trips_long_escaped_name() {
         let ca = Ca {

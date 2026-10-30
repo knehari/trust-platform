@@ -236,4 +236,60 @@ AND ('Load CA 100'::text IS NULL OR (c.display_name,c.ca_id) > ('Load CA 100','c
 AND ('load ca%'::text IS NULL OR lower(c.display_name) LIKE 'load ca%' ESCAPE '\' OR lower(c.policy_version) LIKE 'load ca%' ESCAPE '\')
 ORDER BY c.display_name,c.ca_id LIMIT 101;
 
+-- ------------------------------------------------- sliced reads (0016)
+-- The API reads a page in time slices on the views' window columns (see
+-- docs/operations/lab-history-time-window.md): the same SELECT plus a range
+-- outward from the cursor. A bounded slice must reach the window index
+-- through the barrier. When four bounded slices do not fill a page, the API
+-- runs the unsliced statement measured above (C1-C12, A1-A9).
+\set wslice ' AND signed_at_window <= ' :'cert_mid_t' '::text::timestamp - 0::float8 * interval ''1 second'' AND signed_at_window > ' :'cert_mid_t' '::text::timestamp - 3600::float8 * interval ''1 second'''
+\set aslice ' AND recorded_at_window <= ' :'audit_mid_t' '::text::timestamp - 0::float8 * interval ''1 second'' AND recorded_at_window > ' :'audit_mid_t' '::text::timestamp - 3600::float8 * interval ''1 second'''
+
+\echo '### W1 certificates, no filter, cursor in the middle, first slice (1 hour)'
+EXPLAIN (ANALYZE, BUFFERS) :certsel
+  AND (:'cert_mid_t'::text IS NULL OR (signed_at, request_id) < (:'cert_mid_t', :'cert_mid_id'))
+  :wslice
+  ORDER BY signed_at DESC, request_id DESC LIMIT 101;
+
+\echo '### W2 audit, no filter, cursor in the middle, first slice (1 hour)'
+EXPLAIN (ANALYZE, BUFFERS) :auditsel
+  AND (:'audit_mid_t'::text IS NULL OR (recorded_at, event_id) < (:'audit_mid_t', :'audit_mid_id'))
+  AND (NULL::text IS NULL OR recorded_at >= NULL) AND (NULL::text IS NULL OR recorded_at < NULL)
+  AND (NULL::text IS NULL OR event_type = NULL)
+  AND (NULL::text IS NULL OR decision = NULL) AND (NULL::text IS NULL OR policy_version = NULL)
+  :aslice
+  ORDER BY recorded_at DESC, event_id DESC LIMIT 101;
+
+-- Fail if a bounded slice stops reaching its window index.
+SELECT :'certsel' || ' AND (signed_at, request_id) < (' || quote_literal(:'cert_mid_t') || ', '
+       || quote_literal(:'cert_mid_id') || ')' || :'wslice'
+       || ' ORDER BY signed_at DESC, request_id DESC LIMIT 101' AS w1_sql \gset
+SELECT set_config('trust.w1_sql', :'w1_sql', true) IS NOT NULL AS w1_set \gset
+SELECT :'auditsel' || ' AND (recorded_at, event_id) < (' || quote_literal(:'audit_mid_t') || ', '
+       || quote_literal(:'audit_mid_id') || ')' || :'aslice'
+       || ' ORDER BY recorded_at DESC, event_id DESC LIMIT 101' AS w2_sql \gset
+SELECT set_config('trust.w2_sql', :'w2_sql', true) IS NOT NULL AS w2_set \gset
+DO $slice$
+DECLARE
+    line text;
+    plan text;
+    sql text;
+    index_name text;
+BEGIN
+    FOR sql, index_name IN VALUES
+        (current_setting('trust.w1_sql'), 'certificate_management_history_window'),
+        (current_setting('trust.w2_sql'), 'audit_event_management_history_window')
+    LOOP
+        plan := '';
+        FOR line IN EXECUTE 'EXPLAIN ' || sql LOOP
+            plan := plan || line || E'\n';
+        END LOOP;
+        IF position(index_name IN plan) = 0 THEN
+            RAISE EXCEPTION 'a bounded history slice does not use %:%', index_name, plan;
+        END IF;
+    END LOOP;
+END
+$slice$;
+\echo 'SLICES: bounded certificate and audit slices use their window indexes'
+
 ROLLBACK;

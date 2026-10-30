@@ -187,6 +187,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0013_management_reader_grants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0014_certificate_subject_cn.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0015_verified_certificate_metadata.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0016_management_history_window.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
@@ -225,7 +226,7 @@ jobs:
           test -n "$CONTAINER"
           docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
           DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
-          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql; do
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql; do
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null
@@ -246,6 +247,25 @@ jobs:
           TRUST_API_CA_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
           TRUST_API_CA_PAGINATION_ADMIN_URL="$DATABASE_URL" \
             cargo test -p trust-management-api --bin trust-management-api ca_pagination_reads_all_scoped_rows --locked -- --nocapture
+      - name: Read sliced management history in order
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_history_window
+          DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_history_window"
+          for migration in migrations/0*.sql; do
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+          done
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_window_seed.sql >/dev/null
+          # Every page of every order and filter must equal one unsliced
+          # statement through the same views, as the reader login.
+          TRUST_API_WINDOW_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_history_window" \
+            cargo test -p trust-management-api --bin trust-management-api history_slices_read_every_row_in_order --locked -- --nocapture 2>&1 | tee history-window.txt
+          if grep -q '^SKIP:' history-window.txt; then
+            echo 'FAIL: the sliced-history test skipped although its database is configured' >&2
+            exit 1
+          fi
       - name: Measure history query plans on a multi-CA load fixture
         run: |
           set -euo pipefail

@@ -64,15 +64,15 @@ if [[ "$first_status" != 0 || "$second_status" != 0 ]]; then
   cat "$logs/first" "$logs/second" >&2
   exit 1
 fi
-if [[ $(grep -hc '^APPLY:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 4 ]] ||
-   [[ $(grep -hc '^SKIP:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 4 ]]; then
+if [[ $(grep -hc '^APPLY:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 5 ]] ||
+   [[ $(grep -hc '^SKIP:' "$logs/first" "$logs/second" | awk '{s+=$1} END {print s}') != 5 ]]; then
   echo 'Concurrent runners did not apply each migration exactly once' >&2
   cat "$logs/first" "$logs/second" >&2
   exit 1
 fi
 ledger_count=$("$psql_bin" "$TRUST_LEDGER_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
   -c 'SELECT count(*) FROM management_migration_ledger')
-test "$ledger_count" = 4
+test "$ledger_count" = 5
 core_after=$("$psql_bin" "$TRUST_LEDGER_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
   -f tests/management_migration_core_fingerprint.sql)
 test "$core_after" = "$core_before"
@@ -87,8 +87,8 @@ if reader_output=$("$psql_bin" "$TRUST_LEDGER_DATABASE_URL" -X -v ON_ERROR_STOP=
 fi
 [[ "$reader_output" == *'permission denied for table management_migration_ledger'* ]]
 run_migration "$TRUST_LEDGER_DATABASE_URL" >"$logs/repeated"
-test "$(grep -c '^SKIP:' "$logs/repeated")" = 4
-echo 'PASS: concurrent and repeated migration runs recorded 0012–0015 once'
+test "$(grep -c '^SKIP:' "$logs/repeated")" = 5
+echo 'PASS: concurrent and repeated migration runs recorded 0012–0016 once'
 
 original_checksum=$("$psql_bin" "$TRUST_LEDGER_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
   -c "SELECT source_sha256 FROM management_migration_ledger WHERE version = '0013_management_reader_grants'")
