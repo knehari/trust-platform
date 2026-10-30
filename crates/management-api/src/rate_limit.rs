@@ -101,24 +101,29 @@ impl RateLimiter {
         self.allow_at(issuer, subject, Instant::now())
     }
 
-    /// Counts one request for a client address (`limit_peers`). When the
-    /// table is full of addresses still in their window (a flood from many
-    /// addresses, such as the /64s of one IPv6 /48), a new address is
-    /// counted under its aggregate prefix instead (IPv6 /48, IPv4 /24): the
-    /// flood then spends its own prefix's budget and other prefixes keep
-    /// theirs. Only when the prefix table is full too is the request
-    /// refused.
-    pub fn allow_peer(&self, addr: Option<IpAddr>) -> bool {
-        self.allow_peer_at(addr, Instant::now())
+    #[cfg(test)]
+    fn allow_peer_at(&self, addr: Option<IpAddr>, now: Instant) -> bool {
+        matches!(self.peer_decision_at(addr, now), Count::Allowed)
     }
 
-    fn allow_peer_at(&self, addr: Option<IpAddr>, now: Instant) -> bool {
+    /// Counts one request for a client address (`limit_peers`), telling the
+    /// first refusal of a window apart (`Count::FirstRefusal`) so it is
+    /// logged once. When the table is full of addresses still in their
+    /// window (a flood from many addresses, such as the /64s of one IPv6
+    /// /48), a new address is counted under its aggregate prefix instead
+    /// (IPv6 /48, IPv4 /24): the flood then spends its own prefix's budget
+    /// and other prefixes keep theirs. Only when the prefix table is full
+    /// too is the request refused.
+    fn peer_decision_at(&self, addr: Option<IpAddr>, now: Instant) -> Count {
         match self.count(&self.windows, ("peer".into(), peer_key(addr)), now) {
             Count::Full => {
                 let key = ("prefix".into(), aggregate_key(addr));
-                matches!(self.count(&self.overflow, key, now), Count::Allowed)
+                match self.count(&self.overflow, key, now) {
+                    Count::Full => Count::Refused,
+                    outcome => outcome,
+                }
             }
-            outcome => matches!(outcome, Count::Allowed),
+            outcome => outcome,
         }
     }
 
@@ -143,6 +148,12 @@ impl RateLimiter {
             *entry = (now, 0);
         }
         if entry.1 >= self.limit {
+            // The counter stops one past the limit: past it, refusals are
+            // no longer the first of the window.
+            if entry.1 == self.limit {
+                entry.1 += 1;
+                return Count::FirstRefusal;
+            }
             return Count::Refused;
         }
         entry.1 += 1;
@@ -252,8 +263,11 @@ pub fn client_ip(peer: IpAddr, forwarded: &[&str], trusted: &[IpNet]) -> IpAddr 
     peer
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum Count {
     Allowed,
+    /// The first refusal in this key's window.
+    FirstRefusal,
     Refused,
     /// The table is full of keys still in their window.
     Full,
@@ -310,10 +324,26 @@ pub async fn limit_peers(
     let addr = client
         .ok()
         .map(|ConnectInfo(addr)| client_ip(addr.0.ip(), &forwarded, &peers.trusted_proxies));
-    if !peers.allow_peer(addr) {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    match peers.peer_decision_at(addr, Instant::now()) {
+        Count::Allowed => next.run(request).await,
+        decision => {
+            if let Some(line) = refusal_log_line(&decision, addr) {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr().lock(), "{line}");
+            }
+            StatusCode::TOO_MANY_REQUESTS.into_response()
+        }
     }
-    next.run(request).await
+}
+
+/// The JSON line logged (on stderr) for a refusal: only for the first
+/// refusal of an address in its window, so an address (or IPv6 /64) that
+/// keeps hammering is logged once a minute, never once per request. No
+/// header or token is logged.
+fn refusal_log_line(decision: &Count, addr: Option<IpAddr>) -> Option<String> {
+    (*decision == Count::FirstRefusal).then(|| {
+        serde_json::json!({"event": "rate_limited_peer", "client": peer_key(addr)}).to_string()
+    })
 }
 
 #[cfg(test)]
@@ -480,6 +510,33 @@ mod tests {
         }
         assert!(!limiter.allow_peer_at(v4(MAX_TRACKED + 41, 1), start));
         assert!(limiter.allow_peer_at(v4(MAX_TRACKED + 41, 1), start + Duration::from_secs(61)));
+    }
+
+    /// Only the first refusal of a window is reported (and so logged).
+    #[test]
+    fn the_first_refusal_of_a_window_is_told_apart() {
+        let limiter = RateLimiter::new(1, Duration::from_secs(60));
+        let start = Instant::now();
+        let ip: Option<IpAddr> = Some("192.0.2.7".parse().unwrap());
+        assert_eq!(limiter.peer_decision_at(ip, start), Count::Allowed);
+        assert_eq!(limiter.peer_decision_at(ip, start), Count::FirstRefusal);
+        assert_eq!(limiter.peer_decision_at(ip, start), Count::Refused);
+        assert_eq!(limiter.peer_decision_at(ip, start), Count::Refused);
+        let later = start + Duration::from_secs(60);
+        assert_eq!(limiter.peer_decision_at(ip, later), Count::Allowed);
+        assert_eq!(limiter.peer_decision_at(ip, later), Count::FirstRefusal);
+        // Only the first refusal makes a log line, naming the address key.
+        let line = refusal_log_line(&Count::FirstRefusal, ip).unwrap();
+        assert_eq!(
+            line,
+            r#"{"client":"192.0.2.7","event":"rate_limited_peer"}"#
+        );
+        assert!(refusal_log_line(&Count::Refused, ip).is_none());
+        assert!(refusal_log_line(&Count::Allowed, ip).is_none());
+        // The identity limiter's answers are unchanged.
+        assert!(limiter.allow_at("iss", "a", start));
+        assert!(!limiter.allow_at("iss", "a", start));
+        assert!(!limiter.allow_at("iss", "a", start));
     }
 
     #[test]
