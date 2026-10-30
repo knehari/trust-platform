@@ -49,6 +49,19 @@ DO $test$ BEGIN
     ) THEN
         RAISE EXCEPTION 'management view exposes protected raw fields';
     END IF;
+
+    -- 0016: the window columns are the same instant as the text times, at
+    -- the same millisecond precision, so slicing on them cannot reorder or
+    -- drop rows relative to the text cursor.
+    IF EXISTS (
+        SELECT 1 FROM management_certificate
+        WHERE to_char(signed_at_window, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM signed_at
+    ) OR EXISTS (
+        SELECT 1 FROM management_audit
+        WHERE to_char(recorded_at_window, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') IS DISTINCT FROM recorded_at
+    ) THEN
+        RAISE EXCEPTION 'management window column differs from the text time';
+    END IF;
 END $test$;
 
 INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (

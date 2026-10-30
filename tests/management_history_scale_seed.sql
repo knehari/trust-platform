@@ -4,6 +4,9 @@
 -- database migrated to 0015, as its owner:
 --   psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -v total=1000000 -v seed=42 \
 --     -f tests/management_history_scale_seed.sql
+-- Optional -v origin='<timestamptz>' moves the 730 days of history (default
+-- 2024-01-01T00:00:00Z); origin = now() - 730 days gives an authority that
+-- is still issuing (lab-history-time-window.md).
 -- Determinism: every value derives from the row number and the fixed seed
 -- through hashint8() (no random(), no clock), so the same total and seed
 -- build the same rows on the same PostgreSQL major version.
@@ -13,7 +16,7 @@
 -- * S1..S8 dddddddd-0000-4000-8000-0000000000b1..b8  2% each, granted
 -- * U  dddddddd-0000-4000-8000-0000000000c1  4%, NOT granted
 -- Per certificate (u, v: independent hashes in 0..9999):
--- * signed_at spreads each authority's rows over 730 days from 2024-01-01,
+-- * signed_at spreads each authority's rows over 730 days from the origin,
 --   two rows per millisecond step (cursor ties);
 -- * 10% historical rows without verified metadata (CN, SAN, validity NULL);
 -- * CN prefix: svc- for 0.1%, app- for 10%, host- otherwise (zzz-: none);
@@ -28,6 +31,10 @@
 \if :{?seed}
 \else
   \set seed 42
+\endif
+\if :{?origin}
+\else
+  \set origin 2024-01-01T00:00:00Z
 \endif
 
 DO $guard$ BEGIN
@@ -48,14 +55,14 @@ SELECT 176 + s, ('dddddddd-0000-4000-8000-0000000000b' || s)::uuid, :total * 2 /
 FROM generate_series(1, 8) AS s;
 
 INSERT INTO ca (ca_id, display_name, policy_version, created_at)
-SELECT ca_id, 'Scale CA ' || to_hex(k), 'v1', '2023-12-01T00:00:00Z'
+SELECT ca_id, 'Scale CA ' || to_hex(k), 'v1', :'origin'::timestamptz - interval '31 days'
 FROM scale_ca;
 
 CREATE TEMP TABLE scale_row ON COMMIT DROP AS
 SELECT l.k, l.ca_id, n,
        (lpad(to_hex(l.k), 8, '0') || '-0000-4000-8000-' || lpad(to_hex(n), 12, '0'))::uuid AS request_id,
        decode('01' || lpad(to_hex(n), 8, '0'), 'hex') AS serial,
-       '2024-01-01T00:00:00Z'::timestamptz
+       :'origin'::timestamptz
          + ((n / 2) * (730::bigint * 86400000 / greatest(l.size / 2, 1))) * interval '1 millisecond' AS signed_at,
        abs(hashint8(n * 1000003 + l.k * 7919 + :seed)) % 10000 AS u,
        abs(hashint8(n * 999983 + l.k * 104729 + :seed * 31)) % 10000 AS v
