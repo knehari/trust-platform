@@ -257,6 +257,13 @@ The throughput ceiling (16 pages/s at 100k, 1.6 at 1M) follows from items
 items 1–3 is the lever. Raising the API's 8/16 slot bounds or the 3 s
 timeout would only move the queue.
 
+## Decision (2026-10-30)
+
+The repository owner decided to **keep `security_barrier`** on the
+management views for now. Option 1.2, and option 2.2 which depends on it,
+are not pursued. The candidates that remain are 1.1, 2.1 and 3.1. Each
+needs its own migration and API change, and none has been started.
+
 ## Reproduce
 
 ```sh
