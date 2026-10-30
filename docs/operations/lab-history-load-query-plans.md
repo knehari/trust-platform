@@ -207,3 +207,7 @@ every plan; it fails if authority C becomes visible to the reader.
   HTTP API (OIDC verification, connection slots, JSON encoding).
 - The fixture's metadata and time distributions are synthetic. Real
   selectivities change the filtered cases, not the unfiltered linear scan.
+
+A follow-up study at 100,000 and 1,000,000 certificates, with selectivity
+tiers, cold caches, 1/10/50 readers and tests of the text-cast and SAN
+hypotheses, is in [lab-history-scale-study.md](lab-history-scale-study.md).
