@@ -1,0 +1,84 @@
+[package]
+name = "trust-pki-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+lab-software = ["trust-pki-crypto/lab-software"]
+postgres-store = ["dep:postgres"]
+
+[dependencies]
+trust-pki-policy = { path = "../pki-policy" }
+trust-pki-crypto = { path = "../pki-crypto" }
+x509-cert = { version = "=0.2.5", features = ["pem"] }
+sha2 = "=0.10.9"
+base64ct = { version = "=1.8.3", features = ["alloc"] }
+serde_json = "=1.0.149"
+postgres = { version = "=0.19.12", optional = true }
+
+[dev-dependencies]
+# The audit_chain_anchor lab example applies the management API's database
+# TLS policy (crates/management-api/src/database.rs).
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
+tokio-postgres-rustls = { version = "=0.14.0", features = ["ring"] }
+tokio = { version = "=1.53.3", features = ["rt"] }
+# Independent RFC 5280 path validator for tests/rfc5280_path_validation.rs
+# (already in the lockfile through rustls).
+webpki = { package = "rustls-webpki", version = "=0.103.16", default-features = false, features = ["alloc", "ring", "std"] }
+rustls-pki-types = { version = "=1.15.1", features = ["std"] }
+
+[[example]]
+name = "audit_chain_anchor"
+required-features = ["postgres-store", "lab-software"]
+
+[[example]]
+name = "crl_reconcile"
+required-features = ["postgres-store", "lab-software"]
+
+[[example]]
+name = "crash_recovery_lab"
+required-features = ["lab-software", "postgres-store"]
+
+[[example]]
+name = "issue_crl_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_openssl_classical_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_openssl_classical_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pkcs1_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_agile_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_root_agile_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_root_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "issue_rsa_pss_server_lab"
+required-features = ["lab-software"]
+
+[[example]]
+name = "verify_rsa_pkcs1_csr_lab"
+required-features = ["lab-software"]

@@ -1,0 +1,53 @@
+name: Fuzz
+
+# SEC-07: untrusted DER (PKCS#10 CSRs, CA certificates, CRLs), WebAuthn assertions and
+# exported audit checkpoints must be rejected, never panic. Short smoke on every PR; longer weekly campaign.
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'fuzz/**'
+      - 'Cargo.lock'
+      - '.github/workflows/fuzz.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 2 * * 0"
+
+permissions:
+  contents: read
+
+env:
+  FUZZ_TOOLCHAIN: nightly-2026-10-17
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [csr_p256, csr_rsa_pkcs1_lab, ca_certificate, crl_verify, webauthn_assertion, audit_checkpoint]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+          cargo +"$FUZZ_TOOLCHAIN" install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - name: Build seed corpus with OpenSSL
+        run: bash fuzz/seed-corpus.sh fuzz/corpus
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: |
+          seconds=60
+          if [ "${{ github.event_name }}" = "schedule" ]; then seconds=1800; fi
+          cargo +"$FUZZ_TOOLCHAIN" fetch --locked
+          cargo +"$FUZZ_TOOLCHAIN" fuzz run "${{ matrix.target }}" "corpus/${{ matrix.target }}" \
+            -- -max_total_time="$seconds"
+      - name: Keep crash reproducer
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/

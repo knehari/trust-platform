@@ -12,5 +12,8 @@ Failure states: REJECTED, FAILED_RETRYABLE, FAILED_FINAL, RECONCILIATION_REQUIRE
 - No certificate is considered published until persisted and publication confirmed.
 - Ambiguous signing results require reconciliation, not blind re-signing.
 
+## Revocation lifecycle
+Certificate status after issuance (VALID, SUSPENDED, REVOKED; maker-checker; irreversible definitive revocation) and the CRL reserve / intent / sign / verify / store pipeline are specified in [revocation and CRL design](../superpowers/specs/2026-10-18-revocation-crl-design.md). Lab only: ephemeral lab CA key, no CRL publication or OCSP.
+
 ## Tests
 Negative policy tests, duplicate requests, crashes before/after signing, retries, serial uniqueness, audit continuity.

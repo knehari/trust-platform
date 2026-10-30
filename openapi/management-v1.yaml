@@ -1,0 +1,193 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform management API
+  version: 0.1.0-lab
+  description: Read-only laboratory API. No issuance or production qualification is implied. Every HTTP response carries a generated X-Request-Id header for diagnostic correlation; it is not signed audit evidence. Each verified reader identity may make 300 data requests per minute; beyond that data routes answer 429 before any database access.
+servers:
+  - url: http://127.0.0.1:8081
+security:
+  - oidcAccessToken: []
+paths:
+  /v1/health:
+    get:
+      security: []
+      summary: Liveness without sensitive details
+      responses:
+        '200':
+          description: Process is serving requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: up
+  /v1/ready:
+    get:
+      security: []
+      summary: Readiness of the restricted PostgreSQL management read path
+      description: Checks the restricted reader role and required views without returning metadata or database errors. Uses one separate probe slot and a one-second result cache; a busy authenticated-read budget or concurrent probe returns 503.
+      responses:
+        '200':
+          description: Management reads can be served
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: ready
+        '503':
+          description: Management reads are unavailable
+  /v1/cas:
+    get:
+      summary: List one ordered page of CAs in both the signed scope and server-managed reader grants, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaCursor'
+      responses:
+        '200':
+          description: Scoped CA list. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string, format: uuid }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}:
+    get:
+      summary: Read one scoped CA
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: CA detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates:
+    get:
+      summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
+      responses:
+        '200':
+          description: Metadata only; certificate DER is not exposed. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/audit:
+    get:
+      summary: Read one ordered page of audit event metadata for a scoped CA, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
+      responses:
+        '200':
+          description: Audit metadata without actor identifiers. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids; issuer/subject/CA must also have a server-managed grant.
+  parameters:
+    CaId:
+      in: path
+      name: ca_id
+      required: true
+      schema: { type: string, format: uuid }
+    HistoryCursor:
+      in: query
+      name: before
+      required: false
+      description: Pass the previous page's X-Next-Cursor unchanged. Malformed values return 400.
+      schema: { type: string, maxLength: 61 }
+    CaCursor:
+      in: query
+      name: after
+      required: false
+      description: Pass the previous CA page's X-Next-Cursor unchanged. Malformed values return 400.
+      schema: { type: string, format: uuid }
+  schemas:
+    CA:
+      type: object
+      required: [ca_id, parent_ca_id, display_name, policy_version, created_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        parent_ca_id: { type: [string, 'null'], format: uuid }
+        display_name: { type: string }
+        policy_version: { type: string }
+        created_at: { type: string, format: date-time }
+    Certificate:
+      type: object
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        serial_hex: { type: string }
+        fingerprint_sha256: { type: string }
+        request_id: { type: string, format: uuid }
+        state: { type: string }
+        signed_at: { type: string, format: date-time }
+        published_at: { type: [string, 'null'], format: date-time }
+    AuditEvent:
+      type: object
+      required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]
+      properties:
+        event_id: { type: string, format: uuid }
+        ca_id: { type: string, format: uuid }
+        event_type: { type: string }
+        decision: { type: string }
+        policy_version: { type: [string, 'null'] }
+        recorded_at: { type: string, format: date-time }
+  responses:
+    BadRequest: { description: Invalid CA identifier }
+    Unauthorized: { description: Missing or invalid access token }
+    Forbidden: { description: Role, signed CA scope or server-managed grant denied }
+    TooManyRequests: { description: 'Request budget spent: 600 per minute per client address before authentication, then 300 per minute per token identity (per process); Retry-After gives 60 seconds' }
+    Unavailable: { description: Management data request capacity exhausted or read database unavailable }

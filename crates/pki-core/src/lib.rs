@@ -1,0 +1,218 @@
+#![forbid(unsafe_code)]
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+//! Native CA core: strict PKCS#10 verification, issuance orchestration with
+//! durable signing intents, X.509 assembly/verification, CP/CPS governance and
+//! laboratory issuance paths (`lab-software` feature).
+//!
+//! Several modules are standalone predicates that nothing calls yet (for
+//! example `key_ceremony`, `pqc_rollout`, `request_rate`, `production_gates`).
+//! They are not capabilities; see docs/architecture/unintegrated-contracts.md.
+pub mod agile_x509_identifier;
+pub mod audit_chain;
+#[cfg(feature = "postgres-store")]
+pub mod audit_chain_store;
+pub mod audit_manifest;
+pub mod capacity_policy;
+pub mod signer_capabilities;
+
+pub mod audit_integrity;
+pub mod audit_retention;
+pub mod authentication;
+pub mod ca_observation;
+pub mod certificate_profile;
+pub mod challenge_binding;
+pub mod clock;
+pub mod cp_cps;
+pub mod crl;
+pub mod crl_orchestrator;
+pub mod crypto_migration;
+pub mod csr;
+pub mod identity_boundary;
+pub mod issuance_evidence;
+pub mod issuance_x509_binding;
+pub mod key_attestation;
+pub mod key_ceremony;
+#[cfg(feature = "lab-software")]
+pub mod lab_ca;
+#[cfg(feature = "lab-software")]
+pub mod lab_x509_verifier;
+pub mod native_typed_csr_binding;
+pub mod officer_credential;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_server_lab;
+#[cfg(all(feature = "lab-software", unix))]
+pub mod openssl_classical_x509_lab;
+pub mod orchestrator;
+pub mod platform_readiness;
+pub mod policy_decisions;
+pub mod policy_gate;
+#[cfg(feature = "lab-software")]
+pub mod policy_trace;
+#[cfg(feature = "postgres-store")]
+pub mod postgres_store;
+pub mod pqc_rollout;
+pub mod production_gates;
+pub mod provider_evidence;
+pub mod reconciliation;
+pub mod recovery_budget;
+pub mod release_gate;
+pub mod request_rate;
+pub mod resilience_policy;
+pub mod reviewer_binding;
+pub mod revocation;
+pub mod revocation_policy;
+#[cfg(feature = "postgres-store")]
+pub mod revocation_store;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pkcs1_x509_lab;
+pub mod rsa_pss_identifier;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_issuer_verify_lab;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_orchestrator_lab;
+#[cfg(feature = "lab-software")]
+pub mod rsa_pss_x509_lab;
+pub mod serial;
+pub mod serial_binding;
+pub mod tenant_isolation;
+pub mod webauthn;
+pub mod x509_extensions;
+
+use trust_pki_policy::{
+    AuthenticatedPrincipal, Authorization, Denial, IssuanceRequest, PolicyEngine,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuanceState {
+    Received,
+    CsrValidated,
+    Authorized,
+    SerialReserved,
+    Signing,
+    Signed,
+    Published,
+    Rejected,
+    ReconciliationRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssuanceError {
+    Unauthorized(Denial),
+    InvalidTransition,
+}
+
+/// Policy decisions must be made using a principal returned by a trusted auth layer.
+/// This function alone does not validate the CSR or generate a certificate.
+pub fn authorize_request(
+    policy: &impl PolicyEngine,
+    principal: &AuthenticatedPrincipal<'_>,
+    request: &IssuanceRequest<'_>,
+) -> Result<Authorization, IssuanceError> {
+    policy
+        .authorize(principal, request)
+        .map_err(IssuanceError::Unauthorized)
+}
+
+/// Defines legal lifecycle edges; actual durable enforcement requires the persistence layer.
+/// It is NOT a substitute for CSR verification or signing-intent authorization.
+pub fn can_transition(from: IssuanceState, to: IssuanceState) -> bool {
+    use IssuanceState::*;
+    matches!(
+        (from, to),
+        (Received, CsrValidated)
+            | (Received, Rejected)
+            | (CsrValidated, Authorized)
+            | (CsrValidated, Rejected)
+            | (Authorized, SerialReserved)
+            | (SerialReserved, Signing)
+            | (Signing, Signed)
+            | (Signing, ReconciliationRequired)
+            | (Signed, Published)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trust_pki_crypto::SignatureAlgorithm;
+    use trust_pki_policy::{DenyAll, StaticPolicy};
+
+    #[test]
+    fn deny_all_blocks_authorization() {
+        let names = ["api.lab.invalid"];
+        let principal = AuthenticatedPrincipal {
+            subject_id: "operator",
+        };
+        let request = IssuanceRequest {
+            profile_id: "lab-server",
+            subject_common_name: "api.lab.invalid",
+            dns_sans: &names,
+            validity_days: 7,
+            ca_signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+        };
+        assert_eq!(
+            authorize_request(&DenyAll, &principal, &request),
+            Err(IssuanceError::Unauthorized(Denial::DeniedByDefault))
+        );
+    }
+
+    #[test]
+    fn explicitly_allowed_policy_binds_actor() {
+        let names = ["api.lab.invalid"];
+        let principal = AuthenticatedPrincipal {
+            subject_id: "operator",
+        };
+        let request = IssuanceRequest {
+            profile_id: "lab-server",
+            subject_common_name: "api.lab.invalid",
+            dns_sans: &names,
+            validity_days: 7,
+            ca_signature_algorithm: SignatureAlgorithm::EcdsaP256Sha256,
+        };
+        let policy = StaticPolicy {
+            profile_id: "lab-server".into(),
+            policy_version: "2026-10".into(),
+            allowed_actors: vec!["operator".into()],
+            allowed_dns_zones: vec!["lab.invalid".into()],
+            allowed_ca_signature_algorithms: vec![SignatureAlgorithm::EcdsaP256Sha256],
+            max_validity_days: 30,
+            max_dns_sans: 5,
+        };
+        let authorization = authorize_request(&policy, &principal, &request).unwrap();
+        assert_eq!(authorization.actor_id(), "operator");
+        assert_eq!(authorization.policy_version(), "2026-10");
+    }
+
+    #[test]
+    fn no_transition_can_skip_authorization() {
+        assert!(!can_transition(
+            IssuanceState::Received,
+            IssuanceState::Signing
+        ));
+        assert!(!can_transition(
+            IssuanceState::CsrValidated,
+            IssuanceState::SerialReserved
+        ));
+        assert!(!can_transition(
+            IssuanceState::ReconciliationRequired,
+            IssuanceState::Signing
+        ));
+    }
+
+    #[test]
+    fn allowed_transitions_match_design() {
+        assert!(can_transition(
+            IssuanceState::Signing,
+            IssuanceState::ReconciliationRequired
+        ));
+        assert!(can_transition(
+            IssuanceState::Signed,
+            IssuanceState::Published
+        ));
+        assert!(!can_transition(
+            IssuanceState::Rejected,
+            IssuanceState::Authorized
+        ));
+    }
+}

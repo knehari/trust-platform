@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-22 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-10-30 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` remains a documentation baseline, not a shipped CA.** Laboratory implementation lives across historical and stacked PR branches; [Draft #135](https://github.com/knehari/trust-platform/pull/135) is not merged into `main`. The version history below records **development milestones**, not GitHub releases.
+- **`main` remains a documentation baseline, not a shipped CA.** Laboratory implementation lives across historical and stacked PR branches; [Draft #135](https://github.com/knehari/trust-platform/pull/135) is not merged into `main`. The revocation, CRL and signed-administration lab slice lives in the integration [Draft #94](https://github.com/knehari/trust-platform/pull/94) (stack #1–#70 plus the slice; marked do-not-merge), described [below](#revocation-crl-and-signed-administration-lab-slice-draft-94). The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -36,6 +36,8 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [ ] **Durable audit evidence:** persisted authenticated event chain, integrity/tamper checks, exportable verification manifest and governed retention.
 - [ ] **Operational recovery:** protected database and key backup/restore, migration rollback, incident runbooks and measured pilot RTO/RPO.
 - [ ] **Release gates:** G0 legal/IP clearance, independent PKI/security review, final-commit CI and an explicitly approved controlled-pilot release decision.
+
+Laboratory parts of the *revocation and publication*, *durable audit evidence* and *operational recovery* criteria exist in [Draft #94](#revocation-crl-and-signed-administration-lab-slice-draft-94) (maker-checker and WebAuthn-signed revocation, verified CRL publication, sealed audit chain with external checkpoints, a logical restore rehearsal). None of these criteria is checked: each still needs human IAM, a real HSM, independent review or a designed recovery exercise.
 
 ### Next implementation sequence
 
@@ -76,6 +78,144 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 | v2.4 | Pure Rust verifiable audit evidence manifest contract | [PR #24](https://github.com/knehari/trust-platform/pull/24) | LAB-PROTOTYPE / G0 BLOCKED |
 
 **Caveat for v2.1–v2.4:** unit-tested domain contracts are not end-to-end integrated, externally attested, or deployment-ready; full CI and independent assurance remain gates.
+
+## Revocation, CRL and signed administration lab slice (Draft #94)
+
+Status on 30 October 2026: full CI green at `9031292` (all eight workflows; migrations up to 0065); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
+Integration Draft [#94](https://github.com/knehari/trust-platform/pull/94) is marked
+do-not-merge and only runs CI. Maturity: **LAB-PROTOTYPE / G0 BLOCKED**. Nothing
+below is released, deployed or accepted. ADR-0006 and ADR-0007 are **Proposed**:
+the lab implementation was made at the repository owner's request, and that is
+not an acceptance of either ADR.
+
+**Evidence at `9031292`** (full CI) **and `affccf4`** (local)
+- GitHub Actions at `9031292`: all eight workflows green (Rust CI with the
+  rust and schema jobs, laboratory-compose, six fuzz targets, supply chain
+  with cargo-deny and gitleaks, lockfile SBOM, frontend, policy gate
+  concurrency, recovery inventory); also at `ebac3f3`, `538040d` and `63b5753`.
+- Local run at `affccf4` (Rust 1.99.0, PostgreSQL 16):
+  - `cargo fmt`; clippy with `-D warnings`, with all features and with default
+    features;
+  - workspace tests: 464 passed, 0 failed;
+  - every SQL suite, and the PostgreSQL integration and API tests with
+    `TRUST_REQUIRE_DATABASE=1`;
+  - OpenSSL interoperability (complete and delta CRLs, RFC 5280 suite);
+  - populated upgrade from 0013 to 0065, the migration runner, the restore
+    rehearsals into the same cluster and into a fresh one;
+  - the OpenAPI contract check (four contracts) and `tests/http_tls.sh`;
+  - `cargo deny check` (0.20.2): advisories, bans, licenses and sources ok,
+    with the two reasoned exceptions in `deny.toml`.
+  The Docker-only steps (Compose stack, verified TLS 1.3 to PostgreSQL in a
+  container) run in CI only.
+- Each security change since migration 0035 has a RED test, failing on the
+  previous schema or code, or a mutation that the test detects.
+
+### Done (lab)
+
+| Area | Migrations / code | What it enforces in the lab |
+| --- | --- | --- |
+| Status lifecycle | 0014, 0018–0019, 0025, 0034 | Maker-checker suspend, release and revoke (RFC 5280 reasons). Definitive revocation is irreversible. Invalidity dates are bounded. Lock order is fixed (deadlock test). Pending changes can be read. |
+| CRL pipeline | 0015–0017, 0020–0022, 0031–0033, 0055, 0058–0061 | The CRL number is reserved before signing and never reused. The signing intent is bound to entries, number and times. The CRL is verified independently before it is stored. Ambiguous outcomes are quarantined; a quarantined CRL is stored from its DER with the `crl_reconcile` tool, under a signer login, after re-verification. The entries digest has one definition, an ordered aggregate (0061). One issuer certificate per CA. After a restore from an older backup, a superuser raises a CRL number floor so no published number is reused (0058). Delta CRLs (0059) list what changed since the latest complete CRL, including released holds as removeFromCRL. They share the numbering, are served only at a separate `/delta` path, and never count as a complete CRL for publication deadlines; OpenSSL applies them with `-extended_crl -use_deltas`. After a restore from an older backup, `crl_restore_revocations` (0060) re-applies the revocations listed on the last published CRL, once the CRL verifies against the registered issuer. Expired entries can be pruned (opt-in, refused for ETSI EN 319 411-2); housekeeping backfills `notAfter` from the stored DER for certificates stored before 0031. Operator CA list. OpenSSL interop and a fuzz target. |
+| CRL distribution | 0030 | Lab read-only HTTP distribution point; it re-verifies each CRL before serving it. Issued lab certificates can carry an opt-in CDP extension. |
+| Least privilege | 0023, 0035, 0043 | Tables are owned by NOLOGIN roles. Service functions are `SECURITY DEFINER` with a pinned `search_path`. Capability roles are EXECUTE-only (officer API, CRL signer and operator, CA admin, issuance, policy admin, reconciliation, audit). Service connections refuse privileged logins. |
+| CA administration | 0024, 0037, 0040, 0042, 0044, 0050, 0052, 0054 | Issuer registration, officer grants and credential changes need two admins. Once a CA opts in, they are WebAuthn-signed with distinct keys and persons, and so are admin keys and rejections. Checkers see the signed content (digest recomputed in Rust) and whether the maker's stored signature re-verifies; an approval is never written, and no approval challenge is issued, for a proposal whose maker signature does not re-verify. Proposals expire after 7 days by default: the API flags them and issues no approval challenge, and housekeeping alerts on them. |
+| Signed status changes (ADR-0007) | 0028–0029, 0036, 0038–0039, 0047 | Officer WebAuthn registry and canonical claim. The assertion is verified in Rust before any write, and the database re-checks everything but ECDSA. Rejection and withdrawal are signed. The maker's stored signature is re-verified before an approval is written (and shown to checkers), and signed submissions are refused while the database clock is untrusted. A single officer can apply a precautionary hold, with a deadline, a per-officer cap and a per-CA cap. |
+| Break-glass (minimal) | 0045–0046, 0048, 0051 | A DBA-enrolled emergency key whose custodian person never signs on the CA. It can only re-enrol admin keys, and only while the CA has fewer than two. Every use is audited and alerted until two other admins review it. Reviews require evidence that re-verifies, when the challenge is issued and again when the review is written, and a key from a use whose evidence does not re-verify signs nothing through the Rust core. Registry enrolments are serialised. |
+| Challenges | 0049, 0053 | At most 16 open challenges per actor and CA. Challenges that expired unused are purged after 30 days; consumed ones are kept as evidence. Concurrent consumption is tested. |
+| Audit and evidence | 0026–0027, 0041 | DDL and grants are audited by event triggers. A sealed hash chain with signed checkpoints is anchored outside the database (lab); the anchoring job uses verified TLS and refuses privileged logins. Offline re-verification of every signature (`signed_evidence_audit`, one CA or `--all`, exit 3 on failure). Database clock skew is checked against the Rust core. |
+| Backup and restore | `tests/revocation_backup_restore.sh`, `tests/revocation_fresh_cluster_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster, and into a fresh cluster once its NOLOGIN roles are provisioned (no credential copied). Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
+| Lab migrations | `scripts/lab/migrate.sh`, 0064 | An existing lab database is brought up to the checkout, one transaction per file, stopping at the first failure. Refused: pre-0026 or newer databases, gaps, non-superusers, a second runner on the same database (session advisory lock), and migration files changed or removed after they were applied (SHA-256 digests since 0064; digests of files applied earlier are adopted only with `--adopt`). |
+| Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Before the token is read, each client address may make 600 requests per minute (per process); per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s and also limits each client address to 600 requests per minute. Behind a reverse proxy listed in `TRUST_HTTP_TRUSTED_PROXIES`, every service counts the client address from X-Forwarded-For; from any other peer the header is ignored. Every service caps connections (1,024 per process, 64 per client address), the time to send a request header (10 s) and the time per request, body included (30 s, 408); every 429 carries `Retry-After: 60`, and the first per-address refusal of each minute is logged. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`, `openapi/crl-distribution-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401 and 429 (429 on every distribution point operation) and, with a body, 413. |
+
+Progress against the historical proposed versions (labels only):
+- **v2.5:** partial (audit chain, checkpoints, offline evidence audit).
+- **v2.6:** partial (authenticated lab APIs, rate limits; no mTLS or workload
+  identity).
+- **v2.9:** partial (complete and delta CRLs with lab publication, a 17-case
+  path-validation suite; no OCSP, no multi-level path validation).
+- **v3.1:** partial (signed CA administration and separation of duties for
+  revocation only).
+
+### Remaining before any non-lab use
+
+Human gates (not self-approvable):
+- G0 legal and IP clearance.
+- Independent security and cryptographic review, including every
+  `SECURITY DEFINER` function.
+- Acceptance of ADR-0006: its conditions 1–6, including runtime without
+  superuser, external audit anchor storage and authenticated time.
+- Acceptance of ADR-0007.
+- An IAM decision on person identifiers, the authenticator and attestation
+  policy, and allowed models.
+- CPS text for suspension, precautionary holds and break-glass.
+- An on-call rota.
+
+Engineering backlog:
+- **Signing:** a real HSM/PKCS#11 signer with key custody and ceremonies (lab
+  CA keys are ephemeral). CA key rollover (several issuer certificates per CA)
+  is not modelled.
+- **Validation services:** OCSP, scheduled delta CRL issuance (deltas are
+  reserved, signed, stored and served on demand), highly available CRL
+  publication, and path validation beyond one level (intermediates, name
+  and policy constraints, PKITS). The platform's certificates and CRLs pass
+  a 17-case RFC 5280 suite under webpki and OpenSSL
+  (`docs/testing/rfc5280-path-validation.md`) (v2.9).
+- **Identity:** production IAM integration. Person identifiers are
+  caller-supplied, so one human under two identifiers is not detected.
+  WebAuthn attestation is not checked.
+- **Runtime:**
+  - dedicated service logins and secrets management;
+  - scheduled deployment outside the lab (the lab Compose stack runs
+    `crl_housekeeping`, `signed_evidence_audit` and the audit chain jobs
+    under dedicated logins; nothing pages anyone);
+  - mTLS and certificate management for the HTTP side (the token APIs
+    serve TLS 1.3 when given a certificate and refuse plain HTTP off
+    loopback unless the logged lab opt-out is set);
+  - a client-address limit shared across replicas (since i74 each API
+    counts 600 requests per minute per client address before the token is
+    read, per process; X-Forwarded-For is read only from the reverse
+    proxies listed in `TRUST_HTTP_TRUSTED_PROXIES`; the per-identity budget is shared
+    across replicas in the database since 0062, idle budgets purged after
+    7 days since 0063; the read API's identity budget stays per process).
+- **Database assurance:**
+  - server-side logging of role changes (pgaudit);
+  - storage of the external audit anchor;
+  - authenticated time (NTS);
+  - online upgrade and RTO/RPO (logical restores into the same cluster and
+    into a fresh cluster are rehearsed; re-applying revocations from the
+    last published CRL after an older backup has a tool and a runbook);
+  - recovering certificates issued after the backup a database was
+    restored from (reported by the restore tool, not recovered).
+- **Residual lab risks:**
+  - The database cannot verify ECDSA, so a holder of a service role could
+    store a forged assertion. Re-verification exposes it; a forged break-glass
+    use cannot be reviewed, and its admin key signs nothing through the Rust
+    core, but stays enrolled until two admins remove it.
+  - The challenge table keeps consumed challenges and 30 days of unused ones.
+  - Reconciling a quarantined CRL (`crl_reconcile` tool) needs its DER; a
+    DER lost with its process cannot be recovered (no signer read-back).
+  - Certificates stored before 0031 whose stored DER does not parse stay
+    without `notAfter` (reported by housekeeping, never pruned).
+  - RUSTSEC-2026-0387 (crypto-bigint timing) is a reasoned `deny.toml`
+    exception: no fix compatible with p256/p384 0.13 exists, and P-256
+    private-key use is lab-only. tokio and ctutils were upgraded.
+- **Hygiene:**
+  - Older migrations copy whole function bodies to change one line. The CRL
+    entries digest (0061) and the status-change audit decision (0065) have
+    one definition each, guarded by `tests/crl_entries_digest.sql` and
+    `tests/status_change_audit_decision.sql`; 0065 rewrites the four
+    lifecycle bodies from the catalog instead of copying them.
+  - Migration-retry and ledger scripts stop at 0013; `scripts/lab/migrate.sh`
+    upgrades an existing database from 0026 on and, since 0064, refuses a
+    migration file changed or removed after it was applied (digests of
+    files applied earlier are adopted only with `--adopt`).
+  - Four historical issuance suites are not idempotent on a reused database
+    (they rely on the CI-seeded CA; CI runs them on a fresh one).
+  - See `docs/superpowers/plans/2026-10-18-revocation-crl-followups.md`.
+- **Integration path:**
+  - Review and merge the stacked Drafts #1–#70 in dependency order.
+  - Split Draft #94 into reviewable PRs.
+  - Rerun CI on the final merged commit.
 
 ## Archived version proposals — not the active checklist
 
@@ -120,6 +260,7 @@ The labels below are retained for traceability. Some read-only parts of v3.1/v3.
 - [Issuance state machine](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/architecture/issuance-state-machine.md)
 - [Security threat model](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/security/threat-model.md)
 - [Security acceptance gates](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/testing/acceptance-gates.md)
+- On the Draft #94 branch: [ADR-0006 revocation write model](docs/adr/ADR-0006-revocation-write-model.md) and [ADR-0007 signed double control](docs/adr/ADR-0007-signed-double-control.md) (both Proposed), [revocation/CRL follow-ups](docs/superpowers/plans/2026-10-18-revocation-crl-followups.md), [lab break-glass](docs/operations/lab-break-glass.md), [CRL housekeeping](docs/operations/lab-crl-housekeeping.md), [revocation restore rehearsal](docs/operations/lab-revocation-backup-restore.md)
 - [GitHub pull requests](https://github.com/knehari/trust-platform/pulls)
 - [Jira TRUST](https://knehari.atlassian.net/jira/software/projects/TRUST)
 
@@ -130,6 +271,8 @@ The labels below are retained for traceability. Some read-only parts of v3.1/v3.
 - Keep roadmap features, design proposals and implementation evidence separately traceable.
 
 ## Historical execution notes (archive)
+
+> **Revocation, CRL and signed-administration lab slice — 22 October 2026 (integration Draft [#94](https://github.com/knehari/trust-platform/pull/94); not a release):** migrations 0014–0065 add a maker-checker certificate status lifecycle, a CRL pipeline with a lab distribution point, least-privilege service roles, WebAuthn-signed double control for status changes and CA administration (ADR-0007, Proposed), a minimal break-glass path, an audit chain with external checkpoints, and four lab HTTP services and jobs. CI was green on all workflows at `b349e56`, and at `5a7cac6` on 25 October. LAB-PROTOTYPE only: ephemeral lab CA key, no OCSP (complete and delta CRLs only), no production IAM or HSM; G0, independent review and ADR-0006/0007 acceptance are open. Done and remaining work: [section below](#revocation-crl-and-signed-administration-lab-slice-draft-94).
 
 > **Execution checkpoint — 2026-10-17:** PRs #43–#45 reverified green on exact trees; C-01 reproduced and corrected in Draft #46; consolidation and crypto registry in Draft #47–#48; control-plane decision in Draft #49; read-only Rust API in Draft #50 and React laboratory console in Draft #51. Draft #52 bounds management database requests after a focused security diff scan. Draft #53's disposable Docker Compose stack passed image build, startup and scoped OIDC/API/PostgreSQL smoke in CI; diagnostic request logging is the next increment. The console exercises a disposable OIDC code/PKCE fixture and real API/PostgreSQL reads, but no production IAM, persistent audit or policy-controlled HTTP issuance is delivered. See [execution status](https://github.com/knehari/trust-platform/blob/0d0697d28945a8acb8891f7bef6e3da495a82563/docs/recovery/EXECUTION_STATUS.md).
 

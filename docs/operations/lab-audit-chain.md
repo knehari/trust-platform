@@ -1,0 +1,92 @@
+# Laboratory audit chain and external anchoring
+
+Lab only (migration 0027, ADR-0006 section F, proposed). It addresses open
+item D-04 in part: a database administrator can still alter the database,
+but no longer unnoticed once the chain is anchored outside it.
+
+## What is sealed
+
+`seal_audit_chain(limit)` appends every `audit_event` and
+`schema_change_audit` row not yet sealed to `audit_chain_entry`:
+
+- `event_sha256` is the SHA-256 of the row's canonical encoding: the tag
+  `trust-platform:audit-record:v1\0`, the source name, then each column as
+  `0x00` (NULL) or `0x01` + 4-byte big-endian length + bytes. UUIDs are
+  16 bytes, text is UTF-8, and timestamps and integers are 8-byte big-endian,
+  timestamps in microseconds since the Unix epoch.
+- `entry_hash = SHA-256("trust-platform:audit-chain:v1\0" || previous || seq || event_sha256)`
+  (`audit_chain::next_audit_hash`); the first `previous` is 32 zero bytes.
+
+Sealing is a scheduled job, not a trigger, so issuance and revocation
+transactions never wait on the chain head. Records are only protected once
+sealed and anchored.
+
+## Jobs
+
+```
+# every few minutes, login granted trust_audit_sealer only
+TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+  cargo run -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor -- seal
+
+# after sealing, on another host, login granted trust_audit_verifier only
+TRUST_DATABASE_URL=postgresql://... TRUST_DATABASE_CA_FILE=/etc/trust/db-ca.pem \
+  cargo run -p trust-pki-core --features postgres-store,lab-software --example audit_chain_anchor -- \
+  verify /var/lib/trust-audit/checkpoints [--unsealed-older-than 3600]
+```
+
+The connection follows the management API's policy: verified TLS 1.3
+against `TRUST_DATABASE_CA_FILE` by default, plaintext only with the
+explicit lab opt-out `TRUST_DATABASE_TLS=disable-lab` (reported on stderr).
+A superuser, a role creator, a role bypassing row security or a member of
+`trust_audit_owner` or `trust_revocation_owner` is refused (exit 1): a sealer
+or verifier that could also rewrite the records is not one. The job stays a
+`pki-core` lab example because `--anchor-key` signs with a lab key file
+(`lab-software`), which is kept out of the service binaries.
+
+`verify` loads the whole chain, re-encodes every record in Rust, checks the
+links and every checkpoint already in the file, then appends the new head
+(`audit-chain-checkpoint v1 <seq> <hex>`) and syncs the file. It never
+appends after a failure.
+
+Exit status:
+- 0: verified;
+- 2: records older than the threshold are not sealed yet;
+- 3: the chain does not verify. The output names the first bad entry:
+  `RecordAltered`, `SourceMissing`, `EntryHash`, `Chain`,
+  `CheckpointMismatch` (rewritten history) or `Truncated`. Treat it as an
+  incident and do not "repair" the anchor;
+- 1: error, including an unreadable or damaged checkpoint file (fail closed).
+
+## Keeping the anchor out of reach
+
+The checkpoint file is the anchor. It must be out of reach of the database
+administrators:
+- keep it on another system, with append-only or WORM storage;
+- copy the last line out of band, for example into a ticket, a signed email
+  or an RFC 3161 timestamp request.
+
+Signed checkpoints: with `--anchor-key <pkcs8.der>`, every appended line
+is signed with the anchoring host's P-256 key:
+`audit-chain-checkpoint v2 <seq> <head> <signature>`, ECDSA/SHA-256 over
+`trust-platform:audit-checkpoint:v1\0 || seq || head`. Every existing line
+must then verify with that key. A second verifier holding only
+`--anchor-public-key <spki.der>` checks the signatures and appends nothing.
+An edited, unsigned or foreign-key line is reported as tampering (exit 3),
+so whoever can write the file but does not hold the key cannot rewrite the
+anchor. The lab key is a plaintext PKCS#8 file
+(`openssl genpkey ... | openssl pkcs8 -topk8 -nocrypt -outform DER`); in
+production it belongs in an HSM. Checkpoints are still not timestamped by
+a third party (RFC 3161), which remains open with authenticated time
+(D-04, ADR-0006 conditions 5 and 6).
+
+## Limits
+
+- Entries sealed after the last checkpoint, and records not yet sealed, can
+  be rewritten unnoticed.
+- A forged record inserted before sealing is sealed like any other; the
+  chain proves integrity after sealing, not the origin of a record.
+- Verification reads the whole chain each time (lab scale).
+
+Covered by `tests/audit_chain.sql`, `crates/pki-core/tests/audit_chain_postgres.rs`
+(superuser rewrite, deletion, recomputed chain, truncation) and
+`tests/audit_chain_anchor.sh` (the jobs end to end, committed tampering).
