@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-29 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-10-30 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -81,22 +81,22 @@ Laboratory parts of the *revocation and publication*, *durable audit evidence* a
 
 ## Revocation, CRL and signed administration lab slice (Draft #94)
 
-Status on 29 October 2026: full CI green at `ebac3f3` (all eight workflows; migrations up to 0065); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
+Status on 30 October 2026: full CI green at `9031292` (all eight workflows; migrations up to 0065); later commits verified locally, their CI read from the PR checks (`claude/friendly-hopper-3l9y56`).
 Integration Draft [#94](https://github.com/knehari/trust-platform/pull/94) is marked
 do-not-merge and only runs CI. Maturity: **LAB-PROTOTYPE / G0 BLOCKED**. Nothing
 below is released, deployed or accepted. ADR-0006 and ADR-0007 are **Proposed**:
 the lab implementation was made at the repository owner's request, and that is
 not an acceptance of either ADR.
 
-**Evidence at `ebac3f3`** (full CI) **and `dc957aa`** (local)
-- GitHub Actions at `ebac3f3`: all eight workflows green (Rust CI with the
+**Evidence at `9031292`** (full CI) **and `affccf4`** (local)
+- GitHub Actions at `9031292`: all eight workflows green (Rust CI with the
   rust and schema jobs, laboratory-compose, six fuzz targets, supply chain
   with cargo-deny and gitleaks, lockfile SBOM, frontend, policy gate
-  concurrency, recovery inventory); also at `24652f4` and `458e421`.
-- Local run at `dc957aa` (Rust 1.99.0, PostgreSQL 16):
+  concurrency, recovery inventory); also at `ebac3f3`, `538040d` and `63b5753`.
+- Local run at `affccf4` (Rust 1.99.0, PostgreSQL 16):
   - `cargo fmt`; clippy with `-D warnings`, with all features and with default
     features;
-  - workspace tests: 448 passed, 0 failed;
+  - workspace tests: 464 passed, 0 failed;
   - every SQL suite, and the PostgreSQL integration and API tests with
     `TRUST_REQUIRE_DATABASE=1`;
   - OpenSSL interoperability (complete and delta CRLs, RFC 5280 suite);
@@ -125,7 +125,7 @@ not an acceptance of either ADR.
 | Audit and evidence | 0026–0027, 0041 | DDL and grants are audited by event triggers. A sealed hash chain with signed checkpoints is anchored outside the database (lab); the anchoring job uses verified TLS and refuses privileged logins. Offline re-verification of every signature (`signed_evidence_audit`, one CA or `--all`, exit 3 on failure). Database clock skew is checked against the Rust core. |
 | Backup and restore | `tests/revocation_backup_restore.sh`, `tests/revocation_fresh_cluster_restore.sh` | A logical backup of the populated revocation database restores into an empty database in the same cluster, and into a fresh cluster once its NOLOGIN roles are provisioned (no credential copied). Rows, sequences, owners, ACLs, definer settings and triggers are identical. Privilege invariants hold, and the offline evidence audit gives the same result. The audit chain verifies against the checkpoint taken before the backup, and a stale backup is refused against a later checkpoint. |
 | Lab migrations | `scripts/lab/migrate.sh`, 0064 | An existing lab database is brought up to the checkout, one transaction per file, stopping at the first failure. Refused: pre-0026 or newer databases, gaps, non-superusers, a second runner on the same database (session advisory lock), and migration files changed or removed after they were applied (SHA-256 digests since 0064; digests of files applied earlier are adopted only with `--adopt`). |
-| Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Before the token is read, each client address may make 600 requests per minute (per process); per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s and also limits each client address to 600 requests per minute. Behind a reverse proxy listed in `TRUST_HTTP_TRUSTED_PROXIES`, every service counts the client address from X-Forwarded-For; from any other peer the header is ignored. Every service caps connections (1,024 per process, 64 per client address), the time to send a request header (10 s) and the time per request, body included (30 s, 408). `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`, `openapi/crl-distribution-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401 and 429 (429 on every distribution point operation) and, with a body, 413. |
+| Lab services and jobs | management-api binaries | `revocation_api` and `ca_admin_api` take OIDC tokens and enforce CA scope before any write. Before the token is read, each client address may make 600 requests per minute (per process); per identity, they allow 60 requests per minute across all replicas (0062; the read API 300 per process) and 64 KiB bodies; responses carry `no-store` and `nosniff`. They serve TLS 1.3 when given a certificate, and plain HTTP only on loopback or with a logged lab opt-out. The CRL distribution point reuses a verified CRL for 30 s and also limits each client address to 600 requests per minute. Behind a reverse proxy listed in `TRUST_HTTP_TRUSTED_PROXIES`, every service counts the client address from X-Forwarded-For; from any other peer the header is ignored. Every service caps connections (1,024 per process, 64 per client address), the time to send a request header (10 s) and the time per request, body included (30 s, 408); every 429 carries `Retry-After: 60`, and the first per-address refusal of each minute is logged. `crl_distribution`, `crl_housekeeping` and `signed_evidence_audit` are also lab binaries. The lab Compose stack runs housekeeping, the evidence audit and audit chain sealing and verification on a schedule, each under its own login. All use verified TLS 1.3 to PostgreSQL by default. OpenAPI contracts: `openapi/revocation-v1.yaml`, `openapi/ca-admin-v1.yaml`, `openapi/crl-distribution-v1.yaml`; `scripts/ci/openapi_routes.py` checks every contract against the routes its service serves, and that each operation documents 401 and 429 (429 on every distribution point operation) and, with a body, 413. |
 
 Progress against the historical proposed versions (labels only):
 - **v2.5:** partial (audit chain, checkpoints, offline evidence audit).
