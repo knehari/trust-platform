@@ -66,8 +66,13 @@ fn app_and_token(database_url: String, slots: usize) -> (Router, String) {
         "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
     }]}))
     .unwrap();
-    let verifier =
-        OidcVerifier::from_jwks("https://issuer.scale.invalid", "trust-api", jwks).unwrap();
+    let verifier = OidcVerifier::from_jwks(
+        "https://issuer.scale.invalid",
+        "trust-api",
+        "trust-console",
+        jwks,
+    )
+    .unwrap();
     let signer =
         EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
             .unwrap();
@@ -79,7 +84,7 @@ fn app_and_token(database_url: String, slots: usize) -> (Router, String) {
         &header,
         &json!({
             "iss":"https://issuer.scale.invalid", "aud":"trust-api", "sub":"reader",
-            "nbf":now-1, "exp":now+3600, "roles":["trust-ca-reader"], "ca_ids":[CA]
+            "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+3600, "roles":["trust-ca-reader"], "ca_ids":[CA]
         }),
         &signer,
     )

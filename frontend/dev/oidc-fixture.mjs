@@ -73,7 +73,7 @@ createServer(async (request, response) => {
     const now = Math.floor(Date.now() / 1000);
     const common = { iss: origin, sub: 'lab-operator', iat: now, nbf: now - 1, exp: now + 300 };
     const access_token = jwt({ alg: 'RS256', typ: 'at+jwt', kid: jwk.kid },
-      { ...common, aud: 'trust-api', roles: ['trust-ca-reader'], ca_ids: [caId] });
+      { ...common, aud: 'trust-api', azp: 'trust-console', roles: ['trust-ca-reader'], ca_ids: [caId] });
     const id_token = jwt({ alg: 'RS256', typ: 'JWT', kid: jwk.kid },
       { ...common, aud: 'trust-console', ...(entry.nonce ? { nonce: entry.nonce } : {}), preferred_username: 'Lab Operator' });
     json(response, 200, { access_token, id_token, token_type: 'Bearer', expires_in: 300, scope: 'openid profile trust-ca-read' });

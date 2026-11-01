@@ -522,8 +522,11 @@ fn history_anchor(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
+    // The OAuth client of the human console. Tokens issued to any other
+    // client of the issuer (workloads included) are refused.
+    let client_id = env::var("TRUST_OIDC_CLIENT_ID")?;
     let database_url = env::var("TRUST_DATABASE_URL")?;
-    let verifier = OidcVerifier::discover(&issuer, &audience).await?;
+    let verifier = OidcVerifier::discover(&issuer, &audience, &client_id).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
     let safe_db_role = query_db(
         database_url.clone(),
@@ -1583,8 +1586,13 @@ mod tests {
             "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
         }]}))
         .unwrap();
-        let verifier =
-            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
         let signer =
             EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
                 .unwrap();
@@ -1596,7 +1604,7 @@ mod tests {
             &header,
             &json!({
                 "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
-                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
             &signer,
@@ -2168,7 +2176,7 @@ mod tests {
             &header,
             &json!({
                 "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned",
-                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
             &signer,
@@ -2217,8 +2225,13 @@ mod tests {
             "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
         }]}))
         .unwrap();
-        let verifier =
-            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
         let signer =
             EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
                 .unwrap();
@@ -2234,7 +2247,7 @@ mod tests {
             &header,
             &json!({
                 "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator",
-                "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+                "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":ca_ids
             }),
             &signer,
@@ -2361,8 +2374,13 @@ mod tests {
             "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
         }]}))
         .unwrap();
-        let verifier =
-            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
         let signer =
             EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
                 .unwrap();
@@ -2374,7 +2392,7 @@ mod tests {
             &header,
             &json!({
                 "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
-                "nbf":now-1, "exp":now+120, "roles":["trust-ca-reader"], "ca_ids":[CA]
+                "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+120, "roles":["trust-ca-reader"], "ca_ids":[CA]
             }),
             &signer,
         )
@@ -2465,6 +2483,8 @@ mod tests {
         let claims = Claims {
             iss: "https://issuer.example.test".into(),
             sub: "operator".into(),
+            azp: "trust-console".into(),
+            iat: 0,
             roles: vec!["trust-ca-reader".into()],
             ca_ids: vec!["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into()],
         };
@@ -2548,8 +2568,13 @@ mod tests {
             "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
         }]}))
         .unwrap();
-        let verifier =
-            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
         let signer =
             EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
                 .unwrap();
@@ -2559,7 +2584,7 @@ mod tests {
         let now = jsonwebtoken::get_current_timestamp();
         let mut claims = json!({
             "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
-            "nbf":now-1, "exp":now+60, "roles":[],
+            "nbf":now-1, "iat":now, "azp":"trust-console", "exp":now+60, "roles":[],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
         let database_url = env::var("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
@@ -2758,6 +2783,28 @@ mod tests {
             first_request_id
         );
         claims["roles"] = json!(["trust-ca-reader"]);
+        // A workload token of the same issuer, with the reader role and the
+        // CA in scope, is not a human session: 401 before any database read.
+        let mut workload = claims.clone();
+        workload["azp"] = json!("trust-lab-workload");
+        let workload_token = encode(&header, &workload, &signer).unwrap();
+        for uri in [
+            "/v1/cas",
+            "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/certificates",
+        ] {
+            let refused = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {workload_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        }
         let token = encode(&header, &claims, &signer).unwrap();
         let other_ca = app
             .clone()
