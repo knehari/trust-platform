@@ -229,3 +229,6 @@ TRUST_API_TIMING_CLIENTS=1,10,50 \
   - The slice widths are tuned for this fixture's density (about 46 rows
     per hour); a much denser authority puts more rows in each slice.
 - **Consistency.** One page is one snapshot; successive pages are not.
+
+The first-page anchor limit is removed by migration 0020
+([lab-history-bounds.md](lab-history-bounds.md)).

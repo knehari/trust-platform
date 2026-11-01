@@ -9,8 +9,8 @@ runner=${TRUST_LEDGER_BIN:-target/debug/lab_migrate_management}
 
 source_versions=$("$psql_bin" "$TRUST_RESTORE_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 \
   -c "SELECT string_agg(version, ',' ORDER BY version) FROM management_migration_ledger")
-if [[ "$source_versions" != '0012_management_read_views,0013_management_reader_grants,0014_certificate_subject_cn,0015_verified_certificate_metadata,0016_profile_draft_catalogue,0017_management_history_window,0018_management_certificate_san,0019_management_certificate_cn_lower' ]]; then
-  echo 'Restore source lacks the complete 0012–0019 migration ledger' >&2
+if [[ "$source_versions" != '0012_management_read_views,0013_management_reader_grants,0014_certificate_subject_cn,0015_verified_certificate_metadata,0016_profile_draft_catalogue,0017_management_history_window,0018_management_certificate_san,0019_management_certificate_cn_lower,0020_management_history_bounds' ]]; then
+  echo 'Restore source lacks the complete 0012–0020 migration ledger' >&2
   exit 1
 fi
 
@@ -25,6 +25,7 @@ if [[ "$run_output" != *'SKIP: 0012_management_read_views already recorded with 
    [[ "$run_output" != *'SKIP: 0017_management_history_window already recorded with matching checksum'* ]] ||
    [[ "$run_output" != *'SKIP: 0018_management_certificate_san already recorded with matching checksum'* ]] ||
    [[ "$run_output" != *'SKIP: 0019_management_certificate_cn_lower already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0020_management_history_bounds already recorded with matching checksum'* ]] ||
    [[ "$run_output" == *'APPLY:'* ]]; then
   echo 'Restored migration ledger was not recognized without reapplication' >&2
   echo "$run_output" >&2
