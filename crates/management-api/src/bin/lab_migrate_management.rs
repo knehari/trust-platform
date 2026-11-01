@@ -207,8 +207,10 @@ fn schema_present(
              AND attname='subject_cn_lower' AND NOT attisdropped)",
             &[],
         )?;
-        return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all)
-            && relations_present(tx, relations, require_all)?);
+        return Ok(
+            (0..2).all(|index| row.get::<usize, bool>(index) == require_all)
+                && relations_present(tx, relations, require_all)?,
+        );
     }
     if version == "0016_management_history_window" {
         let row = tx.query_one(

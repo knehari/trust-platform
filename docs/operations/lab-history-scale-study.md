@@ -293,3 +293,6 @@ Option 1.1 (paging by time slice, barrier kept) is implemented and measured in
 
 Option 2.1 (normalized SAN table, two steps, barrier kept) is implemented and
 measured in [lab-history-san-table.md](lab-history-san-table.md).
+
+Option 3.1 (stored lowered CN, leakproof prefix, barrier kept) is implemented
+and measured in [lab-history-cn-lower.md](lab-history-cn-lower.md).
