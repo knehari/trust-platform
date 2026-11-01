@@ -81,8 +81,9 @@ verification, which AGENTS.md rules out. Neither is proposed here.
 
 - Every tool that reads the views must declare a principal. The lab scripts
   and tests do, through `set_config` or `PGOPTIONS`.
-- The filter adds a semi-join on the small grant table. The cost is measured
-  in `docs/operations/lab-reader-isolation.md`.
+- The filter adds a semi-join on the small grant table: 2–11 ms on pages under
+  50 ms, up to +38% on unsliced pages, and 4–12% less throughput
+  ([measurements](../operations/lab-reader-isolation.md)).
 - An operator querying the views as the owner also sees only the declared
   principal's rows. Owner queries on the base tables are unchanged.
 
