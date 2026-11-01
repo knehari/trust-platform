@@ -22,6 +22,51 @@ struct VerifierInner {
     refresh_lock: Mutex<()>,
     source: Option<JwksSource>,
     validation: Validation,
+    clients: ClientPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientKind {
+    Human,
+    Workload,
+}
+
+#[derive(Clone)]
+pub struct ClientPolicy {
+    human_client_id: String,
+    workload_client_id: String,
+}
+
+impl ClientPolicy {
+    pub fn new(human_client_id: String, workload_client_id: String) -> Result<Self, String> {
+        let valid = |id: &str| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+        };
+        if !valid(&human_client_id)
+            || !valid(&workload_client_id)
+            || human_client_id == workload_client_id
+        {
+            return Err("invalid or overlapping OIDC client IDs".into());
+        }
+        Ok(Self {
+            human_client_id,
+            workload_client_id,
+        })
+    }
+
+    fn kind(&self, azp: &str) -> Option<ClientKind> {
+        if azp == self.human_client_id {
+            Some(ClientKind::Human)
+        } else if azp == self.workload_client_id {
+            Some(ClientKind::Workload)
+        } else {
+            None
+        }
+    }
 }
 
 struct KeyCache {
@@ -47,10 +92,17 @@ pub struct Claims {
     pub sub: String,
     pub roles: Vec<String>,
     pub ca_ids: Vec<String>,
+    pub azp: String,
+    #[serde(skip)]
+    pub client_kind: Option<ClientKind>,
 }
 
 impl OidcVerifier {
-    pub async fn discover(issuer: &str, audience: &str) -> Result<Self, String> {
+    pub async fn discover(
+        issuer: &str,
+        audience: &str,
+        clients: ClientPolicy,
+    ) -> Result<Self, String> {
         if audience.is_empty() || !safe_issuer_url(issuer) {
             return Err("invalid OIDC issuer or audience".into());
         }
@@ -89,12 +141,18 @@ impl OidcVerifier {
             uri: document.jwks_uri,
         };
         let jwks = source.fetch().await?;
-        Self::new(issuer, audience, jwks, Some(source))
+        Self::new(issuer, audience, jwks, Some(source), clients)
     }
 
     #[cfg(test)]
     pub fn from_jwks(issuer: &str, audience: &str, jwks: JwkSet) -> Result<Self, String> {
-        Self::new(issuer, audience, jwks, None)
+        Self::new(
+            issuer,
+            audience,
+            jwks,
+            None,
+            ClientPolicy::new("trust-console".into(), "trust-workload".into())?,
+        )
     }
 
     fn new(
@@ -102,6 +160,7 @@ impl OidcVerifier {
         audience: &str,
         jwks: JwkSet,
         source: Option<JwksSource>,
+        clients: ClientPolicy,
     ) -> Result<Self, String> {
         if issuer.is_empty() || audience.is_empty() {
             return Err("missing OIDC issuer or audience".into());
@@ -110,7 +169,9 @@ impl OidcVerifier {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[issuer]);
         validation.set_audience(&[audience]);
-        validation.set_required_spec_claims(&["exp", "nbf", "iss", "aud", "sub"]);
+        // RFC 9068 does not require nbf, and Keycloak omits it by default.
+        // jsonwebtoken still rejects a future nbf when one is present.
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub", "azp"]);
         validation.validate_nbf = true;
         validation.leeway = 0;
         let now = Instant::now();
@@ -124,6 +185,7 @@ impl OidcVerifier {
                 refresh_lock: Mutex::new(()),
                 source,
                 validation,
+                clients,
             }),
         })
     }
@@ -140,14 +202,16 @@ impl OidcVerifier {
         self.refresh_if_needed(kid).await?;
         let cache = self.inner.keys.read().await;
         let key = cache.keys.get(kid).ok_or(())?;
-        let claims = decode::<Claims>(token, key, &self.inner.validation)
+        let mut claims = decode::<Claims>(token, key, &self.inner.validation)
             .map_err(|_| ())?
             .claims;
+        claims.client_kind = self.inner.clients.kind(&claims.azp);
         if claims.iss.len() > 1024
             || claims.sub.is_empty()
             || claims.sub.len() > 512
             || claims.ca_ids.len() > 1024
             || claims.roles.len() > 32
+            || claims.client_kind.is_none()
         {
             return Err(());
         }
@@ -282,7 +346,7 @@ mod tests {
         header.typ = Some("at+jwt".into());
         header.kid = Some(kid.into());
         let now = jsonwebtoken::get_current_timestamp();
-        let claims = json!({"iss":issuer,"aud":"trust-api","sub":"operator",
+        let claims = json!({"iss":issuer,"aud":"trust-api","sub":"operator","azp":"trust-console",
             "nbf":now-1,"exp":now+60,"roles":["trust-ca-reader"],"ca_ids":[]});
         let pem = private.to_pkcs8_pem(LineEnding::LF).unwrap();
         encode(
@@ -299,6 +363,15 @@ mod tests {
         assert!(safe_issuer_url("http://127.0.0.1:8080/realms/lab"));
         assert!(!safe_issuer_url("http://issuer.example.test/realms/lab"));
         assert!(!safe_issuer_url("https://user:pass@issuer.example.test"));
+    }
+
+    #[test]
+    fn oidc_clients_must_be_distinct_and_bounded() {
+        assert!(ClientPolicy::new("trust-console".into(), "trust-workload".into()).is_ok());
+        assert!(ClientPolicy::new("trust-console".into(), "trust-console".into()).is_err());
+        assert!(ClientPolicy::new("".into(), "trust-workload".into()).is_err());
+        assert!(ClientPolicy::new("trust console".into(), "trust-workload".into()).is_err());
+        assert!(ClientPolicy::new("x".repeat(129), "trust-workload".into()).is_err());
     }
 
     #[test]
@@ -323,7 +396,7 @@ mod tests {
         let signer = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
         let now = jsonwebtoken::get_current_timestamp();
         let claims = json!({
-            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator-1",
+            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator-1", "azp":"trust-console",
             "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
@@ -332,6 +405,40 @@ mod tests {
         header.typ = Some("at+jwt".into());
         let token = encode(&header, &claims, &signer).unwrap();
         assert_eq!(verifier.verify(&token).await.unwrap().sub, "operator-1");
+        let mut without_nbf = claims.clone();
+        without_nbf.as_object_mut().unwrap().remove("nbf");
+        assert!(verifier
+            .verify(&encode(&header, &without_nbf, &signer).unwrap())
+            .await
+            .is_ok());
+        let mut future_nbf = claims.clone();
+        future_nbf["nbf"] = json!(now + 60);
+        assert!(verifier
+            .verify(&encode(&header, &future_nbf, &signer).unwrap())
+            .await
+            .is_err());
+        let mut unknown_client = claims.clone();
+        unknown_client["azp"] = json!("untrusted-client");
+        assert!(verifier
+            .verify(&encode(&header, &unknown_client, &signer).unwrap())
+            .await
+            .is_err());
+        let mut missing_client = claims.clone();
+        missing_client.as_object_mut().unwrap().remove("azp");
+        assert!(verifier
+            .verify(&encode(&header, &missing_client, &signer).unwrap())
+            .await
+            .is_err());
+        let mut workload = claims.clone();
+        workload["azp"] = json!("trust-workload");
+        assert_eq!(
+            verifier
+                .verify(&encode(&header, &workload, &signer).unwrap())
+                .await
+                .unwrap()
+                .client_kind,
+            Some(ClientKind::Workload)
+        );
         let mut wrong_audience = claims.clone();
         wrong_audience["aud"] = json!("another-service");
         assert!(verifier
@@ -376,7 +483,10 @@ mod tests {
             .with_state(state.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let verifier = OidcVerifier::discover(&issuer, "trust-api").await.unwrap();
+        let clients = ClientPolicy::new("trust-console".into(), "trust-workload".into()).unwrap();
+        let verifier = OidcVerifier::discover(&issuer, "trust-api", clients)
+            .await
+            .unwrap();
         let first_token = test_token(&first, &issuer, "first");
         assert!(verifier.verify(&first_token).await.is_ok());
         *state.jwks.write().await = json!({"keys":[test_jwk(&second,"second")]});

@@ -1,7 +1,7 @@
 mod auth;
 mod profile_proposal;
 
-use auth::{Claims, OidcVerifier};
+use auth::{Claims, ClientKind, ClientPolicy, OidcVerifier};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -104,6 +104,11 @@ struct ProfileDraftQuery {
     profile_id: Option<String>,
     order: Option<String>,
     q: Option<String>,
+    policy_version: Option<String>,
+    from: Option<String>,
+    until: Option<String>,
+    min_validity_days: Option<i32>,
+    min_dns_sans: Option<i32>,
 }
 
 fn profile_draft_cursor(raw: Option<String>) -> Result<Option<(String, i32)>, StatusCode> {
@@ -166,6 +171,16 @@ fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
         .replace('%', "\\%")
         .replace('_', "\\_");
     Ok(Some(format!("{escaped}%")))
+}
+
+fn profile_policy_version_filter(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+    let value = raw.map(|value| value.trim().to_owned());
+    if value.as_ref().is_some_and(|value| {
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(value)
 }
 
 fn exact_san_dns(raw: Option<String>) -> Result<Option<String>, StatusCode> {
@@ -346,8 +361,12 @@ fn history_headers(next_cursor: Option<String>) -> HeaderMap {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
+    let clients = ClientPolicy::new(
+        env::var("TRUST_OIDC_HUMAN_CLIENT_ID")?,
+        env::var("TRUST_OIDC_WORKLOAD_CLIENT_ID")?,
+    )?;
     let database_url = env::var("TRUST_DATABASE_URL")?;
-    let verifier = OidcVerifier::discover(&issuer, &audience).await?;
+    let verifier = OidcVerifier::discover(&issuer, &audience, clients).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
     let safe_db_role = query_db(
         database_url.clone(),
@@ -531,7 +550,14 @@ async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claim
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
+    let (required_role, forbidden_role) = match claims.client_kind {
+        Some(ClientKind::Human) => ("trust-ca-reader", "trust-ca-workload-reader"),
+        Some(ClientKind::Workload) => ("trust-ca-workload-reader", "trust-ca-reader"),
+        None => return Err(StatusCode::UNAUTHORIZED),
+    };
+    if !claims.roles.iter().any(|role| role == required_role)
+        || claims.roles.iter().any(|role| role == forbidden_role)
+    {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(claims)
@@ -711,6 +737,28 @@ async fn list_profile_drafts(
     }
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
     let search = literal_prefix(page.q)?;
+    let policy_version = profile_policy_version_filter(page.policy_version)?;
+    let from = page.from.as_deref().map(valid_utc_timestamp).transpose()?;
+    let until = page.until.as_deref().map(valid_utc_timestamp).transpose()?;
+    if from
+        .as_ref()
+        .zip(until.as_ref())
+        .is_some_and(|(start, end)| start >= end)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if page
+        .min_validity_days
+        .is_some_and(|value| !(1..=825).contains(&value))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if page
+        .min_dns_sans
+        .is_some_and(|value| !(1..=100).contains(&value))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if direction == "DESC" && page.profile_id.is_none() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -739,10 +787,15 @@ async fn list_profile_drafts(
              AND ($7::text IS NULL OR lower(profile_id) LIKE $7 ESCAPE '\\' \
                  OR lower(display_name) LIKE $7 ESCAPE '\\' \
                  OR lower(policy_version) LIKE $7 ESCAPE '\\') \
+             AND ($8::text IS NULL OR policy_version=$8) \
+             AND ($9::text IS NULL OR created_at >= $9) \
+             AND ($10::text IS NULL OR created_at < $10) \
+             AND ($11::integer IS NULL OR max_validity_days >= $11) \
+             AND ($12::integer IS NULL OR max_dns_sans >= $12) \
              ORDER BY profile_id {direction},revision {direction} LIMIT 101");
         db.query(
             &query,
-            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search],
+            &[&ca_id, &issuer, &subject, &after_id, &after_revision, &profile_id, &search, &policy_version, &from, &until, &page.min_validity_days, &page.min_dns_sans],
         ).map(Some)
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
     let has_more = rows.len() > HISTORY_PAGE_SIZE;
@@ -1165,7 +1218,7 @@ mod tests {
         let token = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
@@ -1278,6 +1331,84 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(search_tail.len(), 2);
+        let (status, policy_cursor, policy_page) =
+            history_page(&app, &token, &format!("{draft_base}?policy_version=v1")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(policy_page.len(), 100);
+        assert!(policy_page.iter().all(|row| row["policy_version"] == "v1"));
+        let (status, _, policy_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?policy_version=v1&after={}",
+                policy_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(policy_tail.len(), 3);
+        let (_, _, other_policy) =
+            history_page(&app, &token, &format!("{draft_base}?policy_version=v101")).await;
+        assert_eq!(other_policy.len(), 1);
+        let range = "from=2020-01-01T00%3A00%3A00.000Z&until=2090-01-01T00%3A00%3A00.000Z";
+        let (status, range_cursor, range_page) =
+            history_page(&app, &token, &format!("{draft_base}?{range}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(range_page.len(), 100);
+        let (status, _, range_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?{range}&after={}",
+                range_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(range_tail.len(), 100);
+        let (_, _, old_range) = history_page(
+            &app,
+            &token,
+            &format!("{draft_base}?until=2020-01-01T00%3A00%3A00.000Z"),
+        )
+        .await;
+        assert!(old_range.is_empty());
+        let (status, validity_cursor, validity_page) =
+            history_page(&app, &token, &format!("{draft_base}?min_validity_days=90")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validity_page.len(), 100);
+        let (status, _, validity_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?min_validity_days=90&after={}",
+                validity_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(validity_tail.len(), 100);
+        let (_, _, high_validity) =
+            history_page(&app, &token, &format!("{draft_base}?min_validity_days=91")).await;
+        assert!(high_validity.is_empty());
+        let (status, san_cursor, san_page) =
+            history_page(&app, &token, &format!("{draft_base}?min_dns_sans=5")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(san_page.len(), 100);
+        let (status, _, san_tail) = history_page(
+            &app,
+            &token,
+            &format!(
+                "{draft_base}?min_dns_sans=5&after={}",
+                san_cursor.unwrap().replace('|', "%7C")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(san_tail.len(), 100);
+        let (_, _, high_san) =
+            history_page(&app, &token, &format!("{draft_base}?min_dns_sans=6")).await;
+        assert!(high_san.is_empty());
         let (_, _, literal_wildcard) =
             history_page(&app, &token, &format!("{draft_base}?q=%25%25")).await;
         assert!(literal_wildcard.is_empty());
@@ -1291,6 +1422,13 @@ mod tests {
             "profile_id=server-999&order=invalid".to_owned(),
             "order=newest".to_owned(),
             "q=x".to_owned(),
+            "policy_version=%0A".to_owned(),
+            "from=2026-02-30T00%3A00%3A00.000Z".to_owned(),
+            "from=2090-01-01T00%3A00%3A00.000Z&until=2020-01-01T00%3A00%3A00.000Z".to_owned(),
+            "min_validity_days=0".to_owned(),
+            "min_validity_days=826".to_owned(),
+            "min_dns_sans=0".to_owned(),
+            "min_dns_sans=101".to_owned(),
         ] {
             assert_eq!(
                 history_page(&app, &token, &format!("{draft_base}?{query}"))
@@ -1652,7 +1790,7 @@ mod tests {
         let unprovisioned = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
@@ -1718,7 +1856,7 @@ mod tests {
         let token = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":ca_ids
             }),
@@ -1818,6 +1956,8 @@ mod tests {
             sub: "operator".into(),
             roles: vec!["trust-ca-reader".into()],
             ca_ids: vec!["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into()],
+            azp: "trust-console".into(),
+            client_kind: Some(ClientKind::Human),
         };
         assert_eq!(
             scoped_ca_id("ffffffff-ffff-4fff-8fff-ffffffffffff", &claims),
@@ -1845,6 +1985,22 @@ mod tests {
             "../x|1",
         ] {
             assert!(profile_draft_cursor(Some(invalid.into())).is_err());
+        }
+    }
+
+    #[test]
+    fn profile_policy_filter_matches_database_character_limit() {
+        assert_eq!(profile_policy_version_filter(None), Ok(None));
+        let valid = "😀".repeat(128);
+        assert_eq!(
+            profile_policy_version_filter(Some(valid.clone())),
+            Ok(Some(valid))
+        );
+        for invalid in ["😀".repeat(129), " ".into(), "v\u{0085}1".into()] {
+            assert_eq!(
+                profile_policy_version_filter(Some(invalid)),
+                Err(StatusCode::BAD_REQUEST)
+            );
         }
     }
 
@@ -1909,7 +2065,7 @@ mod tests {
         header.kid = Some("http-test".into());
         let now = jsonwebtoken::get_current_timestamp();
         let mut claims = json!({
-            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator", "azp":"trust-console",
             "nbf":now-1, "exp":now+60, "roles":[],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
@@ -2099,6 +2255,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_role.status(), StatusCode::FORBIDDEN);
+        let mut wrong_client = claims.clone();
+        wrong_client["azp"] = json!("unknown-client");
+        let wrong_client_token = encode(&header, &wrong_client, &signer).unwrap();
+        let denied_client = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {wrong_client_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_client.status(), StatusCode::UNAUTHORIZED);
+        let mut workload_claims = claims.clone();
+        workload_claims["azp"] = json!("trust-workload");
+        workload_claims["roles"] = json!(["trust-ca-reader"]);
+        let wrong_role_token = encode(&header, &workload_claims, &signer).unwrap();
+        let denied_workload = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {wrong_role_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_workload.status(), StatusCode::FORBIDDEN);
+        let mut human_with_workload_role = claims.clone();
+        human_with_workload_role["roles"] = json!(["trust-ca-workload-reader"]);
+        let human_with_workload_role_token =
+            encode(&header, &human_with_workload_role, &signer).unwrap();
+        let denied_human = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header(
+                        "authorization",
+                        format!("Bearer {human_with_workload_role_token}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_human.status(), StatusCode::FORBIDDEN);
+        workload_claims["roles"] = json!(["trust-ca-reader", "trust-ca-workload-reader"]);
+        let both_roles_token = encode(&header, &workload_claims, &signer).unwrap();
+        let denied_mixed_roles = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {both_roles_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_mixed_roles.status(), StatusCode::FORBIDDEN);
+        workload_claims["roles"] = json!(["trust-ca-workload-reader"]);
+        let workload_token = encode(&header, &workload_claims, &signer).unwrap();
+        let mut workload_headers = HeaderMap::new();
+        workload_headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {workload_token}")).unwrap(),
+        );
+        assert_eq!(
+            authorize(&workload_headers, &state.verifier)
+                .await
+                .unwrap()
+                .client_kind,
+            Some(ClientKind::Workload)
+        );
         assert_ne!(
             no_role
                 .headers()

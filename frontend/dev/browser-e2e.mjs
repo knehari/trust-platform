@@ -127,6 +127,35 @@ try {
   await page.getByText('No proposals match “hidden”').waitFor();
   await page.getByRole('button', { name: 'Clear search' }).click();
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByText('Advanced filters (0 active)').click();
+  await page.locator('#profile-draft-policy-filter').fill('v2');
+  const policyFilterResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('policy_version') === 'v2');
+  await page.getByRole('button', { name: 'Filter policy' }).click();
+  await policyFilterResponse;
+  await page.getByText('server-lab · revision 2').waitFor();
+  await page.getByRole('button', { name: 'Clear policy' }).click();
+  await page.getByLabel('Recorded before UTC date').fill('2020-01-01');
+  const recordedRangeResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('until') === '2020-01-01T00:00:00.000Z');
+  await page.getByRole('button', { name: 'Filter dates' }).click();
+  await recordedRangeResponse;
+  await page.getByText('No proposals match the active filters').waitFor();
+  await page.getByRole('button', { name: 'Clear dates' }).click();
+  await page.locator('#profile-draft-validity-filter').fill('91');
+  const validityResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('min_validity_days') === '91');
+  await page.getByRole('button', { name: 'Filter validity' }).click();
+  await validityResponse;
+  await page.getByText('No proposals match the active filters').waitFor();
+  await page.getByRole('button', { name: 'Clear validity' }).click();
+  await page.locator('#profile-draft-san-filter').fill('6');
+  const sanResponse = page.waitForResponse(response => response.status() === 200
+    && new URL(response.url()).searchParams.get('min_dns_sans') === '6');
+  await page.getByRole('button', { name: 'Filter SAN limit' }).click();
+  await sanResponse;
+  await page.getByText('No proposals match the active filters').waitFor();
+  await page.getByRole('button', { name: 'Clear SAN limit' }).click();
   await page.locator('#profile-draft-id-filter').fill('Server-Lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByRole('alert').getByText('Enter a lowercase profile ID').waitFor();
@@ -151,8 +180,9 @@ try {
   const unfilteredProfiles = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).pathname.endsWith('/profile-drafts')
     && !new URL(response.url()).searchParams.has('profile_id'));
-  await page.getByRole('button', { name: 'Clear filter' }).click();
+  await page.getByRole('button', { name: 'Clear all advanced filters' }).click();
   await unfilteredProfiles;
+  await page.getByText('Advanced filters (0 active)').waitFor();
   await page.getByRole('button', { name: 'View proposal detail' }).first().click();
   const profileDialog = page.getByRole('dialog', { name: 'Revision 1' });
   await profileDialog.waitFor();
@@ -206,6 +236,7 @@ try {
   assert.equal(await comparison.getByRole('row', { name: /Proposed signature suites/ }).count(), 1);
   await comparison.getByRole('button', { name: 'Close revision comparison' }).click();
   await comparison.waitFor({ state: 'hidden' });
+  await page.getByText('Advanced filters (0 active)').click();
   await page.locator('#profile-draft-id-filter').fill('missing-profile');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await page.getByText('No revisions recorded for missing-profile').waitFor();

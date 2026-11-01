@@ -92,6 +92,36 @@ paths:
           description: Exact lowercase profile ID. Keep this filter on each cursor page; a cursor for another profile returns 400.
           schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
         - in: query
+          name: q
+          required: false
+          description: Case-insensitive literal prefix of profile ID, display name or policy version across the authorized CA history. Percent, underscore and backslash are escaped as literals. Keep this query on every cursor page.
+          schema: { type: string, minLength: 2, maxLength: 255 }
+        - in: query
+          name: policy_version
+          required: false
+          description: Exact policy version across the authorized CA history, trimmed and limited to 128 Unicode characters with no control characters, matching the stored proposal field; keep it on every cursor page.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - in: query
+          name: from
+          required: false
+          description: Inclusive recorded-at UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; keep it on every cursor page.
+          schema: { type: string, minLength: 24, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
+        - in: query
+          name: until
+          required: false
+          description: Exclusive recorded-at UTC timestamp in the same format; it must follow from and remain on every cursor page.
+          schema: { type: string, minLength: 24, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
+        - in: query
+          name: min_validity_days
+          required: false
+          description: Minimum proposed maximum certificate validity in days across the authorized CA history; informational only and not an issuance grant. Keep on every cursor page.
+          schema: { type: integer, minimum: 1, maximum: 825 }
+        - in: query
+          name: min_dns_sans
+          required: false
+          description: Minimum proposed maximum DNS SAN count across the authorized CA history; informational only and not an issuance grant. Keep on every cursor page.
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - in: query
           name: order
           required: false
           description: Oldest (default) or newest revision first. Newest requires profile_id. Keep this order on each cursor page.
@@ -99,7 +129,7 @@ paths:
         - in: query
           name: after
           required: false
-          description: Pass X-Next-Cursor from the preceding page unchanged; malformed cursors return 400.
+          description: Pass X-Next-Cursor from the preceding page unchanged, with the same filters and order; malformed cursors return 400.
           schema: { type: string, maxLength: 72 }
       responses:
         '200':
@@ -272,7 +302,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids; issuer/subject/CA must also have a server-managed grant.
+      description: RS256 OIDC access token with typ at+jwt, approved azp client ID, explicit ca_ids and the client-specific human trust-ca-reader or workload trust-ca-workload-reader role; issuer/subject/CA must also have a server-managed grant.
   parameters:
     CaId:
       in: path
@@ -313,32 +343,32 @@ components:
       in: query
       name: from
       required: false
-      description: Inclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format.
-      schema: { type: string, maxLength: 24 }
+      description: Inclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; keep it on each cursor page.
+      schema: { type: string, minLength: 24, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
     AuditUntil:
       in: query
       name: until
       required: false
-      description: Exclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; must follow from.
-      schema: { type: string, maxLength: 24 }
+      description: Exclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; must follow from and remain on each cursor page.
+      schema: { type: string, minLength: 24, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
     AuditEventType:
       in: query
       name: event_type
       required: false
-      description: Exact event type in the selected CA's full audit history.
-      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Exact event type in the selected CA's full audit history, trimmed and limited to 128 UTF-8 bytes with no control characters; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128, x-utf8-max-bytes: 128 }
     AuditDecision:
       in: query
       name: decision
       required: false
-      description: Exact decision in the selected CA's full audit history; keep on each cursor page.
-      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Exact decision in the selected CA's full audit history, trimmed and limited to 128 UTF-8 bytes with no control characters; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128, x-utf8-max-bytes: 128 }
     AuditPolicyVersion:
       in: query
       name: policy_version
       required: false
-      description: Exact non-null policy version in the selected CA's full audit history; keep on each cursor page.
-      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Exact non-null policy version in the selected CA's full audit history, trimmed and limited to 128 UTF-8 bytes with no control characters; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128, x-utf8-max-bytes: 128 }
     CaCursor:
       in: query
       name: after

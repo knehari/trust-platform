@@ -53,6 +53,17 @@ const scoped = await fetch(`${api}/v1/cas`, { headers });
 assert.equal(scoped.status, 200);
 const cas = await scoped.json();
 assert.deepEqual(cas.map((ca) => ca.ca_id), [allowedCa]);
+for (const [path, name] of [
+  ['/v1/cas', 'q'],
+  [`/v1/cas/${allowedCa}/certificates`, 'cn'],
+]) {
+  for (const value of ['a', 'a\u0085b']) {
+    const query = new URLSearchParams({ [name]: value });
+    assert.equal((await fetch(`${api}${path}?${query}`, { headers })).status, 400, `invalid ${name} prefix`);
+  }
+  const validUnicode = new URLSearchParams({ [name]: '😀😀' });
+  assert.equal((await fetch(`${api}${path}?${validUnicode}`, { headers })).status, 200, `valid ${name} Unicode prefix`);
+}
 assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}`, { headers })).status, 403);
 assert.equal((await fetch(`${api}/v1/cas/${allowedCa}`, { headers })).status, 200);
 const drafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts`, { headers });
@@ -64,6 +75,27 @@ assert.deepEqual((await filteredDrafts.json()).map(draft => draft.revision), [1,
 const newestDrafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=server-lab&order=newest`, { headers });
 assert.equal(newestDrafts.status, 200);
 assert.deepEqual((await newestDrafts.json()).map(draft => draft.revision), [2, 1]);
+for (const [query, revisions] of [
+  ['q=Laboratory', [1, 2]],
+  ['q=La%25', []],
+  ['policy_version=v2', [2]],
+  ['min_validity_days=70', [1]],
+  ['min_dns_sans=4', [1]],
+  ['from=2100-01-01T00%3A00%3A00.000Z', []],
+  ['until=2100-01-01T00%3A00%3A00.000Z', [1, 2]],
+  ['q=Laboratory&policy_version=v2&min_dns_sans=3', [2]],
+]) {
+  const response = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?${query}`, { headers });
+  assert.equal(response.status, 200, `profile-draft filter ${query}`);
+  assert.deepEqual((await response.json()).map(draft => draft.revision), revisions, `profile-draft filter ${query}`);
+}
+for (const query of ['q=a', 'q=a%C2%85b', `policy_version=${'a'.repeat(129)}`, 'min_validity_days=0', 'min_dns_sans=101']) {
+  assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?${query}`, { headers })).status, 400, `invalid profile-draft filter ${query}`);
+}
+for (const [length, status] of [[128, 200], [129, 400]]) {
+  const query = new URLSearchParams({ policy_version: '😀'.repeat(length) });
+  assert.equal((await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?${query}`, { headers })).status, status, `Unicode policy-version length ${length}`);
+}
 const missingDrafts = await fetch(`${api}/v1/cas/${allowedCa}/profile-drafts?profile_id=missing-profile`, { headers });
 assert.equal(missingDrafts.status, 200);
 assert.deepEqual(await missingDrafts.json(), []);
@@ -98,5 +130,15 @@ for (const [kind, knownId, hiddenId, idField, sensitiveField] of [
   assert.equal((await fetch(`${base}/${hiddenId}`, { headers })).status, 404);
   assert.equal((await fetch(`${api}/v1/cas/${hiddenCa}/${kind}/${hiddenId}`, { headers })).status, 403);
   assert.equal((await fetch(`${base}/not-a-uuid`, { headers })).status, 400);
+}
+const auditBase = `${api}/v1/cas/${allowedCa}/audit`;
+const trimmedAudit = await fetch(`${auditBase}?${new URLSearchParams({ event_type: 'certificate.signed\u0085' })}`, { headers });
+assert.equal(trimmedAudit.status, 200);
+assert.deepEqual((await trimmedAudit.json()).map(event => event.event_id), [allowedEvent]);
+for (const field of ['event_type', 'decision', 'policy_version']) {
+  for (const value of ['😀'.repeat(33), 'a\u0085b']) {
+    const query = new URLSearchParams({ [field]: value });
+    assert.equal((await fetch(`${auditBase}?${query}`, { headers })).status, 400, `invalid audit ${field}`);
+  }
 }
 console.log('Laboratory smoke passed: console, code+PKCE, scoped list/detail reads, and denials.');

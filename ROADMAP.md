@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-26 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-11-01 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -12,7 +12,7 @@
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #159](https://github.com/knehari/trust-platform/pull/159) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #164](https://github.com/knehari/trust-platform/pull/164) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
 - Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
 
@@ -20,7 +20,9 @@
 
 The first viable version means an authorized operator can create a CA and a certificate profile, issue and revoke a certificate through authenticated application routes, inspect durable evidence, and recover the service and its protected keys in a controlled pilot. It is **not** a qualified trust service or a general-availability release.
 
-**Progression: 4/12 criteria evidenced (33%)** · `████░░░░░░░░` · **MVP not reached**.
+**Progression: 5/12 criteria evidenced (42%)** · `█████░░░░░░░` · **MVP not reached**.
+
+**Latest assessment (2026-11-01):** five foundation criteria are evidenced in the laboratory; seven MVP criteria remain open. An isolated Keycloak 26.8.1 environment now authenticates distinct maker and checker accounts with Authorization Code + PKCE, and a separate workload through client credentials. Real signed tokens pass the read API's exact issuer, audience, client, role and CA grant checks; anonymous, ID-token, unrelated CA and ungranted workload reads are denied. This closes criterion 5 at the laboratory evidence level. It does not implement approval actions, production transport or secret custody. Criterion 6 still requires write-specific database roles, protected signer evidence and policy-controlled API/console transitions. These changes are local and have no remote CI evidence. [Detailed development status](docs/DEVELOPMENT_STATUS.md).
 
 Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the nearest whole percent. A checked foundation means implemented and tested **in the laboratory**, including code still in a Draft PR; it does not mean merged, independently reviewed or production-approved. An unchecked criterion may have partial prototypes, but its full MVP acceptance condition remains open.
 
@@ -28,7 +30,7 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] **Scoped read API:** OIDC-token and server-owned CA-grant checks, bounded reads, readiness and cursor pagination are exercised against disposable PostgreSQL ([Drafts #50–#70](https://github.com/knehari/trust-platform/pulls)). The test issuer is not human IAM.
 - [x] **Read-only operator console:** CA/certificate/audit consultation, detail dialogs, search, export and recorded-date filters are exercised in the laboratory; profile-draft consultation is proposed through [Draft #140](https://github.com/knehari/trust-platform/pull/140). These views do not issue or revoke certificates.
 - [x] **Reproducible laboratory stack and data checks:** disposable Compose/browser flow, restricted database role, migrations and logical restore regressions ([Drafts #53, #61–#69 and PR #129](https://github.com/knehari/trust-platform/pulls)). This is not operational disaster recovery.
-- [ ] **Human IAM and authorization:** real IdP, workload identity, least-privilege roles and independently authenticated maker/checker actors, with negative access tests.
+- [x] **Human IAM and authorization:** isolated Keycloak realm, distinct maker/checker sign-ins, separate workload credential, CA-scoped reader grants and negative access tests ([IAM laboratory runbook](docs/development/iam-keycloak-lab.md)). This is laboratory evidence; approval enforcement belongs to criterion 6.
 - [ ] **CA and profile lifecycle:** policy-controlled API and console workflows to create, approve, activate and retire CAs and versioned certificate profiles; no direct database bypass.
 - [ ] **Application issuance:** authenticated CSR submission and approval, profile enforcement, Core orchestration, idempotent API result and end-to-end negative/fault tests.
 - [ ] **Revocation and publication:** authorized revocation with durable audit evidence and verifiable CRL publication; OCSP and broader path validation require a separate design decision.
@@ -58,6 +60,16 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [x] Copy an exact proposal's allowlisted metadata and digest as JSON for offline review, without actor identity or approval evidence ([Draft #157](https://github.com/knehari/trust-platform/pull/157)).
 - [x] Copy the visible comparison fields as scoped JSON with both revision digests and no actor identity ([Draft #158](https://github.com/knehari/trust-platform/pull/158)).
 - [x] Triage advisory syntax warnings among already loaded proposal revisions, with an explicit loaded-only count ([Draft #159](https://github.com/knehari/trust-platform/pull/159)).
+- [x] Filter the complete authorized proposal history by exact policy version with cursor continuity ([Draft #160](https://github.com/knehari/trust-platform/pull/160)).
+- [x] Filter proposal history by inclusive/exclusive UTC recorded dates while retaining CA scope and pagination ([Draft #161](https://github.com/knehari/trust-platform/pull/161)).
+- [x] Triage proposed maximum-validity lifetimes by a server-side minimum-days filter across authorized history ([Draft #162](https://github.com/knehari/trust-platform/pull/162)).
+- [x] Triage proposed DNS SAN count limits by a server-side minimum threshold across authorized history ([Draft #163](https://github.com/knehari/trust-platform/pull/163)).
+- [x] Collapse advanced proposal filters with an active-count summary and one action to clear them together ([Draft #164](https://github.com/knehari/trust-platform/pull/164)).
+- [x] Align the local read-only API contract and console filter validation for proposals, audit, authority search and CN prefix; verify scoped pagination and invalid inputs in disposable PostgreSQL (`codex/profile-openapi-contract`, local only; remote CI pending).
+- [x] Accept valid Unicode proposal display names, policy versions and creator identifiers at the PostgreSQL character-count limits in the read-only console and policy-version API filter (`codex/profile-openapi-contract`, local only; remote CI pending).
+- [x] Bind the read-only API's accepted OIDC client IDs to separate human and workload reader roles; reject unknown clients and cross-role tokens (`codex/iam-identity-boundary`, local only). This is a prerequisite for human IAM.
+- [x] Enforce sequential immutable profile-draft revisions per CA/profile with PostgreSQL writer serialization and reject gapped existing data during migration (`codex/profile-revision-sequence`, local only). This does not activate profiles.
+- [ ] Validate the local filter changes on their exact remote CI head and run the browser E2E scenario; Chromium installation is currently unavailable locally.
 - [ ] Implement authenticated profile approval/activation and CA creation with denial, concurrency and recovery tests.
 - [ ] Expose policy-controlled issuance through the Rust Core, with a real identity boundary before pilot use.
 - [ ] Add revocation, publication and durable evidence paths, then complete custody/recovery and independent release gates.

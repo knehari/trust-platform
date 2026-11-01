@@ -30,3 +30,18 @@ test('profile proposal reads reject scope, revision and malformed policy metadat
   assert.throws(() => requireProfileDraftPage([valid, { ...valid, status: 'ACTIVE' }], caId));
   assert.throws(() => requireProfileDraftPage(Array(101).fill(valid), caId), /invalid profile proposal page/);
 });
+
+test('profile proposal text bounds match PostgreSQL Unicode character length', () => {
+  const unicode = {
+    ...valid,
+    display_name: '😀'.repeat(255),
+    policy_version: '😀'.repeat(128),
+    created_by: '😀'.repeat(256),
+  };
+  assert.deepEqual(requireProfileDraft(unicode, caId), unicode);
+  for (const [field, length] of [
+    ['display_name', 256], ['policy_version', 129], ['created_by', 257],
+  ]) {
+    assert.throws(() => requireProfileDraft({ ...valid, [field]: '😀'.repeat(length) }, caId));
+  }
+});

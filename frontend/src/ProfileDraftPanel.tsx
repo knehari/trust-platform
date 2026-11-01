@@ -8,6 +8,7 @@ import { navigationUrl, type DetailLink } from './navigation';
 import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
 import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
 import { visibleProfileDrafts } from './profile-draft-filter';
+import { profileDraftListUrl, trimProfileFilterInput, validProfileDraftSearch, validProfilePolicyVersion } from './profile-draft-query';
 
 interface Props {
   caId: string;
@@ -32,6 +33,20 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [policyInput, setPolicyInput] = useState('');
+  const [policyFilter, setPolicyFilter] = useState('');
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [fromInput, setFromInput] = useState('');
+  const [untilInput, setUntilInput] = useState('');
+  const [fromFilter, setFromFilter] = useState('');
+  const [untilFilter, setUntilFilter] = useState('');
+  const [rangeError, setRangeError] = useState<string | null>(null);
+  const [validityInput, setValidityInput] = useState('');
+  const [minValidity, setMinValidity] = useState<number | null>(null);
+  const [validityError, setValidityError] = useState<string | null>(null);
+  const [sanInput, setSanInput] = useState('');
+  const [minSans, setMinSans] = useState<number | null>(null);
+  const [sanError, setSanError] = useState<string | null>(null);
   const [lookupProfileId, setLookupProfileId] = useState('');
   const [lookupRevision, setLookupRevision] = useState('');
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -48,6 +63,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   onUnauthorizedRef.current = onUnauthorized;
   const onCloseDetailRef = useRef(onCloseDetail);
   onCloseDetailRef.current = onCloseDetail;
+  const listUrl = (after?: string) => profileDraftListUrl(caId, {
+    profileFilter, profileOrder, searchTerm, policyFilter, fromFilter, untilFilter, minValidity, minSans,
+  }, after);
 
   useEffect(() => {
     setItems([]);
@@ -60,14 +78,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setExportSelection([]);
     moreController.current?.abort();
     const controller = new AbortController();
-    const params = new URLSearchParams();
-    if (profileFilter) {
-      params.set('profile_id', profileFilter);
-      params.set('order', profileOrder);
-    }
-    if (searchTerm) params.set('q', searchTerm);
-    const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
-    void apiGetPage<unknown>(listUrl, token, controller.signal)
+    void apiGetPage<unknown>(listUrl(), token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
         setItems(requireProfileDraftPage(page.items, caId));
@@ -80,7 +91,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); moreController.current?.abort(); };
-  }, [caId, token, retry, profileFilter, profileOrder, searchTerm]);
+  }, [caId, token, retry, profileFilter, profileOrder, searchTerm, policyFilter, fromFilter, untilFilter, minValidity, minSans]);
 
   useEffect(() => {
     if (!linkedDetail) {
@@ -146,13 +157,57 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   function applySearch() {
-    const value = searchInput.trim();
-    if (value.length < 2 || value.length > 255 || [...value].some(char => /[\x00-\x1f\x7f]/u.test(char))) {
+    const value = trimProfileFilterInput(searchInput);
+    if (!validProfileDraftSearch(value)) {
       setSearchError('Enter 2–255 printable characters.');
       return;
     }
     setSearchError(null);
     setSearchTerm(value);
+  }
+
+  function applyPolicyFilter() {
+    const value = trimProfileFilterInput(policyInput);
+    if (!validProfilePolicyVersion(value)) {
+      setPolicyError('Enter a policy version of at most 128 characters, without control characters.');
+      return;
+    }
+    setPolicyError(null);
+    setPolicyFilter(value);
+  }
+
+  function applyRecordedRange() {
+    if (!fromInput && !untilInput) {
+      setRangeError('Choose at least one UTC date.');
+      return;
+    }
+    if (fromInput && untilInput && fromInput >= untilInput) {
+      setRangeError('The before date must be later than the from date.');
+      return;
+    }
+    setRangeError(null);
+    setFromFilter(fromInput ? `${fromInput}T00:00:00.000Z` : '');
+    setUntilFilter(untilInput ? `${untilInput}T00:00:00.000Z` : '');
+  }
+
+  function applyValidityFilter() {
+    const value = Number(validityInput);
+    if (!/^\d{1,3}$/u.test(validityInput) || !Number.isInteger(value) || value < 1 || value > 825) {
+      setValidityError('Enter a whole number from 1 to 825 days.');
+      return;
+    }
+    setValidityError(null);
+    setMinValidity(value);
+  }
+
+  function applySanFilter() {
+    const value = Number(sanInput);
+    if (!/^\d{1,3}$/u.test(sanInput) || !Number.isInteger(value) || value < 1 || value > 100) {
+      setSanError('Enter a whole number from 1 to 100 DNS SANs.');
+      return;
+    }
+    setSanError(null);
+    setMinSans(value);
   }
 
   async function loadMore() {
@@ -162,13 +217,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setMoreLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ after: cursor });
-      if (profileFilter) {
-        params.set('profile_id', profileFilter);
-        params.set('order', profileOrder);
-      }
-      if (searchTerm) params.set('q', searchTerm);
-      const page = await apiGetPage<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
+      const page = await apiGetPage<unknown>(listUrl(cursor), token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireProfileDraftPage(page.items, caId);
       setItems(current => appendUniquePage(current, rows, row => `${row.profile_id}/${row.revision}`));
@@ -225,6 +274,16 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   const visibleItems = visibleProfileDrafts(items, warningsOnly);
+  const advancedFilterCount = Number(Boolean(policyFilter)) + Number(Boolean(fromFilter || untilFilter))
+    + Number(minValidity !== null) + Number(minSans !== null) + Number(Boolean(profileFilter));
+
+  function clearAdvancedFilters() {
+    setPolicyInput(''); setPolicyFilter(''); setPolicyError(null);
+    setFromInput(''); setUntilInput(''); setFromFilter(''); setUntilFilter(''); setRangeError(null);
+    setValidityInput(''); setMinValidity(null); setValidityError(null);
+    setSanInput(''); setMinSans(null); setSanError(null);
+    setFilterInput(''); setProfileFilter(''); setProfileOrder('oldest'); setFilterError(null);
+  }
 
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
@@ -232,14 +291,25 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     <div className="subtle-panel profile-compare-controls"><span>{exportSelection.length}/{MAX_CSV_ROWS} loaded proposals selected for metadata CSV export.</span><button type="button" className="link-button" disabled={exportSelection.length === 0} onClick={downloadSelected}>Export selected proposals CSV</button>{exportSelection.length > 0 && <button type="button" className="link-button" onClick={() => setExportSelection([])}>Clear selection</button>}</div>
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySearch(); }}><label htmlFor="profile-draft-search">Search profile ID, display name or policy prefix across this authority’s history</label><div><input id="profile-draft-search" type="search" value={searchInput} onChange={event => { setSearchInput(event.target.value); setSearchError(null); }} placeholder="At least 2 characters" aria-describedby={searchError ? 'profile-draft-search-error' : undefined} /><button type="submit">Search proposals</button>{searchTerm && <button type="button" className="profile-filter-clear" onClick={() => { setSearchInput(''); setSearchTerm(''); setSearchError(null); }}>Clear search</button>}</div></form>
     {searchError && <p id="profile-draft-search-error" className="lookup-error" role="alert">{searchError}</p>}
+    <details className="profile-advanced-filters"><summary>Advanced filters ({advancedFilterCount} active)</summary><div className="profile-advanced-filters-content">
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyPolicyFilter(); }}><label htmlFor="profile-draft-policy-filter">Filter the full authority history by exact policy version</label><div><input id="profile-draft-policy-filter" type="search" value={policyInput} onChange={event => { setPolicyInput(event.target.value); setPolicyError(null); }} placeholder="Policy version" aria-describedby={policyError ? 'profile-draft-policy-error' : undefined} /><button type="submit">Filter policy</button>{policyFilter && <button type="button" className="profile-filter-clear" onClick={() => { setPolicyInput(''); setPolicyFilter(''); setPolicyError(null); }}>Clear policy</button>}</div></form>
+    {policyError && <p id="profile-draft-policy-error" className="lookup-error" role="alert">{policyError}</p>}
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyRecordedRange(); }}><label>Filter recorded UTC dates across the full authority history</label><div><input type="date" aria-label="Recorded from UTC date" value={fromInput} onChange={event => { setFromInput(event.target.value); setRangeError(null); }} /><input type="date" aria-label="Recorded before UTC date" value={untilInput} onChange={event => { setUntilInput(event.target.value); setRangeError(null); }} /><button type="submit">Filter dates</button>{(fromFilter || untilFilter) && <button type="button" className="profile-filter-clear" onClick={() => { setFromInput(''); setUntilInput(''); setFromFilter(''); setUntilFilter(''); setRangeError(null); }}>Clear dates</button>}</div></form>
+    {rangeError && <p className="lookup-error" role="alert">{rangeError}</p>}
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyValidityFilter(); }}><label htmlFor="profile-draft-validity-filter">Minimum proposed maximum validity across the full authority history</label><div><input id="profile-draft-validity-filter" type="number" min="1" max="825" step="1" value={validityInput} onChange={event => { setValidityInput(event.target.value); setValidityError(null); }} placeholder="Days" /><button type="submit">Filter validity</button>{minValidity !== null && <button type="button" className="profile-filter-clear" onClick={() => { setValidityInput(''); setMinValidity(null); setValidityError(null); }}>Clear validity</button>}</div></form>
+    {validityError && <p className="lookup-error" role="alert">{validityError}</p>}
+    <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySanFilter(); }}><label htmlFor="profile-draft-san-filter">Minimum proposed maximum DNS SANs across the full authority history</label><div><input id="profile-draft-san-filter" type="number" min="1" max="100" step="1" value={sanInput} onChange={event => { setSanInput(event.target.value); setSanError(null); }} placeholder="DNS SANs" /><button type="submit">Filter SAN limit</button>{minSans !== null && <button type="button" className="profile-filter-clear" onClick={() => { setSanInput(''); setMinSans(null); setSanError(null); }}>Clear SAN limit</button>}</div></form>
+    {sanError && <p className="lookup-error" role="alert">{sanError}</p>}
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applyProfileFilter(); }}><label htmlFor="profile-draft-id-filter">Show all recorded revisions of a profile in this authority</label><div><input id="profile-draft-id-filter" type="search" value={filterInput} onChange={event => { setFilterInput(event.target.value); setFilterError(null); }} placeholder="Profile ID" aria-describedby={filterError ? 'profile-draft-filter-error' : undefined} /><button type="submit">Filter revisions</button>{profileFilter && <button type="button" className="profile-filter-clear" onClick={() => { setFilterInput(''); setFilterError(null); setProfileOrder('oldest'); setProfileFilter(''); }}>Clear filter</button>}</div>{profileFilter && <label className="profile-order-label" htmlFor="profile-draft-order">Revision order <select id="profile-draft-order" value={profileOrder} onChange={event => setProfileOrder(event.target.value as 'oldest' | 'newest')}><option value="oldest">Oldest first</option><option value="newest">Newest first</option></select></label>}</form>
     {filterError && <p id="profile-draft-filter-error" className="lookup-error" role="alert">{filterError}</p>}
+    {advancedFilterCount > 0 && <button type="button" className="link-button profile-draft-action" onClick={clearAdvancedFilters}>Clear all advanced filters</button>}
+    </div></details>
     <form className="exact-lookup profile-draft-lookup" onSubmit={event => { event.preventDefault(); findRevision(); }}><label htmlFor="profile-draft-id-lookup">Find a proposal by exact profile ID and revision across this authority’s history</label><div><input id="profile-draft-id-lookup" type="search" value={lookupProfileId} onChange={event => { setLookupProfileId(event.target.value); setLookupError(null); }} placeholder="Profile ID" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><input type="text" inputMode="numeric" aria-label="Profile revision number" value={lookupRevision} onChange={event => { setLookupRevision(event.target.value); setLookupError(null); }} placeholder="Revision" aria-describedby={lookupError ? 'profile-draft-lookup-error' : undefined} /><button type="submit" disabled={detailLoading}>{detailLoading ? 'Finding…' : 'Find revision'}</button></div></form>
     {lookupError && <p id="profile-draft-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}
     <label className="profile-compare-filter"><input type="checkbox" checked={warningsOnly} onChange={event => { setWarningsOnly(event.target.checked); setExportSelection([]); }} /> Show proposals with advisory syntax warnings among loaded revisions only ({visibleProfileDrafts(items, true).length}/{items.length})</label>
     {loading ? <p className="profile-draft-message">Loading scoped profile proposals…</p>
       : error && items.length === 0 ? <p className="profile-draft-message" role="alert">{error} <button className="link-button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>
-      : items.length === 0 ? <p className="profile-draft-message">{searchTerm ? `No proposals match “${searchTerm}” in this authority.` : profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : 'No profile proposals recorded for this authority.'}</p>
+      : items.length === 0 ? <p className="profile-draft-message">{searchTerm ? `No proposals match “${searchTerm}” in this authority.` : profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : policyFilter || fromFilter || untilFilter || minValidity !== null || minSans !== null ? 'No proposals match the active filters in this authority.' : 'No profile proposals recorded for this authority.'}</p>
       : visibleItems.length === 0 ? <p className="profile-draft-message">No advisory syntax warnings in the loaded revisions.{cursor ? ' Load more proposals to inspect further history.' : ''}</p>
       : <div className="profile-draft-list">{visibleItems.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
         <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>

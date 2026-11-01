@@ -12,14 +12,14 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 - CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
 - P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
 - PostgreSQL migrations 0001–0013 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, draft governance, read-only API views and server-owned reader grants; disposable CI tests.
-- Executable authenticated Rust management API for scoped CA, certificate and audit metadata reads; see its [scope and setup](docs/architecture/management-api-readonly.md).
+- Executable authenticated Rust management API for scoped CA, certificate and audit metadata reads; see its [scope and setup](docs/architecture/management-api-readonly.md). An [isolated Keycloak IAM laboratory](docs/development/iam-keycloak-lab.md) exercises real human and workload tokens against this read boundary.
 - Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
 - CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.
 - Unit tests and a Rust CI workflow with PostgreSQL and OpenSSL interoperability checks.
 
 ## Important gaps
 
-No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client with a disposable OIDC fixture, not a production login. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
+No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client. Its original stack uses a disposable OIDC fixture; a separate Keycloak lab verifies actual operator sign-in on loopback. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
 
 ## How to inspect the laboratory workspace
 
@@ -45,6 +45,7 @@ See the [execution record](docs/recovery/EXECUTION_STATUS.md) for exact PR heads
 - [Read-only management API and OpenAPI contract](docs/architecture/management-api-readonly.md)
 - [React management console laboratory setup](frontend/README.md)
 - [Disposable Docker Compose laboratory stack](docs/development/lab-compose.md)
+- [Isolated Keycloak IAM laboratory](docs/development/iam-keycloak-lab.md)
 - [Security gates](docs/testing/acceptance-gates.md)
 - [Engineering instructions](AGENTS.md)
 

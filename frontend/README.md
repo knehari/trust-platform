@@ -30,6 +30,16 @@ Newest/oldest choices request the API's complete-history order and reset paginat
 
 The proposal search queries profile IDs, display names and policy versions by literal prefix across the full authorized CA history. It preserves the search term on later cursor pages and can be combined with an exact profile-ID filter.
 
+An exact policy-version filter narrows the authorized proposal history server-side and stays applied across cursor pages. It can be combined with the search and exact profile-ID filter.
+
+The recorded-date filter uses UTC midnight boundaries: “from” is inclusive and “before” is exclusive. Both dates are applied server-side across the complete authorized CA history and preserved on subsequent cursor pages.
+
+The minimum-validity filter finds draft policies whose proposed maximum certificate lifetime is at least the chosen number of days (1–825). It is an informational review filter, not an approval or an issuance constraint.
+
+The minimum DNS SAN limit filter similarly finds draft policies proposing a maximum count at or above 1–100. It remains CA scoped and is an informational review aid only.
+
+Advanced proposal filters are collapsed by default. The summary shows how many server-side filters are active; readers can expand them to edit or clear individual constraints, or clear all advanced filters together. Search and exact revision lookup remain directly visible.
+
 Readers may explicitly select up to 100 loaded proposals for a browser-generated, formula-safe metadata CSV. The selection clears when the CA or server-side filters change; the export omits actor identity, certificate material and approval evidence.
 
 An exact proposal detail can copy a field-allowlisted JSON metadata snapshot including its digest and advisory warnings. This copy is informational and contains no signed review or approval evidence.
