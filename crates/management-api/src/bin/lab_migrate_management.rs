@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012–0017.
+//! Transactional laboratory runner for management migrations 0012–0018.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, NoTls, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 6] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 7] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -68,6 +68,19 @@ const MIGRATIONS: [(&str, &str, &[&str]); 6] = [
             "public.audit_event_management_history_window",
         ],
     ),
+    (
+        "0018_management_certificate_san",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0018_management_certificate_san.sql"
+        )),
+        &[
+            "public.certificate_san_dns",
+            "public.management_certificate_san",
+            "public.certificate_san_dns_lookup",
+            "public.certificate_management_request_text",
+        ],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -82,7 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0017 recorded and current");
+    println!("PASS: management migrations 0012–0018 recorded and current");
     Ok(())
 }
 
