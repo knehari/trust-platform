@@ -31,10 +31,11 @@ const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_SIZE: usize = 100;
 /// Every view and column the read routes use, including the history window
-/// columns of migration 0017; LIMIT 0 reads no row.
-const MANAGEMENT_VIEWS_CHECK: &str = "SELECT c.signed_at_window, a.recorded_at_window \
-     FROM management_ca, management_certificate c, management_audit a, management_reader_scope, \
-     management_profile_draft LIMIT 0";
+/// columns of migration 0017 and the SAN view of 0018; LIMIT 0 reads no row.
+const MANAGEMENT_VIEWS_CHECK: &str =
+    "SELECT c.signed_at_window, a.recorded_at_window, s.signed_at_window \
+     FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft, \
+     management_certificate_san s LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -520,7 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0017")?;
+    .map_err(|_| "management views unavailable or older than migration 0018")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -1043,20 +1044,33 @@ async fn list_certificates(
             select.push_str(&format!(" AND lower(subject_cn) LIKE ${} ESCAPE '\\'", params.len() + 1));
             params.push(prefix);
         }
-        if let Some(dns) = san_dns.as_ref() {
-            select.push_str(&format!(" AND EXISTS (SELECT 1 FROM unnest(san_dns) AS entry(name) WHERE lower(entry.name) = ${})", params.len() + 1));
-            params.push(dns);
-        }
         if let Some(cutoff) = not_after_before.as_ref() {
             select.push_str(&format!(" AND not_after < ${}", params.len() + 1));
             params.push(cutoff);
         }
         let newest = direction == "DESC";
+        let order = format!(" ORDER BY signed_at {direction}, request_id {direction}");
+        if let Some(dns) = san_dns.as_ref() {
+            let rows = read_san_page(&mut tx, deadline, SanPage {
+                ca_id: &ca_id,
+                issuer: &issuer,
+                subject: &subject,
+                comparison,
+                order: &order,
+                newest,
+                cursor: before_time.clone().zip(before_id.clone()),
+                dns,
+                select: &select,
+                params: &params,
+            })?;
+            tx.commit()?;
+            return Ok(Some(rows));
+        }
         let anchor = history_anchor(&mut tx, &ca_id, before_time.as_ref(), newest)?;
         let slices = HistorySlices {
             window: "signed_at_window",
             select,
-            order: format!(" ORDER BY signed_at {direction}, request_id {direction}"),
+            order,
             params,
             newest,
             anchor,
@@ -1077,6 +1091,81 @@ async fn list_certificates(
         format!("{}|{}", last.signed_at, last.request_id)
     });
     Ok((history_headers(next), Json(items)))
+}
+
+/// A certificate page filtered on one DNS SAN.
+struct SanPage<'a> {
+    ca_id: &'a String,
+    issuer: &'a String,
+    subject: &'a String,
+    /// `<` (newest first) or `>` (oldest first).
+    comparison: &'static str,
+    order: &'a str,
+    newest: bool,
+    cursor: Option<(String, String)>,
+    /// Lowercase ASCII DNS name.
+    dns: &'a String,
+    /// The certificate query with its scope, cursor, CN and notAfter
+    /// predicates, and its parameters.
+    select: &'a str,
+    params: &'a [&'a (dyn ToSql + Sync)],
+}
+
+/// Reads a SAN-filtered page in two steps (migration 0018). Step one lists,
+/// in page order, the request ids whose certificate carries the name, from
+/// the indexed `management_certificate_san` view, in time slices like any
+/// history page. Step two reads those certificates from
+/// `management_certificate` with the page's other predicates. Both views
+/// stay `security_barrier`, every statement keeps the CA predicate and the
+/// server-owned grant, and the SAN view carries the certificate's own time
+/// text, so the two steps share one order and one cursor. When the other
+/// filters drop rows, step one continues after its last id.
+fn read_san_page(
+    db: &mut Transaction<'_>,
+    deadline: Instant,
+    page: SanPage<'_>,
+) -> Result<Vec<Row>, postgres::Error> {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut after = page.cursor.clone();
+    loop {
+        let (time, id) = after.clone().unzip();
+        let anchor = history_anchor(db, page.ca_id, time.as_ref(), page.newest)?;
+        let matches = HistorySlices {
+            window: "signed_at_window",
+            select: format!(
+                "SELECT request_id, signed_at FROM management_certificate_san WHERE ca_id=$1 AND EXISTS \
+                 (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
+                 AND ($4::text IS NULL OR (signed_at, request_id) {} ($4, $5)) AND san_dns=$6",
+                page.comparison
+            ),
+            order: page.order.to_owned(),
+            params: vec![page.ca_id, page.issuer, page.subject, &time, &id, page.dns],
+            newest: page.newest,
+            anchor,
+            from_cursor: time.is_some(),
+        }
+        .read(db, deadline)?;
+        let ids: Vec<String> = matches.iter().map(|row| row.get(0)).collect();
+        if ids.is_empty() {
+            return Ok(rows);
+        }
+        let mut params = page.params.to_vec();
+        params.push(&ids);
+        let sql = format!(
+            "{} AND request_id = ANY(${}){} LIMIT {}",
+            page.select,
+            params.len(),
+            page.order,
+            HISTORY_PAGE_SIZE + 1 - rows.len()
+        );
+        statement_budget(db, deadline)?;
+        rows.extend(db.query(&sql, &params)?);
+        if rows.len() > HISTORY_PAGE_SIZE || matches.len() <= HISTORY_PAGE_SIZE {
+            return Ok(rows);
+        }
+        let last = matches.last().expect("a full batch has a last id");
+        after = Some((last.get(1), last.get(0)));
+    }
 }
 
 fn certificate_from_row(row: Row) -> Certificate {
@@ -2221,6 +2310,14 @@ mod tests {
             ("certificates", "?order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at, request_id", 376),
             ("certificates", "?cn=needle-", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at DESC, request_id DESC", 22),
             ("certificates", "?cn=needle-&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at, request_id", 22),
+            ("certificates", "?san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 151),
+            ("certificates", "?san_dns=GRP.lab.INVALID&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at, request_id", 151),
+            ("certificates", "?san_dns=rare.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'rare.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 11),
+            ("certificates", "?san_dns=host-7.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'host-7.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 1),
+            ("certificates", "?san_dns=absent.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'absent.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 0),
+            ("certificates", "?cn=hay-&san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'hay-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 142),
+            ("certificates", "?cn=needle-&san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 9),
+            ("certificates", "?cn=needle-&san_dns=grp.lab.invalid&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at, request_id", 9),
             ("audit", "", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC, event_id DESC", 376),
             ("audit", "?order=oldest", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at, event_id", 376),
             ("audit", "?event_type=certificate.revoked", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 AND event_type='certificate.revoked' ORDER BY recorded_at DESC, event_id DESC", 22),
@@ -2250,7 +2347,7 @@ mod tests {
                 "{base}: fixture not loaded as expected"
             );
             assert_eq!(ids, expected, "{base}");
-            assert_eq!(pages, count.div_ceil(HISTORY_PAGE_SIZE), "{base}");
+            assert_eq!(pages, count.div_ceil(HISTORY_PAGE_SIZE).max(1), "{base}");
         }
     }
 

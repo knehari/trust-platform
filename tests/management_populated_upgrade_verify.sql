@@ -62,6 +62,22 @@ DO $test$ BEGIN
     ) THEN
         RAISE EXCEPTION 'management window column differs from the text time';
     END IF;
+
+    -- 0018: the SAN table holds exactly the lowered, distinct names of each
+    -- certificate's array, with the certificate's CA and time.
+    IF EXISTS (
+        (SELECT request_id, ca_id, signed_at, name_lower FROM certificate_san_dns
+         EXCEPT
+         SELECT DISTINCT c.request_id, c.ca_id, c.signed_at, lower(e.name)
+         FROM certificate c, unnest(c.san_dns) AS e(name) WHERE e.name IS NOT NULL)
+        UNION ALL
+        (SELECT DISTINCT c.request_id, c.ca_id, c.signed_at, lower(e.name)
+         FROM certificate c, unnest(c.san_dns) AS e(name) WHERE e.name IS NOT NULL
+         EXCEPT
+         SELECT request_id, ca_id, signed_at, name_lower FROM certificate_san_dns)
+    ) THEN
+        RAISE EXCEPTION 'certificate_san_dns differs from certificate.san_dns';
+    END IF;
 END $test$;
 
 INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (
