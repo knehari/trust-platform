@@ -13,6 +13,18 @@ const browser = await chromium.launch({
   headless: true,
   ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}),
 });
+const readerPassword = process.env.TRUST_LAB_PW_READER;
+if (!readerPassword) throw new Error('TRUST_LAB_PW_READER is not set; load .env.lab (set -a; . ./.env.lab; set +a)');
+
+// Each new page is a new browser context, so each signs in through the
+// laboratory Keycloak login form, as a person would.
+async function signIn(target) {
+  await target.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await target.locator('#username').fill('lab-reader');
+  await target.locator('#password').fill(readerPassword);
+  await target.locator('#kc-login').click();
+}
+
 const page = await browser.newPage({ acceptDownloads: true });
 page.setDefaultTimeout(15_000);
 page.on('response', response => {
@@ -25,7 +37,7 @@ try {
   // A fresh browser must complete the actual OIDC code + PKCE redirect before
   // opening a scoped direct link. The synthetic DER never appears in the UI.
   await page.goto(`${origin}/?view=certificates&ca=${allowedCa}&certificate=${allowedRequest}`);
-  await page.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await signIn(page);
   const certificateDialog = page.getByRole('dialog', { name: 'Certificate detail' });
   await certificateDialog.waitFor();
   assert.equal(new URL(page.url()).searchParams.get('certificate'), allowedRequest);
@@ -217,7 +229,7 @@ try {
   const freshPage = await browser.newPage();
   freshPage.setDefaultTimeout(15_000);
   await freshPage.goto(`${origin}/?view=profiles&ca=${allowedCa}&profile=server-lab&revision=2`);
-  await freshPage.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await signIn(freshPage);
   await freshPage.getByRole('dialog', { name: 'Revision 2' }).waitFor();
   assert.equal(new URL(freshPage.url()).searchParams.get('profile'), 'server-lab');
   await freshPage.close();
@@ -262,7 +274,7 @@ try {
   const sharedComparisonPage = await browser.newPage();
   sharedComparisonPage.setDefaultTimeout(15_000);
   await sharedComparisonPage.goto(comparisonUrl);
-  await sharedComparisonPage.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await signIn(sharedComparisonPage);
   const sharedComparison = sharedComparisonPage.getByRole('dialog', { name: 'Revision comparison' });
   await sharedComparison.getByRole('row', { name: /Policy version v1 v2/ }).waitFor();
   assert.equal(new URL(sharedComparisonPage.url()).searchParams.get('compare_revision'), '2');
@@ -297,7 +309,14 @@ try {
   await page.getByRole('button', { name: 'Apply' }).click();
   await page.getByText('No audit events recorded').waitFor();
 
-  console.log(`Browser E2E passed: OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  // Signing out ends the Keycloak session too: signing in again asks for the
+  // password instead of reusing the identity provider's session cookie.
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('button', { name: /Sign in with your organization/i }).click();
+  await page.locator('#password').waitFor();
+  assert.equal(await page.locator('#kc-form-login').count(), 1);
+
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

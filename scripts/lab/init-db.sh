@@ -15,9 +15,28 @@ GRANT trust_api_reader TO trust_api_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');
+-- Reader grants for the laboratory Keycloak realm (scripts/lab/keycloak). The
+-- subjects are the realm's fixed user IDs. Grants never confer a role: the
+-- API also requires trust-ca-reader in the token and the CA in its scope.
+-- Grants that must NOT authorize anything:
+--   * lab-editor, lab-outsider and lab-disabled are granted CA E, but have no
+--     reader role or cannot sign in;
+--   * lab-other-ca's token names CA F, which is granted to nobody under this
+--     issuer;
+--   * the foreign realm's reader is granted CA E under its own issuer, which
+--     the API does not trust;
+--   * the workload's service account is granted CA E, but its tokens are not
+--     issued to the console client.
 INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
-  ('http://127.0.0.1:8080','lab-operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('https://other-issuer.example.test','lab-operator','ffffffff-ffff-4fff-8fff-ffffffffffff');
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000006','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000007','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
 -- Inert profile proposals; no revision can authorize issuance.
 INSERT INTO certificate_profile_draft
   (ca_id,profile_id,revision,display_name,policy_version,max_validity_days,

@@ -20,20 +20,46 @@ services:
     networks: [lab]
 
   issuer:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    command: ["node", "dev/oidc-fixture.mjs"]
+    # Laboratory identity provider: Keycloak in development mode with an
+    # in-container H2 store, imported from scripts/lab/keycloak at each fresh
+    # start. Development mode is not a production configuration (plain HTTP on
+    # loopback, no external database, no clustering). Image pinned by digest.
+    image: keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
+    command:
+      - start-dev
+      - --import-realm
+      - --http-host=0.0.0.0
+      - --http-port=8080
+      - --hostname=http://127.0.0.1:8080
+      - --health-enabled=true
     environment:
-      TRUST_OIDC_LISTEN: 0.0.0.0
+      # No outbound analytics from the schema tool Keycloak embeds.
+      JAVA_OPTS_APPEND: -Dliquibase.analytics.enabled=false
+      KC_BOOTSTRAP_ADMIN_USERNAME: lab-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${TRUST_LAB_KC_ADMIN_PASSWORD:?Run scripts/lab/init-env.sh first}
+      # Read only by the realm import (${...} placeholders in the realm files).
+      TRUST_LAB_WORKLOAD_SECRET: ${TRUST_LAB_WORKLOAD_SECRET:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_READER: ${TRUST_LAB_PW_READER:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_EDITOR: ${TRUST_LAB_PW_EDITOR:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_APPROVER_1: ${TRUST_LAB_PW_APPROVER_1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_APPROVER_2: ${TRUST_LAB_PW_APPROVER_2:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_OPERATOR: ${TRUST_LAB_PW_OPERATOR:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_OUTSIDER: ${TRUST_LAB_PW_OUTSIDER:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_DISABLED: ${TRUST_LAB_PW_DISABLED:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_OTHER_CA: ${TRUST_LAB_PW_OTHER_CA:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_FOREIGN: ${TRUST_LAB_PW_FOREIGN:?Run scripts/lab/init-env.sh first}
+    volumes:
+      - ./scripts/lab/keycloak:/opt/keycloak/data/import:ro
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8081:8081" # API shares this network namespace for exact loopback OIDC issuer URL.
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/.well-known/openid-configuration').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
+      # The image has no curl; bash's /dev/tcp reads the management health endpoint.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
     networks: [lab]
 
   api:
@@ -45,8 +71,9 @@ services:
       db: {condition: service_healthy}
       issuer: {condition: service_healthy}
     environment:
-      TRUST_OIDC_ISSUER: http://127.0.0.1:8080
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_OIDC_CLIENT_ID: trust-console
       TRUST_API_BIND: 0.0.0.0:8081
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
     healthcheck:
@@ -63,8 +90,9 @@ services:
       api: {condition: service_healthy}
     environment:
       TRUST_API_DEV_TARGET: http://issuer:8081
-      VITE_OIDC_ISSUER: http://127.0.0.1:8080
+      VITE_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       VITE_OIDC_CLIENT_ID: trust-console
+      VITE_OIDC_SCOPE: openid profile
     ports:
       - "127.0.0.1:5173:5173"
     healthcheck:

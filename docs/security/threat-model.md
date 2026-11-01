@@ -16,6 +16,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
 - Cross-authority reads through the management API: the token's CA scope intersected with server-owned grants in every API query, and since migration 0021 the same restriction inside every management view for the principal the API declares; a session that declares none reads nothing. The database cannot authenticate the declared principal, so a compromised API process or a holder of the reader login can still read any granted principal's authorities ([ADR-0008](../adr/ADR-0008-database-reader-isolation.md), Proposed).
+- Impersonation and token confusion at the management API (laboratory, [ADR-0009](../adr/ADR-0009-laboratory-identity-provider.md), Proposed): people sign in through a Keycloak realm with per-user passwords and lockout after repeated failures; the API accepts only RS256 `at+jwt` access tokens of the pinned issuer and audience that were issued to the console client (`azp`), so workload, ID and foreign-realm tokens are refused; roles grant only their own permission. Open: no multi-factor authentication, development-mode Keycloak, workload identity by shared secret, and anyone administering the realm can mint users, roles and CA scopes (database grants remain a second, owner-held layer).
 
 ## Open
 STRIDE workshop, risk scoring and independent security review before non-critical pilot.

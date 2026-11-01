@@ -29,9 +29,10 @@ jobs:
           scripts/lab/init-env.sh
           docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
       - name: Build and start laboratory services
-        run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 180
-      - name: Exercise code/PKCE and scoped database reads
+        run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 300
+      - name: Exercise Keycloak sign-in, code/PKCE and scoped database reads
         run: |
+          set -a; . ./.env.lab; set +a
           node frontend/dev/check-api-compat.mjs
           node frontend/dev/compose-smoke.mjs
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -50,7 +51,12 @@ jobs:
           DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
           test -n "$DB_CONTAINER"
           docker exec -i "$DB_CONTAINER" psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 < tests/management_browser_e2e_seed.sql
+          set -a; . ./.env.lab; set +a
           node frontend/dev/browser-e2e.mjs
+      - name: Refuse unauthorized identities (IAM negative suite)
+        run: |
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/iam-negative.mjs
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80

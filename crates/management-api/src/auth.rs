@@ -22,6 +22,7 @@ struct VerifierInner {
     refresh_lock: Mutex<()>,
     source: Option<JwksSource>,
     validation: Validation,
+    client_id: String,
 }
 
 struct KeyCache {
@@ -41,18 +42,26 @@ struct Discovery {
     jwks_uri: String,
 }
 
+/// The verified claims of an access token. `azp` names the OAuth client the
+/// token was issued to; only the configured console client is a human
+/// session. A token without `roles` or `ca_ids` has none: it is authenticated
+/// but authorized for nothing.
 #[derive(Debug, Deserialize)]
 pub struct Claims {
     pub iss: String,
     pub sub: String,
+    pub azp: String,
+    pub iat: u64,
+    #[serde(default)]
     pub roles: Vec<String>,
+    #[serde(default)]
     pub ca_ids: Vec<String>,
 }
 
 impl OidcVerifier {
-    pub async fn discover(issuer: &str, audience: &str) -> Result<Self, String> {
-        if audience.is_empty() || !safe_issuer_url(issuer) {
-            return Err("invalid OIDC issuer or audience".into());
+    pub async fn discover(issuer: &str, audience: &str, client_id: &str) -> Result<Self, String> {
+        if audience.is_empty() || client_id.is_empty() || !safe_issuer_url(issuer) {
+            return Err("invalid OIDC issuer, audience or client".into());
         }
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
@@ -89,28 +98,37 @@ impl OidcVerifier {
             uri: document.jwks_uri,
         };
         let jwks = source.fetch().await?;
-        Self::new(issuer, audience, jwks, Some(source))
+        Self::new(issuer, audience, client_id, jwks, Some(source))
     }
 
     #[cfg(test)]
-    pub fn from_jwks(issuer: &str, audience: &str, jwks: JwkSet) -> Result<Self, String> {
-        Self::new(issuer, audience, jwks, None)
+    pub fn from_jwks(
+        issuer: &str,
+        audience: &str,
+        client_id: &str,
+        jwks: JwkSet,
+    ) -> Result<Self, String> {
+        Self::new(issuer, audience, client_id, jwks, None)
     }
 
     fn new(
         issuer: &str,
         audience: &str,
+        client_id: &str,
         jwks: JwkSet,
         source: Option<JwksSource>,
     ) -> Result<Self, String> {
-        if issuer.is_empty() || audience.is_empty() {
-            return Err("missing OIDC issuer or audience".into());
+        if issuer.is_empty() || audience.is_empty() || client_id.is_empty() {
+            return Err("missing OIDC issuer, audience or client".into());
         }
         let keys = permitted_keys(jwks)?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[issuer]);
         validation.set_audience(&[audience]);
-        validation.set_required_spec_claims(&["exp", "nbf", "iss", "aud", "sub"]);
+        // RFC 9068 access tokens carry exp, iat, iss, aud and sub; `nbf` is
+        // optional there and is checked whenever present. `iat` and `azp`
+        // are required fields of `Claims`.
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         validation.validate_nbf = true;
         validation.leeway = 0;
         let now = Instant::now();
@@ -124,6 +142,7 @@ impl OidcVerifier {
                 refresh_lock: Mutex::new(()),
                 source,
                 validation,
+                client_id: client_id.to_owned(),
             }),
         })
     }
@@ -148,6 +167,12 @@ impl OidcVerifier {
             || claims.sub.len() > 512
             || claims.ca_ids.len() > 1024
             || claims.roles.len() > 32
+            // A token issued in the future is refused, like a future `nbf`.
+            || claims.iat > jsonwebtoken::get_current_timestamp()
+            // Only tokens issued to the console client are human sessions;
+            // a workload's client-credentials token is refused here even
+            // when it carries the reader role and CA scope.
+            || claims.azp != self.inner.client_id
         {
             return Err(());
         }
@@ -283,7 +308,7 @@ mod tests {
         header.kid = Some(kid.into());
         let now = jsonwebtoken::get_current_timestamp();
         let claims = json!({"iss":issuer,"aud":"trust-api","sub":"operator",
-            "nbf":now-1,"exp":now+60,"roles":["trust-ca-reader"],"ca_ids":[]});
+            "nbf":now-1,"iat":now,"azp":"trust-console","exp":now+60,"roles":["trust-ca-reader"],"ca_ids":[]});
         let pem = private.to_pkcs8_pem(LineEnding::LF).unwrap();
         encode(
             &header,
@@ -304,7 +329,13 @@ mod tests {
     #[test]
     fn empty_jwks_is_rejected() {
         let set = JwkSet { keys: Vec::new() };
-        assert!(OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", set).is_err());
+        assert!(OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            set
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -317,14 +348,19 @@ mod tests {
             "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
         }]}))
         .unwrap();
-        let verifier =
-            OidcVerifier::from_jwks("https://issuer.example.test", "trust-api", jwks).unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
         let pem = private.to_pkcs8_pem(LineEnding::LF).unwrap();
         let signer = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
         let now = jsonwebtoken::get_current_timestamp();
         let claims = json!({
             "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator-1",
-            "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
+            "iat":now, "azp":"trust-console", "exp":now+60, "roles":["trust-ca-reader"],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
         let mut header = Header::new(Algorithm::RS256);
@@ -344,6 +380,59 @@ mod tests {
             .verify(&encode(&header, &expired, &signer).unwrap())
             .await
             .is_err());
+        // RFC 9068: nbf is optional, but a future nbf is still refused.
+        let mut not_yet_valid = claims.clone();
+        not_yet_valid["nbf"] = json!(now + 60);
+        assert!(verifier
+            .verify(&encode(&header, &not_yet_valid, &signer).unwrap())
+            .await
+            .is_err());
+        let mut with_nbf = claims.clone();
+        with_nbf["nbf"] = json!(now - 1);
+        assert!(verifier
+            .verify(&encode(&header, &with_nbf, &signer).unwrap())
+            .await
+            .is_ok());
+        // A token issued to another client (a workload's client-credentials
+        // token, or another application of the same issuer) is not a human
+        // console session, whatever roles and CA scope it carries.
+        for azp in [json!("trust-lab-workload"), json!(""), json!(null)] {
+            let mut other_client = claims.clone();
+            other_client["azp"] = azp;
+            assert!(verifier
+                .verify(&encode(&header, &other_client, &signer).unwrap())
+                .await
+                .is_err());
+        }
+        let mut no_client = claims.clone();
+        no_client.as_object_mut().unwrap().remove("azp");
+        assert!(verifier
+            .verify(&encode(&header, &no_client, &signer).unwrap())
+            .await
+            .is_err());
+        let mut issued_later = claims.clone();
+        issued_later["iat"] = json!(now + 60);
+        assert!(verifier
+            .verify(&encode(&header, &issued_later, &signer).unwrap())
+            .await
+            .is_err());
+        let mut no_iat = claims.clone();
+        no_iat.as_object_mut().unwrap().remove("iat");
+        assert!(verifier
+            .verify(&encode(&header, &no_iat, &signer).unwrap())
+            .await
+            .is_err());
+        // Missing roles and CA scope mean none: the token verifies, and the
+        // route then refuses it with 403.
+        let mut unprivileged = claims.clone();
+        let object = unprivileged.as_object_mut().unwrap();
+        object.remove("roles");
+        object.remove("ca_ids");
+        let verified = verifier
+            .verify(&encode(&header, &unprivileged, &signer).unwrap())
+            .await
+            .unwrap();
+        assert!(verified.roles.is_empty() && verified.ca_ids.is_empty());
         header.typ = Some("JWT".into());
         assert!(verifier
             .verify(&encode(&header, &claims, &signer).unwrap())
@@ -376,7 +465,9 @@ mod tests {
             .with_state(state.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let verifier = OidcVerifier::discover(&issuer, "trust-api").await.unwrap();
+        let verifier = OidcVerifier::discover(&issuer, "trust-api", "trust-console")
+            .await
+            .unwrap();
         let first_token = test_token(&first, &issuer, "first");
         assert!(verifier.verify(&first_token).await.is_ok());
         *state.jwks.write().await = json!({"keys":[test_jwk(&second,"second")]});
