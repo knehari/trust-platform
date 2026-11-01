@@ -360,4 +360,31 @@ END
 $cn$;
 \echo 'CN: the prefix filter uses its index through the barrier view'
 
+-- --------------------------------------------- first-page anchor from the bounds view (0019)
+\echo '### B1 newest and oldest certificate and audit times of authority A'
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT newest_signed_window, oldest_signed_window, newest_recorded_window, oldest_recorded_window
+FROM management_history_bounds WHERE ca_id=:'a' AND EXISTS
+  (SELECT 1 FROM management_reader_scope WHERE issuer=:'iss' AND subject=:'sub' AND ca_id=:'a');
+SELECT set_config('trust.b1_sql', 'SELECT newest_signed_window, oldest_signed_window, newest_recorded_window, '
+       || 'oldest_recorded_window FROM management_history_bounds WHERE ca_id=' || quote_literal(:'a'), true)
+       IS NOT NULL AS b1_set \gset
+DO $bounds$
+DECLARE
+    line text;
+    plan text := '';
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN ' || current_setting('trust.b1_sql') LOOP
+        plan := plan || line || E'\n';
+    END LOOP;
+    IF position('certificate_management_ca_signed' IN plan) = 0
+       OR position('audit_event_management_ca_recorded' IN plan) = 0
+       OR position('Seq Scan on certificate' IN plan) > 0
+       OR position('Seq Scan on audit_event' IN plan) > 0 THEN
+        RAISE EXCEPTION 'the history bounds do not come from their indexes:%', plan;
+    END IF;
+END
+$bounds$;
+\echo 'BOUNDS: each bound is one index probe through the barrier view'
+
 ROLLBACK;

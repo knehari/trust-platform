@@ -30,12 +30,13 @@ const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_SIZE: usize = 100;
 /// Every view and column the read routes use, including the history window
-/// columns of migration 0016, the SAN view of 0017 and the lowered CN of
-/// 0018; LIMIT 0 reads no row.
+/// columns of migration 0016, the SAN view of 0017, the lowered CN of 0018
+/// and the bounds view of 0019; LIMIT 0 reads no row.
 const MANAGEMENT_VIEWS_CHECK: &str =
-    "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window \
+    "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
+     b.newest_signed_window \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, \
-     management_certificate_san s LIMIT 0";
+     management_certificate_san s, management_history_bounds b LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -421,29 +422,42 @@ fn history_transaction(db: &mut Client) -> Result<Transaction<'_>, postgres::Err
 }
 
 /// Where the slices of a page start: the cursor's time, or, for a first
-/// page, the current time (newest first) or the authority's creation time
-/// (oldest first).
+/// page, the authority's own newest (newest first) or oldest (oldest first)
+/// signing or recording time, from `management_history_bounds` (0019). An
+/// authority with no rows yet starts at the current time.
 fn history_anchor(
     tx: &mut Transaction<'_>,
-    ca_id: &str,
+    scope: [&String; 3],
     cursor_time: Option<&String>,
     newest: bool,
+    audit: bool,
 ) -> Result<String, postgres::Error> {
     if let Some(time) = cursor_time {
         return Ok(time.clone());
     }
-    let row = if newest {
-        tx.query_one(
-            "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
-            &[],
-        )?
-    } else {
-        tx.query_one(
-            "SELECT created_at FROM management_ca WHERE ca_id=$1",
-            &[&ca_id],
-        )?
+    let bound = match (audit, newest) {
+        (false, true) => "newest_signed_window",
+        (false, false) => "oldest_signed_window",
+        (true, true) => "newest_recorded_window",
+        (true, false) => "oldest_recorded_window",
     };
-    Ok(row.get(0))
+    let row = tx.query_opt(
+        &format!(
+            "SELECT to_char(COALESCE({bound}, now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+             FROM management_history_bounds WHERE ca_id=$1 AND EXISTS \
+             (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1)"
+        ),
+        &[scope[0], scope[1], scope[2]],
+    )?;
+    match row {
+        Some(row) => Ok(row.get(0)),
+        None => Ok(tx
+            .query_one(
+                "SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')",
+                &[],
+            )?
+            .get(0)),
+    }
 }
 
 #[tokio::main]
@@ -473,7 +487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0018")?;
+    .map_err(|_| "management views unavailable or older than migration 0019")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -858,7 +872,7 @@ async fn list_certificates(
             tx.commit()?;
             return Ok(Some(rows));
         }
-        let anchor = history_anchor(&mut tx, &ca_id, before_time.as_ref(), newest)?;
+        let anchor = history_anchor(&mut tx, [&ca_id, &issuer, &subject], before_time.as_ref(), newest, false)?;
         let slices = HistorySlices {
             window: "signed_at_window",
             select,
@@ -921,7 +935,13 @@ fn read_san_page(
     let mut after = page.cursor.clone();
     loop {
         let (time, id) = after.clone().unzip();
-        let anchor = history_anchor(db, page.ca_id, time.as_ref(), page.newest)?;
+        let anchor = history_anchor(
+            db,
+            [page.ca_id, page.issuer, page.subject],
+            time.as_ref(),
+            page.newest,
+            false,
+        )?;
         let matches = HistorySlices {
             window: "signed_at_window",
             select: format!(
@@ -1064,7 +1084,7 @@ async fn list_audit(
              AND ($9::text IS NULL OR decision = $9) \
              AND ($10::text IS NULL OR policy_version = $10)");
         let newest = direction == "DESC";
-        let anchor = history_anchor(&mut tx, &ca_id, before_time.as_ref(), newest)?;
+        let anchor = history_anchor(&mut tx, [&ca_id, &issuer, &subject], before_time.as_ref(), newest, true)?;
         let slices = HistorySlices {
             window: "recorded_at_window",
             select,
