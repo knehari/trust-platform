@@ -78,6 +78,13 @@ DO $test$ BEGIN
     ) THEN
         RAISE EXCEPTION 'certificate_san_dns differs from certificate.san_dns';
     END IF;
+
+    -- 0018: the stored lowered CN is lower(subject_cn) on every row.
+    IF EXISTS (
+        SELECT 1 FROM certificate WHERE subject_cn_lower IS DISTINCT FROM lower(subject_cn)
+    ) THEN
+        RAISE EXCEPTION 'subject_cn_lower differs from lower(subject_cn)';
+    END IF;
 END $test$;
 
 INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (

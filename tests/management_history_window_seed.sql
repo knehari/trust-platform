@@ -11,7 +11,9 @@
 --   1601 (beyond the bounded slices: the unsliced fallback);
 -- * 1 row 25 years back. It and the 1601 rows predate the authority's
 --   creation, which anchors an oldest-first page (its open first slice).
--- Every 17th row has the CN prefix "needle-" (a sparse filter).
+-- Every 17th row has the CN prefix "needle-" (a sparse filter). Every 23rd
+-- other row has "Wild_%-" (mixed case and LIKE wildcards, literal in the API's
+-- prefix filter) and every 31st "wildx-", which "wild_" must not match.
 -- DNS SANs (migration 0017), on every row but each 10th (historical rows):
 -- * host-<n>.lab.invalid on each;
 -- * grp.lab.invalid on even rows, written twice with different case, so
@@ -57,7 +59,10 @@ INSERT INTO certificate
      not_before_utc, not_after_utc, san_dns)
 SELECT 'abababab-0000-4000-8000-0000000000ab', decode('02' || lpad(to_hex(n), 4, '0'), 'hex'), id,
        decode(repeat('02', 32), 'hex'), decode('3000', 'hex'), at,
-       CASE WHEN n % 17 = 0 THEN 'needle-' ELSE 'hay-' END || n || '.lab.invalid',
+       CASE WHEN n % 17 = 0 THEN 'needle-'
+            WHEN n % 23 = 0 THEN 'Wild_%-'
+            WHEN n % 31 = 0 THEN 'wildx-'
+            ELSE 'hay-' END || n || '.lab.invalid',
        CASE WHEN n % 10 <> 0 THEN at END,
        CASE WHEN n % 10 <> 0 THEN at + interval '365 days' END,
        CASE WHEN n % 10 <> 0 THEN

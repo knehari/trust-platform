@@ -337,4 +337,27 @@ END
 $san$;
 \echo 'SAN: both steps use their indexes through the barrier views'
 
+-- --------------------------------------------- CN prefix on the lowered column (0018)
+\echo '### K1 certificates, CN prefix svc- (1%) on subject_cn_lower'
+EXPLAIN (ANALYZE, BUFFERS) :certsel
+  AND (NULL::text IS NULL OR (signed_at, request_id) < (NULL, NULL))
+  AND subject_cn_lower ^@ 'svc-'
+  ORDER BY signed_at DESC, request_id DESC LIMIT 101;
+SELECT set_config('trust.k1_sql', :'certsel' || ' AND subject_cn_lower ^@ ''svc-'''
+       || ' ORDER BY signed_at DESC, request_id DESC LIMIT 101', true) IS NOT NULL AS k1_set \gset
+DO $cn$
+DECLARE
+    line text;
+    plan text := '';
+BEGIN
+    FOR line IN EXECUTE 'EXPLAIN ' || current_setting('trust.k1_sql') LOOP
+        plan := plan || line || E'\n';
+    END LOOP;
+    IF position('certificate_management_cn_lower' IN plan) = 0 THEN
+        RAISE EXCEPTION 'the CN prefix does not use certificate_management_cn_lower:%', plan;
+    END IF;
+END
+$cn$;
+\echo 'CN: the prefix filter uses its index through the barrier view'
+
 ROLLBACK;
