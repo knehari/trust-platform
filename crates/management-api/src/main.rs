@@ -31,9 +31,10 @@ const DATABASE_STATEMENT_TIMEOUT_MS: u64 = 3_000;
 const READINESS_CACHE_AGE: Duration = Duration::from_secs(1);
 const HISTORY_PAGE_SIZE: usize = 100;
 /// Every view and column the read routes use, including the history window
-/// columns of migration 0017 and the SAN view of 0018; LIMIT 0 reads no row.
+/// columns of migration 0017, the SAN view of 0018 and the lowered CN of
+/// 0019; LIMIT 0 reads no row.
 const MANAGEMENT_VIEWS_CHECK: &str =
-    "SELECT c.signed_at_window, a.recorded_at_window, s.signed_at_window \
+    "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft, \
      management_certificate_san s LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -165,14 +166,23 @@ fn history_order(raw: Option<&str>) -> Result<(&'static str, &'static str), Stat
     }
 }
 
-fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+/// A trimmed, lowercased search prefix of 2–255 characters without control
+/// characters.
+fn lowercase_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
     let Some(raw) = raw else { return Ok(None) };
-    let cn = raw.trim();
-    if !(2..=255).contains(&cn.chars().count()) || cn.chars().any(char::is_control) {
+    let prefix = raw.trim();
+    if !(2..=255).contains(&prefix.chars().count()) || prefix.chars().any(char::is_control) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let escaped = cn
-        .to_lowercase()
+    Ok(Some(prefix.to_lowercase()))
+}
+
+/// A `LIKE` pattern matching the literal prefix.
+fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+    let Some(prefix) = lowercase_prefix(raw)? else {
+        return Ok(None);
+    };
+    let escaped = prefix
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_");
@@ -521,7 +531,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0018")?;
+    .map_err(|_| "management views unavailable or older than migration 0019")?;
     let app = router(AppState {
         verifier,
         database_url,
@@ -1015,7 +1025,7 @@ async fn list_certificates(
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let (comparison, direction) = history_order(page.order.as_deref())?;
     let cursor = parse_history_cursor(page.before)?;
-    let cn_prefix = literal_prefix(page.cn)?;
+    let cn_prefix = lowercase_prefix(page.cn)?;
     let san_dns = exact_san_dns(page.san_dns)?;
     let not_after_before = page
         .not_after_before
@@ -1041,7 +1051,10 @@ async fn list_certificates(
         let mut params: Vec<&(dyn ToSql + Sync)> =
             vec![&ca_id, &issuer, &subject, &before_time, &before_id];
         if let Some(prefix) = cn_prefix.as_ref() {
-            select.push_str(&format!(" AND lower(subject_cn) LIKE ${} ESCAPE '\\'", params.len() + 1));
+            // starts_with (^@) is leakproof and, on the "C"-collated stored
+            // column of 0019, an index range: it reaches the index through the
+            // barrier, where lower() and LIKE did not.
+            select.push_str(&format!(" AND subject_cn_lower ^@ ${}", params.len() + 1));
             params.push(prefix);
         }
         if let Some(cutoff) = not_after_before.as_ref() {
@@ -2310,12 +2323,15 @@ mod tests {
             ("certificates", "?order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 ORDER BY signed_at, request_id", 376),
             ("certificates", "?cn=needle-", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at DESC, request_id DESC", 22),
             ("certificates", "?cn=needle-&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' ORDER BY signed_at, request_id", 22),
+            ("certificates", "?cn=WILD_%25", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND lower(subject_cn) LIKE 'wild\\_\\%%' ESCAPE '\\' ORDER BY signed_at DESC, request_id DESC", 16),
+            ("certificates", "?cn=wild_", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND lower(subject_cn) LIKE 'wild\\_%' ESCAPE '\\' ORDER BY signed_at DESC, request_id DESC", 16),
+            ("certificates", "?cn=wildx&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND lower(subject_cn) LIKE 'wildx%' ORDER BY signed_at, request_id", 12),
             ("certificates", "?san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 151),
             ("certificates", "?san_dns=GRP.lab.INVALID&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at, request_id", 151),
             ("certificates", "?san_dns=rare.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'rare.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 11),
             ("certificates", "?san_dns=host-7.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'host-7.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 1),
             ("certificates", "?san_dns=absent.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'absent.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 0),
-            ("certificates", "?cn=hay-&san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'hay-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 142),
+            ("certificates", "?cn=hay-&san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'hay-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 130),
             ("certificates", "?cn=needle-&san_dns=grp.lab.invalid", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at DESC, request_id DESC", 9),
             ("certificates", "?cn=needle-&san_dns=grp.lab.invalid&order=oldest", "request_id", "SELECT request_id FROM management_certificate WHERE ca_id=$1 AND subject_cn LIKE 'needle-%' AND EXISTS (SELECT 1 FROM unnest(san_dns) AS e(name) WHERE lower(e.name) = 'grp.lab.invalid') ORDER BY signed_at, request_id", 9),
             ("audit", "", "event_id", "SELECT event_id FROM management_audit WHERE ca_id=$1 ORDER BY recorded_at DESC, event_id DESC", 376),
