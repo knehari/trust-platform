@@ -290,3 +290,6 @@ python3 -I scripts/lab/history_scale_load.py --db scale_1m --dir OUT --seconds 6
 
 Option 1.1 (paging by time slice, barrier kept) is implemented and measured in
 [lab-history-time-window.md](lab-history-time-window.md).
+
+Option 2.1 (normalized SAN table, two steps, barrier kept) is implemented and
+measured in [lab-history-san-table.md](lab-history-san-table.md).

@@ -292,4 +292,49 @@ END
 $slice$;
 \echo 'SLICES: bounded certificate and audit slices use their window indexes'
 
+-- ---------------------------------------------- SAN filter in two steps (0017)
+-- Step one: request ids from the SAN view (unsliced form). Step two: those
+-- certificates from the certificate view.
+\echo '### S1 SAN alt-7, step one: request ids from management_certificate_san'
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT request_id, signed_at FROM management_certificate_san WHERE ca_id=:'a' AND EXISTS
+  (SELECT 1 FROM management_reader_scope WHERE issuer=:'iss' AND subject=:'sub' AND ca_id=:'a')
+  AND (NULL::text IS NULL OR (signed_at, request_id) < (NULL, NULL)) AND san_dns='alt-7.lab.invalid'
+  ORDER BY signed_at DESC, request_id DESC LIMIT 101;
+SELECT '{' || coalesce(string_agg(request_id, ',' ORDER BY signed_at DESC, request_id DESC), '') || '}' AS san_ids
+FROM (SELECT request_id, signed_at FROM management_certificate_san WHERE ca_id=:'a' AND san_dns='alt-7.lab.invalid'
+      ORDER BY signed_at DESC, request_id DESC LIMIT 101) ids \gset
+\echo '### S2 SAN alt-7, step two: those certificates'
+EXPLAIN (ANALYZE, BUFFERS) :certsel
+  AND (NULL::text IS NULL OR (signed_at, request_id) < (NULL, NULL))
+  AND request_id = ANY(:'san_ids'::text[])
+  ORDER BY signed_at DESC, request_id DESC LIMIT 101;
+SELECT set_config('trust.s1_sql', 'SELECT request_id, signed_at FROM management_certificate_san WHERE ca_id='
+       || quote_literal(:'a') || ' AND san_dns=''alt-7.lab.invalid'' ORDER BY signed_at DESC, request_id DESC LIMIT 101', true)
+       IS NOT NULL AS s1_set \gset
+SELECT set_config('trust.s2_sql', :'certsel' || ' AND request_id = ANY(' || quote_literal(:'san_ids')
+       || '::text[]) ORDER BY signed_at DESC, request_id DESC LIMIT 101', true) IS NOT NULL AS s2_set \gset
+DO $san$
+DECLARE
+    line text;
+    plan text;
+    sql text;
+    index_name text;
+BEGIN
+    FOR sql, index_name IN VALUES
+        (current_setting('trust.s1_sql'), 'certificate_san_dns_lookup'),
+        (current_setting('trust.s2_sql'), 'certificate_management_request_text')
+    LOOP
+        plan := '';
+        FOR line IN EXECUTE 'EXPLAIN ' || sql LOOP
+            plan := plan || line || E'\n';
+        END LOOP;
+        IF position(index_name IN plan) = 0 THEN
+            RAISE EXCEPTION 'a SAN step does not use %:%', index_name, plan;
+        END IF;
+    END LOOP;
+END
+$san$;
+\echo 'SAN: both steps use their indexes through the barrier views'
+
 ROLLBACK;
