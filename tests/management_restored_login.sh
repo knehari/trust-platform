@@ -33,9 +33,17 @@ expect_denied 'SELECT count(*) FROM management_ca' 'view access before role gran
 "$psql_bin" "$TRUST_RESTORE_ADMIN_URL" -X -v ON_ERROR_STOP=1 \
   -c 'GRANT trust_api_reader TO trust_restore_login_ci' >/dev/null
 
-view_counts=$("$psql_bin" "$TRUST_RESTORE_READER_URL" -XAt -v ON_ERROR_STOP=1 \
-  -c 'SELECT (SELECT count(*) FROM management_ca), (SELECT count(*) FROM management_certificate), (SELECT count(*) FROM management_audit), (SELECT count(*) FROM management_reader_scope)')
-if [[ "$view_counts" != '2|1|1|1' ]]; then
+counts='SELECT (SELECT count(*) FROM management_ca), (SELECT count(*) FROM management_certificate), (SELECT count(*) FROM management_audit), (SELECT count(*) FROM management_reader_scope)'
+# Without a declared reader principal the restored views show nothing (0020).
+view_counts=$("$psql_bin" "$TRUST_RESTORE_READER_URL" -XAt -v ON_ERROR_STOP=1 -c "$counts")
+if [[ "$view_counts" != '0|0|0|0' ]]; then
+  echo "Restored views return rows without a declared principal: $view_counts" >&2
+  exit 1
+fi
+# As the fixture's granted principal: its one CA, certificate, event and grant.
+view_counts=$(PGOPTIONS='-c trust.reader_issuer=https://issuer.example.test -c trust.reader_subject=upgrade-operator' \
+  "$psql_bin" "$TRUST_RESTORE_READER_URL" -XAt -v ON_ERROR_STOP=1 -c "$counts")
+if [[ "$view_counts" != '1|1|1|1' ]]; then
   echo "Unexpected restored view counts: $view_counts" >&2
   exit 1
 fi

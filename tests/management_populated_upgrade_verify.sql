@@ -1,5 +1,6 @@
--- Verify pre-existing rows survived both management migrations and their
--- projections remain deliberately narrower than the underlying tables.
+-- Verify pre-existing rows survived the management migrations and their
+-- projections remain deliberately narrower than the underlying tables: fewer
+-- columns, and since 0020 only the rows of CAs granted to the declared reader.
 DO $test$ BEGIN
     IF (SELECT count(*) FROM ca) <> 2 OR
        (SELECT count(*) FROM certificate_request) <> 1 OR
@@ -9,12 +10,31 @@ DO $test$ BEGIN
         RAISE EXCEPTION 'pre-existing management rows changed during upgrade';
     END IF;
 
+    -- 0020: without a declared reader principal the views show nothing.
+    IF EXISTS (SELECT 1 FROM management_ca) OR EXISTS (SELECT 1 FROM management_certificate)
+       OR EXISTS (SELECT 1 FROM management_audit) OR EXISTS (SELECT 1 FROM management_reader_scope)
+       OR EXISTS (SELECT 1 FROM management_certificate_san)
+       OR EXISTS (SELECT 1 FROM management_history_bounds) THEN
+        RAISE EXCEPTION 'management views return rows without a declared reader principal';
+    END IF;
+END $test$;
+
+-- Grant the fixture's first CA to one principal and declare it, as the API
+-- does from a verified token (0020).
+INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (
+    'https://issuer.example.test', 'upgrade-operator',
+    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+) ON CONFLICT DO NOTHING;
+SELECT set_config('trust.reader_issuer', 'https://issuer.example.test', false),
+       set_config('trust.reader_subject', 'upgrade-operator', false);
+
+DO $test$ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM management_ca
         WHERE ca_id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
           AND display_name = 'Existing Lab CA' AND policy_version = 'v1'
-    ) OR (SELECT count(*) FROM management_ca) <> 2 THEN
-        RAISE EXCEPTION 'management CA view did not project both existing CAs';
+    ) OR (SELECT count(*) FROM management_ca) <> 1 THEN
+        RAISE EXCEPTION 'management CA view did not project exactly the granted CA';
     END IF;
 
     IF NOT EXISTS (
@@ -97,17 +117,10 @@ DO $test$ BEGIN
               (SELECT max(date_trunc('milliseconds', a.recorded_at AT TIME ZONE 'UTC')) FROM audit_event a WHERE a.ca_id = ca.ca_id)
            OR b.oldest_recorded_window IS DISTINCT FROM
               (SELECT min(date_trunc('milliseconds', a.recorded_at AT TIME ZONE 'UTC')) FROM audit_event a WHERE a.ca_id = ca.ca_id)
-    ) OR (SELECT count(*) FROM management_history_bounds) <> (SELECT count(*) FROM ca) THEN
+    ) OR (SELECT count(*) FROM management_history_bounds) <> 1 THEN
         RAISE EXCEPTION 'management_history_bounds differs from the authorities'' rows';
     END IF;
-END $test$;
 
-INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (
-    'https://issuer.example.test', 'upgrade-operator',
-    'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
-);
-
-DO $test$ BEGIN
     IF (SELECT count(*) FROM management_reader_scope) <> 1 OR NOT EXISTS (
         SELECT 1 FROM management_reader_scope
         WHERE issuer = 'https://issuer.example.test'
@@ -117,3 +130,14 @@ DO $test$ BEGIN
         RAISE EXCEPTION 'new management grant projection is not exact';
     END IF;
 END $test$;
+
+-- A principal without grants, or the same subject under another issuer,
+-- sees nothing.
+SELECT set_config('trust.reader_issuer', 'https://other-issuer.example.test', false);
+DO $test$ BEGIN
+    IF EXISTS (SELECT 1 FROM management_ca) OR EXISTS (SELECT 1 FROM management_certificate)
+       OR EXISTS (SELECT 1 FROM management_audit) OR EXISTS (SELECT 1 FROM management_reader_scope) THEN
+        RAISE EXCEPTION 'management views leak rows to a principal without grants';
+    END IF;
+END $test$;
+SELECT set_config('trust.reader_issuer', '', false), set_config('trust.reader_subject', '', false);

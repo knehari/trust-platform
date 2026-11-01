@@ -1,11 +1,16 @@
 -- Migration 0017: the SAN table follows certificate.san_dns through every
 -- write, and the API role reads it only through its security-barrier view.
--- Run as the migration owner after 0017 on a disposable database; every
+-- Run as the migration owner after 0020 on a disposable database; every
 -- change is rolled back.
 BEGIN;
 
 INSERT INTO ca (ca_id, display_name, policy_version) VALUES
     ('5a5a5a5a-0000-4000-8000-00000000005a', 'SAN Lab CA', 'v1');
+-- The views show only authorities granted to the declared principal (0020).
+INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
+    ('https://issuer.san.invalid', 'san-reader', '5a5a5a5a-0000-4000-8000-00000000005a');
+SELECT set_config('trust.reader_issuer', 'https://issuer.san.invalid', true),
+       set_config('trust.reader_subject', 'san-reader', true);
 INSERT INTO certificate_request (request_id, ca_id, idempotency_key, csr_sha256, requester_id, policy_version, state)
 VALUES ('5a5a5a5a-0000-4000-8000-000000000001', '5a5a5a5a-0000-4000-8000-00000000005a', 'san-1',
         decode(repeat('01', 32), 'hex'), 'san-test', 'v1', 'SIGNED');

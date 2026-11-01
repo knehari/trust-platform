@@ -19,6 +19,18 @@ SELECT '{' || string_agg(ca_id::text, ',' ORDER BY ca_id) || '}' AS token_cas FR
 BEGIN READ ONLY;
 SET LOCAL ROLE trust_api_reader;
 SET LOCAL statement_timeout = '30s';
+-- Without a declared principal the views show nothing (migration 0020).
+SELECT (SELECT count(*) FROM management_ca) + (SELECT count(*) FROM management_reader_scope)
+       = 0 AS undeclared_empty \gset
+\if :undeclared_empty
+  \echo 'ISOLATION: no row without a declared reader principal'
+\else
+  \echo 'FAIL: the views return rows without a declared reader principal'
+  SELECT 1/0;
+\endif
+-- The reader principal the API declares from the token.
+SELECT set_config('trust.reader_issuer', :'iss', true) IS NOT NULL AS issuer_set,
+       set_config('trust.reader_subject', :'sub', true) IS NOT NULL AS subject_set \gset
 
 -- Isolation: the reader holds no grant on C and reads nothing of it.
 SELECT EXISTS(SELECT 1 FROM management_reader_scope
@@ -31,7 +43,11 @@ SELECT count(*) AS c_rows FROM management_certificate WHERE ca_id = :'c' AND EXI
   (SELECT 1 FROM management_reader_scope WHERE issuer = :'iss' AND subject = :'sub' AND ca_id = :'c') \gset
 SELECT count(*) AS c_audit FROM management_audit WHERE ca_id = :'c' AND EXISTS
   (SELECT 1 FROM management_reader_scope WHERE issuer = :'iss' AND subject = :'sub' AND ca_id = :'c') \gset
-SELECT (:c_rows + :c_audit) = 0 AS isolated \gset
+-- Since 0020 the views themselves hide C, even to a query without the grant
+-- predicate the API adds.
+SELECT count(*) AS c_view_rows FROM management_certificate WHERE ca_id = :'c' \gset
+SELECT count(*) AS c_view_audit FROM management_audit WHERE ca_id = :'c' \gset
+SELECT (:c_rows + :c_audit + :c_view_rows + :c_view_audit) = 0 AS isolated \gset
 \if :isolated
   \echo 'ISOLATION: authority C invisible to the reader (0 certificates, 0 events)'
 \else

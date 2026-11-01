@@ -63,7 +63,9 @@ def psql(db, sql, user=OWNER, extra=()):
     out = subprocess.run(
         ["psql", "-h", HOST, "-p", PORT, "-U", user, "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1",
          *extra, "-d", db, "-c", sql],
-        check=True, capture_output=True, text=True, env={"PGPASSWORD": "test-only-not-secret"})
+        check=True, capture_output=True, text=True, env={"PGPASSWORD": "test-only-not-secret",
+                                      # The reader principal the API declares (migration 0020).
+                                      "PGOPTIONS": "-c trust.reader_issuer=https://issuer.scale.invalid -c trust.reader_subject=reader"})
     return out.stdout
 
 

@@ -48,7 +48,10 @@ def main():
         res = subprocess.run(
             ["pgbench", "-n", "-c", str(clients), "-j", str(min(clients, 4)), "-T", str(args.seconds),
              "--random-seed=42", "-l", f"--log-prefix={prefix}", "-f", str(script), url],
-            capture_output=True, text=True, cwd=out)
+            capture_output=True, text=True, cwd=out,
+            # The reader principal the API declares (migration 0020).
+            env={**os.environ, "PGOPTIONS": "-c trust.reader_issuer=https://issuer.scale.invalid "
+                                            "-c trust.reader_subject=reader"})
         lat = []
         for log in glob.glob(f"{prefix}*"):
             if log.endswith(".pgb"):
