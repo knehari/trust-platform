@@ -546,6 +546,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await
     .map_err(|_| "management views unavailable or older than migration 0020")?;
+    let isolated = query_db(
+        database_url.clone(),
+        database_slots.clone(),
+        reader_isolation_active,
+    )
+    .await
+    .map_err(|_| "management views lack per-principal isolation (migration 0021)")?;
+    if !isolated {
+        return Err("management views return rows without a declared reader principal".into());
+    }
     let app = router(AppState {
         verifier,
         database_url,
@@ -670,7 +680,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             // Parse and authorize every view used by the read routes without
             // scanning or returning any CA, certificate, audit or grant rows.
             db.query(MANAGEMENT_VIEWS_CHECK, &[])?;
-            Ok(true)
+            reader_isolation_active(db)
         })
         .await;
         cache.available = matches!(checked, Ok(true));
@@ -795,6 +805,42 @@ async fn query_db<T: Send + 'static>(
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
 }
 
+/// Runs `query` on a connection that declares the verified OIDC principal to
+/// PostgreSQL (migration 0021). Every management view then returns only the
+/// rows of authorities granted to that principal, and nothing at all on a
+/// connection that declares none. The API's own CA predicates and grant checks
+/// stay in every query: the database filter is a second, independent layer.
+async fn query_db_as<T: Send + 'static>(
+    url: String,
+    slots: Arc<Semaphore>,
+    principal: (String, String),
+    query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
+) -> Result<T, StatusCode> {
+    query_db(url, slots, move |db| {
+        // Session settings: each request opens its own connection and drops it.
+        db.execute(
+            "SELECT set_config('trust.reader_issuer', $1, false), \
+             set_config('trust.reader_subject', $2, false)",
+            &[&principal.0, &principal.1],
+        )?;
+        query(db)
+    })
+    .await
+}
+
+/// Whether the views filter by principal: migration 0021's marker exists and
+/// a connection that declares no principal sees no authority and no grant.
+fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
+    Ok(db
+        .query_one(
+            "SELECT management_reader_isolation_version() = 1 \
+             AND NOT EXISTS (SELECT 1 FROM management_ca) \
+             AND NOT EXISTS (SELECT 1 FROM management_reader_scope)",
+            &[],
+        )?
+        .get(0))
+}
+
 async fn list_cas(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -814,7 +860,7 @@ async fn list_cas(
         .collect();
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         db.query(
             "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
@@ -852,14 +898,19 @@ async fn get_ca(
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
-        db.query_opt(
-            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+    let row = query_db_as(
+        state.database_url,
+        state.database_slots,
+        (issuer.clone(), subject.clone()),
+        move |db| {
+            db.query_opt(
+                "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=$1 AND g.issuer=$2 AND g.subject=$3",
-            &[&ca_id, &issuer, &subject],
-        )
-    })
+                &[&ca_id, &issuer, &subject],
+            )
+        },
+    )
     .await?
     .ok_or(StatusCode::FORBIDDEN)?;
     Ok(Json(Ca {
@@ -928,7 +979,7 @@ async fn list_profile_drafts(
     let profile_id = page.profile_id;
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
@@ -1011,7 +1062,7 @@ async fn get_profile_draft_revision(
     let revision = valid_profile_revision(&revision)?;
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
+    let row = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
@@ -1049,7 +1100,7 @@ async fn list_certificates(
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let deadline = Instant::now() + Duration::from_millis(DATABASE_STATEMENT_TIMEOUT_MS);
         // One snapshot for every slice of the page, as for a single statement.
         let mut tx = history_transaction(db)?;
@@ -1229,7 +1280,7 @@ async fn get_certificate(
         .to_string();
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
+    let row = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
@@ -1256,7 +1307,7 @@ async fn get_certificate_by_serial(
     let serial_hex = canonical_serial_hex(&serial_hex)?;
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
+    let row = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
@@ -1287,7 +1338,7 @@ async fn list_audit(
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db(state.database_url, state.database_slots, move |db| {
+    let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let deadline = Instant::now() + Duration::from_millis(DATABASE_STATEMENT_TIMEOUT_MS);
         let mut tx = history_transaction(db)?;
         let granted: bool = tx.query_one(
@@ -1355,7 +1406,7 @@ async fn get_audit_event(
         .to_string();
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db(state.database_url, state.database_slots, move |db| {
+    let row = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
@@ -2361,6 +2412,13 @@ mod tests {
         let queries: Vec<&'static str> = cases.iter().map(|case| case.3).collect();
         let expected: Vec<Vec<String>> = tokio::task::spawn_blocking(move || {
             let mut db = Client::connect(&database_url, NoTls).unwrap();
+            // The views filter by the declared principal (0021), as for the API.
+            db.execute(
+                "SELECT set_config('trust.reader_issuer', 'https://issuer.example.test', false), \
+                 set_config('trust.reader_subject', 'operator', false)",
+                &[],
+            )
+            .unwrap();
             queries
                 .iter()
                 .map(|query| {

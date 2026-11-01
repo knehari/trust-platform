@@ -117,11 +117,23 @@ async fn get(app: &Router, token: &str, path: &str) -> (StatusCode, Option<Strin
 
 /// The cursor that starts a page in the middle or near the end of the
 /// filtered history, read with one unsliced statement through the view.
+/// A connection to the views as the scale fixture's reader principal (0021).
+fn reader_db(database_url: &str) -> Client {
+    let mut db = Client::connect(database_url, NoTls).unwrap();
+    db.execute(
+        "SELECT set_config('trust.reader_issuer', 'https://issuer.scale.invalid', false), \
+         set_config('trust.reader_subject', 'reader', false)",
+        &[],
+    )
+    .unwrap();
+    db
+}
+
 fn cursor_for(database_url: &str, query: &str, position: &str) -> Option<String> {
     if position == "first" {
         return None;
     }
-    let mut db = Client::connect(database_url, NoTls).unwrap();
+    let mut db = reader_db(database_url);
     let mut filter = String::new();
     for part in query.split('&').filter(|part| !part.is_empty()) {
         let (key, value) = part.split_once('=').unwrap();
@@ -172,7 +184,7 @@ async fn history_timing() {
     let only = env::var("TRUST_API_TIMING_CASES").unwrap_or_default();
     let url = database_url.clone();
     let first: String = tokio::task::spawn_blocking(move || {
-        let mut db = Client::connect(&url, NoTls).unwrap();
+        let mut db = reader_db(&url);
         db.query_one(
             &format!("SELECT min(signed_at) FROM management_certificate WHERE ca_id='{CA}'"),
             &[],
