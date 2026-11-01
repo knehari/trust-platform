@@ -15,6 +15,7 @@ User/API -> authenticated control plane -> policy engine -> CA signing service -
 - CRL manipulation/staleness: signed CRLs, controlled publication, freshness monitoring.
 - Supply chain: pinned dependencies, SBOM, SCA, provenance, signed releases.
 - Insider abuse: role separation, privileged action audit, two-person control where justified.
+- Cross-authority reads through the management API: the token's CA scope intersected with server-owned grants in every API query, and since migration 0020 the same restriction inside every management view for the principal the API declares; a session that declares none reads nothing. The database cannot authenticate the declared principal, so a compromised API process or a holder of the reader login can still read any granted principal's authorities ([ADR-0008](../adr/ADR-0008-database-reader-isolation.md), Proposed).
 
 ## Open
 STRIDE workshop, risk scoring and independent security review before non-critical pilot.
