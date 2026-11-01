@@ -8,6 +8,9 @@
 BEGIN READ ONLY;
 SET LOCAL ROLE trust_api_reader;
 SET LOCAL statement_timeout = '3s';
+-- The reader principal the API declares from the token (migration 0021).
+SELECT set_config('trust.reader_issuer', :'issuer', true) IS NOT NULL AS issuer_set,
+       set_config('trust.reader_subject', :'subject', true) IS NOT NULL AS subject_set \gset
 
 SELECT count(*) AS scoped_fixture_rows FROM management_certificate
 WHERE ca_id = :'ca_id';

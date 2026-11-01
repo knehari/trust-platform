@@ -3,6 +3,11 @@ BEGIN;
 
 INSERT INTO ca(ca_id, display_name, policy_version) VALUES
   ('77777777-7777-4777-8777-777777777777', 'Draft Profile CA', 'v1');
+-- The view shows only authorities granted to the declared reader (0021).
+INSERT INTO management_reader_grant(issuer, subject, ca_id) VALUES
+  ('https://issuer.profile.invalid', 'profile-reader', '77777777-7777-4777-8777-777777777777');
+SELECT set_config('trust.reader_issuer', 'https://issuer.profile.invalid', true),
+       set_config('trust.reader_subject', 'profile-reader', true);
 
 INSERT INTO certificate_profile_draft
   (ca_id, profile_id, revision, display_name, policy_version,
