@@ -85,6 +85,21 @@ DO $test$ BEGIN
     ) THEN
         RAISE EXCEPTION 'subject_cn_lower differs from lower(subject_cn)';
     END IF;
+
+    -- 0020: the bounds are each authority's first and last row times.
+    IF EXISTS (
+        SELECT 1 FROM management_history_bounds b JOIN ca ON ca.ca_id::text = b.ca_id
+        WHERE b.newest_signed_window IS DISTINCT FROM
+              (SELECT max(date_trunc('milliseconds', c.signed_at AT TIME ZONE 'UTC')) FROM certificate c WHERE c.ca_id = ca.ca_id)
+           OR b.oldest_signed_window IS DISTINCT FROM
+              (SELECT min(date_trunc('milliseconds', c.signed_at AT TIME ZONE 'UTC')) FROM certificate c WHERE c.ca_id = ca.ca_id)
+           OR b.newest_recorded_window IS DISTINCT FROM
+              (SELECT max(date_trunc('milliseconds', a.recorded_at AT TIME ZONE 'UTC')) FROM audit_event a WHERE a.ca_id = ca.ca_id)
+           OR b.oldest_recorded_window IS DISTINCT FROM
+              (SELECT min(date_trunc('milliseconds', a.recorded_at AT TIME ZONE 'UTC')) FROM audit_event a WHERE a.ca_id = ca.ca_id)
+    ) OR (SELECT count(*) FROM management_history_bounds) <> (SELECT count(*) FROM ca) THEN
+        RAISE EXCEPTION 'management_history_bounds differs from the authorities'' rows';
+    END IF;
 END $test$;
 
 INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES (
