@@ -287,3 +287,6 @@ python3 -I scripts/lab/history_scale_load.py --db scale_1m --dir OUT --seconds 6
 - The hypothesis tests used throwaway copies with objects created by hand
   (functions, indexes, a table, views). None of them is a reviewed
   migration.
+
+Option 1.1 (paging by time slice, barrier kept) is implemented and measured in
+[lab-history-time-window.md](lab-history-time-window.md).
