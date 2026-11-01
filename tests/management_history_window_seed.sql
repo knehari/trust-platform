@@ -12,7 +12,15 @@
 -- * 1 row 25 years back. It and the 1601 rows predate the authority's
 --   creation, which anchors an oldest-first page (its open first slice).
 -- Every 17th row has the CN prefix "needle-" (a sparse filter).
--- Run on a database migrated to 0016, as its owner, before the API test
+-- DNS SANs (migration 0017), on every row but each 10th (historical rows):
+-- * host-<n>.lab.invalid on each;
+-- * grp.lab.invalid on even rows, written twice with different case, so
+--   the SAN table must keep one row per certificate and name;
+-- * RARE.Lab.Invalid on every 29th row (upper case only: lowered on write);
+-- CN needle- with SAN grp.lab.invalid (every 34th row) drops most of each
+-- batch of SAN matches, and CN hay- with it drops a few: either way the API
+-- must continue after its last match, without repeating it.
+-- Run on a database migrated to 0017, as its owner, before the API test
 -- history_slices_read_every_row_in_order.
 BEGIN;
 
@@ -45,10 +53,18 @@ SELECT 'abababab-0000-4000-8000-0000000000ab', decode('02' || lpad(to_hex(n), 4,
 FROM window_row;
 
 INSERT INTO certificate
-    (ca_id, serial_der_content, request_id, fingerprint_sha256, certificate_der, signed_at, subject_cn)
+    (ca_id, serial_der_content, request_id, fingerprint_sha256, certificate_der, signed_at, subject_cn,
+     not_before_utc, not_after_utc, san_dns)
 SELECT 'abababab-0000-4000-8000-0000000000ab', decode('02' || lpad(to_hex(n), 4, '0'), 'hex'), id,
        decode(repeat('02', 32), 'hex'), decode('3000', 'hex'), at,
-       CASE WHEN n % 17 = 0 THEN 'needle-' ELSE 'hay-' END || n || '.lab.invalid'
+       CASE WHEN n % 17 = 0 THEN 'needle-' ELSE 'hay-' END || n || '.lab.invalid',
+       CASE WHEN n % 10 <> 0 THEN at END,
+       CASE WHEN n % 10 <> 0 THEN at + interval '365 days' END,
+       CASE WHEN n % 10 <> 0 THEN
+           ARRAY['host-' || n || '.lab.invalid']
+           || CASE WHEN n % 2 = 0 THEN ARRAY['grp.lab.invalid', 'GRP.Lab.Invalid'] ELSE '{}' END
+           || CASE WHEN n % 29 = 0 THEN ARRAY['RARE.Lab.Invalid'] ELSE '{}' END
+       END
 FROM window_row;
 
 INSERT INTO audit_event (event_id, ca_id, actor_id, event_type, decision, policy_version, recorded_at)
@@ -57,7 +73,25 @@ SELECT id, 'abababab-0000-4000-8000-0000000000ab', 'window-fixture-actor',
        'allow', 'v1', at
 FROM window_row;
 
+-- The SAN table holds exactly the lowered, distinct names of each array.
+DO $san$ BEGIN
+    IF EXISTS (
+        (SELECT request_id, ca_id, signed_at, name_lower FROM certificate_san_dns
+         EXCEPT
+         SELECT DISTINCT c.request_id, c.ca_id, c.signed_at, lower(e.name)
+         FROM certificate c, unnest(c.san_dns) AS e(name))
+        UNION ALL
+        (SELECT DISTINCT c.request_id, c.ca_id, c.signed_at, lower(e.name)
+         FROM certificate c, unnest(c.san_dns) AS e(name)
+         EXCEPT
+         SELECT request_id, ca_id, signed_at, name_lower FROM certificate_san_dns)
+    ) THEN
+        RAISE EXCEPTION 'certificate_san_dns differs from certificate.san_dns';
+    END IF;
+END $san$;
+
 COMMIT;
 
 ANALYZE certificate;
+ANALYZE certificate_san_dns;
 ANALYZE audit_event;

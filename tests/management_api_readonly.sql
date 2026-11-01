@@ -1,4 +1,4 @@
--- Run after 0016 as the migration owner. The API role may read only the views.
+-- Run after 0017 as the migration owner. The API role may read only the views.
 BEGIN;
 SET LOCAL ROLE trust_api_reader;
 DO $test$ BEGIN
@@ -7,6 +7,12 @@ DO $test$ BEGIN
     PERFORM subject_cn FROM management_certificate LIMIT 1;
     PERFORM signed_at_window FROM management_certificate LIMIT 1;
     PERFORM recorded_at_window FROM management_audit LIMIT 1;
+    PERFORM count(*) FROM management_certificate_san;
+    BEGIN
+        PERFORM count(*) FROM certificate_san_dns;
+        RAISE EXCEPTION 'API role unexpectedly reads the raw SAN table';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
     PERFORM count(*) FROM management_audit;
     PERFORM count(*) FROM management_reader_scope;
     BEGIN
