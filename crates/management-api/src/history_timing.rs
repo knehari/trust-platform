@@ -92,6 +92,7 @@ fn app_and_token(database_url: String, slots: usize) -> (Router, String) {
     let app = router(AppState {
         verifier,
         database_url,
+        writer_database_url: None,
         database_slots: Arc::new(Semaphore::new(slots)),
         http_data_slots: Arc::new(Semaphore::new(slots)),
         readiness_slots: Arc::new(Semaphore::new(1)),

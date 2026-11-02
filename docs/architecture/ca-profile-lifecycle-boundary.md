@@ -1,8 +1,13 @@
 # CA and certificate-profile lifecycle boundary
 
 **Status:** laboratory design contract, 22 October 2026. No CA or profile
-write route is authorized by this document. The current Rust management API,
-database login and React console remain read-only. This contract refines
+write route is authorized by this document. **Update, 2 November 2026:** the
+first slice, recording and submitting profile drafts, is implemented in the
+laboratory under [ADR-0010](../adr/ADR-0010-profile-draft-writes.md)
+(Proposed), after the identity provider of
+[ADR-0009](../adr/ADR-0009-laboratory-identity-provider.md) and with a
+write-specific database role. Approval, activation, retirement and every CA
+transition remain unimplemented. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

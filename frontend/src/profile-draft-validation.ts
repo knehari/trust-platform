@@ -14,7 +14,10 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
   if (row.ca_id !== caId) throw new Error('The management API returned a proposal outside the selected authority.');
   if (typeof row.profile_id !== 'string' || !canonicalProfileId(row.profile_id)
     || !Number.isInteger(row.revision) || (row.revision as number) < 1 || (row.revision as number) > 1_000_000
-    || row.status !== 'DRAFT'
+    || (row.status !== 'DRAFT' && row.status !== 'SUBMITTED')
+    || (row.status === 'DRAFT' ? row.submitted_at !== null && row.submitted_at !== undefined
+      : typeof row.submitted_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.submitted_at)
+        || !Number.isFinite(Date.parse(row.submitted_at)))
     || typeof row.display_name !== 'string' || row.display_name.length < 1 || row.display_name.length > 255
     || typeof row.policy_version !== 'string' || row.policy_version.length < 1 || row.policy_version.length > 128
     || !Number.isInteger(row.max_validity_days) || (row.max_validity_days as number) < 1 || (row.max_validity_days as number) > 825
@@ -42,7 +45,8 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
     proposed_signature_suites: row.proposed_signature_suites,
     created_by: row.created_by as string,
     created_at: row.created_at as string,
-    status: 'DRAFT',
+    status: row.status as ProfileDraft['status'],
+    submitted_at: row.status === 'SUBMITTED' ? row.submitted_at as string : null,
     proposal_warnings: row.proposal_warnings,
     snapshot_sha256: row.snapshot_sha256,
   };

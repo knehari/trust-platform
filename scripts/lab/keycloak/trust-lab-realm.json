@@ -38,7 +38,7 @@
       },
       {
         "name": "trust-profile-editor",
-        "description": "Reserved: propose certificate-profile drafts. No API route accepts it yet."
+        "description": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA)."
       },
       {
         "name": "trust-policy-approver",
@@ -405,6 +405,31 @@
       ],
       "realmRoles": [
         "trust-ca-reader"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000011",
+      "username": "lab-author",
+      "enabled": true,
+      "firstName": "lab-author",
+      "lastName": "Laboratory",
+      "email": "lab-author@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_AUTHOR}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-profile-editor"
       ]
     },
     {

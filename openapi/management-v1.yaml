@@ -118,6 +118,39 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Record the next immutable DRAFT revision of a profile (laboratory, migration 0022)
+      description: Requires the trust-profile-editor token role, the CA in the signed scope and a server-owned profile-editor grant; the reader role is not required. The server assigns the next revision number, records a lifecycle event and an audit event, and never approves or activates anything. Writes go through a database login that can only execute the lifecycle functions (ADR-0010, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileDraftCreate' }
+      responses:
+        '201':
+          description: Revision recorded as a DRAFT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDraft' }
+        '200':
+          description: Replay of a recorded request with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-profile-editor role, CA outside the signed scope, or no server-owned profile-editor grant for this issuer, subject and CA }
+        '409': { description: Idempotency key reused for another request, or a conflicting recorded state }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}:
     get:
       summary: Read one exact inert profile-draft revision in a scoped CA
@@ -134,7 +167,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 1000000 }
       responses:
         '200':
-          description: One exact DRAFT revision
+          description: One exact DRAFT or SUBMITTED revision
           content:
             application/json:
               schema:
@@ -144,6 +177,55 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { description: No such revision in the authorized CA }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/submission:
+    post:
+      summary: Submit the latest revision of a profile for approval (laboratory, migration 0022)
+      description: Same role and grant requirements as recording a revision. Only the latest revision can be submitted, once, and only when the request names its exact digest, recomputed by the database. A revision with advisory syntax warnings is refused. SUBMITTED is not approval and cannot authorize issuance.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [snapshot_sha256]
+              properties:
+                snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '201':
+          description: Revision submitted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileSubmission' }
+        '200':
+          description: Replay of a recorded submission with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileSubmission' }
+        '404': { description: No such revision in the authorized CA }
+        '422': { description: The revision has advisory syntax warnings; nothing was recorded }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-profile-editor role, CA outside the signed scope, or no server-owned profile-editor grant for this issuer, subject and CA }
+        '409': { description: Idempotency key reused, a newer revision exists, the revision is already submitted, or the digest does not match it }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -363,7 +445,7 @@ components:
         created_at: { type: string, format: date-time }
     ProfileDraft:
       type: object
-      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, proposal_warnings, snapshot_sha256]
+      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, submitted_at, proposal_warnings, snapshot_sha256]
       properties:
         ca_id: { type: string, format: uuid }
         profile_id: { type: string }
@@ -376,7 +458,11 @@ components:
         proposed_signature_suites: { type: array, items: { type: string } }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
-        status: { type: string, const: DRAFT }
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED]
+          description: SUBMITTED revisions await approval (no approval route exists yet). Neither state authorizes issuance.
+        submitted_at: { type: [string, 'null'], format: date-time, description: Submission time; null for a DRAFT }
         proposal_warnings:
           type: array
           description: Advisory syntax findings only. An empty array is not an approval, provider capability check or issuance authorization.
@@ -385,6 +471,28 @@ components:
           type: string
           pattern: '^[0-9a-f]{64}$'
           description: SHA-256 of the v1 length-prefixed proposal-policy envelope. It is not signed, approved or bound to an issued certificate.
+    ProfileDraftCreate:
+      type: object
+      additionalProperties: false
+      required: [profile_id, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites]
+      properties:
+        profile_id: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        display_name: { type: string, minLength: 1, maxLength: 255 }
+        policy_version: { type: string, minLength: 1, maxLength: 128 }
+        max_validity_days: { type: integer, minimum: 1, maximum: 825 }
+        max_dns_sans: { type: integer, minimum: 1, maximum: 100 }
+        proposed_dns_zones: { type: array, minItems: 1, maxItems: 32, items: { type: string, maxLength: 253 } }
+        proposed_signature_suites: { type: array, minItems: 1, maxItems: 16, items: { type: string, maxLength: 64 } }
+    ProfileSubmission:
+      type: object
+      required: [ca_id, profile_id, revision, status, snapshot_sha256, submitted_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, const: SUBMITTED }
+        snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        submitted_at: { type: string, format: date-time }
     Certificate:
       type: object
       required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]

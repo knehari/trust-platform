@@ -12,7 +12,8 @@ recovery procedure.
 Use PostgreSQL 16 client tools (`psql`, `pg_dump`, `pg_restore`) and a disposable
 cluster. Apply migrations 0001–0011, seed the fixture, and apply 0012–0013 by
 running `management_populated_upgrade.sh` against an empty source database.
-Provision the `trust_api_reader` NOLOGIN role in the target cluster and create
+Provision the `trust_api_reader` and `trust_profile_writer` (migration 0022)
+NOLOGIN roles in the target cluster and create
 a **separate, empty** target database owned by the test operator. The CI job
 tests both same-cluster and fresh-cluster restoration. For a fresh cluster, it
 first confirms that the missing role is rejected before the archive is made,

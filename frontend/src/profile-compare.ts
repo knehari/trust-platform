@@ -8,10 +8,14 @@ export interface ProfileDifference {
   changed: boolean;
 }
 
+function recordedStatus(status: string): boolean {
+  return status === 'DRAFT' || status === 'SUBMITTED';
+}
+
 export function compareProfileRevisions(first: ProfileDraft, second: ProfileDraft): ProfileDifference[] {
   if (first.ca_id !== second.ca_id || first.profile_id !== second.profile_id || first.revision === second.revision
-    || first.status !== 'DRAFT' || second.status !== 'DRAFT') {
-    throw new Error('Select two different draft revisions of the same profile and authority.');
+    || !recordedStatus(first.status) || !recordedStatus(second.status)) {
+    throw new Error('Select two different recorded revisions of the same profile and authority.');
   }
   const [before, after] = first.revision < second.revision ? [first, second] : [second, first];
   const rows: [string, string, string][] = [
