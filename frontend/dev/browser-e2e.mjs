@@ -18,10 +18,10 @@ if (!readerPassword) throw new Error('TRUST_LAB_PW_READER is not set; load .env.
 
 // Each new page is a new browser context, so each signs in through the
 // laboratory Keycloak login form, as a person would.
-async function signIn(target) {
+async function signIn(target, username = 'lab-reader', password = readerPassword) {
   await target.getByRole('button', { name: /Sign in with your organization/i }).click();
-  await target.locator('#username').fill('lab-reader');
-  await target.locator('#password').fill(readerPassword);
+  await target.locator('#username').fill(username);
+  await target.locator('#password').fill(password);
   await target.locator('#kc-login').click();
 }
 
@@ -120,7 +120,7 @@ try {
   // Profile drafts are readable only under the signed and granted CA scope.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
-  await page.getByText('These proposals are not approved or active.').waitFor();
+  await page.getByText('None is approved or active', { exact: false }).waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).check();
   await page.getByText('No advisory syntax warnings in the loaded revisions.').waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).uncheck();
@@ -309,6 +309,36 @@ try {
   await page.getByRole('button', { name: 'Apply' }).click();
   await page.getByText('No audit events recorded').waitFor();
 
+  // A reader is not offered profile changes. An author records a revision
+  // through the console form and submits it; it becomes SUBMITTED, not
+  // approved.
+  await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
+  await page.getByRole('heading', { name: 'Profile proposals' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Propose a revision' }).count(), 0);
+  if (process.env.TRUST_LAB_PW_AUTHOR) {
+    const authorPage = await browser.newPage();
+    authorPage.setDefaultTimeout(15_000);
+    await authorPage.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
+    await signIn(authorPage, 'lab-author', process.env.TRUST_LAB_PW_AUTHOR);
+    await authorPage.getByRole('button', { name: 'Propose a revision' }).click();
+    const form = authorPage.getByRole('dialog', { name: 'Propose a profile revision' });
+    const browserProfile = `browser-${Date.now().toString(36)}`;
+    await form.getByLabel('Profile ID').fill(browserProfile);
+    await form.getByLabel('Display name').fill('Browser server proposal');
+    await form.getByLabel('Policy version').fill('v1');
+    await form.getByLabel(/Proposed DNS zones/).fill('lab.invalid');
+    await form.getByRole('button', { name: 'Record draft revision' }).click();
+    const recorded = authorPage.getByRole('dialog', { name: 'Revision 1' });
+    await recorded.waitFor();
+    await recorded.getByText('DRAFT', { exact: true }).waitFor();
+    await recorded.getByRole('button', { name: 'Submit for approval' }).click();
+    await recorded.getByText('SUBMITTED', { exact: true }).waitFor();
+    await recorded.getByText('This revision awaits approval.', { exact: false }).waitFor();
+    assert.equal(await recorded.getByRole('button', { name: 'Submit for approval' }).count(), 0);
+    await authorPage.getByRole('status').filter({ hasText: 'was submitted for approval' }).waitFor();
+    await authorPage.close();
+  }
+
   // Signing out ends the Keycloak session too: signing in again asks for the
   // password instead of reusing the identity provider's session cookie.
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -316,7 +346,7 @@ try {
   await page.locator('#password').waitFor();
   assert.equal(await page.locator('#kc-form-login').count(), 1);
 
-  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded and submitted from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

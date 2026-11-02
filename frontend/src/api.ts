@@ -29,6 +29,8 @@ export interface AuditEvent {
   recorded_at: string;
 }
 
+export type ProfileLifecycleStatus = 'DRAFT' | 'SUBMITTED';
+
 export interface ProfileDraft {
   ca_id: string;
   profile_id: string;
@@ -41,7 +43,9 @@ export interface ProfileDraft {
   proposed_signature_suites: string[];
   created_by: string;
   created_at: string;
-  status: 'DRAFT';
+  /** SUBMITTED revisions await approval; neither state authorizes issuance. */
+  status: ProfileLifecycleStatus;
+  submitted_at: string | null;
   proposal_warnings: string[];
   snapshot_sha256: string;
 }
@@ -84,6 +88,41 @@ async function apiResponse(path: string, token: string, signal?: AbortSignal): P
 
 export async function apiGet<T>(path: string, token: string, signal?: AbortSignal): Promise<T> {
   return (await apiResponse(path, token, signal)).json() as Promise<T>;
+}
+
+const WRITE_MESSAGES: Record<number, string> = {
+  400: 'The request was rejected as invalid. Check every field.',
+  401: 'Your session has expired. Sign in again.',
+  403: 'Your role or CA grant does not allow this change.',
+  404: 'That revision no longer exists for this authority.',
+  409: 'This change conflicts with the recorded state: the revision may be stale, already submitted, or its digest changed. Reload and try again.',
+  413: 'The request is too large.',
+  422: 'This revision has advisory syntax warnings and cannot be submitted. Propose a corrected revision.',
+  503: 'Profile changes are unavailable: the management API or its write database is not configured or not reachable.',
+};
+
+/**
+ * POSTs JSON with an idempotency key. Retrying with the same key and body
+ * returns the recorded result instead of writing twice.
+ */
+export async function apiPost<T>(path: string, token: string, body: unknown, idempotencyKey: string): Promise<{ status: number; replayed: boolean; value: T }> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`, Accept: 'application/json',
+      'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify(body),
+    credentials: 'omit',
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    const rawRequestId = response.headers.get('x-request-id');
+    const requestId = rawRequestId && /^[0-9]{1,10}-[0-9]{1,20}$/.test(rawRequestId) ? rawRequestId : null;
+    const message = WRITE_MESSAGES[response.status] ?? `The request failed (${response.status}).`;
+    throw new ApiError(response.status, requestId ? `${message} Request ID: ${requestId}.` : message, requestId);
+  }
+  return { status: response.status, replayed: response.headers.get('idempotent-replayed') === 'true', value: await response.json() as T };
 }
 
 export async function apiGetPage<T>(path: string, token: string, signal?: AbortSignal): Promise<ApiPage<T>> {

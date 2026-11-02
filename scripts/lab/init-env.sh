@@ -9,11 +9,11 @@ cd "$(dirname "$0")/../.."
 umask 077
 [ -e .env.lab ] || : > .env.lab
 added=0
-for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
+for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_WRITER_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
     TRUST_LAB_WORKLOAD_SECRET \
     TRUST_LAB_PW_READER TRUST_LAB_PW_EDITOR TRUST_LAB_PW_APPROVER_1 TRUST_LAB_PW_APPROVER_2 \
     TRUST_LAB_PW_OPERATOR TRUST_LAB_PW_OUTSIDER TRUST_LAB_PW_DISABLED TRUST_LAB_PW_OTHER_CA \
-    TRUST_LAB_PW_FOREIGN; do
+    TRUST_LAB_PW_FOREIGN TRUST_LAB_PW_AUTHOR; do
   if ! grep -q "^${name}=" .env.lab; then
     printf '%s=%s\n' "$name" "$(openssl rand -hex 24)" >> .env.lab
     added=$((added + 1))

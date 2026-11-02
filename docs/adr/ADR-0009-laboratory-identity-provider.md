@@ -97,7 +97,7 @@ grant or a forged token.
 | token of another realm on the same server, with a grant under that issuer | 401 |
 | widened `ca_ids` or altered signature | 401 |
 | two approvers | distinct `sub` and session; one's password does not open the other's account |
-| `POST` with an operator token | 404 or 405: no write route exists |
+| `POST` with an operator or approver token | 405 on `/v1/cas`; 403 on profile drafts, the only write route ([ADR-0010](ADR-0010-profile-draft-writes.md)) |
 | account console roles and user-profile policy (admin API, read only) | readers and approvers hold no account-console role; `ca_ids` is not a user-editable attribute |
 | 5 wrong passwords | the right password is then refused (lockout) |
 

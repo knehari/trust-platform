@@ -135,11 +135,14 @@ await check('approvers are distinct, separately authenticated identities', async
   assert.equal(swapped.code, undefined);
 });
 
-await check('no route accepts a write, whatever the role', async () => {
-  const { access_token } = await human('lab-operator', 'TRUST_LAB_PW_OPERATOR');
-  for (const path of ['/v1/cas', `/v1/cas/${allowedCa}/profile-drafts`]) {
-    const code = await status(path, access_token, { method: 'POST' });
-    assert.ok([404, 405].includes(code), `POST ${path} returned ${code}`);
+await check('only profile editors can write, and only profile drafts', async () => {
+  // The operator and approvers hold no editor role; no route accepts any
+  // other write (CA creation, approval, activation).
+  for (const [username, envName] of [['lab-operator', 'TRUST_LAB_PW_OPERATOR'], ['lab-approver-1', 'TRUST_LAB_PW_APPROVER_1']]) {
+    const { access_token } = await human(username, envName);
+    assert.equal(await status('/v1/cas', access_token, { method: 'POST' }), 405);
+    const code = await status(`/v1/cas/${allowedCa}/profile-drafts`, access_token, { method: 'POST' });
+    assert.equal(code, 403, `POST profile-drafts as ${username} returned ${code}`);
   }
 });
 

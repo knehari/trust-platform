@@ -1,10 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ProfileDraft } from './api';
+import { ApiError, apiPost, type ProfileDraft } from './api';
 import { profileDraftMetadataJson } from './profile-draft-export';
 
-export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean }) {
+interface SubmitAction {
+  caId: string;
+  token: string;
+  onSubmitted: (submittedAt: string) => void;
+  onUnauthorized: () => void;
+  onProposeRevision: () => void;
+}
+
+export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected, editor }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean; editor: SubmitAction | null }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [copyFeedback, setCopyFeedback] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  // Stable for this dialog: a retry of the same submission is a replay.
+  const submitKey = useRef(crypto.randomUUID());
+  async function submitForApproval() {
+    if (!editor) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = await apiPost<{ status?: unknown; submitted_at?: unknown }>(
+        `/v1/cas/${encodeURIComponent(editor.caId)}/profile-drafts/${encodeURIComponent(draft.profile_id)}/${draft.revision}/submission`,
+        editor.token, { snapshot_sha256: draft.snapshot_sha256 }, submitKey.current);
+      if (result.value.status !== 'SUBMITTED' || typeof result.value.submitted_at !== 'string') throw new Error('The management API returned an invalid submission.');
+      editor.onSubmitted(result.value.submitted_at);
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 401) editor.onUnauthorized();
+      else setSubmitError(failure instanceof Error ? failure.message : 'Could not submit this revision.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
   useEffect(() => {
     const element = dialog.current;
     element?.showModal();
@@ -30,6 +59,7 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
     ['PROFILE ID', draft.profile_id],
     ['REVISION', String(draft.revision)],
     ['STATUS', draft.status],
+    ...(draft.submitted_at ? [['SUBMITTED FOR APPROVAL', new Date(draft.submitted_at).toLocaleString()]] : []),
     ['DISPLAY NAME', draft.display_name],
     ['POLICY VERSION', draft.policy_version],
     ['MAXIMUM VALIDITY', `${draft.max_validity_days} days`],
@@ -48,6 +78,13 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
     {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
     <button type="button" className="link-button profile-draft-action" onClick={() => void copyMetadata()}>Copy proposal metadata JSON</button>
     <button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected} onClick={onToggleComparison}>{comparisonSelected ? 'Remove from comparison' : 'Select for comparison'}</button>
-    <p className="dialog-note">This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.</p>
+    {editor && <div className="subtle-panel profile-lifecycle-actions">
+      {draft.status === 'DRAFT' && <button type="button" disabled={submitting || draft.proposal_warnings.length > 0} onClick={() => void submitForApproval()}>{submitting ? 'Submitting…' : 'Submit for approval'}</button>}
+      <button type="button" className="link-button" onClick={editor.onProposeRevision}>Propose a new revision from this one</button>
+      {draft.status === 'DRAFT' && draft.proposal_warnings.length > 0 && <p>Revisions with advisory syntax warnings cannot be submitted. Propose a corrected revision.</p>}
+      {draft.status === 'DRAFT' && <p>Only the latest revision of a profile can be submitted, with exactly the digest shown above. Submission does not approve or activate it.</p>}
+      {submitError && <p className="lookup-error" role="alert">{submitError}</p>}
+    </div>}
+    <p className="dialog-note">{draft.status === 'SUBMITTED' ? 'This revision awaits approval. Submission is not approval: it cannot authorize certificate issuance.' : 'This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.'}</p>
   </dialog>;
 }

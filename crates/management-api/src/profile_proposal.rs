@@ -174,6 +174,7 @@ mod tests {
             created_by: "editor-one".into(),
             created_at: "2026-10-22T00:00:00.000Z".into(),
             status: "DRAFT",
+            submitted_at: None,
             proposal_warnings: vec![],
             snapshot_sha256: String::new(),
         };
@@ -190,5 +191,40 @@ mod tests {
         draft.proposed_dns_zones.pop();
         draft.revision += 1;
         assert_ne!(snapshot_sha256(&draft), initial);
+    }
+    /// Pinned digests, also asserted by tests/management_profile_lifecycle.sql
+    /// against the database's own computation (migration 0022). A change to
+    /// either implementation breaks one of the two tests.
+    #[test]
+    fn snapshot_digest_matches_pinned_database_vectors() {
+        let mut draft = ProfileDraft {
+            ca_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into(),
+            profile_id: "server-lab".into(),
+            revision: 1,
+            display_name: "Server proposal".into(),
+            policy_version: "v1".into(),
+            max_validity_days: 90,
+            max_dns_sans: 5,
+            proposed_dns_zones: vec!["lab.invalid".into()],
+            proposed_signature_suites: vec!["P256-SHA256".into()],
+            created_by: "editor-one".into(),
+            created_at: "2026-10-22T00:00:00.000Z".into(),
+            status: "DRAFT",
+            submitted_at: None,
+            proposal_warnings: vec![],
+            snapshot_sha256: String::new(),
+        };
+        assert_eq!(
+            snapshot_sha256(&draft),
+            "5e74e6260bf6f56f899c323e3525cfac09a2fd1c9b01653e2c47247d08f72330"
+        );
+        draft.revision = 2;
+        draft.display_name = "Serveur \u{e9}t\u{e9}".into();
+        draft.proposed_dns_zones = vec!["a.lab.invalid".into(), "b.lab.invalid".into()];
+        draft.proposed_signature_suites = vec!["P256-SHA256".into(), "RSA-PSS-SHA256".into()];
+        assert_eq!(
+            snapshot_sha256(&draft),
+            "2bee232acffcc1e3d29e99e4d03f6fa5b3641e87f7d997acab73007999f1a80f"
+        );
     }
 }

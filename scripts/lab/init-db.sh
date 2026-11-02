@@ -8,10 +8,14 @@ for migration in "$migrations_dir"/*.sql; do
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"
 done
 
-psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" \
+psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
 SELECT format('CREATE ROLE trust_api_lab LOGIN INHERIT PASSWORD %L', :'api_password') \gexec
 GRANT trust_api_reader TO trust_api_lab;
+-- A separate login for profile writes (migration 0022): it can only execute
+-- the two lifecycle functions, and holds no table or view privilege.
+SELECT format('CREATE ROLE trust_api_writer_lab LOGIN INHERIT PASSWORD %L', :'writer_password') \gexec
+GRANT trust_profile_writer TO trust_api_writer_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');
@@ -36,7 +40,14 @@ INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000006','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000007','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+  ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+-- Lifecycle role grants (migration 0022). lab-author (reader and editor) and
+-- lab-editor (editor only) may record and submit drafts for CA E. Nobody may
+-- for CA F, and no approver or operator grant exists: those routes do not.
+INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor');
 -- Inert profile proposals; no revision can authorize issuance.
 INSERT INTO certificate_profile_draft
   (ca_id,profile_id,revision,display_name,policy_version,max_validity_days,

@@ -1,9 +1,11 @@
 mod auth;
+mod profile_lifecycle;
 mod profile_proposal;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
     body::Body,
+    extract::DefaultBodyLimit,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
@@ -36,7 +38,8 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft, \
+     , p.lifecycle_status \
+     FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -44,6 +47,9 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 struct AppState {
     verifier: OidcVerifier,
     database_url: String,
+    /// Login holding only `trust_profile_writer` (migration 0022). Without
+    /// it, the profile write routes answer 503.
+    writer_database_url: Option<String>,
     database_slots: Arc<Semaphore>,
     http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
@@ -102,6 +108,7 @@ struct ProfileDraft {
     created_by: String,
     created_at: String,
     status: &'static str,
+    submitted_at: Option<String>,
     proposal_warnings: Vec<&'static str>,
     snapshot_sha256: String,
 }
@@ -548,7 +555,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0020")?;
+    .map_err(|_| "management views unavailable or older than migration 0022")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -559,9 +566,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !isolated {
         return Err("management views return rows without a declared reader principal".into());
     }
+    // Optional second login for the profile write routes (migration 0022).
+    let writer_database_url = env::var("TRUST_WRITER_DATABASE_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    if let Some(url) = &writer_database_url {
+        let restricted = query_db(
+            url.clone(),
+            database_slots.clone(),
+            profile_lifecycle::restricted_writer_role,
+        )
+        .await
+        .map_err(|_| "profile writer database unavailable or older than migration 0022")?;
+        if !restricted {
+            return Err("profile writer login is not limited to trust_profile_writer".into());
+        }
+    }
     let app = router(AppState {
         verifier,
         database_url,
+        writer_database_url,
         database_slots,
         http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
@@ -578,10 +602,17 @@ fn router(state: AppState) -> Router {
     let data_routes = Router::new()
         .route("/v1/cas", get(list_cas))
         .route("/v1/cas/{ca_id}", get(get_ca))
-        .route("/v1/cas/{ca_id}/profile-drafts", get(list_profile_drafts))
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts",
+            get(list_profile_drafts).post(profile_lifecycle::create_profile_draft),
+        )
         .route(
             "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}",
             get(get_profile_draft_revision),
+        )
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/submission",
+            axum::routing::post(profile_lifecycle::submit_profile_draft),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -594,6 +625,9 @@ fn router(state: AppState) -> Router {
         )
         .route("/v1/cas/{ca_id}/audit", get(list_audit))
         .route("/v1/cas/{ca_id}/audit/{event_id}", get(get_audit_event))
+        .layer(DefaultBodyLimit::max(
+            profile_lifecycle::MAX_WRITE_BODY_BYTES,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             limit_data_requests,
@@ -699,6 +733,8 @@ async fn ready(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
 fn restricted_reader_role(db: &mut Client) -> Result<bool, postgres::Error> {
     db.query_one(
         "SELECT pg_has_role(current_user,'trust_api_reader','member') \
+         AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='trust_profile_writer' \
+             AND pg_has_role(current_user,r.oid,'member')) \
          AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname=current_user \
              AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
          AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
@@ -709,7 +745,8 @@ fn restricted_reader_role(db: &mut Client) -> Result<bool, postgres::Error> {
     .map(|row| row.get::<_, bool>(0))
 }
 
-async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+/// Verifies the bearer token only: 401 when it is missing or invalid.
+async fn authenticate(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -721,6 +758,12 @@ async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claim
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(claims)
+}
+
+/// Read routes: a verified token with the reader role (403 without it).
+async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+    let claims = authenticate(headers, verifier).await?;
     if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -989,7 +1032,7 @@ async fn list_profile_drafts(
         )?.get(0);
         if !granted { return Ok(None); }
         let query = format!("SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at \
              FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (profile_id,revision){comparison}($4,$5)) \
@@ -1044,7 +1087,12 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
         proposed_signature_suites,
         created_by: row.get(9),
         created_at: row.get(10),
-        status: "DRAFT",
+        status: match row.get::<_, &str>(11) {
+            "DRAFT" => "DRAFT",
+            "SUBMITTED" => "SUBMITTED",
+            _ => "UNKNOWN",
+        },
+        submitted_at: row.get(12),
         proposal_warnings,
         snapshot_sha256: String::new(),
     };
@@ -1073,7 +1121,7 @@ async fn get_profile_draft_revision(
         if !granted { return Ok(None); }
         db.query_opt(
             "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at \
              FROM management_profile_draft WHERE ca_id=$1 AND profile_id=$2 AND revision=$3 \
              AND EXISTS (SELECT 1 FROM management_reader_scope WHERE issuer=$4 AND subject=$5 AND ca_id=$1)",
             &[&ca_id, &profile_id, &revision, &issuer, &subject],
@@ -1445,6 +1493,348 @@ mod tests {
     use std::collections::HashSet;
     use tower::ServiceExt;
 
+    /// Profile write routes against PostgreSQL (migration 0022). CI seeds a
+    /// reader grant and a profile-editor grant for `operator` on CA E, and
+    /// provides a login holding only trust_profile_writer.
+    #[tokio::test]
+    async fn profile_writes_are_granted_idempotent_serialized_and_submitted_once() {
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: profile write routes need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"write-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("write-test".into());
+        let token = |sub: &str, roles: serde_json::Value, ca: &str| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[ca]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        const CA: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let editor = token(
+            "operator",
+            json!(["trust-profile-editor", "trust-ca-reader"]),
+            CA,
+        );
+        let reader_only = token("operator", json!(["trust-ca-reader"]), CA);
+        let ungranted_editor = token("someone-else", json!(["trust-profile-editor"]), CA);
+        let ungranted_ca = token(
+            "operator",
+            json!(["trust-profile-editor"]),
+            "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        );
+        let state = AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        };
+        let app = router(state.clone());
+        let post = |token: &str, path: &str, key: Option<String>, body: String| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let app = app.clone();
+            let request = request.body(Body::from(body)).unwrap();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let replayed = response.headers().contains_key("idempotent-replayed");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                (status, replayed, value)
+            }
+        };
+        // A fresh profile per run, so the test can repeat on one database.
+        let profile = format!("http-{}", &random_uuid().simple().to_string()[..12]);
+        let base = format!("/v1/cas/{CA}/profile-drafts");
+        let draft = |name: &str, zone: &str| {
+            json!({"profile_id":profile, "display_name":name, "policy_version":"v1",
+                   "max_validity_days":90, "max_dns_sans":5,
+                   "proposed_dns_zones":[zone], "proposed_signature_suites":["P256-SHA256"]})
+            .to_string()
+        };
+        let key = || Some(random_uuid().to_string());
+
+        // Refusals before any write: no editor role, a CA outside the token
+        // scope, a CA in scope without a database grant, an editor without a
+        // grant, and malformed requests.
+        assert_eq!(
+            post(
+                &editor,
+                "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/profile-drafts",
+                key(),
+                draft("A", "lab.invalid")
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(&reader_only, &base, key(), draft("A", "lab.invalid"))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                &ungranted_ca,
+                "/v1/cas/ffffffff-ffff-4fff-8fff-ffffffffffff/profile-drafts",
+                key(),
+                draft("A", "lab.invalid")
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(&ungranted_editor, &base, key(), draft("A", "lab.invalid"))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(&editor, &base, None, draft("A", "lab.invalid"))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(
+                &editor,
+                &base,
+                Some("not-a-uuid".into()),
+                draft("A", "lab.invalid")
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let mut extra: serde_json::Value =
+            serde_json::from_str(&draft("A", "lab.invalid")).unwrap();
+        extra["status"] = json!("APPROVED");
+        assert_eq!(
+            post(&editor, &base, key(), extra.to_string()).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(&editor, &base, key(), "x".repeat(17 * 1024)).await.0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let text_body = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&base)
+                    .header("authorization", format!("Bearer {editor}"))
+                    .header("content-type", "text/plain")
+                    .header("idempotency-key", random_uuid().to_string())
+                    .body(Body::from(draft("A", "lab.invalid")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(text_body.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let without_writer = router(AppState {
+            writer_database_url: None,
+            ..state.clone()
+        });
+        let unavailable = without_writer
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&base)
+                    .header("authorization", format!("Bearer {editor}"))
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", random_uuid().to_string())
+                    .body(Body::from(draft("A", "lab.invalid")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // Concurrent creations get distinct, dense revisions.
+        let created = futures_join_all((0..6).map(|index| {
+            post(
+                &editor,
+                &base,
+                key(),
+                draft(&format!("Concurrent {index}"), "lab.invalid"),
+            )
+        }))
+        .await;
+        let mut revisions: Vec<i64> = created
+            .iter()
+            .map(|(status, replayed, body)| {
+                assert_eq!(*status, StatusCode::CREATED);
+                assert!(!replayed);
+                assert_eq!(body["status"], "DRAFT");
+                body["revision"].as_i64().unwrap()
+            })
+            .collect();
+        revisions.sort_unstable();
+        assert_eq!(revisions, vec![1, 2, 3, 4, 5, 6]);
+
+        // Replay returns the recorded revision; the key cannot be reused.
+        let replay_key = key();
+        let first = post(
+            &editor,
+            &base,
+            replay_key.clone(),
+            draft("Replayed", "lab.invalid"),
+        )
+        .await;
+        assert_eq!((first.0, first.1), (StatusCode::CREATED, false));
+        let again = post(
+            &editor,
+            &base,
+            replay_key.clone(),
+            draft("Replayed", "lab.invalid"),
+        )
+        .await;
+        assert_eq!((again.0, again.1), (StatusCode::OK, true));
+        assert_eq!(again.2["revision"], first.2["revision"]);
+        assert_eq!(again.2["snapshot_sha256"], first.2["snapshot_sha256"]);
+        assert_eq!(
+            post(&editor, &base, replay_key, draft("Changed", "lab.invalid"))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let latest = first.2["revision"].as_i64().unwrap();
+        assert_eq!(latest, 7);
+        let digest = first.2["snapshot_sha256"].as_str().unwrap().to_owned();
+
+        // Submission: stale revision, altered digest, unknown revision.
+        let submit = |revision: i64| format!("{base}/{profile}/{revision}/submission");
+        let body = |digest: &str| json!({"snapshot_sha256": digest}).to_string();
+        assert_eq!(
+            post(
+                &editor,
+                &submit(6),
+                key(),
+                body(created[0].2["snapshot_sha256"].as_str().unwrap())
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(&editor, &submit(latest), key(), body(&"0".repeat(64)))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(&editor, &submit(99), key(), body(&digest)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post(&reader_only, &submit(latest), key(), body(&digest))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let submit_key = key();
+        let submitted = post(&editor, &submit(latest), submit_key.clone(), body(&digest)).await;
+        assert_eq!((submitted.0, submitted.1), (StatusCode::CREATED, false));
+        assert_eq!(submitted.2["status"], "SUBMITTED");
+        let replayed = post(&editor, &submit(latest), submit_key, body(&digest)).await;
+        assert_eq!((replayed.0, replayed.1), (StatusCode::OK, true));
+        assert_eq!(replayed.2["submitted_at"], submitted.2["submitted_at"]);
+        assert_eq!(
+            post(&editor, &submit(latest), key(), body(&digest)).await.0,
+            StatusCode::CONFLICT
+        );
+
+        // Readers see the state; a revision with syntax warnings cannot be
+        // submitted and stays a DRAFT.
+        let (status, detail) =
+            detail_response(&app, &editor, &format!("{base}/{profile}/{latest}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["status"], "SUBMITTED");
+        assert_eq!(detail["submitted_at"], submitted.2["submitted_at"]);
+        let warned = post(&editor, &base, key(), draft("Warned", "Not_A_Zone")).await;
+        assert_eq!(warned.0, StatusCode::CREATED);
+        assert_eq!(warned.2["proposal_warnings"], json!(["invalid_dns_zone"]));
+        let warned_revision = warned.2["revision"].as_i64().unwrap();
+        let warned_digest = warned.2["snapshot_sha256"].as_str().unwrap().to_owned();
+        assert_eq!(
+            post(
+                &editor,
+                &submit(warned_revision),
+                key(),
+                body(&warned_digest)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let (_, detail) = detail_response(
+            &app,
+            &editor,
+            &format!("{base}/{profile}/{warned_revision}"),
+        )
+        .await;
+        assert_eq!(detail["status"], "DRAFT");
+        assert_eq!(detail["submitted_at"], serde_json::Value::Null);
+    }
+
+    /// A random (version 4) UUID from the test RNG; the crate builds uuid
+    /// without its `v4` feature.
+    fn random_uuid() -> uuid::Uuid {
+        uuid::Builder::from_random_bytes(rand::random()).into_uuid()
+    }
+
+    async fn futures_join_all<F>(futures: impl Iterator<Item = F>) -> Vec<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let handles: Vec<_> = futures.map(tokio::spawn).collect();
+        let mut outputs = Vec::new();
+        for handle in handles {
+            outputs.push(handle.await.unwrap());
+        }
+        outputs
+    }
+
     #[test]
     fn utc_filter_timestamp_checks_calendar_date() {
         for valid in ["2028-02-29T00:00:00.000Z", "2026-12-31T23:59:59.999Z"] {
@@ -1613,6 +2003,7 @@ mod tests {
         let app = router(AppState {
             verifier,
             database_url,
+            writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -2256,6 +2647,7 @@ mod tests {
         let app = router(AppState {
             verifier,
             database_url,
+            writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -2400,6 +2792,7 @@ mod tests {
         let app = router(AppState {
             verifier,
             database_url: database_url.clone(),
+            writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -2591,6 +2984,7 @@ mod tests {
         let state = AppState {
             verifier,
             database_url: database_url.clone(),
+            writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),

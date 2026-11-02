@@ -38,7 +38,7 @@
       },
       {
         "name": "trust-profile-editor",
-        "description": "Reserved: propose certificate-profile drafts. No API route accepts it yet."
+        "description": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA)."
       },
       {
         "name": "trust-policy-approver",

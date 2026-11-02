@@ -8,6 +8,8 @@ import { navigationUrl, type DetailLink } from './navigation';
 import { canonicalProfileId, canonicalProfileRevision } from './profile-revision';
 import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
 import { visibleProfileDrafts } from './profile-draft-filter';
+import { ProfileDraftForm } from './ProfileDraftForm';
+import { PROFILE_EDITOR_ROLE, tokenRoles } from './roles';
 
 interface Props {
   caId: string;
@@ -56,6 +58,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [showComparison, setShowComparison] = useState(false);
   const [exportSelection, setExportSelection] = useState<string[]>([]);
   const [warningsOnly, setWarningsOnly] = useState(false);
+  const [formSource, setFormSource] = useState<ProfileDraft | null | undefined>(undefined);
+  const [lifecycleNotice, setLifecycleNotice] = useState<string | null>(null);
+  const canEdit = tokenRoles(token).includes(PROFILE_EDITOR_ROLE);
   const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -251,7 +256,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   function toggleComparison(item: ProfileDraft) {
-    if (item.ca_id !== caId || item.status !== 'DRAFT') return;
+    if (item.ca_id !== caId || (item.status !== 'DRAFT' && item.status !== 'SUBMITTED')) return;
     setShowComparison(false);
     setComparisonItems(current => {
       if (current.some(value => value.profile_id === item.profile_id && value.revision === item.revision)) return current.filter(value => value.profile_id !== item.profile_id || value.revision !== item.revision);
@@ -306,7 +311,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
 
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
-    <div className="subtle-panel profile-draft-notice"><b>Drafts only</b><p>These proposals are not approved or active. They cannot authorize certificate issuance. CA creation, approvals and signing remain unavailable in this console.</p></div>
+    <div className="subtle-panel profile-draft-notice"><b>Not approved, not active</b><p>These proposals are drafts or submitted for approval. None is approved or active, and none can authorize certificate issuance. Approval, activation, CA creation and signing remain unavailable in this console.</p></div>
+    {canEdit && <div className="subtle-panel profile-compare-controls"><span>You hold the profile editor role. The server also requires your editor grant for this authority.</span><button type="button" onClick={() => { setLifecycleNotice(null); setFormSource(null); }}>Propose a revision</button></div>}
+    {lifecycleNotice && <p className="copy-feedback" role="status">{lifecycleNotice}</p>}
     <div className="subtle-panel profile-compare-controls"><span>{exportSelection.length}/{MAX_CSV_ROWS} loaded proposals selected for metadata CSV export.</span><button type="button" className="link-button" disabled={exportSelection.length === 0} onClick={downloadSelected}>Export selected proposals CSV</button>{exportSelection.length > 0 && <button type="button" className="link-button" onClick={() => setExportSelection([])}>Clear selection</button>}</div>
     <form className="exact-lookup profile-draft-filter" onSubmit={event => { event.preventDefault(); applySearch(); }}><label htmlFor="profile-draft-search">Search profile ID, display name or policy prefix across this authority’s history</label><div><input id="profile-draft-search" type="search" value={searchInput} onChange={event => { setSearchInput(event.target.value); setSearchError(null); }} placeholder="At least 2 characters" aria-describedby={searchError ? 'profile-draft-search-error' : undefined} /><button type="submit">Search proposals</button>{searchTerm && <button type="button" className="profile-filter-clear" onClick={() => { setSearchInput(''); setSearchTerm(''); setSearchError(null); }}>Clear search</button>}</div></form>
     {searchError && <p id="profile-draft-search-error" className="lookup-error" role="alert">{searchError}</p>}
@@ -331,7 +338,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
       : items.length === 0 ? <p className="profile-draft-message">{searchTerm ? `No proposals match “${searchTerm}” in this authority.` : profileFilter ? `No revisions recorded for ${profileFilter} in this authority.` : policyFilter || fromFilter || untilFilter || minValidity !== null || minSans !== null ? 'No proposals match the active filters in this authority.' : 'No profile proposals recorded for this authority.'}</p>
       : visibleItems.length === 0 ? <p className="profile-draft-message">No advisory syntax warnings in the loaded revisions.{cursor ? ' Load more proposals to inspect further history.' : ''}</p>
       : <div className="profile-draft-list">{visibleItems.map(item => <article className="profile-draft-card" key={`${item.profile_id}/${item.revision}`}>
-        <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">DRAFT</span></div>
+        <div className="profile-draft-title"><div><h4>{item.display_name}</h4><span className="mono">{item.profile_id} · revision {item.revision}</span></div><span className="row-state">{item.status}</span></div>
         <dl><div><dt>Policy</dt><dd>{item.policy_version}</dd></div><div><dt>Maximum validity</dt><dd>{item.max_validity_days} days</dd></div><div><dt>Maximum DNS SANs</dt><dd>{item.max_dns_sans}</dd></div><div><dt>Proposed DNS zones</dt><dd>{item.proposed_dns_zones.join(', ')}</dd></div><div><dt>Proposed signature suites</dt><dd>{item.proposed_signature_suites.join(', ')}</dd></div><div><dt>Recorded</dt><dd>{new Date(item.created_at).toLocaleString()}</dd></div></dl>
         <div className="profile-draft-actions"><button type="button" className="link-button profile-draft-action" disabled={detailLoading} onClick={() => void openDetail(item)}>View proposal detail</button><button type="button" className="link-button profile-draft-action" aria-pressed={comparisonSelected(item)} onClick={() => toggleComparison(item)}>{comparisonSelected(item) ? 'Remove from comparison' : 'Select for comparison'}</button><button type="button" className="link-button profile-draft-action" aria-pressed={exportSelection.includes(`${item.profile_id}/${item.revision}`)} disabled={exportSelection.length >= MAX_CSV_ROWS && !exportSelection.includes(`${item.profile_id}/${item.revision}`)} onClick={() => toggleExport(item)}>{exportSelection.includes(`${item.profile_id}/${item.revision}`) ? 'Remove from CSV' : 'Select for CSV'}</button></div>
       </article>)}</div>}
@@ -340,7 +347,23 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     {detailLoading && <p className="profile-draft-message" role="status">Loading proposal detail…</p>}
     {detailError && <p className="profile-draft-message" role="alert">{detailError}</p>}
     {cursor && <button className="link-button pagination-action" disabled={moreLoading} onClick={() => void loadMore()}>{moreLoading ? 'Loading…' : 'Load more proposals'}</button>}
-    {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog draft={selected} comparisonSelected={comparisonSelected(selected)} onToggleComparison={() => toggleComparison(selected)} onClose={() => { setSelected(null); onCloseDetail(); }} />}
+    {selected && linkedDetail?.id === selected.profile_id && linkedDetail.revision === selected.revision && <ProfileDraftDialog key={`${selected.profile_id}/${selected.revision}`} draft={selected} comparisonSelected={comparisonSelected(selected)} onToggleComparison={() => toggleComparison(selected)} onClose={() => { setSelected(null); onCloseDetail(); }}
+      editor={canEdit ? {
+        caId, token, onUnauthorized,
+        onSubmitted: submittedAt => {
+          setSelected({ ...selected, status: 'SUBMITTED', submitted_at: submittedAt });
+          setLifecycleNotice(`Revision ${selected.revision} of ${selected.profile_id} was submitted for approval.`);
+          setRetry(value => value + 1);
+        },
+        onProposeRevision: () => { const source = selected; setSelected(null); onCloseDetail(); setLifecycleNotice(null); setFormSource(source); },
+      } : null} />}
+    {formSource !== undefined && <ProfileDraftForm caId={caId} token={token} initial={formSource} onUnauthorized={onUnauthorized} onClose={() => setFormSource(undefined)}
+      onCreated={draft => {
+        setFormSource(undefined);
+        setLifecycleNotice(`Revision ${draft.revision} of ${draft.profile_id} was recorded as a draft.`);
+        setRetry(value => value + 1);
+        onOpenDetail({ kind: 'profile', id: draft.profile_id, revision: draft.revision });
+      }} />}
     {showComparison && comparisonItems.length === 2 && <ProfileCompareDialog first={comparisonItems[0]} second={comparisonItems[1]} onCopyLink={copyComparisonLink} onClose={() => { setShowComparison(false); if (linkedDetail?.compareRevision) onCloseDetail(); }} />}
   </div>;
 }
