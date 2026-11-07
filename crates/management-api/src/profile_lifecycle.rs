@@ -96,20 +96,21 @@ pub(crate) async fn write_context(
     })
 }
 
-/// Writes that are not scoped to one CA (CA proposals, ADR-0013): the token
-/// role, then the same request checks as `write_context`, always with an
-/// idempotency key. `ca_id` is empty.
+/// Writes that are not scoped to one CA (CA proposals, ADR-0013 and
+/// ADR-0014): the token role, then the same request checks as
+/// `write_context`. `ca_id` is empty.
 pub(crate) async fn platform_write_context(
     state: &AppState,
     headers: &HeaderMap,
     body: &Bytes,
     required_role: &str,
+    idempotent: bool,
 ) -> Result<WriteContext, StatusCode> {
     let claims = authenticate(headers, &state.verifier).await?;
     if !claims.roles.iter().any(|role| role == required_role) {
         return Err(StatusCode::FORBIDDEN);
     }
-    let (writer_url, operation) = request_checks(state, headers, body, true)?;
+    let (writer_url, operation) = request_checks(state, headers, body, idempotent)?;
     Ok(WriteContext {
         issuer: claims.iss,
         subject: claims.sub,
@@ -434,7 +435,8 @@ pub(crate) fn restricted_writer_role(db: &mut postgres::Client) -> Result<bool, 
          AND management_profile_lifecycle_version() = 1 \
          AND management_profile_decision_version() = 1 \
          AND management_profile_activation_version() = 1 \
-         AND management_ca_proposal_version() = 1",
+         AND management_ca_proposal_version() = 1 \
+         AND management_ca_activation_version() = 1",
         &[],
     )
     .map(|row| row.get::<_, bool>(0))

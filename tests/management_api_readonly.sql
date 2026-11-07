@@ -1,4 +1,4 @@
--- Run after 0025 as the migration owner. The API role may read only the views.
+-- Run after 0026 as the migration owner. The API role may read only the views.
 BEGIN;
 SET LOCAL ROLE trust_api_reader;
 DO $test$ BEGIN

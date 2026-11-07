@@ -15,9 +15,9 @@ stays unchecked.
 **Not here:**
 - **No CA is created.** A proposal is not a row of `ca`. It appears in no
   CA list, holds no grant, and nothing can issue under it.
-- **No approval, activation, suspension or retirement of CAs.** These are
-  the next slice: a two-person signed approval like ADR-0011, then
-  activation that creates the `ca` row.
+- **No approval, activation, suspension or retirement of CAs.** Approval
+  and activation followed in
+  [ADR-0014](ADR-0014-ca-approval-and-activation.md).
 - **No key generation by the platform, and no key custody.** The private
   key is generated outside the API and the database (OpenSSL in the lab).
 - **No subordinate CAs.** Only self-signed roots.
@@ -189,8 +189,8 @@ This ADR is the first part.
   confirms. Approval by two signers is the next slice.
 - **The database trusts the API's X.509 parsing.** A compromised API, or a
   holder of the writer login, could record a certificate the verifier would
-  refuse. The DER is stored, so an audit tool could re-verify it; no such
-  tool exists yet.
+  refuse. The DER is stored, so an audit tool could re-verify it; ADR-0014
+  added that tool and a re-verification at activation.
 - **The database trusts the declared principal** (ADR-0008, ADR-0010).
 - **No revocation, renewal or replacement.** A certificate cannot be
   withdrawn from a proposal; a new proposal is needed.

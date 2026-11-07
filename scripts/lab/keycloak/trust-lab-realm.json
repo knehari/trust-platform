@@ -50,7 +50,11 @@
       },
       {
         "name": "trust-ca-administrator",
-        "description": "Propose a CA and register its self-signed issuer certificate (with a ca-administrator platform grant)."
+        "description": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant)."
+      },
+      {
+        "name": "trust-ca-approver",
+        "description": "Approve or reject a key-attested CA proposal with a registered key (with a ca-approver platform grant)."
       }
     ]
   },
@@ -205,7 +209,8 @@
         "trust-profile-editor",
         "trust-policy-approver",
         "trust-ca-operator",
-        "trust-ca-administrator"
+        "trust-ca-administrator",
+        "trust-ca-approver"
       ]
     },
     {
@@ -215,7 +220,8 @@
         "trust-profile-editor",
         "trust-policy-approver",
         "trust-ca-operator",
-        "trust-ca-administrator"
+        "trust-ca-administrator",
+        "trust-ca-approver"
       ]
     }
   ],
@@ -458,6 +464,50 @@
       ],
       "realmRoles": [
         "trust-ca-administrator"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000013",
+      "username": "lab-ca-approver-1",
+      "enabled": true,
+      "firstName": "lab-ca-approver-1",
+      "lastName": "Laboratory",
+      "email": "lab-ca-approver-1@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_APPROVER_1}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000014",
+      "username": "lab-ca-approver-2",
+      "enabled": true,
+      "firstName": "lab-ca-approver-2",
+      "lastName": "Laboratory",
+      "email": "lab-ca-approver-2@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_APPROVER_2}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-approver"
       ]
     },
     {

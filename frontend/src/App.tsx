@@ -15,7 +15,7 @@ import { canonicalSerialHex } from './serial';
 import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
-import { CA_ADMINISTRATOR_ROLE, tokenRoles } from './roles';
+import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, tokenRoles } from './roles';
 
 function displayDate(value: string | null): string {
   if (!value) return '—';
@@ -730,7 +730,7 @@ export function App() {
         {linkedCaError && <div className="notice error" role="alert">{linkedCaError} <button onClick={() => setLinkedCaError(null)}>Dismiss</button></div>}
         {linkedDetailError && <div className="notice error" role="alert">{linkedDetailError} <button onClick={() => setLinkedDetailError(null)}>Dismiss</button></div>}
         {casLoading && <div className="notice loading"><span className="spinner" /> Loading scoped authorities…</div>}
-        {section === 'overview' && user && tokenRoles(user.access_token).includes(CA_ADMINISTRATOR_ROLE) && <CaProposalPanel key={reload} token={user.access_token} onUnauthorized={rejectSession} />}
+        {section === 'overview' && user && (tokenRoles(user.access_token).includes(CA_ADMINISTRATOR_ROLE) || tokenRoles(user.access_token).includes(CA_APPROVER_ROLE)) && <CaProposalPanel key={reload} token={user.access_token} canAdminister={tokenRoles(user.access_token).includes(CA_ADMINISTRATOR_ROLE)} canApprove={tokenRoles(user.access_token).includes(CA_APPROVER_ROLE)} onUnauthorized={rejectSession} />}
         {section === 'overview' && !casLoading && cas.length === 0 && !dataError && !caQuery && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
         {(cas.length > 0 || caQuery || (section !== 'overview' && !casLoading)) && <>
           {section === 'overview' && <>

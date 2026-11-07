@@ -11,7 +11,8 @@ TRUST_ROLES = {
     "trust-profile-editor": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA).",
     "trust-policy-approver": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA).",
     "trust-ca-operator": "Activate or retire an approved profile revision (with a ca-operator grant for the CA).",
-    "trust-ca-administrator": "Propose a CA and register its self-signed issuer certificate (with a ca-administrator platform grant).",
+    "trust-ca-administrator": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant).",
+    "trust-ca-approver": "Approve or reject a key-attested CA proposal with a registered key (with a ca-approver platform grant).",
 }
 def uid(n): return f"7c1a0000-0000-4000-8000-{n:012d}"
 def mappers(access_only=True):
@@ -82,6 +83,8 @@ lab_users = [
     user(8, "lab-other-ca", "TRUST_LAB_PW_OTHER_CA", ["trust-ca-reader"], ["ffffffff-ffff-4fff-8fff-ffffffffffff"]),
     user(11, "lab-author", "TRUST_LAB_PW_AUTHOR", ["trust-ca-reader", "trust-profile-editor"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
     user(12, "lab-ca-admin", "TRUST_LAB_PW_CA_ADMIN", ["trust-ca-administrator"], []),
+    user(13, "lab-ca-approver-1", "TRUST_LAB_PW_CA_APPROVER_1", ["trust-ca-approver"], []),
+    user(14, "lab-ca-approver-2", "TRUST_LAB_PW_CA_APPROVER_2", ["trust-ca-approver"], []),
     {"id": uid(9), "username": "service-account-trust-lab-workload", "enabled": True,
      "serviceAccountClientId": "trust-lab-workload",
      "attributes": {"ca_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]},

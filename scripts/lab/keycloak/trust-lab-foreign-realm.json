@@ -50,7 +50,11 @@
       },
       {
         "name": "trust-ca-administrator",
-        "description": "Propose a CA and register its self-signed issuer certificate (with a ca-administrator platform grant)."
+        "description": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant)."
+      },
+      {
+        "name": "trust-ca-approver",
+        "description": "Approve or reject a key-attested CA proposal with a registered key (with a ca-approver platform grant)."
       }
     ]
   },
@@ -141,7 +145,8 @@
         "trust-profile-editor",
         "trust-policy-approver",
         "trust-ca-operator",
-        "trust-ca-administrator"
+        "trust-ca-administrator",
+        "trust-ca-approver"
       ]
     }
   ],
