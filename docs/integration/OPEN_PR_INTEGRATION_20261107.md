@@ -17,3 +17,7 @@ This is an integration workspace, not a release or an instruction to deploy. The
 4. Obtain the G0 legal/IP decision and independent security/cryptographic review recorded as open in `AGENTS.md` and the PR descriptions. Do not treat draft CI or this branch as those decisions.
 
 The existing 5173 laboratory instance remains on the prior local integration commit and has not been pointed at this branch. No production system or signing key is involved in this checkpoint.
+
+## Checks on this branch
+
+On the published integration tree, `cargo fmt --all -- --check` and `cargo test --workspace --all-targets --locked` pass. The workspace run does not establish database coverage for tests that skip without a URL. All 48 frontend tests and the frontend build pass. On a separate disposable PostgreSQL 16 database, migrations `0001`–`0024` apply in order and the lifecycle, signed-decision and activation SQL suites pass. This verifies the compatible profile stack only; it does not validate the unported #94 or local-branch changes, nor replace independent review or exact-head CI.
