@@ -54,7 +54,15 @@
       },
       {
         "name": "trust-ca-approver",
-        "description": "Approve or reject a key-attested CA proposal with a registered key (with a ca-approver platform grant)."
+        "description": "Approve or reject a key-attested CA proposal, or a CA reactivation or retirement, with a registered key (with a ca-approver platform grant)."
+      },
+      {
+        "name": "trust-certificate-requester",
+        "description": "Submit certificate applications for a CA's active profiles (with a certificate-requester grant for the CA)."
+      },
+      {
+        "name": "trust-registration-officer",
+        "description": "Approve or reject certificate applications of others (with a registration-officer grant for the CA)."
       }
     ]
   },
@@ -146,7 +154,9 @@
         "trust-policy-approver",
         "trust-ca-operator",
         "trust-ca-administrator",
-        "trust-ca-approver"
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     }
   ],

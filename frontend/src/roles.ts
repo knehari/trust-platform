@@ -19,3 +19,5 @@ export const POLICY_APPROVER_ROLE = 'trust-policy-approver';
 export const CA_OPERATOR_ROLE = 'trust-ca-operator';
 export const CA_ADMINISTRATOR_ROLE = 'trust-ca-administrator';
 export const CA_APPROVER_ROLE = 'trust-ca-approver';
+export const CERTIFICATE_REQUESTER_ROLE = 'trust-certificate-requester';
+export const REGISTRATION_OFFICER_ROLE = 'trust-registration-officer';

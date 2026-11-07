@@ -38,6 +38,11 @@ struct ProposalRequest {
     display_name: String,
     policy_version: String,
     suite_id: String,
+    /// Optional identifier chosen by the administrator (ADR-0016), for
+    /// example to match identity-provider CA scopes. The database refuses one
+    /// that names an existing CA or proposal; otherwise it draws one.
+    #[serde(default)]
+    ca_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -121,6 +126,14 @@ pub(crate) async fn propose_ca(
     if request.suite_id != PROPOSABLE_SUITE {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
+    let chosen_ca = match &request.ca_id {
+        Some(raw) => Some(
+            uuid::Uuid::parse_str(raw)
+                .map_err(|_| StatusCode::BAD_REQUEST)?
+                .to_string(),
+        ),
+        None => None,
+    };
     let WriteContext {
         issuer,
         subject,
@@ -137,15 +150,16 @@ pub(crate) async fn propose_ca(
         request.suite_id,
         operation.clone(),
         request_sha256,
+        chosen_ca,
     );
     let (ca_id, proposed_at, replayed) =
         query_db(writer_url, state.database_slots.clone(), move |db| {
             Ok(
                 match db.query_one(
-                    "SELECT ca_id::text, proposed_at, replayed FROM propose_ca_lab($1, $2, NULL, \
-                     $3, $4, $5, $6::text::uuid, $7)",
+                    "SELECT ca_id::text, proposed_at, replayed FROM propose_ca_lab($1, $2, \
+                     $8::text::uuid, $3, $4, $5, $6::text::uuid, $7)",
                     &[
-                        &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6,
+                        &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
                     ],
                 ) {
                     Ok(row) => Ok((
@@ -336,7 +350,7 @@ mod tests {
     #[test]
     fn requests_refuse_unknown_fields() {
         assert!(serde_json::from_str::<ProposalRequest>(
-            r#"{"display_name":"A","policy_version":"v1","suite_id":"ecdsa-p256-sha256","ca_id":"x"}"#
+            r#"{"display_name":"A","policy_version":"v1","suite_id":"ecdsa-p256-sha256","issuer":"x"}"#
         )
         .is_err());
         assert!(serde_json::from_str::<CertificateRequest>(

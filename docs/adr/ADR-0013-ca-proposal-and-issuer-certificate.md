@@ -46,7 +46,8 @@ This ADR is the first part.
 2. **Proposal** (`propose_ca_lab`, through the writer login of ADR-0010).
    - Fields: display name, policy version, signing suite.
    - The database draws the CA identifier, and refuses an identifier
-     already used by a CA or a proposal.
+     already used by a CA or a proposal. Since ADR-0016, the administrator
+     may choose it.
    - The API accepts only the suite `ecdsa-p256-sha256`: the only suite
      whose key type the certificate check and the database map (P-256).
    - The proposal is `PROPOSED`. It is immutable.

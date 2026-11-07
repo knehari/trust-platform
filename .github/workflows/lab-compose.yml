@@ -65,6 +65,14 @@ jobs:
         run: |
           set -a; . ./.env.lab; set +a
           node frontend/dev/ca-proposal-e2e.mjs
+      - name: Submit and approve certificate applications on the lab issuing CA
+        run: |
+          set -a; . ./.env.lab; set +a
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          test -n "$DB_CONTAINER"
+          # The database owner's own action: grants on the new issuing CA.
+          export TRUST_LAB_OWNER_PSQL="docker exec -i $DB_CONTAINER psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 -q"
+          node frontend/dev/certificate-application-e2e.mjs
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
