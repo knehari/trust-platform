@@ -5,11 +5,14 @@ on:
     paths:
       - compose.lab.yaml
       - Dockerfile.api
+      - Dockerfile.jobs
       - frontend/**
       - scripts/lab/**
       - tests/management_browser_e2e_seed.sql
       - migrations/**
       - crates/management-api/**
+      - crates/pki-core/**
+      - crates/pki-crypto/**
       - Cargo.lock
       - Cargo.toml
       - .github/workflows/lab-compose.yml

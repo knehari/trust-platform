@@ -37,6 +37,8 @@ Each checkbox is one criterion, so the bar is `completed / 12`, rounded to the n
 - [ ] **Operational recovery:** protected database and key backup/restore, migration rollback, incident runbooks and measured pilot RTO/RPO.
 - [ ] **Release gates:** G0 legal/IP clearance, independent PKI/security review, final-commit CI and an explicitly approved controlled-pilot release decision.
 
+Laboratory parts of the *revocation and publication*, *durable audit evidence* and *operational recovery* criteria exist in [Draft #94](#revocation-crl-and-signed-administration-lab-slice-draft-94) (maker-checker and WebAuthn-signed revocation, verified CRL publication, sealed audit chain with external checkpoints, a logical restore rehearsal). None of these criteria is checked: each still needs human IAM, a real HSM, independent review or a designed recovery exercise.
+
 ### Next implementation sequence
 
 - [x] Add an exclusive server-side filter on recorded certificate validity end, keep it across pages and exercise it in the browser ([Draft #135](https://github.com/knehari/trust-platform/pull/135); all six checks green on `9a640193b7e67d77b0770a3516a8ae369afeed82`).

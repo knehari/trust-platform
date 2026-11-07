@@ -66,6 +66,37 @@ impl SigningProvider for EphemeralP256Signer {
     }
 }
 
+/// A P-256 key loaded from a PKCS#8 file, for laboratory anchoring jobs
+/// that must sign with the same key across runs (audit checkpoints). The
+/// key file is plaintext on disk: never a production custody mechanism.
+pub struct LabP256KeyFile {
+    private: SigningKey,
+}
+
+impl LabP256KeyFile {
+    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, CryptoError> {
+        use p256::pkcs8::DecodePrivateKey;
+        SigningKey::from_pkcs8_der(der)
+            .map(|private| Self { private })
+            .map_err(|_| CryptoError::KeyUnavailable)
+    }
+
+    /// Compressed SEC1 public key.
+    pub fn public_key_sec1(&self) -> Vec<u8> {
+        self.private
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec()
+    }
+
+    /// ECDSA P-256 with SHA-256 over `message`, DER encoded.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        let signature: Signature = self.private.sign(message);
+        signature.to_der().as_bytes().to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +135,20 @@ mod tests {
         let sec1 = public.to_sec1_bytes();
         verify_p256_ecdsa_sha256(sec1.as_ref(), b"lab-tbs", &signature).unwrap();
         assert!(verify_p256_ecdsa_sha256(sec1.as_ref(), b"other", &signature).is_err());
+    }
+
+    #[test]
+    fn key_file_signs_verifiably_and_refuses_garbage() {
+        use p256::pkcs8::EncodePrivateKey;
+        let key = SigningKey::random(&mut OsRng);
+        let der = key.to_pkcs8_der().unwrap();
+        let file = LabP256KeyFile::from_pkcs8_der(der.as_bytes()).unwrap();
+        let signature = file.sign(b"checkpoint");
+        verify_p256_ecdsa_sha256(&file.public_key_sec1(), b"checkpoint", &signature).unwrap();
+        assert!(verify_p256_ecdsa_sha256(&file.public_key_sec1(), b"other", &signature).is_err());
+        assert!(matches!(
+            LabP256KeyFile::from_pkcs8_der(&[0x30, 0x00]),
+            Err(CryptoError::KeyUnavailable)
+        ));
     }
 }

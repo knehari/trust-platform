@@ -3,7 +3,9 @@
 //! This module does NOT authorize an identity or copy SANs/extensions from a CSR.
 //! Certificate names and allowed uses are supplied independently by policy.
 //!
-//! Currently only ECDSA P-256 with SHA-256 is supported (explicit allowlist).
+//! Explicit allowlist: ECDSA P-256 with SHA-256 (`verify_pkcs10_p256`), plus
+//! RSA PKCS#1 v1.5 with SHA-256/384/512 behind the `lab-software` feature
+//! (`verify_pkcs10_rsa_pkcs1_lab`).
 
 use sha2::{Digest, Sha256};
 use std::str::FromStr;

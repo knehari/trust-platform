@@ -63,6 +63,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}:
     get:
@@ -79,6 +80,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/profile-drafts:
     get:
@@ -471,6 +473,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/certificates/{request_id}:
     get:
@@ -544,6 +547,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/cas/{ca_id}/audit/{event_id}:
     get:
@@ -764,4 +768,5 @@ components:
     BadRequest: { description: Invalid identifier or cursor }
     Unauthorized: { description: Missing or invalid access token }
     Forbidden: { description: Role, signed CA scope or server-managed grant denied }
+    TooManyRequests: { description: 'Request budget spent: 600 per minute per client address before authentication, then 300 per minute per token identity (per process); Retry-After gives 60 seconds' }
     Unavailable: { description: Management data request capacity exhausted or read database unavailable }

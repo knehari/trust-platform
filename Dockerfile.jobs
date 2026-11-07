@@ -1,0 +1,23 @@
+# Lab-only image for the scheduled database jobs (compose service "jobs").
+# It holds no key. audit_chain_anchor is built with the lab-software
+# feature for its lab anchor-key option (--anchor-key), which the jobs do
+# not use; the image is kept apart from Dockerfile.api so the API image
+# stays without lab features.
+FROM rust:1.99.0-bookworm AS build
+WORKDIR /app
+COPY . .
+RUN cargo build -p trust-management-api --release --locked \
+      --bin crl_housekeeping --bin signed_evidence_audit \
+    && cargo build -p trust-pki-core --release --locked \
+      --features postgres-store,lab-software --example audit_chain_anchor
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/target/release/crl_housekeeping /usr/local/bin/crl_housekeeping
+COPY --from=build /app/target/release/signed_evidence_audit /usr/local/bin/signed_evidence_audit
+COPY --from=build /app/target/release/examples/audit_chain_anchor /usr/local/bin/audit_chain_anchor
+COPY scripts/lab/jobs.sh /usr/local/bin/trust-lab-jobs
+RUN mkdir -p /var/lib/trust-jobs && chown nobody:nogroup /var/lib/trust-jobs
+USER nobody
+ENTRYPOINT ["/usr/local/bin/trust-lab-jobs"]

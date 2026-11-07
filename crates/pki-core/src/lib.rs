@@ -1,8 +1,17 @@
 #![forbid(unsafe_code)]
-//! Native CA orchestration contracts.
-//! Sprint 0 deliberately does not parse CSRs, issue certificates or sign data.
+// Production code returns errors; `expect` is reserved for documented invariants.
+#![cfg_attr(not(test), deny(clippy::unwrap_used))]
+//! Native CA core: strict PKCS#10 verification, issuance orchestration with
+//! durable signing intents, X.509 assembly/verification, CP/CPS governance and
+//! laboratory issuance paths (`lab-software` feature).
+//!
+//! Several modules are standalone predicates that nothing calls yet (for
+//! example `key_ceremony`, `pqc_rollout`, `request_rate`, `production_gates`).
+//! They are not capabilities; see docs/architecture/unintegrated-contracts.md.
 pub mod agile_x509_identifier;
 pub mod audit_chain;
+#[cfg(feature = "postgres-store")]
+pub mod audit_chain_store;
 pub mod audit_manifest;
 pub mod capacity_policy;
 pub mod signer_capabilities;
@@ -13,7 +22,10 @@ pub mod authentication;
 pub mod ca_observation;
 pub mod certificate_profile;
 pub mod challenge_binding;
+pub mod clock;
 pub mod cp_cps;
+pub mod crl;
+pub mod crl_orchestrator;
 pub mod crypto_migration;
 pub mod csr;
 pub mod identity_boundary;
@@ -26,6 +38,7 @@ pub mod lab_ca;
 #[cfg(feature = "lab-software")]
 pub mod lab_x509_verifier;
 pub mod native_typed_csr_binding;
+pub mod officer_credential;
 #[cfg(all(feature = "lab-software", unix))]
 pub mod openssl_classical_server_lab;
 #[cfg(all(feature = "lab-software", unix))]
@@ -47,7 +60,10 @@ pub mod release_gate;
 pub mod request_rate;
 pub mod resilience_policy;
 pub mod reviewer_binding;
+pub mod revocation;
 pub mod revocation_policy;
+#[cfg(feature = "postgres-store")]
+pub mod revocation_store;
 #[cfg(feature = "lab-software")]
 pub mod rsa_pkcs1_x509_lab;
 pub mod rsa_pss_identifier;
@@ -60,6 +76,7 @@ pub mod rsa_pss_x509_lab;
 pub mod serial;
 pub mod serial_binding;
 pub mod tenant_isolation;
+pub mod webauthn;
 pub mod x509_extensions;
 
 use trust_pki_policy::{

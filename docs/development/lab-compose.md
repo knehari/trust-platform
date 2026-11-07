@@ -50,7 +50,47 @@ Stop while retaining the disposable database:
 docker compose --env-file .env.lab -f compose.lab.yaml down
 ```
 
-Reset **only this laboratory stack** after a migration or seed change:
+Bring an existing volume up to this checkout's migrations, keeping its data:
+
+```sh
+docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh
+```
+
+On a volume created before migration 0064, or by the entrypoint, the first
+run refuses until the operator adopts the digests of the applied files
+(`sh /lab/migrate.sh --adopt`, see below).
+
+`scripts/lab/migrate.sh` reads which migrations are applied from
+`schema_change_review`: since 0026, each migration records its file name
+there. It applies only the missing ones, in order, one transaction per file,
+and stops at the first failure. It refuses:
+- a database that predates 0026;
+- a database that records a migration newer than this checkout;
+- a gap in the sequence;
+- a login that is not a superuser;
+- a migration file that differs from the one applied, or that was applied
+  and is missing here. Since 0064, `migration_file_digest` (append-only)
+  keeps the SHA-256 of every applied file;
+- applied files without a recorded digest, unless `--adopt` is given. The
+  entrypoint and runs before 0064 kept none. With `--adopt` the operator
+  states that this checkout holds the files that were applied; their
+  digests are taken from it and recorded as `adopted` (trust on first use:
+  an edit made before adoption goes unnoticed). The runner never adopts on
+  its own, like the historical management ledger, which does not infer
+  applied migrations from the schema.
+
+The runner records the digest of each file it applies (`applied`). A run that
+fails leaves the files it applied without a digest, so the next run needs
+`--adopt`. One runner works on a database at a time: it holds a session
+advisory lock until it exits, and a second runner is refused while the lock
+is held. It does
+not add the job logins of `init-db.sh` to an older volume; reset the volume
+for those. Tested by `tests/revocation_migration_runner.sh`, and in the
+`laboratory-compose` job, which runs it on the fresh volume: it must refuse
+without `--adopt`, adopt with it, then report `up to date`.
+
+Reset **only this laboratory stack** after a seed change, or for a volume the
+runner refuses:
 
 ```sh
 docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
@@ -60,6 +100,8 @@ docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
 PostgreSQL's entrypoint runs migrations `0001`–`0024` and seed data only when its volume is first created; startup fails on a migration error. The seed includes a synthetic `*.lab.invalid` subject CN for its invalid-DER certificate metadata and grants the realm's fixed user IDs access to one CA. Some of those grants must authorize nothing (users without the reader role, the workload, and a grant under the foreign realm's issuer); the negative suite checks that they do not. This is a disposable bootstrap, not an online migration/rollback system. `NoTls` PostgreSQL transport is confined to the Compose network, and Keycloak's development mode is not a production identity service. Production transport, credential management, CA key custody, policy-controlled issuance, independent review and G0 remain separate gates.
 
 The Rust schema CI also runs `tests/management_populated_upgrade.sh` against a separate empty PostgreSQL database. It seeds data after migration 0011, applies 0012–0025 and checks row preservation and reader privileges. This is an upgrade regression for those 14 migrations only; it does not upgrade an existing Compose volume or provide a repeatable production migration runner.
+
+`tests/revocation_populated_upgrade.sh` does the same for 0014–0015 in another empty database. Both migrations fail closed on rows they cannot carry forward and roll back entirely: 0014 aborts on a legacy `revocation` row with reason 7 or 8, and 0015 aborts on any pre-existing `crl_publication` row (it has no operation reference, intent, DER or entry snapshot). 0016 likewise aborts on a revocation date outside 1970-01-01 .. 9999-12-31. The script checks that each abort leaves no object of that migration behind, that each migration applies once the operator has removed the offending row, and that a legacy revocation stays irreversible, reports `REVOKED` and is frozen into the first CRL reservation with the canonical entry digest. There is no automatic conversion of legacy CRL rows.
 
 A second disposable database exercises [interrupted migration 0013 and manual retry](../operations/lab-management-migration-retry.md), checking that 0012 and existing rows survive a failed 0013 transaction before retry. That historical test uses direct SQL and has no ledger.
 

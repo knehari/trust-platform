@@ -16,6 +16,8 @@ services:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro
       - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      # Upgrades an existing volume: docker compose ... exec -T db sh /lab/migrate.sh
+      - ./scripts/lab/migrate.sh:/lab/migrate.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_lab -d trust_lab"]
       interval: 3s
@@ -80,6 +82,9 @@ services:
       TRUST_OIDC_AUDIENCE: trust-api
       TRUST_OIDC_CLIENT_ID: trust-console
       TRUST_API_BIND: 0.0.0.0:8081
+      # Plain HTTP on the Compose network only (lab opt-out, logged); the
+      # published port binds host loopback.
+      TRUST_HTTP_TLS: disable-lab
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_WRITER_DATABASE_URL: postgresql://trust_api_writer_lab:${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
     healthcheck:
@@ -87,6 +92,34 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+
+  # Scheduled lab database jobs (scripts/lab/jobs.sh), each under its own
+  # non-privileged login. Output: one "job=<name> exit=<status>" line per job.
+  jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobs
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      TRUST_LAB_HOUSEKEEPING_URL: postgresql://trust_housekeeping_lab:${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_AUDITOR_URL: postgresql://trust_auditor_lab:${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_SEALER_URL: postgresql://trust_sealer_lab:${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_LAB_JOBS_INTERVAL_SECONDS: "300"
+      # Disposable lab network only (see the api service).
+      TRUST_DATABASE_TLS: disable-lab
+      TRUST_WEBAUTHN_RP_ID: officer.lab.invalid
+      TRUST_WEBAUTHN_ORIGIN: https://officer.lab.invalid
+    volumes:
+      # The audit chain checkpoints. Outside the database, but on the same
+      # host: a lab stand-in for a separate anchoring system.
+      - trust_lab_checkpoints:/var/lib/trust-jobs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/trust-lab-jobs", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [lab]
 
   frontend:
     build:
@@ -110,6 +143,7 @@ services:
 
 volumes:
   trust_lab_pg:
+  trust_lab_checkpoints:
 
 networks:
   lab:

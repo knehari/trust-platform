@@ -1,0 +1,65 @@
+# cargo-deny dependency policy (SEC-10). Run locally: cargo deny check
+# CI: .github/workflows/supply-chain.yml
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Marvin timing side channel on RSA *private-key* operations; no fixed `rsa`
+    # release exists. Production code paths only verify RSA signatures
+    # (jsonwebtoken OIDC tokens, CSR proof of possession) with public keys.
+    # RSA private-key signing is confined to the `lab-software` feature and to
+    # management-api dev-dependencies. Revisit before any RSA private-key
+    # operation leaves the lab (HSM/PKCS#11 signer expected instead).
+    { id = "RUSTSEC-2023-0071", reason = "RSA private-key use is lab-only; production paths verify with public keys" },
+    # Timing variability in crypto-bigint operations meant to be constant-time
+    # (2026-10-23). Only crypto-bigint >= 0.7.6 is patched; it is pulled in at
+    # 0.5.5 by elliptic-curve 0.13 (p256/p384 0.13, also inside jsonwebtoken
+    # 10.3), and no 0.13-compatible fix exists. Production paths only verify
+    # ECDSA signatures (OIDC tokens, CSR proof of possession) with public keys;
+    # P-256 private-key signing is confined to the `lab-software` feature
+    # (pki-crypto ecdsa_p256_lab, lab, multi_algorithm_lab) and to tests.
+    # Revisit by moving to p256/p384 0.14 (crypto-bigint 0.7) once jsonwebtoken
+    # supports it, and before any ECDSA private key leaves the lab.
+    { id = "RUSTSEC-2026-0387", reason = "P-256 private-key use is lab-only; production paths verify with public keys; no elliptic-curve 0.13 fix" },
+]
+
+[licenses]
+version = 2
+# Permissive licences only. Copyleft (GPL/AGPL/LGPL/MPL) requires an explicit,
+# reviewed decision recorded here with its reason.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Workspace crates are unpublished (license = "UNLICENSED").
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Lab OpenSSL use goes through the CLI wrapper in pki-crypto; linking OpenSSL
+# or native-tls into a binary requires an ADR first.
+deny = [
+    { crate = "openssl", reason = "Linked OpenSSL requires an ADR (lab uses the CLI only)" },
+    { crate = "openssl-sys", reason = "Linked OpenSSL requires an ADR (lab uses the CLI only)" },
+    { crate = "native-tls", reason = "TLS goes through rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

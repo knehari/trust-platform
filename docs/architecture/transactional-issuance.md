@@ -22,7 +22,7 @@ A signing operation sent to a real HSM may succeed while a process crashes befor
 
 ## Trust boundaries and authorization
 
-These SQL functions accept an actor ID provided by a caller and **do not authenticate** it. They have no deployed Go API or enforced CA policy binding. PUBLIC EXECUTE is revoked to avoid accidental execution; database roles and least-privilege function security need explicit design. Database ownership or superuser can still write tables or modify triggers. The audit log is not externally anchored or WORM.
+These SQL functions accept an actor ID provided by a caller and **do not authenticate** it. They have no deployed Go API or enforced CA policy binding. PUBLIC EXECUTE is revoked to avoid accidental execution; since migration 0035 (lab) they run SECURITY DEFINER as the NOLOGIN `trust_issuance_owner` and the capability role `trust_issuance_service` holds EXECUTE only, with no table access. Database ownership or superuser can still write tables or modify triggers. The audit log is not externally anchored or WORM.
 
 Before any runtime use, separate schema ownership from runtime roles, enforce authenticating clients, authorize each action by issuer/profile, deny direct table mutation and test every negative permission path.
 

@@ -1,0 +1,86 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform CRL distribution point
+  version: 0.1.0-lab
+  description: >-
+    Laboratory, read-only CRL distribution point (RFC 5280 section 4.2.1.13,
+    RFC 2585 section 4.2). Unauthenticated by design. Every CRL is re-verified
+    against the CA's registered issuer certificate before it is served; a CRL
+    that does not re-verify is never served. Complete CRLs and delta CRLs are
+    served at separate paths and never mixed. Not a production publication
+    service.
+servers:
+  - url: http://127.0.0.1:8082
+security: []
+paths:
+  /crl/{file}:
+    get:
+      security: []
+      summary: Latest stored complete CRL of a CA
+      parameters:
+        - $ref: '#/components/parameters/CrlFile'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - $ref: '#/components/parameters/IfModifiedSince'
+      responses:
+        '200': {$ref: '#/components/responses/Crl'}
+        '304': {$ref: '#/components/responses/NotModified'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /delta/{file}:
+    get:
+      security: []
+      summary: Latest stored delta CRL of a CA (the freshestCRL location of its complete CRLs)
+      parameters:
+        - $ref: '#/components/parameters/CrlFile'
+        - $ref: '#/components/parameters/IfNoneMatch'
+        - $ref: '#/components/parameters/IfModifiedSince'
+      responses:
+        '200': {$ref: '#/components/responses/Crl'}
+        '304': {$ref: '#/components/responses/NotModified'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+components:
+  parameters:
+    CrlFile:
+      name: file
+      in: path
+      required: true
+      description: The CA identifier as a canonical lowercase UUID followed by `.crl`; anything else is 404.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.crl$'
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: ETag of a CRL already held (the quoted CRL number). Takes precedence over If-Modified-Since.
+      schema:
+        type: string
+    IfModifiedSince:
+      name: If-Modified-Since
+      in: header
+      required: false
+      schema:
+        type: string
+  responses:
+    Crl:
+      description: >-
+        The CRL as DER. ETag is the quoted CRL number, Last-Modified its
+        thisUpdate, Expires its nextUpdate; Cache-Control follows nextUpdate
+        (at most one hour) and is no-cache once the CRL is past its nextUpdate
+        (it is still served so relying parties see that it is stale).
+      content:
+        application/pkix-crl:
+          schema:
+            type: string
+            format: binary
+    NotModified:
+      description: The CRL held by the client is current (only after the stored CRL re-verified).
+    NotFound:
+      description: Not a canonical CA file name, or no stored CRL of that kind for the CA.
+    TooManyRequests:
+      description: Request budget spent (600 per minute per client address, per process); Retry-After gives 60 seconds.
+    Unavailable:
+      description: Request slots busy, database unavailable, or the stored CRL does not re-verify.

@@ -1,0 +1,16 @@
+# gitleaks configuration (SEC-04): default rules plus PKI-specific ones.
+# CI: .github/workflows/supply-chain.yml
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM private key (PKCS#1, PKCS#8, SEC1, encrypted or not)"
+regex = '''-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |ML-DSA )?PRIVATE KEY-----'''
+keywords = ["private key"]
+
+[[rules]]
+id = "pkcs11-pin"
+description = "PKCS#11 / HSM PIN in configuration"
+regex = '''(?i)(?:hsm|pkcs11|so|user)[_-]?pin\s*[:=]\s*["']?[^\s"']{4,}'''
+keywords = ["pin"]
