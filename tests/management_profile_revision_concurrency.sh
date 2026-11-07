@@ -5,7 +5,7 @@ set -euo pipefail
 : "${TRUST_PROFILE_SEQUENCE_DATABASE_URL:?set a disposable PostgreSQL database URL}"
 psql_bin=${TRUST_PSQL_BIN:-psql}
 database_url=$TRUST_PROFILE_SEQUENCE_DATABASE_URL
-ca_id=55555555-5555-4555-8555-555555555555
+ca_id=5d5d5d5d-5555-4555-8555-555555555556
 
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 -c \
   "INSERT INTO ca(ca_id,display_name,policy_version) VALUES ('$ca_id','Concurrent draft CA','v1')" >/dev/null

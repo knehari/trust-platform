@@ -1,6 +1,6 @@
-# Development status — integration checkpoint
+# Development status — first integration phase
 
-**Checked 2026-11-07.** The `codex/main-all-prs-integration` branch combines the Claude profile lifecycle stack, the distinct approval-key fix, the recovery audit, repository instructions and the local filter/revision work. It is a laboratory integration branch. **MVP progress remains 5/12 (42%)**: the CA half of criterion 6, authenticated issuance, revocation, custody, recovery and release gates remain open.
+**Checked 2026-11-07.** This tree combines the Claude profile lifecycle stack, the distinct approval-key fix, the recovery audit, repository instructions and the local filter/revision work. It is laboratory code. **MVP progress remains 5/12 (42%)**: the CA half of criterion 6, authenticated issuance, revocation, custody, recovery and release gates remain open.
 
 ## Implemented in the combined tree
 
@@ -11,6 +11,6 @@
 
 ## Verification and remaining integration
 
-The combined frontend has 57 passing tests and builds. Rust format and the management API tests pass (34 tests without database variables). A fresh disposable PostgreSQL 16 database accepts migrations 0001–0025, and the profile revision, lifecycle, decision and activation SQL suites pass. A populated 0011→0025 upgrade preserves rows and reader grants; the 0025 migration rejects a pre-existing gap and serializes concurrent revision writes. Complete CI and database-backed HTTP tests remain open on the final integrated head. The 5173 instance still runs the earlier local integration, not this branch.
+The combined frontend has 57 passing tests and builds. Rust format, full workspace tests with and without all features, and management API tests pass (34 management tests without database variables). A fresh disposable PostgreSQL 16 database accepts migrations 0001–0025, and the profile revision, lifecycle, decision and activation SQL suites pass. A populated 0011→0025 upgrade preserves rows and reader grants; the 0025 migration rejects a pre-existing gap and serializes concurrent revision writes. Complete CI and database-backed HTTP tests remain open on the final integrated head. The 5173 instance still runs the earlier local integration, not this tree.
 
-The separate experimental PR #94 contains revocation, CRL and signed administration on an incompatible migration history beginning at 0014. It has not been ported to this tree. Its roles, views, APIs and recovery tests need integration and exact-head verification before `main` can represent all requested PRs. The user confirmed completion of G0 legal/IP clearance and independent security review on 2026-11-07; the review artifacts have not been linked in this repository checkpoint.
+The separate experimental PR #94 contains revocation, CRL and signed administration on an incompatible migration history beginning at 0014. An incomplete port is published on [`codex/revocation-port-onto-profile`](https://github.com/knehari/trust-platform/tree/codex/revocation-port-onto-profile); its roles, views, APIs, migration runner and recovery tests still need integration and exact-head verification before `main` can represent all requested PRs. The user confirmed completion of G0 legal/IP clearance and independent security review on 2026-11-07; the review artifacts have not been linked in this repository checkpoint.
