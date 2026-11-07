@@ -1,0 +1,188 @@
+{
+  "realm": "trust-lab",
+  "enabled": true,
+  "displayName": "Trust IAM laboratory",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "trust-ca-reader"
+      },
+      {
+        "name": "trust-profile-maker"
+      },
+      {
+        "name": "trust-profile-checker"
+      }
+    ]
+  },
+  "users": [
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "username": "maker",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_IAM_MAKER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-profile-maker"
+      ],
+      "firstName": "Maker",
+      "lastName": "Operator",
+      "email": "maker@trust-lab.invalid",
+      "requiredActions": []
+    },
+    {
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "username": "checker",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_IAM_CHECKER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-profile-checker"
+      ],
+      "firstName": "Checker",
+      "lastName": "Operator",
+      "email": "checker@trust-lab.invalid",
+      "requiredActions": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "trust-console-iam",
+      "name": "Trust console laboratory",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:5273/auth/callback"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:5273"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.header.type.rfc9068": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "trust-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "trust-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "trust-realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "trust-allowed-cas",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "ca_ids",
+            "claim.value": "[\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "trust-workload-iam",
+      "name": "Trust workload laboratory",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${TRUST_IAM_WORKLOAD_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "access.token.header.type.rfc9068": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "trust-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "trust-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "trust-workload-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "roles",
+            "claim.value": "[\"trust-ca-workload-reader\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "trust-allowed-cas",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "ca_ids",
+            "claim.value": "[\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\"]",
+            "jsonType.label": "JSON",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
+    }
+  ]
+}

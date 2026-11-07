@@ -10,6 +10,7 @@ import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
 import { visibleProfileDrafts } from './profile-draft-filter';
 import { ProfileDraftForm } from './ProfileDraftForm';
 import { CA_OPERATOR_ROLE, POLICY_APPROVER_ROLE, PROFILE_EDITOR_ROLE, tokenRoles } from './roles';
+import { profileDraftListUrl, trimProfileFilterInput, validProfileDraftSearch, validProfilePolicyVersion } from './profile-draft-query';
 
 interface Props {
   caId: string;
@@ -69,6 +70,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   onUnauthorizedRef.current = onUnauthorized;
   const onCloseDetailRef = useRef(onCloseDetail);
   onCloseDetailRef.current = onCloseDetail;
+  const listUrl = (after?: string) => profileDraftListUrl(caId, {
+    profileFilter, profileOrder, searchTerm, policyFilter, fromFilter, untilFilter, minValidity, minSans,
+  }, after);
 
   useEffect(() => {
     setItems([]);
@@ -81,19 +85,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setExportSelection([]);
     moreController.current?.abort();
     const controller = new AbortController();
-    const params = new URLSearchParams();
-    if (profileFilter) {
-      params.set('profile_id', profileFilter);
-      params.set('order', profileOrder);
-    }
-    if (searchTerm) params.set('q', searchTerm);
-    if (policyFilter) params.set('policy_version', policyFilter);
-    if (fromFilter) params.set('from', fromFilter);
-    if (untilFilter) params.set('until', untilFilter);
-    if (minValidity !== null) params.set('min_validity_days', String(minValidity));
-    if (minSans !== null) params.set('min_dns_sans', String(minSans));
-    const listUrl = `/v1/cas/${encodeURIComponent(caId)}/profile-drafts${params.size ? `?${params}` : ''}`;
-    void apiGetPage<unknown>(listUrl, token, controller.signal)
+    void apiGetPage<unknown>(listUrl(), token, controller.signal)
       .then(page => {
         if (controller.signal.aborted) return;
         setItems(requireProfileDraftPage(page.items, caId));
@@ -172,8 +164,8 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   function applySearch() {
-    const value = searchInput.trim();
-    if (value.length < 2 || value.length > 255 || [...value].some(char => /[\x00-\x1f\x7f]/u.test(char))) {
+    const value = trimProfileFilterInput(searchInput);
+    if (!validProfileDraftSearch(value)) {
       setSearchError('Enter 2–255 printable characters.');
       return;
     }
@@ -182,9 +174,9 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   }
 
   function applyPolicyFilter() {
-    const value = policyInput.trim();
-    if (!value || value.length > 128 || [...value].some(char => /[\x00-\x1f\x7f]/u.test(char))) {
-      setPolicyError('Enter a policy version of 1–128 printable characters.');
+    const value = trimProfileFilterInput(policyInput);
+    if (!validProfilePolicyVersion(value)) {
+      setPolicyError('Enter a policy version of at most 128 characters, without control characters.');
       return;
     }
     setPolicyError(null);
@@ -232,18 +224,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
     setMoreLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ after: cursor });
-      if (profileFilter) {
-        params.set('profile_id', profileFilter);
-        params.set('order', profileOrder);
-      }
-      if (searchTerm) params.set('q', searchTerm);
-      if (policyFilter) params.set('policy_version', policyFilter);
-      if (fromFilter) params.set('from', fromFilter);
-      if (untilFilter) params.set('until', untilFilter);
-      if (minValidity !== null) params.set('min_validity_days', String(minValidity));
-      if (minSans !== null) params.set('min_dns_sans', String(minSans));
-      const page = await apiGetPage<unknown>(`/v1/cas/${encodeURIComponent(caId)}/profile-drafts?${params}`, token, controller.signal);
+      const page = await apiGetPage<unknown>(listUrl(cursor), token, controller.signal);
       if (controller.signal.aborted) return;
       const rows = requireProfileDraftPage(page.items, caId);
       setItems(current => appendUniquePage(current, rows, row => `${row.profile_id}/${row.revision}`));

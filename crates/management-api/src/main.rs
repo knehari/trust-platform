@@ -245,7 +245,7 @@ fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
         .as_ref()
         .map(|value| value.trim().to_owned());
     if event_type.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) || decision.as_ref().is_some_and(|value| {
         value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
     }) || policy_version.as_ref().is_some_and(|value| {
@@ -896,14 +896,19 @@ async fn query_db_as<T: Send + 'static>(
     .await
 }
 
-/// Whether the views filter by principal: migration 0021's marker exists and
-/// a connection that declares no principal sees no authority and no grant.
+/// Whether every management view filters by principal: migration 0021's
+/// marker exists and a connection without a principal sees no rows.
 fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
     Ok(db
         .query_one(
             "SELECT management_reader_isolation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_ca) \
-             AND NOT EXISTS (SELECT 1 FROM management_reader_scope)",
+             AND NOT EXISTS (SELECT 1 FROM management_certificate) \
+             AND NOT EXISTS (SELECT 1 FROM management_audit) \
+             AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
+             AND NOT EXISTS (SELECT 1 FROM management_certificate_san) \
+             AND NOT EXISTS (SELECT 1 FROM management_history_bounds) \
+             AND NOT EXISTS (SELECT 1 FROM management_profile_draft)",
             &[],
         )?
         .get(0))
@@ -3491,6 +3496,33 @@ mod tests {
         assert_eq!(parsed.display_name, ca.display_name);
         assert_eq!(parsed.ca_id, ca.ca_id);
     }
+    #[test]
+    fn reader_isolation_gate_checks_every_management_view() {
+        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
+            return; // CI supplies a disposable PostgreSQL database with migration 0021.
+        };
+        let mut db = Client::connect(&url, NoTls).expect("restricted reader connection");
+        assert!(reader_isolation_active(&mut db).expect("isolation gate"));
+        for view in [
+            "management_ca",
+            "management_certificate",
+            "management_audit",
+            "management_reader_scope",
+            "management_certificate_san",
+            "management_history_bounds",
+            "management_profile_draft",
+        ] {
+            db.batch_execute(&format!("CREATE TEMP VIEW {view} AS SELECT 1 AS canary"))
+                .expect("create unfiltered canary view");
+            assert!(
+                !reader_isolation_active(&mut db).expect("isolation gate"),
+                "gate accepted unfiltered {view}"
+            );
+            db.batch_execute(&format!("DROP VIEW pg_temp.{view}"))
+                .expect("remove canary view");
+        }
+    }
+
     #[test]
     fn scope_rejects_other_and_invalid_ca() {
         let claims = Claims {

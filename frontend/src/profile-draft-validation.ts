@@ -17,6 +17,10 @@ function stringArray(value: unknown, min: number, max: number): value is string[
     && value.every(item => typeof item === 'string');
 }
 
+function boundedUnicodeText(value: unknown, min: number, max: number): value is string {
+  return typeof value === 'string' && [...value].length >= min && [...value].length <= max;
+}
+
 export function requireProfileDraft(value: unknown, caId: string, expected?: { id: string; revision: number }): ProfileDraft {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('The management API returned an invalid profile proposal.');
@@ -43,7 +47,7 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
     || !Number.isInteger(row.max_dns_sans) || (row.max_dns_sans as number) < 1 || (row.max_dns_sans as number) > 100
     || !stringArray(row.proposed_dns_zones, 1, 32) || !stringArray(row.proposed_signature_suites, 1, 16)
     || !stringArray(row.proposal_warnings, 0, 6)
-    || typeof row.created_by !== 'string' || row.created_by.length < 1 || row.created_by.length > 256
+    || !boundedUnicodeText(row.created_by, 1, 256)
     || typeof row.created_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.created_at)
     || !Number.isFinite(Date.parse(row.created_at))
     || typeof row.snapshot_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.snapshot_sha256)) {

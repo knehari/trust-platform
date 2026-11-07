@@ -1,0 +1,95 @@
+name: trust-iam-lab
+
+services:
+  db:
+    image: postgres:16.15-bookworm
+    environment:
+      POSTGRES_USER: trust_iam
+      POSTGRES_DB: trust_iam
+      POSTGRES_PASSWORD: ${TRUST_IAM_DB_PASSWORD:?Run scripts/lab/init-iam-env.sh first}
+      TRUST_LAB_API_PASSWORD: ${TRUST_IAM_API_PASSWORD:?Run scripts/lab/init-iam-env.sh first}
+    volumes:
+      - trust_iam_pg:/var/lib/postgresql/data
+      - ./migrations:/lab/migrations:ro
+      - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./scripts/lab/init-iam-grants.sh:/docker-entrypoint-initdb.d/01-grants.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_iam -d trust_iam"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [iam]
+
+  issuer:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HTTP_PORT: 8180
+      KC_HOSTNAME: http://127.0.0.1:8180
+      KC_BOOTSTRAP_ADMIN_USERNAME: trust-lab-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${TRUST_IAM_ADMIN_PASSWORD:?Run scripts/lab/init-iam-env.sh first}
+      TRUST_IAM_MAKER_PASSWORD: ${TRUST_IAM_MAKER_PASSWORD:?Run scripts/lab/init-iam-env.sh first}
+      TRUST_IAM_CHECKER_PASSWORD: ${TRUST_IAM_CHECKER_PASSWORD:?Run scripts/lab/init-iam-env.sh first}
+      TRUST_IAM_WORKLOAD_SECRET: ${TRUST_IAM_WORKLOAD_SECRET:?Run scripts/lab/init-iam-env.sh first}
+    volumes:
+      - trust_keycloak_data:/opt/keycloak/data
+      - ./scripts/lab/keycloak-trust-lab-realm.json:/opt/keycloak/data/import/trust-lab-realm.json:ro
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "echo > /dev/tcp/127.0.0.1/8180"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:8180:8180"
+      - "127.0.0.1:8181:8181" # API shares this namespace for the exact loopback issuer URL.
+    networks: [iam]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    network_mode: service:issuer
+    restart: on-failure
+    depends_on:
+      db: {condition: service_healthy}
+      issuer: {condition: service_healthy}
+    environment:
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8180/realms/trust-lab
+      TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_OIDC_HUMAN_CLIENT_ID: trust-console-iam
+      TRUST_OIDC_WORKLOAD_CLIENT_ID: trust-workload-iam
+      TRUST_API_BIND: 0.0.0.0:8181
+      TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_IAM_API_PASSWORD:?Run scripts/lab/init-iam-env.sh first}@db:5432/trust_iam
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8181/v1/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    command: ["./node_modules/.bin/vite", "--host", "0.0.0.0", "--port", "5273"]
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      TRUST_API_DEV_TARGET: http://issuer:8181
+      VITE_OIDC_ISSUER: http://127.0.0.1:8180/realms/trust-lab
+      VITE_OIDC_CLIENT_ID: trust-console-iam
+      VITE_OIDC_SCOPE: openid profile
+    ports:
+      - "127.0.0.1:5273:5273"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5273/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [iam]
+
+volumes:
+  trust_iam_pg:
+  trust_keycloak_data:
+
+networks:
+  iam:

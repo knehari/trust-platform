@@ -92,6 +92,8 @@ fi
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f migrations/0024_profile_revision_activation.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0025_profile_draft_revision_sequence.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_api_readonly.sql >/dev/null

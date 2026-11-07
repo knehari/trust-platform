@@ -46,8 +46,8 @@ and the OIDC token is verified in the API.
 4. **The API fails closed on an unfiltered database.** At startup and in
    `/v1/ready`, the API requires the marker function
    `management_reader_isolation_version()`. It also checks that a session
-   declaring no principal sees no CA and no grant. If either check fails,
-   the API does not start, or `/v1/ready` returns 503.
+   declaring no principal sees no rows in any of the seven management views.
+   If a view exposes rows, the API does not start, or `/v1/ready` returns 503.
 
 ## What this protects, and what it does not
 
@@ -101,5 +101,9 @@ verification, which AGENTS.md rules out. Neither is proposed here.
   - A route that does not declare its principal returns 403 in the
     end-to-end history test.
   - The API's `/v1/ready` returns 503 against a 0020 database.
+  - A restricted connection with each management view temporarily shadowed
+    by a one-row unfiltered view is rejected by `reader_isolation_active`.
+    The regression first failed when the gate checked only CA and grants,
+    then passed after all seven views were included.
 - **Other scripts.** The upgrade, restore and load-plan scripts check that
   an undeclared session sees nothing.
