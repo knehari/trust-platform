@@ -122,7 +122,7 @@ try {
   // Profile drafts are readable only under the signed and granted CA scope.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
   await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
-  await page.getByText('None is active', { exact: false }).waitFor();
+  await page.getByText('No issuance path uses the active revision yet', { exact: false }).waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).check();
   await page.getByText('No advisory syntax warnings in the loaded revisions.').waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).uncheck();
@@ -359,6 +359,19 @@ try {
       await detail.getByText(expected).first().waitFor();
       await approverPage.close();
     }
+
+    // An independent operator activates the approved revision, then retires it.
+    const operatorPage = await browser.newPage();
+    operatorPage.setDefaultTimeout(15_000);
+    await operatorPage.goto(`${origin}/?view=profiles&ca=${allowedCa}&profile=${browserProfile}&revision=1`);
+    await signIn(operatorPage, 'lab-operator', process.env.TRUST_LAB_PW_OPERATOR);
+    const operated = operatorPage.getByRole('dialog', { name: 'Revision 1' });
+    await operated.getByRole('button', { name: 'Activate this revision' }).click();
+    await operatorPage.getByRole('status').filter({ hasText: 'is now ACTIVE' }).waitFor();
+    await operated.getByRole('button', { name: 'Retire this revision' }).click();
+    await operatorPage.getByRole('status').filter({ hasText: 'is now RETIRED' }).waitFor();
+    assert.equal(await operated.getByRole('button', { name: /Activate|Retire/ }).count(), 0);
+    await operatorPage.close();
   }
 
   // Signing out ends the Keycloak session too: signing in again asks for the
@@ -368,7 +381,7 @@ try {
   await page.locator('#password').waitFor();
   assert.equal(await page.locator('#kc-form-login').count(), 1);
 
-  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted and approved by two signing approvers from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

@@ -1,7 +1,11 @@
 import type { ProfileDraft } from './api';
 import { canonicalProfileId } from './profile-revision.ts';
 
-const LIFECYCLE_STATES: ProfileDraft['status'][] = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'];
+const LIFECYCLE_STATES: ProfileDraft['status'][] = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'ACTIVE', 'SUPERSEDED', 'RETIRED'];
+// States reached only after two approvals, and those that were activated.
+const APPROVED_STATES = ['APPROVED', 'ACTIVE', 'SUPERSEDED', 'RETIRED'];
+const ACTIVATED_STATES = ['ACTIVE', 'SUPERSEDED', 'RETIRED'];
+const ENDED_STATES = ['SUPERSEDED', 'RETIRED'];
 
 function timestamp(value: unknown): boolean {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
@@ -26,9 +30,13 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
     || !LIFECYCLE_STATES.includes(row.status as ProfileDraft['status'])
     || (row.status === 'DRAFT' ? row.submitted_at !== null && row.submitted_at !== undefined : !timestamp(row.submitted_at))
     || !Number.isInteger(approvals) || (approvals as number) < 0 || (approvals as number) > 2
-    || (row.status === 'APPROVED') !== (approvals === 2)
-    || (row.status === 'APPROVED' || row.status === 'REJECTED' ? !timestamp(row.decided_at)
+    || APPROVED_STATES.includes(row.status as string) !== (approvals === 2)
+    || (APPROVED_STATES.includes(row.status as string) || row.status === 'REJECTED' ? !timestamp(row.decided_at)
       : row.decided_at !== null && row.decided_at !== undefined)
+    || (ACTIVATED_STATES.includes(row.status as string) ? !timestamp(row.activated_at)
+      : row.activated_at !== null && row.activated_at !== undefined)
+    || (ENDED_STATES.includes(row.status as string) ? !timestamp(row.ended_at)
+      : row.ended_at !== null && row.ended_at !== undefined)
     || typeof row.display_name !== 'string' || row.display_name.length < 1 || row.display_name.length > 255
     || typeof row.policy_version !== 'string' || row.policy_version.length < 1 || row.policy_version.length > 128
     || !Number.isInteger(row.max_validity_days) || (row.max_validity_days as number) < 1 || (row.max_validity_days as number) > 825
@@ -59,7 +67,9 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
     status: row.status as ProfileDraft['status'],
     submitted_at: row.status === 'DRAFT' ? null : row.submitted_at as string,
     approval_count: approvals as number,
-    decided_at: row.status === 'APPROVED' || row.status === 'REJECTED' ? row.decided_at as string : null,
+    decided_at: APPROVED_STATES.includes(row.status as string) || row.status === 'REJECTED' ? row.decided_at as string : null,
+    activated_at: ACTIVATED_STATES.includes(row.status as string) ? row.activated_at as string : null,
+    ended_at: ENDED_STATES.includes(row.status as string) ? row.ended_at as string : null,
     proposal_warnings: row.proposal_warnings,
     snapshot_sha256: row.snapshot_sha256,
   };

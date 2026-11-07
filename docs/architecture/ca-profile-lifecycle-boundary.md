@@ -9,7 +9,12 @@ laboratory under [ADR-0010](../adr/ADR-0010-profile-draft-writes.md)
 write-specific database role. **Update, 7 November 2026:** signed approval
 and rejection by two distinct approvers with distinct registered P-256 keys
 follow [ADR-0011](../adr/ADR-0011-signed-profile-decisions.md) (Proposed).
-Activation, retirement and every CA transition remain unimplemented. This contract refines
+**Update, 7 November 2026:** activation and retirement follow
+[ADR-0012](../adr/ADR-0012-profile-revision-activation.md) (Proposed), against
+owner-declared CA signing capabilities and the CA's policy version; the issuer
+certificate is not checked because no CA key binding exists. Every CA
+transition remains unimplemented, and no issuance path reads the active
+revision. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

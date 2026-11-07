@@ -323,6 +323,98 @@ paths:
         '503': { description: The write database login is not configured or the database is unavailable }
         '409': { description: Idempotency key reused, claim expired or not yet valid, revision not submitted or already decided, or this approver already decided }
         '422': { description: The signature does not verify over the claim with the approver's registered key; nothing was recorded }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/activation:
+    post:
+      summary: Activate an approved revision (laboratory, migration 0024)
+      description: The revision must be APPROVED and never activated, and the request names its exact digest. The CA's policy version must equal the revision's, every proposed suite must be declared for the CA by the owner and be in the typed algorithm catalogue. Any active revision of the profile becomes SUPERSEDED. No issuance path reads the active revision yet (ADR-0012, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [snapshot_sha256]
+              properties:
+                snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '201':
+          description: Revision activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '200':
+          description: Replay of a recorded activation with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-operator role, CA outside the signed scope, no server-owned ca-operator grant, or (activation) the caller wrote, submitted or decided on the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: Idempotency key reused, the revision is not APPROVED or was already activated, or the digest does not match it }
+        '422': { description: Incompatible with the CA (policy version, a suite the CA does not declare, or a suite outside the catalogue); nothing was recorded }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/retirement:
+    post:
+      summary: Retire the active revision of a profile (laboratory, migration 0024)
+      description: Only the ACTIVE revision can be retired, once. Nothing replaces it until another approved revision is activated. The body is an empty JSON object.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: Revision retired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '200':
+          description: Replay of a recorded retirement with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-operator role, CA outside the signed scope, no server-owned ca-operator grant, or (activation) the caller wrote, submitted or decided on the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: Idempotency key reused, or the revision is not the active one }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -542,7 +634,7 @@ components:
         created_at: { type: string, format: date-time }
     ProfileDraft:
       type: object
-      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, submitted_at, approval_count, decided_at, proposal_warnings, snapshot_sha256]
+      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, submitted_at, approval_count, decided_at, activated_at, ended_at, proposal_warnings, snapshot_sha256]
       properties:
         ca_id: { type: string, format: uuid }
         profile_id: { type: string }
@@ -557,11 +649,13 @@ components:
         created_at: { type: string, format: date-time }
         status:
           type: string
-          enum: [DRAFT, SUBMITTED, APPROVED, REJECTED]
-          description: SUBMITTED revisions await two signed approvals; APPROVED is not active (no activation route exists). No state authorizes issuance.
+          enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, ACTIVE, SUPERSEDED, RETIRED]
+          description: SUBMITTED revisions await two signed approvals; an operator activates an APPROVED revision, which a later activation supersedes or a retirement ends. No issuance path reads ACTIVE yet, so no state authorizes issuance.
         submitted_at: { type: [string, 'null'], format: date-time, description: Submission time; null for a DRAFT }
         approval_count: { type: integer, minimum: 0, maximum: 2, description: Signed approvals recorded for this revision }
-        decided_at: { type: [string, 'null'], format: date-time, description: Time of the deciding decision; null unless APPROVED or REJECTED }
+        decided_at: { type: [string, 'null'], format: date-time, description: Time of the deciding decision; null before a revision is approved or rejected }
+        activated_at: { type: [string, 'null'], format: date-time, description: Activation time; null unless ACTIVE, SUPERSEDED or RETIRED }
+        ended_at: { type: [string, 'null'], format: date-time, description: Supersession or retirement time; null unless SUPERSEDED or RETIRED }
         proposal_warnings:
           type: array
           description: Advisory syntax findings only. An empty array is not an approval, provider capability check or issuance authorization.
@@ -582,6 +676,15 @@ components:
         max_dns_sans: { type: integer, minimum: 1, maximum: 100 }
         proposed_dns_zones: { type: array, minItems: 1, maxItems: 32, items: { type: string, maxLength: 253 } }
         proposed_signature_suites: { type: array, minItems: 1, maxItems: 16, items: { type: string, maxLength: 64 } }
+    ProfileActivation:
+      type: object
+      required: [ca_id, profile_id, revision, status, superseded_revision]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
+        superseded_revision: { type: [integer, 'null'], description: The revision this activation superseded; null when none was active, and for a retirement }
     ProfileDecision:
       type: object
       required: [ca_id, profile_id, revision, decision, status, approval_count]

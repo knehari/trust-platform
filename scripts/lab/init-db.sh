@@ -50,7 +50,12 @@ INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver');
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ca-operator');
+-- Signing capabilities the owner declares for the allowed CA (migration
+-- 0024). A declaration is not evidence that a provider or key can issue.
+INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
+  ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ecdsa-p256-sha256');
 -- Approver keys (migration 0023): the public halves of the keys init-env.sh
 -- generated into .lab-keys/. The private keys never reach the database.
 INSERT INTO profile_approver_key(key_id,issuer,subject,public_key_sec1) VALUES

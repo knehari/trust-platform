@@ -177,6 +177,8 @@ mod tests {
             submitted_at: None,
             approval_count: 0,
             decided_at: None,
+            activated_at: None,
+            ended_at: None,
             proposal_warnings: vec![],
             snapshot_sha256: String::new(),
         };
@@ -215,6 +217,8 @@ mod tests {
             submitted_at: None,
             approval_count: 0,
             decided_at: None,
+            activated_at: None,
+            ended_at: None,
             proposal_warnings: vec![],
             snapshot_sha256: String::new(),
         };

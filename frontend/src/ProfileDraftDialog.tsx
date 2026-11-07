@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiPost, type ProfileDraft } from './api';
 import { profileDraftMetadataJson } from './profile-draft-export';
 import { ProfileDecision } from './ProfileDecision';
+import { ProfileActivation } from './ProfileActivation';
 
 interface SubmitAction {
   caId: string;
@@ -18,7 +19,14 @@ interface DecisionAction {
   onUnauthorized: () => void;
 }
 
-export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected, editor, approver }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean; editor: SubmitAction | null; approver: DecisionAction | null }) {
+interface OperatorAction {
+  caId: string;
+  token: string;
+  onChanged: (status: ProfileDraft['status'], supersededRevision: number | null) => void;
+  onUnauthorized: () => void;
+}
+
+export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected, editor, approver, operator }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean; editor: SubmitAction | null; approver: DecisionAction | null; operator: OperatorAction | null }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [copyFeedback, setCopyFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -70,6 +78,8 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
     ...(draft.submitted_at ? [['SUBMITTED FOR APPROVAL', new Date(draft.submitted_at).toLocaleString()]] : []),
     ...(draft.status !== 'DRAFT' ? [['SIGNED APPROVALS', `${draft.approval_count} of 2`]] : []),
     ...(draft.decided_at ? [[draft.status === 'REJECTED' ? 'REJECTED' : 'APPROVED', new Date(draft.decided_at).toLocaleString()]] : []),
+    ...(draft.activated_at ? [['ACTIVATED', new Date(draft.activated_at).toLocaleString()]] : []),
+    ...(draft.ended_at ? [[draft.status === 'RETIRED' ? 'RETIRED' : 'SUPERSEDED', new Date(draft.ended_at).toLocaleString()]] : []),
     ['DISPLAY NAME', draft.display_name],
     ['POLICY VERSION', draft.policy_version],
     ['MAXIMUM VALIDITY', `${draft.max_validity_days} days`],
@@ -95,9 +105,13 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
       {draft.status === 'DRAFT' && <p>Only the latest revision of a profile can be submitted, with exactly the digest shown above. Submission does not approve or activate it.</p>}
       {submitError && <p className="lookup-error" role="alert">{submitError}</p>}
     </div>}
+    {operator && <ProfileActivation caId={operator.caId} token={operator.token} draft={draft} onChanged={operator.onChanged} onUnauthorized={operator.onUnauthorized} />}
     {approver && <ProfileDecision caId={approver.caId} token={approver.token} draft={draft} onDecided={approver.onDecided} onUnauthorized={approver.onUnauthorized} />}
     <p className="dialog-note">{draft.status === 'SUBMITTED' ? 'This revision awaits approval. Submission is not approval: it cannot authorize certificate issuance.'
-      : draft.status === 'APPROVED' ? 'Two approvers signed this exact revision. Approval does not activate it: no profile can be activated yet, and none can authorize certificate issuance.'
+      : draft.status === 'APPROVED' ? 'Two approvers signed this exact revision. Approval does not activate it; a CA operator can.'
+      : draft.status === 'ACTIVE' ? 'This is the active revision of the profile. No issuance path uses it yet: it does not authorize certificates.'
+      : draft.status === 'SUPERSEDED' ? 'A later revision of the profile was activated instead of this one.'
+      : draft.status === 'RETIRED' ? 'This revision was retired. A change needs a new revision.'
       : draft.status === 'REJECTED' ? 'An approver rejected this revision. A change needs a new revision.'
       : 'This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.'}</p>
   </dialog>;

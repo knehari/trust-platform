@@ -40,5 +40,6 @@ test('comparison accepts recorded lifecycle states only', () => {
   const second = { ...base, revision: 2, status: 'DRAFT' };
   assert.ok(compareProfileRevisions(first, second).length > 0);
   assert.ok(compareProfileRevisions({ ...first, status: 'APPROVED', approval_count: 2 }, second).length > 0);
-  assert.throws(() => compareProfileRevisions({ ...first, status: 'ACTIVE' }, second));
+  assert.ok(compareProfileRevisions({ ...first, status: 'ACTIVE', approval_count: 2 }, second).length > 0);
+  assert.throws(() => compareProfileRevisions({ ...first, status: 'PUBLISHED' }, second));
 });

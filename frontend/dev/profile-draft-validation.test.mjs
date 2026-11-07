@@ -9,7 +9,7 @@ const valid = {
   max_validity_days: 90, max_dns_sans: 5,
   proposed_dns_zones: ['lab.invalid'], proposed_signature_suites: ['P256-SHA256'],
   created_by: 'synthetic-editor', created_at: '2026-10-24T12:00:00.000Z',
-  status: 'DRAFT', submitted_at: null, approval_count: 0, decided_at: null, proposal_warnings: [], snapshot_sha256: 'a'.repeat(64),
+  status: 'DRAFT', submitted_at: null, approval_count: 0, decided_at: null, activated_at: null, ended_at: null, proposal_warnings: [], snapshot_sha256: 'a'.repeat(64),
 };
 
 test('profile proposal reads retain only allowed fields and exact identity', () => {
@@ -51,5 +51,17 @@ test('decided revisions carry consistent approval counts and decision times', ()
     { ...approved, approval_count: 1 }, { ...submitted, approval_count: 2 }, { ...approved, decided_at: null },
     { ...submitted, decided_at: '2026-10-26T12:00:00.000Z' }, { ...submitted, approval_count: 3 },
     { ...submitted, approval_count: -1 }, { ...submitted, approval_count: 1.5 }, { ...valid, status: 'ACTIVE' },
+  ]) assert.throws(() => requireProfileDraft(altered, caId), JSON.stringify(altered));
+});
+
+test('activated revisions carry activation and end times consistent with their state', () => {
+  const approved = { ...valid, status: 'APPROVED', submitted_at: '2026-10-25T12:00:00.000Z', approval_count: 2, decided_at: '2026-10-26T12:00:00.000Z' };
+  const active = { ...approved, status: 'ACTIVE', activated_at: '2026-10-27T12:00:00.000Z' };
+  const superseded = { ...active, status: 'SUPERSEDED', ended_at: '2026-10-28T12:00:00.000Z' };
+  const retired = { ...superseded, status: 'RETIRED' };
+  for (const row of [active, superseded, retired]) assert.deepEqual(requireProfileDraft(row, caId), row);
+  for (const altered of [
+    { ...active, activated_at: null }, { ...active, ended_at: '2026-10-28T12:00:00.000Z' },
+    { ...superseded, ended_at: null }, { ...retired, approval_count: 1 }, { ...approved, activated_at: '2026-10-27T12:00:00.000Z' },
   ]) assert.throws(() => requireProfileDraft(altered, caId), JSON.stringify(altered));
 });
