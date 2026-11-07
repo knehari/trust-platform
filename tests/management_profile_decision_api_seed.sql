@@ -22,3 +22,13 @@ INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
 -- CA proposals (migration 0025): one platform administrator.
 INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
   ('https://issuer.example.test','ca-admin-http','ca-administrator');
+-- CA approvals (migration 0026): two CA approvers with test scalars 0x44 and
+-- 0x55; the first also holds the administrator grant, to test that an
+-- approver cannot activate what they approved.
+INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
+  ('https://issuer.example.test','ca-approver-http-1','ca-approver'),
+  ('https://issuer.example.test','ca-approver-http-2','ca-approver'),
+  ('https://issuer.example.test','ca-approver-http-1','ca-administrator');
+INSERT INTO ca_approver_key(key_id,issuer,subject,public_key_sec1) VALUES
+  ('ca-approver-http-1-p256','https://issuer.example.test','ca-approver-http-1',decode('045b36890dacbd7c9a96bb74a1ee28b3d2d75b72e09a20ef25cf8e6fd8a9f0350d0e14bed8d4682a34d83538bdff5b96e89a6666ec0db5745d02fa1210072df75a','hex')),
+  ('ca-approver-http-2-p256','https://issuer.example.test','ca-approver-http-2',decode('0457e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34c5ab3770ba573bdff5414065640ffb5b346dfa84dec4db4d68e5f59cc471c2ec','hex'));

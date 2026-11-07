@@ -18,8 +18,13 @@ path reads the active revision.
 its self-signed issuer certificate, verified by the API and bound to the
 proposal by the database
 ([ADR-0013](../adr/ADR-0013-ca-proposal-and-issuer-certificate.md),
-Proposed). A proposal is not a CA; CA approval, activation, suspension and
-retirement remain unimplemented. This contract refines
+Proposed). A proposal is not a CA.
+**Update, 7 November 2026:** two CA approvers with distinct registered keys
+approve a key-attested proposal and a non-approving administrator activates
+it, creating the CA with its attested suite as its only capability
+([ADR-0014](../adr/ADR-0014-ca-approval-and-activation.md), Proposed). CA
+suspension and retirement remain unimplemented, and no issuance path uses an
+activated CA. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

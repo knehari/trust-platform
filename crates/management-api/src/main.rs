@@ -1,5 +1,6 @@
 mod auth;
 mod ca_certificate;
+mod ca_decision;
 mod ca_proposal;
 mod profile_activation;
 mod profile_decision;
@@ -42,7 +43,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256 \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b, management_ca_proposal k LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -563,7 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0025")?;
+    .map_err(|_| "management views unavailable or older than migration 0026")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -645,6 +646,18 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/ca-proposals/{ca_id}/issuer-certificate",
             axum::routing::post(ca_proposal::register_issuer_certificate),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/decision-claims",
+            axum::routing::post(ca_decision::prepare_ca_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/decisions",
+            axum::routing::post(ca_decision::record_ca_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/activation",
+            axum::routing::post(ca_decision::activate_ca),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -915,6 +928,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND NOT EXISTS (SELECT 1 FROM management_ca) \
              AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
              AND management_ca_proposal_version() = 1 \
+             AND management_ca_activation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
@@ -1861,11 +1875,14 @@ mod tests {
 
     /// Public keys of the deterministic approver test keys ([0x11; 32],
     /// [0x22; 32], [0x33; 32]); CI registers them for approver-http-1,
-    /// approver-http-2 and operator (migration 0023).
-    const APPROVER_TEST_KEYS: [(u8, &str); 3] = [
+    /// approver-http-2 and operator (migration 0023), and [0x44; 32],
+    /// [0x55; 32] for ca-approver-http-1 and -2 (migration 0026).
+    const APPROVER_TEST_KEYS: [(u8, &str); 5] = [
         (0x11, "040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794"),
         (0x22, "04d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf350185e895372df6221ea3a137557e473fddb6755f05bd507c3c533fce9c91285"),
         (0x33, "0451a7580833898ea1b183cbd7350a4099078c6ef1c1e18e970cd7683035f25e7d0110522712b0b5a7cff081685486984a94e6831edac46e7360fa9d834a7a81a1"),
+        (0x44, "045b36890dacbd7c9a96bb74a1ee28b3d2d75b72e09a20ef25cf8e6fd8a9f0350d0e14bed8d4682a34d83538bdff5b96e89a6666ec0db5745d02fa1210072df75a"),
+        (0x55, "0457e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34c5ab3770ba573bdff5414065640ffb5b346dfa84dec4db4d68e5f59cc471c2ec"),
     ];
 
     #[test]
@@ -2809,6 +2826,512 @@ mod tests {
                 .0,
             StatusCode::FORBIDDEN
         );
+    }
+
+    /// Signed CA approval and activation against PostgreSQL (migration
+    /// 0026). CI seeds the CA approvers and their keys ([0x44; 32],
+    /// [0x55; 32]) in tests/management_profile_decision_api_seed.sql.
+    #[tokio::test]
+    async fn ca_proposals_are_approved_by_two_signers_then_activated() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA approval and activation need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-activation-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-activation-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let approver_1 = token(
+            "ca-approver-http-1",
+            json!(["trust-ca-approver", "trust-ca-administrator"]),
+        );
+        let approver_2 = token("ca-approver-http-2", json!(["trust-ca-approver"]));
+        // A profile approver: the CA approver role without the platform grant.
+        let profile_approver = token("approver-http-1", json!(["trust-ca-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x55; 32]).unwrap();
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        const CN: &str = "Sovereign Trust Lab Root";
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+            key(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, base) = (send, base.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{base}/decision-claims"),
+                    Some(json!({"decision":decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        // Before the certificate, nothing can be decided.
+        assert_eq!(
+            claim_for(approver_2.clone(), "approve").await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/issuer-certificate"),
+                Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+
+        // Claim refusals: no approver role, the role without the grant.
+        assert_eq!(
+            claim_for(admin.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            claim_for(profile_approver.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let decide = |token: String,
+                      signer: SigningKey,
+                      claim: serde_json::Value,
+                      operation: Option<String>| {
+            let (send, base) = (send, base.clone());
+            async move {
+                let text = claim["claim"].as_str().unwrap().to_owned();
+                let signature: Signature = signer.sign(text.as_bytes());
+                send("POST", &token, format!("{base}/decisions"),
+                    Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    operation).await
+            }
+        };
+
+        // The first approval, its replay, and a second decision by the same approver.
+        let (status, claim_1) = claim_for(approver_1.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(claim_1["claim"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("certificate_sha256={fingerprint}")));
+        let operation = key();
+        let (status, first) = decide(
+            approver_1.clone(),
+            key_1.clone(),
+            claim_1.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                first["lifecycle_status"].as_str(),
+                first["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("KEY_ATTESTED"), Some(1))
+        );
+        assert_eq!(
+            decide(approver_1.clone(), key_1.clone(), claim_1, operation)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            claim_for(approver_1.clone(), "reject").await.0,
+            StatusCode::CONFLICT
+        );
+
+        // A signature by another key, or over other text, is refused and leaves nothing.
+        let (_, claim_2) = claim_for(approver_2.clone(), "approve").await;
+        assert_eq!(
+            decide(approver_2.clone(), key_1.clone(), claim_2.clone(), key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut altered = claim_2.clone();
+        altered["claim"] = json!(claim_2["claim"]
+            .as_str()
+            .unwrap()
+            .replace("decision=approve", "decision=reject"));
+        assert_eq!(
+            decide(approver_2.clone(), key_2.clone(), altered, key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Activation before approval is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, second) = decide(approver_2.clone(), key_2.clone(), claim_2, key()).await;
+        assert_eq!(
+            (
+                status,
+                second["lifecycle_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("APPROVED"), Some(2))
+        );
+
+        // Activation: an approver holding the administrator role, another
+        // digest, unknown fields; then the activation and its replay.
+        let activation = |digest: String| Some(json!({"certificate_sha256": digest}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation("0".repeat(64)),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint, "suite_id": "ecdsa-p384-sha384"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let operation = key();
+        let (status, active) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            activation(fingerprint.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                active["lifecycle_status"].as_str(),
+                active["suite_id"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("ACTIVE"),
+                Some("ecdsa-p256-sha256")
+            )
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Approvers list proposals too; the activated one shows its record.
+        let (status, listed) =
+            send("GET", &approver_2, "/v1/ca-proposals".into(), None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ca_id"] == ca.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (
+                item["lifecycle_status"].as_str(),
+                item["approval_count"].as_i64()
+            ),
+            (Some("ACTIVE"), Some(2))
+        );
+        assert!(item["decided_at"].is_string() && item["activated_at"].is_string());
+    }
+
+    /// A compromised writer path records a certificate the API would refuse
+    /// (the database does not parse X.509): activation must still refuse it.
+    /// It leaves that forged record behind, which lab_verify_ca_lifecycle
+    /// reports, so it runs only on a separate disposable database seeded like
+    /// the API test database: set TRUST_API_FORGERY_TEST_DATABASE_URL (reader
+    /// login) and TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL.
+    #[tokio::test]
+    async fn activation_reverifies_a_certificate_recorded_without_the_api() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_FORGERY_TEST_DATABASE_URL"),
+            env::var("TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: forged-certificate activation needs TRUST_API_FORGERY_TEST_DATABASE_URL and TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL (a separate disposable database); not set in CI");
+            return;
+        };
+        // The writer login, used directly as a compromised API would: an
+        // RSA root (refused by the API's verifier) recorded as a P-256 one.
+        let pem = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ca-root/openssl-rsa-root.crt"
+        ))
+        .unwrap();
+        let der = ca_certificate::certificate_der_from_pem(&pem).unwrap();
+        let fingerprint: String = <sha2::Sha256 as sha2::Digest>::digest(&der)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let name = "Trust Lab RSA Root".to_string();
+        let ca = query_db(writer_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            let op1 = random_uuid().to_string();
+            let op2 = random_uuid().to_string();
+            let spki: Vec<u8> = <sha2::Sha256 as sha2::Digest>::digest(op2.as_bytes()).to_vec();
+            let ca: String = db
+                .query_one(
+                    "SELECT ca_id::text FROM propose_ca_lab('https://issuer.example.test', 'ca-admin-http', \
+                     NULL, $1, 'v1', 'ecdsa-p256-sha256', $2::text::uuid, decode(repeat('01', 32), 'hex'))",
+                    &[&name, &op1],
+                )?
+                .get(0);
+            db.execute(
+                "SELECT register_ca_issuer_certificate_lab('https://issuer.example.test', 'ca-admin-http', \
+                 $1::text::uuid, $2, $3, $4, now() - interval '1 hour', now() + interval '1 year', 'p256', \
+                 $5::text::uuid, decode(repeat('02', 32), 'hex'))",
+                &[&ca, &der, &spki, &name, &op2],
+            )?;
+            Ok(ca)
+        })
+        .await
+        .unwrap();
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"forgery-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("forgery-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let post = |token: String, path: String, body: serde_json::Value, key: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            if key {
+                request = request.header("idempotency-key", random_uuid().to_string());
+            }
+            let request = request.body(Body::from(body.to_string())).unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+                )
+            }
+        };
+        let base = format!("/v1/ca-proposals/{ca}");
+        for (subject, scalar) in [("ca-approver-http-1", 0x44u8), ("ca-approver-http-2", 0x55)] {
+            let approver = token(subject, json!(["trust-ca-approver"]));
+            let (_, claim) = post(
+                approver.clone(),
+                format!("{base}/decision-claims"),
+                json!({"decision":"approve"}),
+                false,
+            )
+            .await;
+            let text = claim["claim"].as_str().unwrap().to_owned();
+            let signature: Signature = SigningKey::from_slice(&[scalar; 32])
+                .unwrap()
+                .sign(text.as_bytes());
+            let (status, _) = post(approver, format!("{base}/decisions"),
+                json!({"decision":"approve", "issued_at":claim["issued_at"],
+                       "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())}),
+                true).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let (status, _) = post(
+            admin,
+            format!("{base}/activation"),
+            json!({"certificate_sha256": fingerprint}),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     /// A random (version 4) UUID from the test RNG; the crate builds uuid

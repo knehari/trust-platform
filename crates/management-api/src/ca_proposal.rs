@@ -74,6 +74,9 @@ struct CaProposal {
     not_after: Option<String>,
     custody: Option<String>,
     registered_at: Option<String>,
+    approval_count: i32,
+    decided_at: Option<String>,
+    activated_at: Option<String>,
 }
 
 fn printable(value: &str, max_chars: usize) -> bool {
@@ -103,7 +106,7 @@ pub(crate) async fn propose_ca(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, StatusCode> {
-    let context = platform_write_context(&state, &headers, &body, ADMINISTRATOR_ROLE).await?;
+    let context = platform_write_context(&state, &headers, &body, ADMINISTRATOR_ROLE, true).await?;
     let request: ProposalRequest =
         serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     if !printable(&request.display_name, 255) || !printable(&request.policy_version, 128) {
@@ -180,7 +183,7 @@ pub(crate) async fn register_issuer_certificate(
     Path(raw_ca): Path<String>,
     body: Bytes,
 ) -> Result<Response, StatusCode> {
-    let context = platform_write_context(&state, &headers, &body, ADMINISTRATOR_ROLE).await?;
+    let context = platform_write_context(&state, &headers, &body, ADMINISTRATOR_ROLE, true).await?;
     let ca_id = uuid::Uuid::parse_str(&raw_ca)
         .map_err(|_| StatusCode::BAD_REQUEST)?
         .to_string();
@@ -260,14 +263,18 @@ pub(crate) async fn register_issuer_certificate(
 }
 
 /// `GET /v1/ca-proposals`: the proposals, newest first (at most 100), for a
-/// token with the administrator role. The view returns rows only when the
-/// declared principal holds the platform grant.
+/// token with the administrator or CA approver role. The view returns rows
+/// only when the declared principal holds one of those platform grants.
 pub(crate) async fn list_ca_proposals(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     let claims = authenticate(&headers, &state.verifier).await?;
-    if !claims.roles.iter().any(|role| role == ADMINISTRATOR_ROLE) {
+    if !claims
+        .roles
+        .iter()
+        .any(|role| role == ADMINISTRATOR_ROLE || role == crate::ca_decision::CA_APPROVER_ROLE)
+    {
         return Err(StatusCode::FORBIDDEN);
     }
     let rows = query_db_as(
@@ -278,7 +285,7 @@ pub(crate) async fn list_ca_proposals(
             db.query(
                 "SELECT ca_id, display_name, policy_version, suite_id, lifecycle_status, \
                  proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, \
-                 registered_at FROM management_ca_proposal \
+                 registered_at, approval_count, decided_at, activated_at FROM management_ca_proposal \
                  ORDER BY proposed_at DESC, ca_id LIMIT 100",
                 &[],
             )
@@ -300,6 +307,9 @@ pub(crate) async fn list_ca_proposals(
             not_after: row.get(9),
             custody: row.get(10),
             registered_at: row.get(11),
+            approval_count: row.get(12),
+            decided_at: row.get(13),
+            activated_at: row.get(14),
         })
         .collect();
     Ok(with_replay_header(Json(items).into_response(), false))

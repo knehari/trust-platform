@@ -12,6 +12,8 @@ services:
       # Public keys only; the private keys stay in .lab-keys/ on the host.
       TRUST_LAB_APPROVER_1_SEC1: ${TRUST_LAB_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_CA_APPROVER_1_SEC1: ${TRUST_LAB_CA_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_CA_APPROVER_2_SEC1: ${TRUST_LAB_CA_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
     volumes:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro
@@ -47,6 +49,8 @@ services:
       TRUST_LAB_PW_EDITOR: ${TRUST_LAB_PW_EDITOR:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_APPROVER_1: ${TRUST_LAB_PW_APPROVER_1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_APPROVER_2: ${TRUST_LAB_PW_APPROVER_2:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_CA_APPROVER_1: ${TRUST_LAB_PW_CA_APPROVER_1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_CA_APPROVER_2: ${TRUST_LAB_PW_CA_APPROVER_2:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_OPERATOR: ${TRUST_LAB_PW_OPERATOR:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_CA_ADMIN: ${TRUST_LAB_PW_CA_ADMIN:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_OUTSIDER: ${TRUST_LAB_PW_OUTSIDER:?Run scripts/lab/init-env.sh first}

@@ -418,7 +418,7 @@ paths:
   /v1/ca-proposals:
     get:
       summary: List CA proposals (laboratory, migration 0025)
-      description: Newest first, at most 100. Requires the trust-ca-administrator role; the database returns rows only when the caller holds the owner-granted ca-administrator platform grant, and an empty list otherwise. A proposal is not a CA and issues nothing (ADR-0013, Proposed).
+      description: Newest first, at most 100. Requires the trust-ca-administrator or trust-ca-approver role; the database returns rows only when the caller holds the matching owner-granted platform grant, and an empty list otherwise. Only an ACTIVE proposal is a CA, and no CA issues yet (ADR-0013, ADR-0014, Proposed).
       responses:
         '200':
           description: Proposals visible to the caller
@@ -429,7 +429,7 @@ paths:
                 maxItems: 100
                 items: { $ref: '#/components/schemas/CaProposal' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { description: Missing trust-ca-administrator role }
+        '403': { description: Missing trust-ca-administrator and trust-ca-approver roles }
         '503': { description: The database is unavailable }
     post:
       summary: Propose a CA (laboratory, migration 0025)
@@ -515,6 +515,129 @@ paths:
                 properties:
                   error: { type: string, enum: [certificate_refused] }
                   reason: { type: string }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/decision-claims:
+    post:
+      summary: Obtain the exact CA decision claim to sign (laboratory, migration 0026)
+      description: "Records nothing. Requires the trust-ca-approver role, an owner-granted ca-approver platform grant and an active registered CA approver key. The proposal must be KEY_ATTESTED and undecided by the caller, who must not have proposed it or registered its certificate. The claim binds the certificate and key digests and is valid for ten minutes. Sign it outside the console, for example: printf '%s' '<claim>' | openssl dgst -sha256 -sign <key>.pem | openssl base64 -A (ADR-0014, Proposed)."
+      parameters:
+        - in: path
+          name: ca_id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string, enum: [approve, reject] }
+                  claim: { type: string, pattern: '^trust-platform/ca-decision/v1;' }
+                  key_id: { type: string }
+                  issued_at: { type: string, format: date-time }
+                  valid_for_seconds: { type: integer, enum: [600] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-approver role, no ca-approver grant, no active CA approver key, or the caller proposed the CA or registered its certificate }
+        '404': { description: No such proposal }
+        '409': { description: The proposal is not KEY_ATTESTED, is already decided, or the caller already decided }
+        '415': { description: Content type is not application/json }
+        '422': { description: The issuer certificate has expired }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/decisions:
+    post:
+      summary: Record a signed CA approval or rejection (laboratory, migration 0026)
+      description: The database re-checks every rule and rebuilds the claim; the API verifies the DER ECDSA P-256/SHA-256 signature with the approver's registered CA key before commit. Two approvals by distinct approvers with distinct keys make the proposal APPROVED; one rejection makes it REJECTED, which is final (ADR-0014, Proposed).
+      parameters:
+        - in: path
+          name: ca_id
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, issued_at, signature_der_base64]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                issued_at: { type: string, format: date-time, description: The issued_at of the signed claim }
+                signature_der_base64: { type: string, maxLength: 120 }
+      responses:
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaDecisionRecorded' }
+        '200':
+          description: Replay of a recorded decision with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaDecisionRecorded' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: As for decision-claims }
+        '404': { description: No such proposal }
+        '409': { description: Idempotency key reused, claim expired or not yet valid, the proposal is not awaiting this decision }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: The signature does not verify over the claim with the approver's registered key, or the certificate has expired; nothing was recorded }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/activation:
+    post:
+      summary: Activate an approved CA proposal (laboratory, migration 0026)
+      description: Requires the trust-ca-administrator role and the ca-administrator platform grant; the caller must not have decided on the proposal. The request names the approved certificate's SHA-256. The database creates the CA with the proposal's identifier, name and policy version and its attested suite as its only signing capability; the API verifies the stored certificate again and checks the suite against the catalogue before commit. No issuance path uses the CA yet, and readers see it only through owner-held reader grants (ADR-0014, Proposed).
+      parameters:
+        - in: path
+          name: ca_id
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [certificate_sha256]
+              properties:
+                certificate_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '201':
+          description: CA activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaActivated' }
+        '200':
+          description: Replay of a recorded activation with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaActivated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or grant, or the caller decided on the proposal }
+        '404': { description: No such proposal }
+        '409': { description: Idempotency key reused, the proposal is not APPROVED or was activated, the digest is not the approved certificate's, or a CA with this identifier exists }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: The stored certificate has expired, no longer verifies, or its suite is not catalogued; nothing was activated }
         '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
@@ -814,13 +937,13 @@ components:
         submitted_at: { type: string, format: date-time }
     CaProposal:
       type: object
-      required: [ca_id, display_name, policy_version, suite_id, lifecycle_status, proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, registered_at]
+      required: [ca_id, display_name, policy_version, suite_id, lifecycle_status, proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, registered_at, approval_count, decided_at, activated_at]
       properties:
         ca_id: { type: string, format: uuid }
         display_name: { type: string }
         policy_version: { type: string }
         suite_id: { type: string }
-        lifecycle_status: { type: string, enum: [PROPOSED, KEY_ATTESTED], description: Neither state is a CA or authorizes issuance. }
+        lifecycle_status: { type: string, enum: [PROPOSED, KEY_ATTESTED, APPROVED, REJECTED, ACTIVE], description: Only ACTIVE is a CA; no state authorizes issuance yet. }
         proposed_at: { type: string, format: date-time }
         certificate_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
         spki_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
@@ -828,6 +951,24 @@ components:
         not_after: { type: [string, 'null'], format: date-time }
         custody: { type: [string, 'null'], enum: [lab-software-file, null], description: A software key file; not custody evidence. }
         registered_at: { type: [string, 'null'], format: date-time }
+        approval_count: { type: integer, minimum: 0, maximum: 2 }
+        decided_at: { type: [string, 'null'], format: date-time, description: Time of the deciding decision; null before APPROVED or REJECTED }
+        activated_at: { type: [string, 'null'], format: date-time }
+    CaDecisionRecorded:
+      type: object
+      required: [ca_id, decision, lifecycle_status, approval_count]
+      properties:
+        ca_id: { type: string, format: uuid }
+        decision: { type: string, enum: [approve, reject] }
+        lifecycle_status: { type: string, enum: [KEY_ATTESTED, APPROVED, REJECTED] }
+        approval_count: { type: integer, minimum: 0, maximum: 2 }
+    CaActivated:
+      type: object
+      required: [ca_id, lifecycle_status, suite_id]
+      properties:
+        ca_id: { type: string, format: uuid }
+        lifecycle_status: { type: string, enum: [ACTIVE] }
+        suite_id: { type: string }
     CaProposalCreated:
       type: object
       required: [ca_id, lifecycle_status, proposed_at]

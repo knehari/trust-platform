@@ -149,8 +149,9 @@ assumed.
     certificate binding exists yet.
   - Both come with the CA lifecycle and key custody (criteria 6 and 9).
     [ADR-0013](ADR-0013-ca-proposal-and-issuer-certificate.md) starts the
-    former with verified issuer certificates of proposed CAs; activation
-    does not use them yet.
+    former with verified issuer certificates of proposed CAs, and
+    [ADR-0014](ADR-0014-ca-approval-and-activation.md) restricts an
+    activated CA's capabilities to its attested suite.
 - **Policy compatibility is an equality of version strings.** CP/CPS content
   is not compared.
 - **A single operator activates.** No second operator confirms, and there is
