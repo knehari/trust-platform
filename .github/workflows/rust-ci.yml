@@ -194,11 +194,13 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0020_management_history_bounds.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0021_management_reader_isolation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0022_profile_draft_submission.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0023_profile_draft_decision.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_draft.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_san.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_reader_isolation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_lifecycle.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_decision.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
@@ -217,9 +219,13 @@ jobs:
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_api_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_api_reader TO trust_api_ci"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_writer_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_profile_writer TO trust_writer_ci"
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_decision_api_seed.sql
           TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             TRUST_API_WRITER_TEST_DATABASE_URL="postgresql://trust_writer_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo test -p trust-management-api --locked
+          # Every decision the API tests recorded must verify independently.
+          TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo run --locked -p trust-management-api --bin lab_verify_profile_decisions
           # Negative test: strict mode must fail if a DB-dependent test has no URL.
           if env -u TRUST_CI_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked; then
             echo "FAIL: DB-dependent test passed without its mandatory DB URL" >&2
@@ -240,7 +246,7 @@ jobs:
           test -n "$CONTAINER"
           docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
           DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
-          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql; do
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql; do
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null

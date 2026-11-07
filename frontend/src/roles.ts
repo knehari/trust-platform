@@ -15,3 +15,4 @@ export function tokenRoles(accessToken: string): string[] {
 }
 
 export const PROFILE_EDITOR_ROLE = 'trust-profile-editor';
+export const POLICY_APPROVER_ROLE = 'trust-policy-approver';

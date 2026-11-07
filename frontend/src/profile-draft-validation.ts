@@ -1,6 +1,13 @@
 import type { ProfileDraft } from './api';
 import { canonicalProfileId } from './profile-revision.ts';
 
+const LIFECYCLE_STATES: ProfileDraft['status'][] = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'];
+
+function timestamp(value: unknown): boolean {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
 function stringArray(value: unknown, min: number, max: number): value is string[] {
   return Array.isArray(value) && value.length >= min && value.length <= max
     && value.every(item => typeof item === 'string');
@@ -12,12 +19,16 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
   }
   const row = value as Record<string, unknown>;
   if (row.ca_id !== caId) throw new Error('The management API returned a proposal outside the selected authority.');
+  // Older API versions omit the decision fields; they mean no decision.
+  const approvals = row.approval_count ?? 0;
   if (typeof row.profile_id !== 'string' || !canonicalProfileId(row.profile_id)
     || !Number.isInteger(row.revision) || (row.revision as number) < 1 || (row.revision as number) > 1_000_000
-    || (row.status !== 'DRAFT' && row.status !== 'SUBMITTED')
-    || (row.status === 'DRAFT' ? row.submitted_at !== null && row.submitted_at !== undefined
-      : typeof row.submitted_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.submitted_at)
-        || !Number.isFinite(Date.parse(row.submitted_at)))
+    || !LIFECYCLE_STATES.includes(row.status as ProfileDraft['status'])
+    || (row.status === 'DRAFT' ? row.submitted_at !== null && row.submitted_at !== undefined : !timestamp(row.submitted_at))
+    || !Number.isInteger(approvals) || (approvals as number) < 0 || (approvals as number) > 2
+    || (row.status === 'APPROVED') !== (approvals === 2)
+    || (row.status === 'APPROVED' || row.status === 'REJECTED' ? !timestamp(row.decided_at)
+      : row.decided_at !== null && row.decided_at !== undefined)
     || typeof row.display_name !== 'string' || row.display_name.length < 1 || row.display_name.length > 255
     || typeof row.policy_version !== 'string' || row.policy_version.length < 1 || row.policy_version.length > 128
     || !Number.isInteger(row.max_validity_days) || (row.max_validity_days as number) < 1 || (row.max_validity_days as number) > 825
@@ -46,7 +57,9 @@ export function requireProfileDraft(value: unknown, caId: string, expected?: { i
     created_by: row.created_by as string,
     created_at: row.created_at as string,
     status: row.status as ProfileDraft['status'],
-    submitted_at: row.status === 'SUBMITTED' ? row.submitted_at as string : null,
+    submitted_at: row.status === 'DRAFT' ? null : row.submitted_at as string,
+    approval_count: approvals as number,
+    decided_at: row.status === 'APPROVED' || row.status === 'REJECTED' ? row.decided_at as string : null,
     proposal_warnings: row.proposal_warnings,
     snapshot_sha256: row.snapshot_sha256,
   };

@@ -11,3 +11,4 @@ target/
 *.keystore
 .DS_Store
 .env.lab
+.lab-keys/

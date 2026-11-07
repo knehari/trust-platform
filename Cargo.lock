@@ -1980,6 +1980,7 @@ dependencies = [
  "base64 0.22.1",
  "http-body-util",
  "jsonwebtoken",
+ "p256",
  "postgres",
  "rand 0.8.5",
  "reqwest",
@@ -1989,6 +1990,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower",
+ "trust-pki-crypto",
  "uuid",
 ]
 

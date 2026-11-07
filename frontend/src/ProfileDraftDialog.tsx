@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiPost, type ProfileDraft } from './api';
 import { profileDraftMetadataJson } from './profile-draft-export';
+import { ProfileDecision } from './ProfileDecision';
 
 interface SubmitAction {
   caId: string;
@@ -10,7 +11,14 @@ interface SubmitAction {
   onProposeRevision: () => void;
 }
 
-export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected, editor }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean; editor: SubmitAction | null }) {
+interface DecisionAction {
+  caId: string;
+  token: string;
+  onDecided: (status: ProfileDraft['status'], approvalCount: number) => void;
+  onUnauthorized: () => void;
+}
+
+export function ProfileDraftDialog({ draft, onClose, onToggleComparison, comparisonSelected, editor, approver }: { draft: ProfileDraft; onClose: () => void; onToggleComparison: () => void; comparisonSelected: boolean; editor: SubmitAction | null; approver: DecisionAction | null }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [copyFeedback, setCopyFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -60,6 +68,8 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
     ['REVISION', String(draft.revision)],
     ['STATUS', draft.status],
     ...(draft.submitted_at ? [['SUBMITTED FOR APPROVAL', new Date(draft.submitted_at).toLocaleString()]] : []),
+    ...(draft.status !== 'DRAFT' ? [['SIGNED APPROVALS', `${draft.approval_count} of 2`]] : []),
+    ...(draft.decided_at ? [[draft.status === 'REJECTED' ? 'REJECTED' : 'APPROVED', new Date(draft.decided_at).toLocaleString()]] : []),
     ['DISPLAY NAME', draft.display_name],
     ['POLICY VERSION', draft.policy_version],
     ['MAXIMUM VALIDITY', `${draft.max_validity_days} days`],
@@ -85,6 +95,10 @@ export function ProfileDraftDialog({ draft, onClose, onToggleComparison, compari
       {draft.status === 'DRAFT' && <p>Only the latest revision of a profile can be submitted, with exactly the digest shown above. Submission does not approve or activate it.</p>}
       {submitError && <p className="lookup-error" role="alert">{submitError}</p>}
     </div>}
-    <p className="dialog-note">{draft.status === 'SUBMITTED' ? 'This revision awaits approval. Submission is not approval: it cannot authorize certificate issuance.' : 'This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.'}</p>
+    {approver && <ProfileDecision caId={approver.caId} token={approver.token} draft={draft} onDecided={approver.onDecided} onUnauthorized={approver.onUnauthorized} />}
+    <p className="dialog-note">{draft.status === 'SUBMITTED' ? 'This revision awaits approval. Submission is not approval: it cannot authorize certificate issuance.'
+      : draft.status === 'APPROVED' ? 'Two approvers signed this exact revision. Approval does not activate it: no profile can be activated yet, and none can authorize certificate issuance.'
+      : draft.status === 'REJECTED' ? 'An approver rejected this revision. A change needs a new revision.'
+      : 'This is an inert proposal. Syntax warnings are advisory; an empty warning list and the digest are neither approval nor authorization to issue certificates.'}</p>
   </dialog>;
 }

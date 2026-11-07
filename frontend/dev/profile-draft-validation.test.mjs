@@ -9,7 +9,7 @@ const valid = {
   max_validity_days: 90, max_dns_sans: 5,
   proposed_dns_zones: ['lab.invalid'], proposed_signature_suites: ['P256-SHA256'],
   created_by: 'synthetic-editor', created_at: '2026-10-24T12:00:00.000Z',
-  status: 'DRAFT', submitted_at: null, proposal_warnings: [], snapshot_sha256: 'a'.repeat(64),
+  status: 'DRAFT', submitted_at: null, approval_count: 0, decided_at: null, proposal_warnings: [], snapshot_sha256: 'a'.repeat(64),
 };
 
 test('profile proposal reads retain only allowed fields and exact identity', () => {
@@ -38,4 +38,18 @@ test('submitted revisions carry their submission time; drafts carry none', () =>
   assert.deepEqual(requireProfileDraft(submitted, caId), submitted);
   const { submitted_at: _omitted, ...withoutField } = valid;
   assert.equal(requireProfileDraft(withoutField, caId).submitted_at, null);
+});
+
+test('decided revisions carry consistent approval counts and decision times', () => {
+  const submitted = { ...valid, status: 'SUBMITTED', submitted_at: '2026-10-25T12:00:00.000Z', approval_count: 1 };
+  assert.deepEqual(requireProfileDraft(submitted, caId), submitted);
+  const approved = { ...submitted, status: 'APPROVED', approval_count: 2, decided_at: '2026-10-26T12:00:00.000Z' };
+  assert.deepEqual(requireProfileDraft(approved, caId), approved);
+  const rejected = { ...submitted, status: 'REJECTED', approval_count: 1, decided_at: '2026-10-26T12:00:00.000Z' };
+  assert.deepEqual(requireProfileDraft(rejected, caId), rejected);
+  for (const altered of [
+    { ...approved, approval_count: 1 }, { ...submitted, approval_count: 2 }, { ...approved, decided_at: null },
+    { ...submitted, decided_at: '2026-10-26T12:00:00.000Z' }, { ...submitted, approval_count: 3 },
+    { ...submitted, approval_count: -1 }, { ...submitted, approval_count: 1.5 }, { ...valid, status: 'ACTIVE' },
+  ]) assert.throws(() => requireProfileDraft(altered, caId), JSON.stringify(altered));
 });

@@ -175,6 +175,8 @@ mod tests {
             created_at: "2026-10-22T00:00:00.000Z".into(),
             status: "DRAFT",
             submitted_at: None,
+            approval_count: 0,
+            decided_at: None,
             proposal_warnings: vec![],
             snapshot_sha256: String::new(),
         };
@@ -211,6 +213,8 @@ mod tests {
             created_at: "2026-10-22T00:00:00.000Z".into(),
             status: "DRAFT",
             submitted_at: None,
+            approval_count: 0,
+            decided_at: None,
             proposal_warnings: vec![],
             snapshot_sha256: String::new(),
         };

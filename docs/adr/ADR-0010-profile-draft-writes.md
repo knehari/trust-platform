@@ -158,9 +158,11 @@ deliver the lifecycle in three slices (decision of 2026-11-02):
 
 ## What this does not establish
 
-- **No approval, activation or retirement.**
+- **No activation or retirement.**
   - `SUBMITTED` has no effect on issuance.
-  - No route accepts the `policy-approver` or `ca-operator` grants yet.
+  - Signed approval and rejection came later, in
+    [ADR-0011](ADR-0011-signed-profile-decisions.md); no route accepts the
+    `ca-operator` grant yet.
   - No CA lifecycle.
 - **The declared principal is trusted** (as in ADR-0008). The database
   cannot authenticate the API's caller. A compromised API, or a holder of
