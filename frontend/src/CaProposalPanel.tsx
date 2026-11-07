@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
 import { CaDecision } from './CaDecision';
+import { CaOperation } from './CaOperation';
 
 export interface CaProposal {
   ca_id: string;
@@ -8,7 +9,7 @@ export interface CaProposal {
   policy_version: string;
   suite_id: string;
   /** Only ACTIVE is a CA; no state issues anything yet (ADR-0013, ADR-0014). */
-  lifecycle_status: 'PROPOSED' | 'KEY_ATTESTED' | 'APPROVED' | 'REJECTED' | 'ACTIVE';
+  lifecycle_status: 'PROPOSED' | 'KEY_ATTESTED' | 'APPROVED' | 'REJECTED' | 'ACTIVE' | 'SUSPENDED' | 'RETIRED';
   proposed_at: string;
   certificate_sha256: string | null;
   spki_sha256: string | null;
@@ -19,6 +20,13 @@ export interface CaProposal {
   approval_count: number;
   decided_at: string | null;
   activated_at: string | null;
+  state_changed_at: string | null;
+  /** The open or approved reactivation or retirement request (ADR-0015). */
+  change_request_id: string | null;
+  change_action: 'reactivate' | 'retire' | null;
+  change_status: 'OPEN' | 'APPROVED' | null;
+  change_approval_count: number | null;
+  change_reason: string | null;
 }
 
 interface Props {
@@ -135,6 +143,8 @@ export function CaProposalPanel({ token, canAdminister, canApprove, onUnauthoriz
         <td>{item.lifecycle_status !== 'PROPOSED'
           ? <><small>SHA-256 {item.certificate_sha256}</small><br /><small>Valid {item.not_before} – {item.not_after}</small><br /><small>Custody: {item.custody} (software key, laboratory only)</small>
             <CaDecision token={token} proposal={item} canDecide={canApprove} canActivate={canAdminister}
+              onChanged={message => { setNotice(message); setReload(value => value + 1); }} onUnauthorized={onUnauthorized} />
+            <CaOperation token={token} proposal={item} canAdminister={canAdminister} canApprove={canApprove}
               onChanged={message => { setNotice(message); setReload(value => value + 1); }} onUnauthorized={onUnauthorized} /></>
           : canAdminister && <>
             <label>Certificate (PEM) for “{item.display_name}”<textarea rows={4} value={pem[item.ca_id] ?? ''} onChange={event => setPem(values => ({ ...values, [item.ca_id]: event.target.value }))} /></label>

@@ -1,5 +1,5 @@
 //! Laboratory audit tool: re-verifies the CA lifecycle records (migrations
-//! 0025–0026, ADR-0013 and ADR-0014) independently of the API that recorded
+//! 0025–0027, ADR-0013 to ADR-0015) independently of the API that recorded
 //! them.
 //!
 //! For each registered issuer certificate it checks, with the same verifier
@@ -14,6 +14,11 @@
 //! approvers and keys. Each activated CA must have two approvals, no
 //! rejection, an activator who did not decide, and a `ca` row that matches
 //! the proposal.
+//!
+//! Decisions on reactivation and retirement requests are checked the same
+//! way. Each applied request must have two approvals, no rejection, neither
+//! the requester nor the applier among its deciders, a state change that
+//! matches it, and, for a retired CA, no active profile revision left.
 //!
 //! PostgreSQL verifies neither X.509 nor ECDSA, so a compromised API or
 //! writer login could record what the API would refuse; this tool is how
@@ -118,6 +123,68 @@ fn load_certificates(db: &mut Client) -> Result<Vec<RecordedCertificate>, postgr
         .collect())
 }
 
+fn load_change_decisions(db: &mut Client) -> Result<Vec<RecordedDecision>, postgres::Error> {
+    Ok(db
+        .query(
+            "SELECT d.request_id::text, d.decision, d.approver_issuer || ' ' || d.approver_subject, \
+                    d.public_key_sec1, d.claim, d.signature_der, \
+                    k.issuer = d.approver_issuer AND k.subject = d.approver_subject \
+                        AND k.public_key_sec1 = d.public_key_sec1, \
+                    d.claim = ca_change_decision_claim(d.decision, r.request_id, r.ca_id, r.action, \
+                        r.from_state, r.reason_sha256, c.certificate_sha256, d.approver_issuer, \
+                        d.approver_subject, d.key_id, d.claim_issued_at) \
+             FROM ca_change_decision d \
+             JOIN ca_change_request r USING (request_id) \
+             JOIN ca_issuer_certificate c ON c.ca_id = r.ca_id \
+             JOIN ca_approver_key k ON k.key_id = d.key_id \
+             ORDER BY d.request_id, d.decided_at",
+            &[],
+        )?
+        .into_iter()
+        .map(|row| RecordedDecision {
+            ca_id: row.get(0),
+            decision: row.get(1),
+            approver: row.get(2),
+            public_key: row.get(3),
+            claim: row.get(4),
+            signature: row.get(5),
+            key_registered: row.get(6),
+            claim_matches: row.get(7),
+        })
+        .collect())
+}
+
+/// Applied change requests that break the rules, with the reason.
+fn application_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgres::Error> {
+    Ok(db
+        .query(
+            "SELECT r.request_id::text, concat_ws('; ', \
+                 CASE WHEN (SELECT count(*) FROM ca_change_decision d WHERE d.request_id = r.request_id \
+                            AND d.decision = 'approve') < 2 THEN 'fewer than two approvals' END, \
+                 CASE WHEN EXISTS (SELECT 1 FROM ca_change_decision d WHERE d.request_id = r.request_id \
+                            AND d.decision = 'reject') THEN 'a rejection was recorded' END, \
+                 CASE WHEN EXISTS (SELECT 1 FROM ca_change_decision d WHERE d.request_id = r.request_id \
+                            AND ((d.approver_issuer = q.actor_issuer AND d.approver_subject = q.actor_subject) \
+                              OR (d.approver_issuer = e.actor_issuer AND d.approver_subject = e.actor_subject))) \
+                      THEN 'the requester or the applier decided on the request' END, \
+                 CASE WHEN s.ca_id <> r.ca_id OR s.action <> r.action OR s.from_state <> r.from_state \
+                            OR s.to_state <> CASE r.action WHEN 'reactivate' THEN 'ACTIVE' ELSE 'RETIRED' END \
+                      THEN 'the state change does not match the request' END, \
+                 CASE WHEN r.action = 'retire' AND EXISTS (SELECT 1 FROM certificate_profile_active p \
+                            WHERE p.ca_id = r.ca_id) THEN 'a retired CA still has an active profile revision' END) \
+             FROM ca_change_application a \
+             JOIN ca_change_request r USING (request_id) \
+             JOIN ca_lifecycle_event q ON q.event_id = r.requested_event_id \
+             JOIN ca_state_change s ON s.change_id = a.change_id \
+             JOIN ca_lifecycle_event e ON e.event_id = s.event_id",
+            &[],
+        )?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+        .filter(|(_, reasons)| !reasons.is_empty())
+        .collect())
+}
+
 fn load_decisions(db: &mut Client) -> Result<Vec<RecordedDecision>, postgres::Error> {
     Ok(db
         .query(
@@ -190,7 +257,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             eprintln!("FAIL certificate of {}: {}", record.ca_id, found.join("; "));
         }
     }
-    let decisions = load_decisions(&mut db)?;
+    let mut decisions = load_decisions(&mut db)?;
+    // Change decisions are keyed by their request, so approvals of one
+    // request are compared together.
+    decisions.extend(load_change_decisions(&mut db)?);
     let mut approvals: BTreeMap<&str, Vec<&RecordedDecision>> = BTreeMap::new();
     for decision in &decisions {
         let found = decision_problems(decision);
@@ -221,6 +291,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             eprintln!("FAIL {ca_id}: approvals share an approver or a key");
         }
     }
+    for (request_id, reasons) in application_problems(&mut db)? {
+        failed += 1;
+        eprintln!("FAIL applied change request {request_id}: {reasons}");
+    }
     let activations = activation_problems(&mut db)?;
     for (ca_id, reasons) in &activations {
         failed += 1;
@@ -234,7 +308,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         .query_one("SELECT count(*) FROM ca_activation", &[])?
         .get(0);
     println!(
-        "PASS: {} issuer certificate(s), {} CA decision(s) and {} activation(s) verified independently",
+        "PASS: {} issuer certificate(s), {} CA and change decision(s), {} activation(s) and their applied changes verified independently",
         certificates.len(),
         decisions.len(),
         activated
