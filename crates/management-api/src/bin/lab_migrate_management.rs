@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012–0021.
+//! Transactional laboratory runner for management migrations 0012–0022.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, NoTls, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 10] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 11] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -109,6 +109,14 @@ const MIGRATIONS: [(&str, &str, &[&str]); 10] = [
         )),
         &[],
     ),
+    (
+        "0022_profile_draft_revision_sequence",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0022_profile_draft_revision_sequence.sql"
+        )),
+        &[],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -123,7 +131,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0021 recorded and current");
+    println!("PASS: management migrations 0012–0022 recorded and current");
     Ok(())
 }
 
@@ -242,6 +250,17 @@ fn schema_present(
         )?;
         return Ok(relations_present(tx, relations, require_all)?
             && (0..2).all(|index| row.get::<usize, bool>(index) == require_all));
+    }
+    if version == "0022_profile_draft_revision_sequence" {
+        let row = tx.query_one(
+            "SELECT to_regprocedure('enforce_profile_draft_revision_sequence()') IS NOT NULL, \
+             EXISTS (SELECT 1 FROM pg_trigger \
+                     WHERE tgrelid=to_regclass('public.certificate_profile_draft') \
+                       AND tgname='enforce_profile_draft_revision_sequence_after_insert' \
+                       AND NOT tgisinternal)",
+            &[],
+        )?;
+        return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all));
     }
     if version == "0021_management_reader_isolation" {
         // Views are replaced in place; the marker function is the new object.

@@ -1,7 +1,7 @@
 mod auth;
 mod profile_proposal;
 
-use auth::{Claims, OidcVerifier};
+use auth::{Claims, ClientKind, ClientPolicy, OidcVerifier};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -188,6 +188,16 @@ fn literal_prefix(raw: Option<String>) -> Result<Option<String>, StatusCode> {
         .replace('%', "\\%")
         .replace('_', "\\_");
     Ok(Some(format!("{escaped}%")))
+}
+
+fn profile_policy_version_filter(raw: Option<String>) -> Result<Option<String>, StatusCode> {
+    let value = raw.map(|value| value.trim().to_owned());
+    if value.as_ref().is_some_and(|value| {
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(value)
 }
 
 fn exact_san_dns(raw: Option<String>) -> Result<Option<String>, StatusCode> {
@@ -522,8 +532,12 @@ fn history_anchor(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
+    let clients = ClientPolicy::new(
+        env::var("TRUST_OIDC_HUMAN_CLIENT_ID")?,
+        env::var("TRUST_OIDC_WORKLOAD_CLIENT_ID")?,
+    )?;
     let database_url = env::var("TRUST_DATABASE_URL")?;
-    let verifier = OidcVerifier::discover(&issuer, &audience).await?;
+    let verifier = OidcVerifier::discover(&issuer, &audience, clients).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
     let safe_db_role = query_db(
         database_url.clone(),
@@ -718,7 +732,14 @@ async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claim
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
+    let (required_role, forbidden_role) = match claims.client_kind {
+        Some(ClientKind::Human) => ("trust-ca-reader", "trust-ca-workload-reader"),
+        Some(ClientKind::Workload) => ("trust-ca-workload-reader", "trust-ca-reader"),
+        None => return Err(StatusCode::UNAUTHORIZED),
+    };
+    if !claims.roles.iter().any(|role| role == required_role)
+        || claims.roles.iter().any(|role| role == forbidden_role)
+    {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(claims)
@@ -944,12 +965,7 @@ async fn list_profile_drafts(
     }
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
     let search = literal_prefix(page.q)?;
-    let policy_version = page.policy_version.map(|value| value.trim().to_owned());
-    if policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
-    }) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    let policy_version = profile_policy_version_filter(page.policy_version)?;
     let from = page.from.as_deref().map(valid_utc_timestamp).transpose()?;
     let until = page.until.as_deref().map(valid_utc_timestamp).transpose()?;
     if from
@@ -1600,7 +1616,7 @@ mod tests {
         let token = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
@@ -2172,7 +2188,7 @@ mod tests {
         let unprovisioned = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"unprovisioned", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
             }),
@@ -2238,7 +2254,7 @@ mod tests {
         let token = encode(
             &header,
             &json!({
-                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator",
+                "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"ca-page-operator", "azp":"trust-console",
                 "nbf":now-1, "exp":now+60, "roles":["trust-ca-reader"],
                 "ca_ids":ca_ids
             }),
@@ -2472,6 +2488,8 @@ mod tests {
             sub: "operator".into(),
             roles: vec!["trust-ca-reader".into()],
             ca_ids: vec!["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into()],
+            azp: "trust-console".into(),
+            client_kind: Some(ClientKind::Human),
         };
         assert_eq!(
             scoped_ca_id("ffffffff-ffff-4fff-8fff-ffffffffffff", &claims),
@@ -2499,6 +2517,22 @@ mod tests {
             "../x|1",
         ] {
             assert!(profile_draft_cursor(Some(invalid.into())).is_err());
+        }
+    }
+
+    #[test]
+    fn profile_policy_filter_matches_database_character_limit() {
+        assert_eq!(profile_policy_version_filter(None), Ok(None));
+        let valid = "😀".repeat(128);
+        assert_eq!(
+            profile_policy_version_filter(Some(valid.clone())),
+            Ok(Some(valid))
+        );
+        for invalid in ["😀".repeat(129), " ".into(), "v\u{0085}1".into()] {
+            assert_eq!(
+                profile_policy_version_filter(Some(invalid)),
+                Err(StatusCode::BAD_REQUEST)
+            );
         }
     }
 
@@ -2592,7 +2626,7 @@ mod tests {
         header.kid = Some("http-test".into());
         let now = jsonwebtoken::get_current_timestamp();
         let mut claims = json!({
-            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator",
+            "iss":"https://issuer.example.test", "aud":"trust-api", "sub":"operator", "azp":"trust-console",
             "nbf":now-1, "exp":now+60, "roles":[],
             "ca_ids":["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]
         });
@@ -2782,6 +2816,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_role.status(), StatusCode::FORBIDDEN);
+        let mut wrong_client = claims.clone();
+        wrong_client["azp"] = json!("unknown-client");
+        let wrong_client_token = encode(&header, &wrong_client, &signer).unwrap();
+        let denied_client = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {wrong_client_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_client.status(), StatusCode::UNAUTHORIZED);
+        let mut workload_claims = claims.clone();
+        workload_claims["azp"] = json!("trust-workload");
+        workload_claims["roles"] = json!(["trust-ca-reader"]);
+        let wrong_role_token = encode(&header, &workload_claims, &signer).unwrap();
+        let denied_workload = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {wrong_role_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_workload.status(), StatusCode::FORBIDDEN);
+        let mut human_with_workload_role = claims.clone();
+        human_with_workload_role["roles"] = json!(["trust-ca-workload-reader"]);
+        let human_with_workload_role_token =
+            encode(&header, &human_with_workload_role, &signer).unwrap();
+        let denied_human = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header(
+                        "authorization",
+                        format!("Bearer {human_with_workload_role_token}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_human.status(), StatusCode::FORBIDDEN);
+        workload_claims["roles"] = json!(["trust-ca-reader", "trust-ca-workload-reader"]);
+        let both_roles_token = encode(&header, &workload_claims, &signer).unwrap();
+        let denied_mixed_roles = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/cas")
+                    .header("authorization", format!("Bearer {both_roles_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_mixed_roles.status(), StatusCode::FORBIDDEN);
+        workload_claims["roles"] = json!(["trust-ca-workload-reader"]);
+        let workload_token = encode(&header, &workload_claims, &signer).unwrap();
+        let mut workload_headers = HeaderMap::new();
+        workload_headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {workload_token}")).unwrap(),
+        );
+        assert_eq!(
+            authorize(&workload_headers, &state.verifier)
+                .await
+                .unwrap()
+                .client_kind,
+            Some(ClientKind::Workload)
+        );
         assert_ne!(
             no_role
                 .headers()

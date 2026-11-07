@@ -47,6 +47,8 @@ services:
     environment:
       TRUST_OIDC_ISSUER: http://127.0.0.1:8080
       TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_OIDC_HUMAN_CLIENT_ID: trust-console
+      TRUST_OIDC_WORKLOAD_CLIENT_ID: trust-workload
       TRUST_API_BIND: 0.0.0.0:8081
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
     healthcheck:

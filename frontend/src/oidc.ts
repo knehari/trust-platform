@@ -5,7 +5,7 @@ const clientId = import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined;
 const scope = (import.meta.env.VITE_OIDC_SCOPE as string | undefined) ?? 'openid profile trust-ca-read';
 
 export const oidcConfigurationError = !issuer || !clientId
-  ? 'OIDC test issuer and client ID are not configured.'
+  ? 'OIDC issuer and console client ID are not configured.'
   : null;
 
 export const userManager = oidcConfigurationError ? null : new UserManager({
