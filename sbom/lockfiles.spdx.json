@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-51d6da95eef96eef97d7b114897d0036d6eb95f37c7b0f0699f9968b865d5782",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-184333d00da9f36ebf9ed9b289299aee970c3cdaed8fb10f9a951c403934ebbb",
   "creationInfo": {
-    "created": "2026-10-21T17:05:52Z",
+    "created": "2026-11-07T00:54:16Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],

@@ -9,7 +9,7 @@ export interface ProfileDifference {
 }
 
 function recordedStatus(status: string): boolean {
-  return status === 'DRAFT' || status === 'SUBMITTED';
+  return status === 'DRAFT' || status === 'SUBMITTED' || status === 'APPROVED' || status === 'REJECTED';
 }
 
 export function compareProfileRevisions(first: ProfileDraft, second: ProfileDraft): ProfileDifference[] {

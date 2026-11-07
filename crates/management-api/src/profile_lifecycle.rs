@@ -59,24 +59,29 @@ struct SubmissionResponse {
     submitted_at: String,
 }
 
-/// The verified principal and inputs common to both write routes.
-struct WriteContext {
-    issuer: String,
-    subject: String,
-    ca_id: String,
-    operation: String,
-    request_sha256: Vec<u8>,
-    writer_url: String,
+/// The verified principal and inputs common to the write routes.
+pub(crate) struct WriteContext {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) ca_id: String,
+    /// The Idempotency-Key, or empty when the route records nothing.
+    pub(crate) operation: String,
+    pub(crate) request_sha256: Vec<u8>,
+    pub(crate) writer_url: String,
 }
 
-async fn write_context(
+/// Verifies the token, the lifecycle role and the CA scope, then the
+/// request's content type, size and (for recording routes) idempotency key.
+pub(crate) async fn write_context(
     state: &AppState,
     headers: &HeaderMap,
     raw_ca: &str,
     body: &Bytes,
+    required_role: &str,
+    idempotent: bool,
 ) -> Result<WriteContext, StatusCode> {
     let claims = authenticate(headers, &state.verifier).await?;
-    if !claims.roles.iter().any(|role| role == EDITOR_ROLE) {
+    if !claims.roles.iter().any(|role| role == required_role) {
         return Err(StatusCode::FORBIDDEN);
     }
     let ca_id = scoped_ca_id(raw_ca, &claims)?;
@@ -99,12 +104,16 @@ async fn write_context(
     if body.len() > MAX_WRITE_BODY_BYTES {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    let operation = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| uuid::Uuid::parse_str(value).ok())
-        .ok_or(StatusCode::BAD_REQUEST)?
-        .to_string();
+    let operation = if idempotent {
+        headers
+            .get("idempotency-key")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .ok_or(StatusCode::BAD_REQUEST)?
+            .to_string()
+    } else {
+        String::new()
+    };
     Ok(WriteContext {
         issuer: claims.iss,
         subject: claims.sub,
@@ -115,8 +124,8 @@ async fn write_context(
     })
 }
 
-/// Maps the lifecycle functions' SQLSTATEs (migration 0022) to HTTP.
-fn write_status(error: &postgres::Error) -> StatusCode {
+/// Maps the lifecycle functions' SQLSTATEs (migrations 0022–0023) to HTTP.
+pub(crate) fn write_status(error: &postgres::Error) -> StatusCode {
     let Some(code) = error.code() else {
         return StatusCode::SERVICE_UNAVAILABLE;
     };
@@ -155,7 +164,7 @@ fn valid_create(request: &CreateDraftRequest) -> bool {
             .all(|suite| bounded(suite, 64))
 }
 
-fn decode_sha256_hex(raw: &str) -> Option<Vec<u8>> {
+pub(crate) fn decode_sha256_hex(raw: &str) -> Option<Vec<u8>> {
     if raw.len() != 64
         || !raw
             .bytes()
@@ -168,7 +177,7 @@ fn decode_sha256_hex(raw: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn with_replay_header(mut response: Response, replayed: bool) -> Response {
+pub(crate) fn with_replay_header(mut response: Response, replayed: bool) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -188,7 +197,7 @@ pub(crate) async fn create_profile_draft(
     Path(raw_ca): Path<String>,
     body: Bytes,
 ) -> Result<Response, StatusCode> {
-    let context = write_context(&state, &headers, &raw_ca, &body).await?;
+    let context = write_context(&state, &headers, &raw_ca, &body, EDITOR_ROLE, true).await?;
     let request: CreateDraftRequest =
         serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     if !valid_create(&request) {
@@ -256,6 +265,8 @@ pub(crate) async fn create_profile_draft(
         created_at,
         status: "DRAFT",
         submitted_at: None,
+        approval_count: 0,
+        decided_at: None,
         proposal_warnings,
         snapshot_sha256: String::new(),
     };
@@ -284,7 +295,7 @@ pub(crate) async fn submit_profile_draft(
     Path((raw_ca, profile_id, raw_revision)): Path<(String, String, String)>,
     body: Bytes,
 ) -> Result<Response, StatusCode> {
-    let context = write_context(&state, &headers, &raw_ca, &body).await?;
+    let context = write_context(&state, &headers, &raw_ca, &body, EDITOR_ROLE, true).await?;
     if !valid_profile_id(&profile_id) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -380,7 +391,8 @@ pub(crate) fn restricted_writer_role(db: &mut postgres::Client) -> Result<bool, 
          AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace \
              WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') \
              AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) \
-         AND management_profile_lifecycle_version() = 1",
+         AND management_profile_lifecycle_version() = 1 \
+         AND management_profile_decision_version() = 1",
         &[],
     )
     .map(|row| row.get::<_, bool>(0))

@@ -6,8 +6,10 @@ first slice, recording and submitting profile drafts, is implemented in the
 laboratory under [ADR-0010](../adr/ADR-0010-profile-draft-writes.md)
 (Proposed), after the identity provider of
 [ADR-0009](../adr/ADR-0009-laboratory-identity-provider.md) and with a
-write-specific database role. Approval, activation, retirement and every CA
-transition remain unimplemented. This contract refines
+write-specific database role. **Update, 7 November 2026:** signed approval
+and rejection by two distinct approvers with distinct registered P-256 keys
+follow [ADR-0011](../adr/ADR-0011-signed-profile-decisions.md) (Proposed).
+Activation, retirement and every CA transition remain unimplemented. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

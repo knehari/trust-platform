@@ -32,12 +32,13 @@ test('the revision form sends exactly the bounded request body', () => {
   ]) assert.ok('error' in parseProfileDraftForm({ ...fields, ...altered }), JSON.stringify(altered));
 });
 
-test('comparison accepts draft and submitted revisions only', () => {
+test('comparison accepts recorded lifecycle states only', () => {
   const base = { ca_id: 'ca', profile_id: 'server-lab', display_name: 'S', policy_version: 'v1', max_validity_days: 90,
     max_dns_sans: 5, proposed_dns_zones: ['lab.invalid'], proposed_signature_suites: ['P256-SHA256'], created_by: 'e',
     created_at: '2026-10-24T12:00:00.000Z', submitted_at: null, proposal_warnings: [], snapshot_sha256: 'a'.repeat(64) };
   const first = { ...base, revision: 1, status: 'SUBMITTED', submitted_at: '2026-10-25T12:00:00.000Z' };
   const second = { ...base, revision: 2, status: 'DRAFT' };
   assert.ok(compareProfileRevisions(first, second).length > 0);
-  assert.throws(() => compareProfileRevisions({ ...first, status: 'APPROVED' }, second));
+  assert.ok(compareProfileRevisions({ ...first, status: 'APPROVED', approval_count: 2 }, second).length > 0);
+  assert.throws(() => compareProfileRevisions({ ...first, status: 'ACTIVE' }, second));
 });

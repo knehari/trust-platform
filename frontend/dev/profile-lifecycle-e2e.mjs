@@ -2,7 +2,9 @@
 // (migration 0022, ADR-0010) through Keycloak sign-ins and the management
 // API of the Compose stack. Run with .env.lab loaded, after compose-smoke.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { clientCredentials, requiredEnv, signIn } from './keycloak-login.mjs';
 
 const realm = 'http://127.0.0.1:8080/realms/trust-lab';
@@ -49,6 +51,12 @@ const base = `/v1/cas/${allowedCa}/profile-drafts`;
 
 const author = await token('lab-author', 'TRUST_LAB_PW_AUTHOR');
 const reader = await token('lab-reader', 'TRUST_LAB_PW_READER');
+const approver1 = await token('lab-approver-1', 'TRUST_LAB_PW_APPROVER_1');
+const approver2 = await token('lab-approver-2', 'TRUST_LAB_PW_APPROVER_2');
+const keys = fileURLToPath(new URL('../../.lab-keys/', import.meta.url));
+// Signs exactly like an approver at the command line: OpenSSL, the
+// approver's own key from scripts/lab/init-env.sh, DER output.
+const sign = (keyName, claim) => execFileSync('openssl', ['dgst', '-sha256', '-sign', `${keys}${keyName}.pem`], { input: claim }).toString('base64');
 let first;
 let second;
 
@@ -111,12 +119,50 @@ await check('a revision with syntax warnings cannot be submitted', async () => {
   assert.equal((await get(`${base}/${profileId}/${warned.body.revision}`, reader)).body.status, 'DRAFT');
 });
 
+await check('two distinct approvers sign revision 2 and it becomes APPROVED', async () => {
+  const claims = `${base}/${profileId}/2/decision-claims`;
+  const decisions = `${base}/${profileId}/2/decisions`;
+  assert.equal((await post(claims, author, { decision: 'approve' })).status, 403);
+  const first = await post(claims, approver1, { decision: 'approve' });
+  assert.equal(first.status, 200);
+  assert.match(first.body.claim, /^trust-platform\/profile-decision\/v1;decision=approve;/);
+  assert.ok(first.body.claim.includes(`;snapshot_sha256=${second.body.snapshot_sha256};`));
+  const record = (accessToken, claim, keyName) => post(decisions, accessToken,
+    { decision: 'approve', issued_at: claim.issued_at, signature_der_base64: sign(keyName, claim.claim) });
+  // Approver 1's claim signed with approver 2's key is refused.
+  assert.equal((await record(approver1, first.body, 'lab-approver-2')).status, 422);
+  const one = await record(approver1, first.body, 'lab-approver-1');
+  assert.equal(one.status, 201);
+  assert.deepEqual([one.body.status, one.body.approval_count], ['SUBMITTED', 1]);
+  assert.equal((await post(claims, approver1, { decision: 'approve' })).status, 409);
+  const claim2 = await post(claims, approver2, { decision: 'approve' });
+  const two = await record(approver2, claim2.body, 'lab-approver-2');
+  assert.deepEqual([two.status, two.body.status, two.body.approval_count], [201, 'APPROVED', 2]);
+  const detail = await get(`${base}/${profileId}/2`, reader);
+  assert.deepEqual([detail.body.status, detail.body.approval_count], ['APPROVED', 2]);
+  assert.ok(detail.body.decided_at);
+});
+
+await check('one signed rejection ends a revision', async () => {
+  const third = await post(base, author, draft({ display_name: 'To be rejected' }));
+  const revision = third.body.revision;
+  assert.equal((await post(`${base}/${profileId}/${revision}/submission`, author, { snapshot_sha256: third.body.snapshot_sha256 })).status, 201);
+  const claim = await post(`${base}/${profileId}/${revision}/decision-claims`, approver2, { decision: 'reject' });
+  const rejected = await post(`${base}/${profileId}/${revision}/decisions`, approver2,
+    { decision: 'reject', issued_at: claim.body.issued_at, signature_der_base64: sign('lab-approver-2', claim.body.claim) });
+  assert.deepEqual([rejected.status, rejected.body.status], [201, 'REJECTED']);
+  assert.equal((await post(`${base}/${profileId}/${revision}/decision-claims`, approver1, { decision: 'approve' })).status, 409);
+  assert.equal((await get(`${base}/${profileId}/${revision}`, reader)).body.status, 'REJECTED');
+});
+
 await check('each write left an audit event readers can see', async () => {
   const audit = await get(`/v1/cas/${allowedCa}/audit?order=newest`, reader);
   assert.equal(audit.status, 200);
   const types = audit.body.map(event => event.event_type);
   assert.ok(types.filter(type => type === 'profile.draft.created').length >= 3);
   assert.ok(types.includes('profile.draft.submitted'));
+  assert.equal(types.filter(type => type === 'profile.draft.approval').length >= 2, true);
+  assert.ok(types.includes('profile.draft.rejection'));
   assert.ok(audit.body.every(event => !('actor_id' in event)));
 });
 

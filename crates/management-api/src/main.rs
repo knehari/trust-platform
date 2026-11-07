@@ -1,4 +1,5 @@
 mod auth;
+mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
 
@@ -38,7 +39,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status \
+     , p.lifecycle_status, p.approval_count \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -109,6 +110,8 @@ struct ProfileDraft {
     created_at: String,
     status: &'static str,
     submitted_at: Option<String>,
+    approval_count: i32,
+    decided_at: Option<String>,
     proposal_warnings: Vec<&'static str>,
     snapshot_sha256: String,
 }
@@ -555,7 +558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0022")?;
+    .map_err(|_| "management views unavailable or older than migration 0023")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -613,6 +616,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/submission",
             axum::routing::post(profile_lifecycle::submit_profile_draft),
+        )
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/decision-claims",
+            axum::routing::post(profile_decision::prepare_decision),
+        )
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/decisions",
+            axum::routing::post(profile_decision::record_decision),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -1032,7 +1043,7 @@ async fn list_profile_drafts(
         )?.get(0);
         if !granted { return Ok(None); }
         let query = format!("SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at \
              FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (profile_id,revision){comparison}($4,$5)) \
@@ -1090,9 +1101,13 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
         status: match row.get::<_, &str>(11) {
             "DRAFT" => "DRAFT",
             "SUBMITTED" => "SUBMITTED",
+            "APPROVED" => "APPROVED",
+            "REJECTED" => "REJECTED",
             _ => "UNKNOWN",
         },
         submitted_at: row.get(12),
+        approval_count: row.get(13),
+        decided_at: row.get(14),
         proposal_warnings,
         snapshot_sha256: String::new(),
     };
@@ -1121,7 +1136,7 @@ async fn get_profile_draft_revision(
         if !granted { return Ok(None); }
         db.query_opt(
             "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at \
              FROM management_profile_draft WHERE ca_id=$1 AND profile_id=$2 AND revision=$3 \
              AND EXISTS (SELECT 1 FROM management_reader_scope WHERE issuer=$4 AND subject=$5 AND ca_id=$1)",
             &[&ca_id, &profile_id, &revision, &issuer, &subject],
@@ -1814,6 +1829,299 @@ mod tests {
         .await;
         assert_eq!(detail["status"], "DRAFT");
         assert_eq!(detail["submitted_at"], serde_json::Value::Null);
+    }
+
+    /// Public keys of the deterministic approver test keys ([0x11; 32],
+    /// [0x22; 32], [0x33; 32]); CI registers them for approver-http-1,
+    /// approver-http-2 and operator (migration 0023).
+    const APPROVER_TEST_KEYS: [(u8, &str); 3] = [
+        (0x11, "040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794"),
+        (0x22, "04d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf350185e895372df6221ea3a137557e473fddb6755f05bd507c3c533fce9c91285"),
+        (0x33, "0451a7580833898ea1b183cbd7350a4099078c6ef1c1e18e970cd7683035f25e7d0110522712b0b5a7cff081685486984a94e6831edac46e7360fa9d834a7a81a1"),
+    ];
+
+    #[test]
+    fn approver_test_keys_match_the_ci_registration() {
+        use p256::ecdsa::SigningKey;
+        for (scalar, expected) in APPROVER_TEST_KEYS {
+            let key = SigningKey::from_slice(&[scalar; 32]).unwrap();
+            let point = key.verifying_key().to_encoded_point(false);
+            let hex: String = point
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(hex, expected);
+        }
+    }
+
+    /// Signed decisions against PostgreSQL (migration 0023). CI seeds the
+    /// grants and keys named above.
+    #[tokio::test]
+    async fn profile_decisions_need_two_distinct_signed_approvals() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: profile decisions need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"decision-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("decision-test".into());
+        const CA: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[CA]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let editor = token(
+            "operator",
+            json!(["trust-profile-editor", "trust-ca-reader"]),
+        );
+        let author_as_approver = token("operator", json!(["trust-policy-approver"]));
+        let approver_1 = token("approver-http-1", json!(["trust-policy-approver"]));
+        let approver_2 = token("approver-http-2", json!(["trust-policy-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x11; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x22; 32]).unwrap();
+        let sign = |key: &SigningKey, text: &str| {
+            let signature: Signature = key.sign(text.as_bytes());
+            base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())
+        };
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            if key {
+                request = request.header("idempotency-key", random_uuid().to_string());
+            }
+            let request = request.body(Body::from(body.to_string())).unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let base = format!("/v1/cas/{CA}/profile-drafts");
+        // Two submitted revisions authored and submitted by "operator".
+        let mut profiles = Vec::new();
+        for _ in 0..2 {
+            let profile = format!("decide-{}", &random_uuid().simple().to_string()[..12]);
+            let (status, draft) = post(
+                &editor,
+                base.clone(),
+                json!({"profile_id":profile, "display_name":"Decision", "policy_version":"v1",
+                       "max_validity_days":90, "max_dns_sans":5,
+                       "proposed_dns_zones":["lab.invalid"], "proposed_signature_suites":["P256-SHA256"]}),
+                true,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            let (status, _) = post(
+                &editor,
+                format!("{base}/{profile}/1/submission"),
+                json!({"snapshot_sha256": draft["snapshot_sha256"]}),
+                true,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            profiles.push(profile);
+        }
+        let claims = |profile: &str| format!("{base}/{profile}/1/decision-claims");
+        let decisions = |profile: &str| format!("{base}/{profile}/1/decisions");
+        let approve = json!({"decision":"approve"});
+
+        // Refusals: an editor token, the author holding an approver grant.
+        assert_eq!(
+            post(&editor, claims(&profiles[0]), approve.clone(), false)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                &author_as_approver,
+                claims(&profiles[0]),
+                approve.clone(),
+                false
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                &approver_1,
+                claims(&profiles[0]),
+                json!({"decision":"activate"}),
+                false
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // First approval, signed by approver 1's key over the exact claim.
+        let (status, claim) = post(&approver_1, claims(&profiles[0]), approve.clone(), false).await;
+        assert_eq!(status, StatusCode::OK);
+        let text = claim["claim"].as_str().unwrap().to_owned();
+        assert!(text.starts_with("trust-platform/profile-decision/v1;decision=approve;"));
+        assert!(text.contains(";approver_subject=approver-http-1;"));
+        let body = json!({"decision":"approve", "issued_at":claim["issued_at"], "signature_der_base64":sign(&key_1, &text)});
+        let first = post(&approver_1, decisions(&profiles[0]), body.clone(), true).await;
+        assert_eq!(first.0, StatusCode::CREATED);
+        assert_eq!(
+            (
+                first.1["status"].as_str(),
+                first.1["approval_count"].as_i64()
+            ),
+            (Some("SUBMITTED"), Some(1))
+        );
+
+        // Approver 2: a signature by another key, or over altered text, or
+        // with another issue time, is refused and leaves nothing.
+        let (_, claim_2) = post(&approver_2, claims(&profiles[0]), approve.clone(), false).await;
+        let text_2 = claim_2["claim"].as_str().unwrap().to_owned();
+        let attempt = |signature: String, issued_at: serde_json::Value| json!({"decision":"approve", "issued_at":issued_at, "signature_der_base64":signature});
+        assert_eq!(
+            post(
+                &approver_2,
+                decisions(&profiles[0]),
+                attempt(sign(&key_1, &text_2), claim_2["issued_at"].clone()),
+                true
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            post(
+                &approver_2,
+                decisions(&profiles[0]),
+                attempt(
+                    sign(&key_2, &text_2.replace("revision=1", "revision=2")),
+                    claim_2["issued_at"].clone()
+                ),
+                true
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            post(
+                &approver_2,
+                decisions(&profiles[0]),
+                attempt(sign(&key_2, &text_2), json!("2026-01-01T00:00:00.000Z")),
+                true
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(
+                &approver_2,
+                decisions(&profiles[0]),
+                attempt("not base64!".into(), claim_2["issued_at"].clone()),
+                true
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (_, detail) =
+            detail_response(&app, &editor, &format!("{base}/{}/1", profiles[0])).await;
+        assert_eq!(
+            (detail["status"].as_str(), detail["approval_count"].as_i64()),
+            (Some("SUBMITTED"), Some(1))
+        );
+
+        // Approver 1 cannot decide twice; approver 2's valid signature approves.
+        assert_eq!(
+            post(&approver_1, claims(&profiles[0]), approve.clone(), false)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let second = post(
+            &approver_2,
+            decisions(&profiles[0]),
+            attempt(sign(&key_2, &text_2), claim_2["issued_at"].clone()),
+            true,
+        )
+        .await;
+        assert_eq!(second.0, StatusCode::CREATED);
+        assert_eq!(
+            (
+                second.1["status"].as_str(),
+                second.1["approval_count"].as_i64()
+            ),
+            (Some("APPROVED"), Some(2))
+        );
+        let (_, detail) =
+            detail_response(&app, &editor, &format!("{base}/{}/1", profiles[0])).await;
+        assert_eq!(detail["status"], "APPROVED");
+        assert!(detail["decided_at"].is_string());
+
+        // One rejection ends the other revision.
+        let (_, claim_r) = post(
+            &approver_2,
+            claims(&profiles[1]),
+            json!({"decision":"reject"}),
+            false,
+        )
+        .await;
+        let text_r = claim_r["claim"].as_str().unwrap().to_owned();
+        assert!(text_r.contains(";decision=reject;"));
+        let rejected = post(&approver_2, decisions(&profiles[1]), json!({"decision":"reject", "issued_at":claim_r["issued_at"], "signature_der_base64":sign(&key_2, &text_r)}), true).await;
+        assert_eq!(rejected.1["status"], "REJECTED");
+        assert_eq!(
+            post(&approver_1, claims(&profiles[1]), approve, false)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
     }
 
     /// A random (version 4) UUID from the test RNG; the crate builds uuid
