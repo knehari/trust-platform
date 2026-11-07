@@ -6,21 +6,22 @@
 #   docker compose --env-file .env.lab -f compose.lab.yaml exec -T db sh /lab/migrate.sh [--adopt]
 #   TRUST_MIGRATE_DATABASE_URL=postgresql://... sh scripts/lab/migrate.sh [--adopt]
 #
-# Which migrations are applied comes from schema_change_review: from 0026 on,
+# Which migrations are applied comes from schema_change_review: from 0038 on,
 # every migration records its file name there (acknowledge_schema_changes)
 # in the transaction that applies it. The runner:
 # * on an EMPTY database (no public relation) applies every migration;
-# * refuses a database that has relations but no schema_change_review (it
-#   predates 0026: rebuild it, see docs/development/lab-compose.md);
+# * accepts an existing profile database through 0025 only with --adopt and
+#   an exact, matching 0012–0025 management migration ledger; earlier or
+#   partially ported databases are refused;
 # * refuses a database that records a migration-like reference newer than
 #   every file here (the database is ahead of this checkout);
-# * refuses a gap: a migration file from 0026 up to the newest recorded one
+# * refuses a gap: a migration file from 0038 up to the newest recorded one
 #   that is not recorded (applied out of order, or acknowledged by hand);
 # * refuses a migration file that differs from the one applied, or that
-#   was applied but is missing here: since 0064, migration_file_digest
+#   was applied but is missing here: since 0076, migration_file_digest
 #   keeps the SHA-256 of every applied file;
 # * refuses, before applying anything, a database holding applied files
-#   without a digest (applied by the Compose entrypoint, or before 0064)
+#   without a digest (applied by the Compose entrypoint, or before 0076)
 #   unless --adopt is given. With --adopt the operator states that this
 #   checkout holds the files that were applied: their digests are taken from
 #   it and recorded as 'adopted' (trust on first use, never inferred
@@ -99,7 +100,29 @@ applied=""
 if [ "$relations" = 0 ]; then
   echo "migrate: empty database, applying every migration"
 elif [ "$has_review" != t ]; then
-  refuse "the database predates migration 0026 (no schema_change_review); rebuild it"
+  [ "$adopt" = yes ] || refuse "existing profile database needs --adopt and a verified 0012–0025 ledger"
+  SQL="SELECT to_regclass('public.management_migration_ledger') IS NOT NULL
+       AND to_regclass('public.ca_revocation_policy') IS NULL
+       AND to_regclass('public.crl_signing_intent') IS NULL
+       AND to_regclass('public.ca') IS NOT NULL
+       AND to_regclass('public.certificate') IS NOT NULL
+       AND to_regclass('public.crl_publication') IS NOT NULL"
+  [ "$(sql "$@")" = t ] || refuse "not an unported profile database through 0025"
+  SQL="SELECT version || ' ' || source_sha256 FROM management_migration_ledger ORDER BY version"
+  profile_ledger=$(sql "$@")
+  [ "$(printf '%s\n' "$profile_ledger" | grep -c '^00[12][0-9]_')" = 14 ] \
+    || refuse "management ledger does not contain exactly 14 migrations"
+  for f in $files; do
+    n=$(echo "$f" | cut -c1-4)
+    [ "$n" \< 0012 ] && continue
+    [ "$n" \> 0025 ] && continue
+    ref=${f%.sql}
+    echo "$profile_ledger" | grep -qx "$ref $(digest "$migrations_dir/$f")" \
+      || refuse "profile migration $ref is missing or its checksum differs"
+  done
+  applied=$(echo "$files" | sed -n '/^00\(0[1-9]\|1[0-9]\|2[0-5]\)_/p' | sed 's/\.sql$//')
+  newest_recorded=0025
+  echo "migrate: adopting verified profile baseline through 0025"
 else
   SQL="SELECT DISTINCT migration_ref FROM schema_change_review ORDER BY 1"
   applied=$(sql "$@")
@@ -110,14 +133,14 @@ else
   for f in $files; do
     n=$(echo "$f" | cut -c1-4)
     ref=${f%.sql}
-    if [ ! "$n" \< 0026 ] && [ ! "$n" \> "$newest_recorded" ] \
+    if [ ! "$n" \< 0038 ] && [ ! "$n" \> "$newest_recorded" ] \
        && ! echo "$applied" | grep -qx "$ref"; then
       refuse "gap: $ref is not recorded although $newest_recorded is"
     fi
   done
 fi
 
-# Applied files must not have changed since (digests kept since 0064).
+# Applied files must not have changed since (digests kept since 0076).
 SQL="SELECT to_regclass('public.migration_file_digest') IS NOT NULL"
 if [ "$(sql "$@")" = t ]; then
   SQL="SELECT migration_ref || ' ' || encode(file_sha256, 'hex') FROM migration_file_digest ORDER BY 1"
@@ -170,7 +193,7 @@ for f in $files; do
     echo "migrate: $ref failed and was rolled back; later migrations not attempted" >&2
     exit 1
   fi
-  if [ ! "$n" \< 0026 ]; then
+  if [ ! "$n" \< 0038 ]; then
     SQL="SELECT count(*) FROM schema_change_review WHERE migration_ref = '$ref'"
     [ "$(sql "$@")" -ge 1 ] || refuse "$ref ran but did not record its reference"
   fi
@@ -181,7 +204,7 @@ done
 # by this run or (with --adopt) before it.
 adopted=0
 SQL="SELECT to_regclass('public.migration_file_digest') IS NOT NULL"
-[ "$(sql "$@")" = t ] || refuse "migration_file_digest is missing (is 0064 in $migrations_dir?)"
+[ "$(sql "$@")" = t ] || refuse "migration_file_digest is missing (is 0076 in $migrations_dir?)"
 for f in $files; do
   ref=${f%.sql}
   echo "$known" | grep -qx "$ref" && continue
