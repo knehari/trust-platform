@@ -1,4 +1,6 @@
 mod auth;
+mod ca_certificate;
+mod ca_proposal;
 mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
@@ -40,9 +42,9 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256 \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
-     management_certificate_san s, management_history_bounds b LIMIT 0";
+     management_certificate_san s, management_history_bounds b, management_ca_proposal k LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -561,7 +563,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0024")?;
+    .map_err(|_| "management views unavailable or older than migration 0025")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -635,6 +637,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/retirement",
             axum::routing::post(profile_activation::retire_revision),
+        )
+        .route(
+            "/v1/ca-proposals",
+            get(ca_proposal::list_ca_proposals).post(ca_proposal::propose_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/issuer-certificate",
+            axum::routing::post(ca_proposal::register_issuer_certificate),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -903,7 +913,9 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
         .query_one(
             "SELECT management_reader_isolation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_ca) \
-             AND NOT EXISTS (SELECT 1 FROM management_reader_scope)",
+             AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
+             AND management_ca_proposal_version() = 1 \
+             AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
         .get(0))
@@ -2434,6 +2446,369 @@ mod tests {
             detail_response(&app, &editor, &format!("{base}/{profile}/{second}")).await;
         assert_eq!(detail["status"], "RETIRED");
         assert!(detail["activated_at"].is_string() && detail["ended_at"].is_string());
+    }
+
+    /// CA proposals and issuer certificates against PostgreSQL (migration
+    /// 0025). CI seeds the `ca-admin-http` platform grant in
+    /// tests/management_profile_decision_api_seed.sql.
+    #[tokio::test]
+    async fn ca_proposals_record_one_verified_root_per_key() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA proposals need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-proposal-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-proposal-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let reader = token(
+            "ca-admin-http",
+            json!(["trust-ca-reader", "trust-ca-operator"]),
+        );
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        let proposal = |name: &str| json!({"display_name":name, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"});
+        const CN: &str = "Sovereign Trust Lab Root";
+
+        // Proposal refusals: no role, no grant, an unproposable suite,
+        // unknown fields, no idempotency key.
+        let path = || "/v1/ca-proposals".to_owned();
+        assert_eq!(
+            send("POST", &reader, path(), Some(proposal(CN)), key())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &ungranted, path(), Some(proposal(CN)), key())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &admin, path(),
+                Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p384-sha384"})), key())
+            .await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                path(),
+                Some(
+                    json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256",
+                            "ca_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"})
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send("POST", &admin, path(), Some(proposal(CN)), None)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // A proposal, and its replay.
+        let operation = key();
+        let (status, first) = send(
+            "POST",
+            &admin,
+            path(),
+            Some(proposal(CN)),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(first["lifecycle_status"], "PROPOSED");
+        let ca = first["ca_id"].as_str().unwrap().to_owned();
+        let (status, replay) = send(
+            "POST",
+            &admin,
+            path(),
+            Some(proposal(CN)),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (status, &replay["ca_id"]),
+            (StatusCode::OK, &first["ca_id"])
+        );
+        assert_eq!(
+            send("POST", &admin, path(), Some(proposal("Other")), operation)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+
+        // Certificate refusals: each leaves the proposal PROPOSED.
+        let certificate = |pem: String| Some(json!({"certificate_pem": pem}));
+        let register = |ca: &str| format!("/v1/ca-proposals/{ca}/issuer-certificate");
+        let vector = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/testdata/ca-root/{name}.crt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let (status, refused) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(vector("openssl-p384-root")),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("KeyAlgorithm"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(vector("openssl-p256-not-ca")),
+                key()
+            )
+            .await
+            .1["reason"],
+            "BasicConstraints"
+        );
+        // A valid root whose CN is not the proposed name (refused by the database).
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(vector("openssl-p256-root")),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let pem = root.to_pem(PemLineEnding::LF).unwrap();
+        let mut tampered = root.clone();
+        tampered.signature = EphemeralLabCa::new(CN)
+            .unwrap()
+            .root_certificate()
+            .signature
+            .clone();
+        let (status, refused) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(tampered.to_pem(PemLineEnding::LF).unwrap()),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("Signature"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                register(&ca),
+                certificate(pem.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&random_uuid().to_string()),
+                certificate(pem.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+
+        // Registration, replay, then no second certificate and no key reuse.
+        let operation = key();
+        let (status, registered) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(pem.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(registered["lifecycle_status"], "KEY_ATTESTED");
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(registered["certificate_sha256"], fingerprint.as_str());
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(pem.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let other_root = EphemeralLabCa::new(CN)
+            .unwrap()
+            .root_certificate()
+            .to_pem(PemLineEnding::LF)
+            .unwrap();
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(other_root),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (_, second) = send("POST", &admin, path(), Some(proposal(CN)), key()).await;
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(second["ca_id"].as_str().unwrap()),
+                certificate(pem),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Listing: administrators with the grant see both; the role without
+        // the grant sees nothing; other roles are refused.
+        let (status, listed) = send("GET", &admin, path(), None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let states: HashSet<(String, String)> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["ca_id"] == ca.as_str() || item["ca_id"] == second["ca_id"])
+            .map(|item| {
+                (
+                    item["ca_id"].as_str().unwrap().to_owned(),
+                    item["lifecycle_status"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            HashSet::from([
+                (ca.clone(), "KEY_ATTESTED".to_owned()),
+                (
+                    second["ca_id"].as_str().unwrap().to_owned(),
+                    "PROPOSED".to_owned()
+                ),
+            ])
+        );
+        let (status, hidden) = send("GET", &ungranted, path(), None, None).await;
+        assert_eq!((status, hidden), (StatusCode::OK, json!([])));
+        assert_eq!(
+            send("GET", &reader, path(), None, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        // A proposal is not a CA.
+        assert_eq!(
+            send("GET", &reader, format!("/v1/cas/{ca}"), None, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
     }
 
     /// A random (version 4) UUID from the test RNG; the crate builds uuid

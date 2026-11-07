@@ -9,8 +9,9 @@ CONSOLE = "http://127.0.0.1:5173"
 TRUST_ROLES = {
     "trust-ca-reader": "Read the CAs, certificates, audit events and profile drafts granted to the user.",
     "trust-profile-editor": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA).",
-    "trust-policy-approver": "Reserved: approve an exact profile revision. No API route accepts it yet.",
-    "trust-ca-operator": "Reserved: request activation of an approved profile. No API route accepts it yet.",
+    "trust-policy-approver": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA).",
+    "trust-ca-operator": "Activate or retire an approved profile revision (with a ca-operator grant for the CA).",
+    "trust-ca-administrator": "Propose a CA and register its self-signed issuer certificate (with a ca-administrator platform grant).",
 }
 def uid(n): return f"7c1a0000-0000-4000-8000-{n:012d}"
 def mappers(access_only=True):
@@ -80,6 +81,7 @@ lab_users = [
     user(7, "lab-disabled", "TRUST_LAB_PW_DISABLED", ["trust-ca-reader"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"], enabled=False),
     user(8, "lab-other-ca", "TRUST_LAB_PW_OTHER_CA", ["trust-ca-reader"], ["ffffffff-ffff-4fff-8fff-ffffffffffff"]),
     user(11, "lab-author", "TRUST_LAB_PW_AUTHOR", ["trust-ca-reader", "trust-profile-editor"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
+    user(12, "lab-ca-admin", "TRUST_LAB_PW_CA_ADMIN", ["trust-ca-administrator"], []),
     {"id": uid(9), "username": "service-account-trust-lab-workload", "enabled": True,
      "serviceAccountClientId": "trust-lab-workload",
      "attributes": {"ca_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]},

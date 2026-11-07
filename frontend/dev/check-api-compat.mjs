@@ -12,6 +12,7 @@ export async function checkApi(base = 'http://127.0.0.1:8081') {
     `/v1/cas/${ca}/certificates/${request}`,
     `/v1/cas/${ca}/certificates/by-serial/010001`,
     `/v1/cas/${ca}/audit/${event}`,
+    `/v1/ca-proposals`,
   ];
   for (const route of routes) {
     const response = await fetch(new URL(route, base), { signal: AbortSignal.timeout(5000) });

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
@@ -374,6 +375,30 @@ try {
     await operatorPage.close();
   }
 
+  // A CA administrator proposes a CA from the console and registers a root
+  // generated outside the platform by OpenSSL; only the certificate is pasted.
+  if (process.env.TRUST_LAB_PW_CA_ADMIN) {
+    const adminPage = await browser.newPage();
+    adminPage.setDefaultTimeout(15_000);
+    await adminPage.goto(`${origin}/?view=overview`);
+    await signIn(adminPage, 'lab-ca-admin', process.env.TRUST_LAB_PW_CA_ADMIN);
+    const panel = adminPage.getByRole('region', { name: 'CA proposals' });
+    const rootName = `Browser Lab Root ${Date.now().toString(36)}`;
+    await panel.getByLabel('Display name').fill(rootName);
+    await panel.getByRole('button', { name: 'Propose this CA' }).click();
+    const row = panel.getByRole('row').filter({ hasText: rootName });
+    await row.getByText('PROPOSED', { exact: true }).waitFor();
+    const repository = fileURLToPath(new URL('../../', import.meta.url));
+    const pem = execFileSync('sh', ['scripts/lab/create-lab-root.sh', rootName], { cwd: repository }).toString();
+    await row.getByLabel(/Certificate \(PEM\)/).fill(pem);
+    await row.getByRole('button', { name: 'Register certificate' }).click();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('KEY_ATTESTED', { exact: true }).waitFor();
+    const slug = rootName.toLowerCase().replaceAll(' ', '-');
+    rmSync(`${repository}.lab-keys/ca-root-${slug}.pem`, { force: true });
+    rmSync(`${repository}.lab-keys/ca-root-${slug}.crt`, { force: true });
+    await adminPage.close();
+  }
+
   // Signing out ends the Keycloak session too: signing in again asks for the
   // password instead of reusing the identity provider's session cookie.
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -381,7 +406,7 @@ try {
   await page.locator('#password').waitFor();
   assert.equal(await page.locator('#kc-form-login').count(), 1);
 
-  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}${process.env.TRUST_LAB_PW_CA_ADMIN ? 'CA proposed and its OpenSSL root registered from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

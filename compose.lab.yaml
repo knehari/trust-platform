@@ -48,6 +48,7 @@ services:
       TRUST_LAB_PW_APPROVER_1: ${TRUST_LAB_PW_APPROVER_1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_APPROVER_2: ${TRUST_LAB_PW_APPROVER_2:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_OPERATOR: ${TRUST_LAB_PW_OPERATOR:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PW_CA_ADMIN: ${TRUST_LAB_PW_CA_ADMIN:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_OUTSIDER: ${TRUST_LAB_PW_OUTSIDER:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_DISABLED: ${TRUST_LAB_PW_DISABLED:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PW_OTHER_CA: ${TRUST_LAB_PW_OTHER_CA:?Run scripts/lab/init-env.sh first}

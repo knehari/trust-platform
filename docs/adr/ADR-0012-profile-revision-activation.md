@@ -148,6 +148,9 @@ assumed.
   - The issuer certificate is not checked, because no CA key, provider or
     certificate binding exists yet.
   - Both come with the CA lifecycle and key custody (criteria 6 and 9).
+    [ADR-0013](ADR-0013-ca-proposal-and-issuer-certificate.md) starts the
+    former with verified issuer certificates of proposed CAs; activation
+    does not use them yet.
 - **Policy compatibility is an equality of version strings.** CP/CPS content
   is not compared.
 - **A single operator activates.** No second operator confirms, and there is

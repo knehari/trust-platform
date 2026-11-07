@@ -1990,8 +1990,10 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower",
+ "trust-pki-core",
  "trust-pki-crypto",
  "uuid",
+ "x509-cert",
 ]
 
 [[package]]

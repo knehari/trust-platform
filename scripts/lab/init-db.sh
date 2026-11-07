@@ -43,15 +43,20 @@ INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
--- Lifecycle role grants (migration 0022). lab-author (reader and editor) and
--- lab-editor (editor only) may record and submit drafts for CA E. Nobody may
--- for CA F, and no approver or operator grant exists: those routes do not.
+-- Lifecycle role grants (migrations 0022–0024). lab-author (reader and
+-- editor) and lab-editor (editor only) may record and submit drafts for CA E;
+-- lab-approver-1 and lab-approver-2 may decide on them, and lab-operator may
+-- activate and retire them. Nobody holds a grant for CA F.
 INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ca-operator');
+-- CA proposals (migration 0025): lab-ca-admin may propose CAs and register
+-- their issuer certificates. A proposal is not a CA and issues nothing.
+INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000012','ca-administrator');
 -- Signing capabilities the owner declares for the allowed CA (migration
 -- 0024). A declaration is not evidence that a provider or key can issue.
 INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
