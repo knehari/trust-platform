@@ -1,6 +1,6 @@
 # Sovereign Trust Platform
 
-> **Status (2026-10-17): private laboratory PKI implementation; not a deployed CA or production release.** The default branch `main` contains the documentation baseline only. Development is held in a stack of **41 draft pull requests** (#1–#41). This recovery branch is based on [PR #41](https://github.com/knehari/trust-platform/pull/41); the independent [recovery audit is PR #42](https://github.com/knehari/trust-platform/pull/42). Do not infer product maturity from `v3.x` or `v4.0` feature branch names.
+> **Status (2026-11-07): private laboratory PKI implementation, not a production CA.** The current local integration branch combines read-only management, database reader isolation, profile-draft revision protection and an isolated Keycloak IAM lab. See [development status](docs/DEVELOPMENT_STATUS.md) and the [roadmap](ROADMAP.md) for tested scope and open MVP criteria.
 
 ## Goal
 
@@ -11,7 +11,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 - Rust workspace: `trust-pki-core`, `trust-pki-policy`, `trust-pki-crypto`, plus a read-only laboratory management API.
 - CSR parsing, signature verification and selected X.509 certificate issuance/verification paths.
 - P-256 and classical RSA/ECDSA/EdDSA laboratory paths; **the implemented algorithms, profiles, providers and evidence differ**. A catalogue entry is never proof that full end-to-end issuance is available.
-- PostgreSQL migrations 0001–0013 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, draft governance, read-only API views and server-owned reader grants; disposable CI tests.
+- PostgreSQL migrations 0001–0022 covering issuer-scoped idempotency, serials, signing intents, recovery, evidence, inert profile drafts, scoped management views and revision sequencing; disposable CI tests.
 - Executable authenticated Rust management API for scoped CA, certificate and audit metadata reads; see its [scope and setup](docs/architecture/management-api-readonly.md). An [isolated Keycloak IAM laboratory](docs/development/iam-keycloak-lab.md) exercises real human and workload tokens against this read boundary.
 - Fail-closed authorization/policy contracts and controls against unsafe automatic re-sign after uncertain signing.
 - CP/CPS draft generation and laboratory dual-approval receipts; no real authenticated reviewer service.
@@ -19,7 +19,7 @@ Develop a sovereign, crypto-agile private PKI and future CLM platform with a nat
 
 ## Important gaps
 
-No deployed management application or production IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client. Its original stack uses a disposable OIDC fixture; a separate Keycloak lab verifies actual operator sign-in on loopback. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
+No production deployment or hardened IAM adapter, no HTTP issuance, no real HSM/PKCS#11 custody, no integrated CRL/OCSP/revocation service, no deployed CLM or post-quantum signer, and no qualified trust-service capability. The [React console](frontend/README.md) is a laboratory read-only client. Its original stack uses a disposable OIDC fixture; a separate Keycloak lab verifies actual operator sign-in on loopback. The lab OpenSSL provider handles temporary private keys; never treat it as production custody. Some standalone Rust domain contracts are not wired to runtime services.
 
 ## How to inspect the laboratory workspace
 
