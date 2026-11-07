@@ -9,6 +9,9 @@ services:
       POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_WRITER_PASSWORD: ${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_HOUSEKEEPING_PASSWORD: ${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_AUDITOR_PASSWORD: ${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_SEALER_PASSWORD: ${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}
       # Public keys only; the private keys stay in .lab-keys/ on the host.
       TRUST_LAB_APPROVER_1_SEC1: ${TRUST_LAB_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}

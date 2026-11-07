@@ -9,6 +9,8 @@ for migration in "$migrations_dir"/*.sql; do
 done
 
 psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" \
+  -v housekeeping_password="$TRUST_LAB_HOUSEKEEPING_PASSWORD" \
+  -v auditor_password="$TRUST_LAB_AUDITOR_PASSWORD" -v sealer_password="$TRUST_LAB_SEALER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
 SELECT format('CREATE ROLE trust_api_lab LOGIN INHERIT PASSWORD %L', :'api_password') \gexec
@@ -17,6 +19,13 @@ GRANT trust_api_reader TO trust_api_lab;
 -- the two lifecycle functions, and holds no table or view privilege.
 SELECT format('CREATE ROLE trust_api_writer_lab LOGIN INHERIT PASSWORD %L', :'writer_password') \gexec
 GRANT trust_profile_writer TO trust_api_writer_lab;
+-- Scheduled jobs each receive only their own database capability.
+SELECT format('CREATE ROLE trust_housekeeping_lab LOGIN INHERIT PASSWORD %L', :'housekeeping_password') \gexec
+GRANT trust_crl_operator TO trust_housekeeping_lab;
+SELECT format('CREATE ROLE trust_auditor_lab LOGIN INHERIT PASSWORD %L', :'auditor_password') \gexec
+GRANT trust_audit_verifier TO trust_auditor_lab;
+SELECT format('CREATE ROLE trust_sealer_lab LOGIN INHERIT PASSWORD %L', :'sealer_password') \gexec
+GRANT trust_audit_sealer TO trust_sealer_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');
@@ -82,4 +91,7 @@ INSERT INTO certificate(ca_id,serial_der_content,request_id,fingerprint_sha256,c
 INSERT INTO audit_event(event_id,ca_id,actor_id,event_type,decision,policy_version,recorded_at) VALUES
   ('33333333-3333-4333-8333-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','private-compose-actor','certificate.signed','allow','v1','2026-10-01T12:00:00Z'),
   ('33333333-3333-4333-8333-000000000002','ffffffff-ffff-4fff-8fff-ffffffffffff','hidden-compose-actor','certificate.signed','allow','v1','2026-10-01T12:00:00Z');
+-- The role-state audit is created by migration 0069; acknowledge only these
+-- initial, documented laboratory grants.
+SELECT acknowledge_role_state('lab-init');
 SQL
