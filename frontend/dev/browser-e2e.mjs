@@ -316,7 +316,11 @@ try {
   // through the console form and submits it; it becomes SUBMITTED, not
   // approved.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
-  await page.getByRole('heading', { name: 'Profile proposals' }).waitFor();
+  // The page title and the panel heading share this name: wait for both, so
+  // the assertion below runs once the panel, where the button would be, is
+  // rendered.
+  await page.getByRole('heading', { name: 'Profile proposals', level: 1 }).waitFor();
+  await page.getByRole('heading', { name: 'Profile proposals', level: 3 }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Propose a revision' }).count(), 0);
   if (process.env.TRUST_LAB_PW_AUTHOR) {
     const authorPage = await browser.newPage();

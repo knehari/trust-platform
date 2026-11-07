@@ -54,7 +54,15 @@
       },
       {
         "name": "trust-ca-approver",
-        "description": "Approve or reject a key-attested CA proposal with a registered key (with a ca-approver platform grant)."
+        "description": "Approve or reject a key-attested CA proposal, or a CA reactivation or retirement, with a registered key (with a ca-approver platform grant)."
+      },
+      {
+        "name": "trust-certificate-requester",
+        "description": "Submit certificate applications for a CA's active profiles (with a certificate-requester grant for the CA)."
+      },
+      {
+        "name": "trust-registration-officer",
+        "description": "Approve or reject certificate applications of others (with a registration-officer grant for the CA)."
       }
     ]
   },
@@ -210,7 +218,9 @@
         "trust-policy-approver",
         "trust-ca-operator",
         "trust-ca-administrator",
-        "trust-ca-approver"
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     },
     {
@@ -221,7 +231,9 @@
         "trust-policy-approver",
         "trust-ca-operator",
         "trust-ca-administrator",
-        "trust-ca-approver"
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     }
   ],
@@ -284,7 +296,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -309,7 +322,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -334,7 +348,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -429,7 +444,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -508,6 +524,56 @@
       ],
       "realmRoles": [
         "trust-ca-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000015",
+      "username": "lab-requester",
+      "enabled": true,
+      "firstName": "lab-requester",
+      "lastName": "Laboratory",
+      "email": "lab-requester@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_REQUESTER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-certificate-requester"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000016",
+      "username": "lab-ra-officer",
+      "enabled": true,
+      "firstName": "lab-ra-officer",
+      "lastName": "Laboratory",
+      "email": "lab-ra-officer@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_RA_OFFICER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-registration-officer"
       ]
     },
     {

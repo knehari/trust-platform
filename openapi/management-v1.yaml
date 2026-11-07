@@ -448,6 +448,7 @@ paths:
                 display_name: { type: string, minLength: 1, maxLength: 255, description: 'No control characters or surrounding spaces. The issuer certificate''s common name must equal it.' }
                 policy_version: { type: string, minLength: 1, maxLength: 128 }
                 suite_id: { type: string, enum: [ecdsa-p256-sha256] }
+                ca_id: { type: string, format: uuid, description: 'Optional identifier chosen by the administrator (ADR-0016); one already used by a CA or proposal is refused (409). Drawn by the database when absent.' }
       responses:
         '201':
           description: Proposal recorded
@@ -462,7 +463,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing trust-ca-administrator role or no server-owned ca-administrator platform grant }
-        '409': { description: Idempotency key reused for another request }
+        '409': { description: Idempotency key reused for another request, or the chosen ca_id is already used }
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '422': { description: A suite other than ecdsa-p256-sha256 }
@@ -823,6 +824,106 @@ paths:
         '415': { description: Content type is not application/json }
         '422': { description: Reactivation with an expired issuer certificate }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications:
+    get:
+      summary: List certificate applications of a CA (laboratory, migration 0028)
+      description: Newest first, at most 100, for readers of the CA. Requester and officer identities are not returned. Nothing is signed (ADR-0016, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Applications
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items: { $ref: '#/components/schemas/CertificateApplication' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing reader role or CA outside the signed scope }
+        '503': { description: The database is unavailable }
+    post:
+      summary: Submit a certificate application (laboratory, migration 0028)
+      description: "Requires the trust-certificate-requester role, the CA in scope and a certificate-requester grant. The API verifies the CSR (canonical DER, PKCS#10 v1, ECDSA-SHA256, uncompressed P-256 key, subject exactly CN=common_name, proof of possession) and never uses its extensions. The database requires a lifecycle-managed ACTIVE CA and the profile's ACTIVE revision, and checks names (count, repeats, zones at a label boundary), the CN among them, the validity, and that the key is not the CA's. Nothing is signed (ADR-0016, Proposed)."
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [profile_id, csr_pem, common_name, dns_names, validity_days]
+              properties:
+                profile_id: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$' }
+                csr_pem: { type: string, maxLength: 15000, description: One PEM CERTIFICATE REQUEST block }
+                common_name: { type: string, description: One of dns_names }
+                dns_names: { type: array, minItems: 1, maxItems: 100, items: { type: string, pattern: '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$', maxLength: 253 } }
+                validity_days: { type: integer, minimum: 1, maximum: 825 }
+      responses:
+        '201':
+          description: Application recorded (SUBMITTED)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateApplicationSubmitted' }
+        '200':
+          description: Replay with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateApplicationSubmitted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-certificate-requester role, CA outside the signed scope, or no certificate-requester grant }
+        '404': { description: The profile has no ACTIVE revision for this CA }
+        '409': { description: Idempotency key reused for another request }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422':
+          description: "The CSR is refused (body reason: Encoding, SubjectMismatch, InvalidSignature or UnsupportedKey), or the CA is not an ACTIVE lifecycle-managed CA, or the names, validity or key do not fit the profile (no body). Nothing was recorded."
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/decision:
+    post:
+      summary: Approve or reject a certificate application (laboratory, migration 0028)
+      description: Requires the trust-registration-officer role, the CA in scope and a registration-officer grant; the officer cannot be the requester. Once per application. Approval also requires the CA to be ACTIVE and the application's revision to be still the profile's active one. Nothing is signed (ADR-0016, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, reason]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ca_id, application_id, status]
+                properties:
+                  ca_id: { type: string, format: uuid }
+                  application_id: { type: string, format: uuid }
+                  status: { type: string, enum: [APPROVED, REJECTED] }
+        '200': { description: Replay with the same Idempotency-Key }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or the caller is the requester }
+        '404': { description: No such application for this CA }
+        '409': { description: Idempotency key reused, already decided, or (approval) the CA or the revision is no longer active }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -1145,6 +1246,32 @@ components:
         change_status: { type: [string, 'null'], enum: [OPEN, APPROVED, null] }
         change_approval_count: { type: [integer, 'null'], minimum: 0, maximum: 2 }
         change_reason: { type: [string, 'null'] }
+    CertificateApplication:
+      type: object
+      required: [application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, dns_names, validity_days, status, decision_reason, submitted_at, decided_at]
+      properties:
+        application_id: { type: string, format: uuid }
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer }
+        csr_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        subject_cn: { type: string }
+        dns_names: { type: array, items: { type: string } }
+        validity_days: { type: integer }
+        status: { type: string, enum: [SUBMITTED, APPROVED, REJECTED], description: No status means a certificate exists; nothing is signed yet. }
+        decision_reason: { type: [string, 'null'] }
+        submitted_at: { type: string, format: date-time }
+        decided_at: { type: [string, 'null'], format: date-time }
+    CertificateApplicationSubmitted:
+      type: object
+      required: [ca_id, application_id, profile_id, revision, status, csr_sha256]
+      properties:
+        ca_id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, description: The active revision the application is bound to }
+        status: { type: string, enum: [SUBMITTED, APPROVED, REJECTED] }
+        csr_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     CaOperationalState:
       type: object
       required: [ca_id, operational_state]
