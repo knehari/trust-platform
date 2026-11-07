@@ -417,6 +417,13 @@ try {
     await approvedRow.getByRole('button', { name: 'Activate this CA' }).click();
     await adminPage.getByRole('status').filter({ hasText: 'is now an ACTIVE CA' }).waitFor();
     await panel.getByRole('row').filter({ hasText: rootName }).getByText('ACTIVE', { exact: true }).waitFor();
+
+    // The administrator suspends the CA at once from the console.
+    const activeRow = panel.getByRole('row').filter({ hasText: rootName });
+    await activeRow.getByLabel(`Reason for ${rootName}`).fill('browser key review');
+    await activeRow.getByRole('button', { name: 'Suspend this CA' }).click();
+    await adminPage.getByRole('status').filter({ hasText: 'is now SUSPENDED' }).waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('SUSPENDED', { exact: true }).first().waitFor();
     const slug = rootName.toLowerCase().replaceAll(' ', '-');
     rmSync(`${repository}.lab-keys/ca-root-${slug}.pem`, { force: true });
     rmSync(`${repository}.lab-keys/ca-root-${slug}.crt`, { force: true });
@@ -430,7 +437,7 @@ try {
   await page.locator('#password').waitFor();
   assert.equal(await page.locator('#kc-form-login').count(), 1);
 
-  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}${process.env.TRUST_LAB_PW_CA_ADMIN ? 'CA proposed, its OpenSSL root registered, approved by two signing CA approvers and activated from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}${process.env.TRUST_LAB_PW_CA_ADMIN ? 'CA proposed, its OpenSSL root registered, approved by two signing CA approvers, activated and suspended from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

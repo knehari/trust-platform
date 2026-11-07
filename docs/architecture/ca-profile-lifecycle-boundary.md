@@ -22,9 +22,13 @@ Proposed). A proposal is not a CA.
 **Update, 7 November 2026:** two CA approvers with distinct registered keys
 approve a key-attested proposal and a non-approving administrator activates
 it, creating the CA with its attested suite as its only capability
-([ADR-0014](../adr/ADR-0014-ca-approval-and-activation.md), Proposed). CA
-suspension and retirement remain unimplemented, and no issuance path uses an
-activated CA. This contract refines
+([ADR-0014](../adr/ADR-0014-ca-approval-and-activation.md), Proposed).
+**Update, 7 November 2026:** one administrator suspends an activated CA at
+once; reactivation and retirement need a change request approved by two CA
+approvers and applied by an administrator who did not decide. Suspended and
+retired CAs cannot gain active profiles, and retirement retires the active
+ones ([ADR-0015](../adr/ADR-0015-ca-suspension-and-retirement.md),
+Proposed). No issuance path uses CAs or profiles yet. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

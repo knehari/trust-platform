@@ -13,7 +13,8 @@ owner's decision and an independent security review (AGENTS.md).
 stays unchecked.
 
 **Not here:**
-- **No suspension or retirement of CAs.** They are the next slice.
+- **No suspension or retirement of CAs.** They followed in
+  [ADR-0015](ADR-0015-ca-suspension-and-retirement.md).
 - **No issuance.** No issuance path uses an activated CA; it has no signing
   provider or key access.
 - **No key custody.** The issuer key is still a laboratory software file

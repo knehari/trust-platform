@@ -1,6 +1,7 @@
 mod auth;
 mod ca_certificate;
 mod ca_decision;
+mod ca_operation;
 mod ca_proposal;
 mod profile_activation;
 mod profile_decision;
@@ -43,7 +44,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b, management_ca_proposal k LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -74,6 +75,9 @@ struct Ca {
     display_name: String,
     policy_version: String,
     created_at: String,
+    /// ACTIVE, SUSPENDED or RETIRED for a CA activated through the CA
+    /// lifecycle (migration 0027); null for a CA the owner created directly.
+    operational_state: Option<String>,
 }
 #[derive(Serialize)]
 struct Certificate {
@@ -564,7 +568,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0026")?;
+    .map_err(|_| "management views unavailable or older than migration 0027")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -658,6 +662,26 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/ca-proposals/{ca_id}/activation",
             axum::routing::post(ca_decision::activate_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/suspension",
+            axum::routing::post(ca_operation::suspend_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests",
+            axum::routing::post(ca_operation::request_change),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/decision-claims",
+            axum::routing::post(ca_operation::prepare_change_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/decisions",
+            axum::routing::post(ca_operation::record_change_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/application",
+            axum::routing::post(ca_operation::apply_change),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -929,6 +953,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
              AND management_ca_proposal_version() = 1 \
              AND management_ca_activation_version() = 1 \
+             AND management_ca_operation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
@@ -956,7 +981,7 @@ async fn list_cas(
     let subject = claims.sub;
     let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         db.query(
-            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at,c.operational_state \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
          AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ($4,$5)) \
@@ -976,6 +1001,7 @@ async fn list_cas(
             display_name: r.get(2),
             policy_version: r.get(3),
             created_at: r.get(4),
+            operational_state: r.get(5),
         })
         .collect();
     let next =
@@ -998,7 +1024,7 @@ async fn get_ca(
         (issuer.clone(), subject.clone()),
         move |db| {
             db.query_opt(
-                "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+                "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at,c.operational_state \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=$1 AND g.issuer=$2 AND g.subject=$3",
                 &[&ca_id, &issuer, &subject],
@@ -1013,6 +1039,7 @@ async fn get_ca(
         display_name: row.get(2),
         policy_version: row.get(3),
         created_at: row.get(4),
+        operational_state: row.get(5),
     }))
 }
 
@@ -3192,6 +3219,574 @@ mod tests {
         assert!(item["decided_at"].is_string() && item["activated_at"].is_string());
     }
 
+    /// Suspension, reactivation and retirement against PostgreSQL
+    /// (migration 0027), with the seeded CA approvers of migration 0026.
+    #[tokio::test]
+    async fn activated_cas_are_suspended_then_reactivated_or_retired_with_two_signers() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA suspension and retirement need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-operation-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-operation-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let approver_1 = token(
+            "ca-approver-http-1",
+            json!(["trust-ca-approver", "trust-ca-administrator"]),
+        );
+        let approver_2 = token("ca-approver-http-2", json!(["trust-ca-approver"]));
+        // A profile approver: the CA approver role without the platform grant.
+        let profile_approver = token("approver-http-1", json!(["trust-ca-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x55; 32]).unwrap();
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        const CN: &str = "Sovereign Trust Lab Root";
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+            key(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, base) = (send, base.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{base}/decision-claims"),
+                    Some(json!({"decision":decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        // Before the certificate, nothing can be decided.
+        assert_eq!(
+            claim_for(approver_2.clone(), "approve").await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/issuer-certificate"),
+                Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+
+        // Claim refusals: no approver role, the role without the grant.
+        assert_eq!(
+            claim_for(admin.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            claim_for(profile_approver.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let decide = |token: String,
+                      signer: SigningKey,
+                      claim: serde_json::Value,
+                      operation: Option<String>| {
+            let (send, base) = (send, base.clone());
+            async move {
+                let text = claim["claim"].as_str().unwrap().to_owned();
+                let signature: Signature = signer.sign(text.as_bytes());
+                send("POST", &token, format!("{base}/decisions"),
+                    Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    operation).await
+            }
+        };
+
+        // The first approval, its replay, and a second decision by the same approver.
+        let (status, claim_1) = claim_for(approver_1.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(claim_1["claim"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("certificate_sha256={fingerprint}")));
+        let operation = key();
+        let (status, first) = decide(
+            approver_1.clone(),
+            key_1.clone(),
+            claim_1.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                first["lifecycle_status"].as_str(),
+                first["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("KEY_ATTESTED"), Some(1))
+        );
+        assert_eq!(
+            decide(approver_1.clone(), key_1.clone(), claim_1, operation)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            claim_for(approver_1.clone(), "reject").await.0,
+            StatusCode::CONFLICT
+        );
+
+        // A signature by another key, or over other text, is refused and leaves nothing.
+        let (_, claim_2) = claim_for(approver_2.clone(), "approve").await;
+        assert_eq!(
+            decide(approver_2.clone(), key_1.clone(), claim_2.clone(), key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut altered = claim_2.clone();
+        altered["claim"] = json!(claim_2["claim"]
+            .as_str()
+            .unwrap()
+            .replace("decision=approve", "decision=reject"));
+        assert_eq!(
+            decide(approver_2.clone(), key_2.clone(), altered, key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Activation before approval is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, second) = decide(approver_2.clone(), key_2.clone(), claim_2, key()).await;
+        assert_eq!(
+            (
+                status,
+                second["lifecycle_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("APPROVED"), Some(2))
+        );
+
+        // Activation: an approver holding the administrator role, another
+        // digest, unknown fields; then the activation and its replay.
+        let activation = |digest: String| Some(json!({"certificate_sha256": digest}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation("0".repeat(64)),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint, "suite_id": "ecdsa-p384-sha384"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let operation = key();
+        let (status, active) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            activation(fingerprint.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                active["lifecycle_status"].as_str(),
+                active["suite_id"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("ACTIVE"),
+                Some("ecdsa-p256-sha256")
+            )
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Suspension: only administrators, only from ACTIVE.
+        let reason = |text: &str| Some(json!({"reason": text}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_2,
+                format!("{base}/suspension"),
+                reason("x"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason(" padded"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let operation = key();
+        let (status, suspended) = send(
+            "POST",
+            &admin,
+            format!("{base}/suspension"),
+            reason("key review"),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (status, suspended["operational_state"].as_str()),
+            (StatusCode::CREATED, Some("SUSPENDED"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("key review"),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("again"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // A change is requested, approved by two signers, then applied.
+        let changes = format!("{base}/change-requests");
+        let change =
+            |action: &str| Some(json!({"action": action, "reason": format!("lab {action}")}));
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("suspend"), key())
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, requested) =
+            send("POST", &admin, changes.clone(), change("reactivate"), key()).await;
+        assert_eq!(
+            (status, requested["from_state"].as_str()),
+            (StatusCode::CREATED, Some("SUSPENDED"))
+        );
+        let request = format!("{changes}/{}", requested["request_id"].as_str().unwrap());
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("retire"), key())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let approve = |token: String, signer: SigningKey, request: String| async move {
+            let (status, claim) = send(
+                "POST",
+                &token,
+                format!("{request}/decision-claims"),
+                Some(json!({"decision":"approve"})),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let text = claim["claim"].as_str().unwrap().to_owned();
+            assert!(text.starts_with("trust-platform/ca-change-decision/v1;decision=approve;"));
+            let signature: Signature = signer.sign(text.as_bytes());
+            send("POST", &token, format!("{request}/decisions"),
+                    Some(json!({"decision":"approve", "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    Some(random_uuid().to_string())).await
+        };
+        // The requester cannot decide; another key's signature is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{request}/decision-claims"),
+                Some(json!({"decision":"approve"})),
+                None
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            approve(approver_1.clone(), key_2.clone(), request.clone())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let (status, first) = approve(approver_1.clone(), key_1.clone(), request.clone()).await;
+        assert_eq!(
+            (status, first["request_status"].as_str()),
+            (StatusCode::CREATED, Some("OPEN"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{request}/application"),
+                Some(json!({})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (_, second) = approve(approver_2.clone(), key_2.clone(), request.clone()).await;
+        assert_eq!(
+            (
+                second["request_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (Some("APPROVED"), Some(2))
+        );
+        // An approver holding the administrator role cannot apply it.
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{request}/application"),
+                Some(json!({})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, applied) = send(
+            "POST",
+            &admin,
+            format!("{request}/application"),
+            Some(json!({})),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, applied["operational_state"].as_str()),
+            (StatusCode::CREATED, Some("ACTIVE"))
+        );
+
+        // Retirement from ACTIVE, then nothing more.
+        let (_, requested) = send("POST", &admin, changes.clone(), change("retire"), key()).await;
+        let request = format!("{changes}/{}", requested["request_id"].as_str().unwrap());
+        approve(approver_1.clone(), key_1.clone(), request.clone()).await;
+        approve(approver_2.clone(), key_2.clone(), request.clone()).await;
+        let (status, retired) = send(
+            "POST",
+            &admin,
+            format!("{request}/application"),
+            Some(json!({})),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                retired["operational_state"].as_str(),
+                retired["retired_revisions"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("RETIRED"), Some(0))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("x"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("reactivate"), key())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let (_, listed) = send("GET", &approver_2, "/v1/ca-proposals".into(), None, None).await;
+        let item = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ca_id"] == ca.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(item["lifecycle_status"], "RETIRED");
+        assert!(item["change_request_id"].is_null() && item["state_changed_at"].is_string());
+    }
+
     /// A compromised writer path records a certificate the API would refuse
     /// (the database does not parse X.509): activation must still refuse it.
     /// It leaves that forged record behind, which lab_verify_ca_lifecycle
@@ -4382,6 +4977,7 @@ mod tests {
             display_name: "\n".repeat(255),
             policy_version: "v1".into(),
             created_at: "2026-10-01T12:00:00.000Z".into(),
+            operational_state: None,
         };
         let cursor = encode_ca_cursor(&ca);
         assert!(cursor.len() <= 4096);

@@ -639,6 +639,190 @@ paths:
         '415': { description: Content type is not application/json }
         '422': { description: The stored certificate has expired, no longer verifies, or its suite is not catalogued; nothing was activated }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/suspension:
+    post:
+      summary: Suspend an ACTIVE CA at once (laboratory, migration 0027)
+      description: One administrator suffices. While SUSPENDED, no profile revision can be activated for the CA. Reactivation needs a change request (ADR-0015, Proposed).
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500, description: No control characters or surrounding spaces. }
+      responses:
+        '201':
+          description: CA suspended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaOperationalState' }
+        '200':
+          description: Replay with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaOperationalState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or ca-administrator platform grant }
+        '404': { description: No such activated CA }
+        '409': { description: Idempotency key reused, or the CA is not ACTIVE }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/change-requests:
+    post:
+      summary: Request reactivation or retirement of an activated CA (laboratory, migration 0027)
+      description: reactivate applies to a SUSPENDED CA, retire to an ACTIVE or SUSPENDED one. One open request per CA; a request whose CA changed state since is stale and no longer blocks. Two CA approvers other than the requester must approve it, then an administrator who did not decide applies it (ADR-0015, Proposed).
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, reason]
+              properties:
+                action: { type: string, enum: [reactivate, retire] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '201':
+          description: Change requested
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaChangeRequested' }
+        '200':
+          description: Replay with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaChangeRequested' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or ca-administrator platform grant }
+        '404': { description: No such activated CA }
+        '409': { description: Idempotency key reused, the action does not apply to the CA's state, the CA is RETIRED, or an open request exists }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/change-requests/{request_id}/decision-claims:
+    post:
+      summary: Obtain the exact change decision claim to sign (laboratory, migration 0027)
+      description: "Records nothing. As for CA decision claims (ADR-0014), with the claim trust-platform/ca-change-decision/v1 binding the action, request, state it was made in, reason digest and certificate. The requester cannot decide (ADR-0015, Proposed)."
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: request_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string, enum: [approve, reject] }
+                  claim: { type: string, pattern: '^trust-platform/ca-change-decision/v1;' }
+                  key_id: { type: string }
+                  issued_at: { type: string, format: date-time }
+                  valid_for_seconds: { type: integer, enum: [600] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-approver role, ca-approver grant or active CA approver key, or the caller requested the change }
+        '404': { description: No such request for this CA }
+        '409': { description: The request is not OPEN, the caller already decided, or the CA changed state since the request }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/change-requests/{request_id}/decisions:
+    post:
+      summary: Record a signed decision on a change request (laboratory, migration 0027)
+      description: The API verifies the DER ECDSA P-256/SHA-256 signature with the approver's registered CA key before commit. Two approvals make the request APPROVED; one rejection makes it REJECTED (ADR-0015, Proposed).
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: request_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, issued_at, signature_der_base64]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                issued_at: { type: string, format: date-time }
+                signature_der_base64: { type: string, maxLength: 120 }
+      responses:
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaChangeDecisionRecorded' }
+        '200':
+          description: Replay with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaChangeDecisionRecorded' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: As for decision-claims }
+        '404': { description: No such request for this CA }
+        '409': { description: Idempotency key reused, claim expired or not yet valid, or the request is not awaiting this decision }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: The signature does not verify over the claim with the approver's registered key; nothing was recorded }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/change-requests/{request_id}/application:
+    post:
+      summary: Apply an approved change request (laboratory, migration 0027)
+      description: By an administrator who did not decide on the request, while the CA is still in the state the request was made in. Reactivation refuses an expired issuer certificate. Retirement is final and retires the CA's active profile revisions in the same transaction (ADR-0015, Proposed).
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: request_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: Change applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaOperationalState' }
+        '200':
+          description: Replay with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaOperationalState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or ca-administrator platform grant, or the caller decided on the request }
+        '404': { description: No such request for this CA }
+        '409': { description: Idempotency key reused, the request is not APPROVED or was applied, or the CA changed state since the request }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: Reactivation with an expired issuer certificate }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -855,10 +1039,11 @@ components:
   schemas:
     CA:
       type: object
-      required: [ca_id, parent_ca_id, display_name, policy_version, created_at]
+      required: [ca_id, parent_ca_id, display_name, policy_version, created_at, operational_state]
       properties:
         ca_id: { type: string, format: uuid }
         parent_ca_id: { type: [string, 'null'], format: uuid }
+        operational_state: { type: [string, 'null'], enum: [ACTIVE, SUSPENDED, RETIRED, null], description: For a CA activated through the CA lifecycle (migration 0027); null for a CA the owner created directly. }
         display_name: { type: string }
         policy_version: { type: string }
         created_at: { type: string, format: date-time }
@@ -937,13 +1122,13 @@ components:
         submitted_at: { type: string, format: date-time }
     CaProposal:
       type: object
-      required: [ca_id, display_name, policy_version, suite_id, lifecycle_status, proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, registered_at, approval_count, decided_at, activated_at]
+      required: [ca_id, display_name, policy_version, suite_id, lifecycle_status, proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, registered_at, approval_count, decided_at, activated_at, state_changed_at, change_request_id, change_action, change_status, change_approval_count, change_reason]
       properties:
         ca_id: { type: string, format: uuid }
         display_name: { type: string }
         policy_version: { type: string }
         suite_id: { type: string }
-        lifecycle_status: { type: string, enum: [PROPOSED, KEY_ATTESTED, APPROVED, REJECTED, ACTIVE], description: Only ACTIVE is a CA; no state authorizes issuance yet. }
+        lifecycle_status: { type: string, enum: [PROPOSED, KEY_ATTESTED, APPROVED, REJECTED, ACTIVE, SUSPENDED, RETIRED], description: ACTIVE, SUSPENDED and RETIRED are CAs (their operational state); no state authorizes issuance yet. }
         proposed_at: { type: string, format: date-time }
         certificate_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
         spki_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
@@ -954,6 +1139,36 @@ components:
         approval_count: { type: integer, minimum: 0, maximum: 2 }
         decided_at: { type: [string, 'null'], format: date-time, description: Time of the deciding decision; null before APPROVED or REJECTED }
         activated_at: { type: [string, 'null'], format: date-time }
+        state_changed_at: { type: [string, 'null'], format: date-time }
+        change_request_id: { type: [string, 'null'], format: uuid, description: The open or approved reactivation or retirement request, if any }
+        change_action: { type: [string, 'null'], enum: [reactivate, retire, null] }
+        change_status: { type: [string, 'null'], enum: [OPEN, APPROVED, null] }
+        change_approval_count: { type: [integer, 'null'], minimum: 0, maximum: 2 }
+        change_reason: { type: [string, 'null'] }
+    CaOperationalState:
+      type: object
+      required: [ca_id, operational_state]
+      properties:
+        ca_id: { type: string, format: uuid }
+        operational_state: { type: string, enum: [ACTIVE, SUSPENDED, RETIRED] }
+        retired_revisions: { type: integer, minimum: 0, description: Present on application; active profile revisions retired with the CA }
+    CaChangeRequested:
+      type: object
+      required: [ca_id, request_id, action, from_state]
+      properties:
+        ca_id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        action: { type: string, enum: [reactivate, retire] }
+        from_state: { type: string, enum: [ACTIVE, SUSPENDED] }
+    CaChangeDecisionRecorded:
+      type: object
+      required: [ca_id, request_id, decision, request_status, approval_count]
+      properties:
+        ca_id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        decision: { type: string, enum: [approve, reject] }
+        request_status: { type: string, enum: [OPEN, APPROVED, REJECTED] }
+        approval_count: { type: integer, minimum: 0, maximum: 2 }
     CaDecisionRecorded:
       type: object
       required: [ca_id, decision, lifecycle_status, approval_count]

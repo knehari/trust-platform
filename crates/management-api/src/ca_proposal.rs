@@ -77,9 +77,15 @@ struct CaProposal {
     approval_count: i32,
     decided_at: Option<String>,
     activated_at: Option<String>,
+    state_changed_at: Option<String>,
+    change_request_id: Option<String>,
+    change_action: Option<String>,
+    change_status: Option<String>,
+    change_approval_count: Option<i32>,
+    change_reason: Option<String>,
 }
 
-fn printable(value: &str, max_chars: usize) -> bool {
+pub(crate) fn printable(value: &str, max_chars: usize) -> bool {
     !value.is_empty()
         && value.chars().count() <= max_chars
         && !value.chars().any(char::is_control)
@@ -285,7 +291,9 @@ pub(crate) async fn list_ca_proposals(
             db.query(
                 "SELECT ca_id, display_name, policy_version, suite_id, lifecycle_status, \
                  proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, \
-                 registered_at, approval_count, decided_at, activated_at FROM management_ca_proposal \
+                 registered_at, approval_count, decided_at, activated_at, state_changed_at, \
+                 change_request_id, change_action, change_status, change_approval_count, \
+                 change_reason FROM management_ca_proposal \
                  ORDER BY proposed_at DESC, ca_id LIMIT 100",
                 &[],
             )
@@ -310,6 +318,12 @@ pub(crate) async fn list_ca_proposals(
             approval_count: row.get(12),
             decided_at: row.get(13),
             activated_at: row.get(14),
+            state_changed_at: row.get(15),
+            change_request_id: row.get(16),
+            change_action: row.get(17),
+            change_status: row.get(18),
+            change_approval_count: row.get(19),
+            change_reason: row.get(20),
         })
         .collect();
     Ok(with_replay_header(Json(items).into_response(), false))
