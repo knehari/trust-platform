@@ -9,4 +9,4 @@ Sovereign product requires an independently maintained native X.509 CA engine, s
 Implement a modular-monolith CA Core in Rust using established cryptographic libraries, not homegrown cryptographic primitives. Go and React are future control/UX planes.
 
 ## Consequences
-More implementation and assurance effort than wrapping an existing CA; strict standards/interoperability testing and external audit required before pilots.
+More implementation and assurance effort than wrapping an existing CA; strict standards/interoperability testing and external audit required before pilots. The tentative Go control-plane direction is superseded for the first integrated slice by [ADR-0005](ADR-0005-rust-management-control-plane.md).

@@ -1,0 +1,450 @@
+{
+  "realm": "trust-lab",
+  "displayName": "Trust Platform laboratory",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
+  "maxDeltaTimeSeconds": 43200,
+  "passwordPolicy": "length(16) and notUsername and notEmail",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 900,
+  "ssoSessionMaxLifespan": 3600,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "defaultSignatureAlgorithm": "RS256",
+  "roles": {
+    "realm": [
+      {
+        "name": "default-roles-trust-lab",
+        "composite": false,
+        "description": "Default role: grants nothing, not even the account console."
+      },
+      {
+        "name": "trust-ca-reader",
+        "description": "Read the CAs, certificates, audit events and profile drafts granted to the user."
+      },
+      {
+        "name": "trust-profile-editor",
+        "description": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA)."
+      },
+      {
+        "name": "trust-policy-approver",
+        "description": "Reserved: approve an exact profile revision. No API route accepts it yet."
+      },
+      {
+        "name": "trust-ca-operator",
+        "description": "Reserved: request activation of an approved profile. No API route accepts it yet."
+      }
+    ]
+  },
+  "defaultRole": {
+    "name": "default-roles-trust-lab"
+  },
+  "clients": [
+    {
+      "clientId": "trust-console",
+      "name": "Trust Platform laboratory console",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "redirectUris": [
+        "http://127.0.0.1:5173/auth/callback"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://127.0.0.1:5173##http://127.0.0.1:5173/",
+        "access.token.header.type.rfc9068": "true"
+      },
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "acr"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "trust-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "trust-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "trust roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "trust CA scope",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "ca_ids",
+            "claim.name": "ca_ids",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "trust-lab-workload",
+      "name": "Laboratory workload (client credentials)",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${TRUST_LAB_WORKLOAD_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "access.token.header.type.rfc9068": "true"
+      },
+      "fullScopeAllowed": false,
+      "defaultClientScopes": [
+        "basic"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "trust-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "trust-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "trust roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "trust CA scope",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "ca_ids",
+            "claim.name": "ca_ids",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "trust-console",
+      "roles": [
+        "trust-ca-reader",
+        "trust-profile-editor",
+        "trust-policy-approver",
+        "trust-ca-operator"
+      ]
+    },
+    {
+      "client": "trust-lab-workload",
+      "roles": [
+        "trust-ca-reader",
+        "trust-profile-editor",
+        "trust-policy-approver",
+        "trust-ca-operator"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000001",
+      "username": "lab-reader",
+      "enabled": true,
+      "firstName": "lab-reader",
+      "lastName": "Laboratory",
+      "email": "lab-reader@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_READER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000002",
+      "username": "lab-editor",
+      "enabled": true,
+      "firstName": "lab-editor",
+      "lastName": "Laboratory",
+      "email": "lab-editor@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_EDITOR}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-profile-editor"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000003",
+      "username": "lab-approver-1",
+      "enabled": true,
+      "firstName": "lab-approver-1",
+      "lastName": "Laboratory",
+      "email": "lab-approver-1@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_APPROVER_1}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-policy-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000004",
+      "username": "lab-approver-2",
+      "enabled": true,
+      "firstName": "lab-approver-2",
+      "lastName": "Laboratory",
+      "email": "lab-approver-2@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_APPROVER_2}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-policy-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000005",
+      "username": "lab-operator",
+      "enabled": true,
+      "firstName": "lab-operator",
+      "lastName": "Laboratory",
+      "email": "lab-operator@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_OPERATOR}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-ca-operator"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000006",
+      "username": "lab-outsider",
+      "enabled": true,
+      "firstName": "lab-outsider",
+      "lastName": "Laboratory",
+      "email": "lab-outsider@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_OUTSIDER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": []
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000007",
+      "username": "lab-disabled",
+      "enabled": false,
+      "firstName": "lab-disabled",
+      "lastName": "Laboratory",
+      "email": "lab-disabled@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_DISABLED}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000008",
+      "username": "lab-other-ca",
+      "enabled": true,
+      "firstName": "lab-other-ca",
+      "lastName": "Laboratory",
+      "email": "lab-other-ca@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_OTHER_CA}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000011",
+      "username": "lab-author",
+      "enabled": true,
+      "firstName": "lab-author",
+      "lastName": "Laboratory",
+      "email": "lab-author@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_AUTHOR}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-profile-editor"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000009",
+      "username": "service-account-trust-lab-workload",
+      "enabled": true,
+      "serviceAccountClientId": "trust-lab-workload",
+      "attributes": {
+        "ca_ids": [
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        ]
+      },
+      "realmRoles": [
+        "trust-ca-reader"
+      ]
+    }
+  ]
+}

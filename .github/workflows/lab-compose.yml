@@ -1,0 +1,70 @@
+name: laboratory-compose
+
+on:
+  pull_request:
+    paths:
+      - compose.lab.yaml
+      - Dockerfile.api
+      - frontend/**
+      - scripts/lab/**
+      - tests/management_browser_e2e_seed.sql
+      - migrations/**
+      - crates/management-api/**
+      - Cargo.lock
+      - Cargo.toml
+      - .github/workflows/lab-compose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Generate disposable credentials and validate Compose
+        run: |
+          scripts/lab/init-env.sh
+          docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
+      - name: Build and start laboratory services
+        run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 300
+      - name: Exercise Keycloak sign-in, code/PKCE and scoped database reads
+        run: |
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/check-api-compat.mjs
+          node frontend/dev/compose-smoke.mjs
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install pinned browser test runtime
+        run: |
+          npm ci --prefix frontend
+          cd frontend
+          npx playwright install --with-deps chromium
+      - name: Exercise console interactions in a real browser
+        run: |
+          set -euo pipefail
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          test -n "$DB_CONTAINER"
+          docker exec -i "$DB_CONTAINER" psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 < tests/management_browser_e2e_seed.sql
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/browser-e2e.mjs
+      - name: Refuse unauthorized identities (IAM negative suite)
+        run: |
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/iam-negative.mjs
+      - name: Record and submit profile drafts through Keycloak identities
+        run: |
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/profile-lifecycle-e2e.mjs
+      - name: Show bounded service logs on failure
+        if: failure()
+        run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
+      - name: Remove disposable stack and volume
+        if: always()
+        run: docker compose --env-file .env.lab -f compose.lab.yaml down -v --remove-orphans
+

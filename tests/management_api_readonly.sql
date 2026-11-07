@@ -1,0 +1,56 @@
+-- Run after 0024 as the migration owner. The API role may read only the views.
+BEGIN;
+SET LOCAL ROLE trust_api_reader;
+DO $test$ BEGIN
+    PERFORM count(*) FROM management_ca;
+    PERFORM count(*) FROM management_certificate;
+    PERFORM subject_cn FROM management_certificate LIMIT 1;
+    PERFORM signed_at_window FROM management_certificate LIMIT 1;
+    PERFORM recorded_at_window FROM management_audit LIMIT 1;
+    PERFORM count(*) FROM management_certificate_san;
+    PERFORM subject_cn_lower FROM management_certificate LIMIT 1;
+    PERFORM count(*) FROM management_history_bounds;
+    PERFORM management_reader_isolation_version();
+    BEGIN
+        PERFORM count(*) FROM certificate_san_dns;
+        RAISE EXCEPTION 'API role unexpectedly reads the raw SAN table';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    PERFORM count(*) FROM management_audit;
+    PERFORM count(*) FROM management_reader_scope;
+    PERFORM count(*) FROM management_profile_draft;
+    BEGIN
+        PERFORM count(*) FROM certificate_profile_draft;
+        RAISE EXCEPTION 'API role unexpectedly reads raw profile drafts';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        PERFORM count(*) FROM management_reader_grant;
+        RAISE EXCEPTION 'API role unexpectedly reads raw reader grants';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
+            ('https://issuer.example.test','forbidden','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+        RAISE EXCEPTION 'API role unexpectedly writes reader grants';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        PERFORM count(*) FROM certificate;
+        RAISE EXCEPTION 'API role unexpectedly reads raw certificate DER';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        UPDATE ca SET display_name = display_name;
+        RAISE EXCEPTION 'API role unexpectedly writes CA';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        PERFORM create_issuance_request(
+            'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'::uuid,
+            'forbidden', decode(repeat('11',32),'hex'), 'api', 'v1');
+        RAISE EXCEPTION 'API role unexpectedly calls issuance function';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+END $test$;
+ROLLBACK;

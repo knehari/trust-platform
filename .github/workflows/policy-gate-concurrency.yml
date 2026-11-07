@@ -1,0 +1,42 @@
+name: Policy gate concurrency
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  gate-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trust_ci
+          POSTGRES_PASSWORD: test-only-not-secret
+          POSTGRES_DB: trust_c01
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U trust_ci -d trust_c01"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TRUST_CI_DATABASE_URL: postgresql://trust_ci:test-only-not-secret@localhost:5432/trust_c01
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test driver
+        run: |
+          python3 -m venv /tmp/c01-venv
+          /tmp/c01-venv/bin/pip install 'psycopg[binary]==3.2.10'
+      - name: Reproduce on historical migrations
+        run: |
+          set -euo pipefail
+          for migration in migrations/000*.sql migrations/0010*.sql; do
+            psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+          done
+          /tmp/c01-venv/bin/python tests/policy_gate_concurrency.py --expect-vulnerable
+      - name: Upgrade populated database and enforce race invariant
+        run: |
+          set -euo pipefail
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0011_policy_gate_serialization.sql
+          /tmp/c01-venv/bin/python tests/policy_gate_concurrency.py
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/policy_approval_presign_gate.sql
+          psql "$TRUST_CI_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/signed_policy_receipts.sql

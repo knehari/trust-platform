@@ -1,0 +1,737 @@
+openapi: 3.1.0
+info:
+  title: Sovereign Trust Platform management API
+  version: 0.1.0-lab
+  description: Read-only laboratory API. No issuance or production qualification is implied. Every HTTP response carries Cache-Control no-store and a generated X-Request-Id header for diagnostic correlation; it is not signed audit evidence.
+servers:
+  - url: http://127.0.0.1:8081
+security:
+  - oidcAccessToken: []
+paths:
+  /v1/health:
+    get:
+      security: []
+      summary: Liveness without sensitive details
+      responses:
+        '200':
+          description: Process is serving requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: up
+  /v1/ready:
+    get:
+      security: []
+      summary: Readiness of the restricted PostgreSQL management read path
+      description: Checks the restricted reader role and required views without returning metadata or database errors. Uses one separate probe slot and a one-second result cache; a busy authenticated-read budget or concurrent probe returns 503.
+      responses:
+        '200':
+          description: Management reads can be served
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: ready
+        '503':
+          description: Management reads are unavailable
+  /v1/cas:
+    get:
+      summary: List one ordered page of CAs in both the signed scope and server-managed reader grants, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaCursor'
+        - $ref: '#/components/parameters/CaSearch'
+      responses:
+        '200':
+          description: Scoped CA list. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string, maxLength: 4096 }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}:
+    get:
+      summary: Read one scoped CA
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: CA detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CA'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/profile-drafts:
+    get:
+      summary: List inert profile-draft revisions for one scoped CA, at most 100 per page
+      description: Draft records are unapproved proposals and cannot authorize issuance. Both signed CA scope and the current server-managed reader grant are required.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: query
+          name: profile_id
+          required: false
+          description: Exact lowercase profile ID. Keep this filter on each cursor page; a cursor for another profile returns 400.
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: query
+          name: order
+          required: false
+          description: Oldest (default) or newest revision first. Newest requires profile_id. Keep this order on each cursor page.
+          schema: { type: string, enum: [oldest, newest] }
+        - in: query
+          name: after
+          required: false
+          description: Pass X-Next-Cursor from the preceding page unchanged; malformed cursors return 400.
+          schema: { type: string, maxLength: 72 }
+      responses:
+        '200':
+          description: Profile-draft revisions ordered by profile ID and revision; a filtered profile may be ordered by revision descending.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileDraft'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      summary: Record the next immutable DRAFT revision of a profile (laboratory, migration 0022)
+      description: Requires the trust-profile-editor token role, the CA in the signed scope and a server-owned profile-editor grant; the reader role is not required. The server assigns the next revision number, records a lifecycle event and an audit event, and never approves or activates anything. Writes go through a database login that can only execute the lifecycle functions (ADR-0010, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileDraftCreate' }
+      responses:
+        '201':
+          description: Revision recorded as a DRAFT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDraft' }
+        '200':
+          description: Replay of a recorded request with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDraft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-profile-editor role, CA outside the signed scope, or no server-owned profile-editor grant for this issuer, subject and CA }
+        '409': { description: Idempotency key reused for another request, or a conflicting recorded state }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}:
+    get:
+      summary: Read one exact inert profile-draft revision in a scoped CA
+      description: Rechecks the signed CA scope and current server-owned reader grant. The returned digest identifies proposed content; it is not an approval.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+      responses:
+        '200':
+          description: One exact revision in any lifecycle state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileDraft'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No such revision in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/submission:
+    post:
+      summary: Submit the latest revision of a profile for approval (laboratory, migration 0022)
+      description: Same role and grant requirements as recording a revision. Only the latest revision can be submitted, once, and only when the request names its exact digest, recomputed by the database. A revision with advisory syntax warnings is refused. SUBMITTED is not approval and cannot authorize issuance.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [snapshot_sha256]
+              properties:
+                snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '201':
+          description: Revision submitted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileSubmission' }
+        '200':
+          description: Replay of a recorded submission with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileSubmission' }
+        '404': { description: No such revision in the authorized CA }
+        '422': { description: The revision has advisory syntax warnings; nothing was recorded }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-profile-editor role, CA outside the signed scope, or no server-owned profile-editor grant for this issuer, subject and CA }
+        '409': { description: Idempotency key reused, a newer revision exists, the revision is already submitted, or the digest does not match it }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/decision-claims:
+    post:
+      summary: Get the exact claim an approver signs to approve or reject a submitted revision (laboratory, migration 0023)
+      description: Records nothing. The database builds a one-line claim binding the decision, CA, profile, revision, submission digest and event, approver identity, registered key and issue time. It is valid for ten minutes. Sign it with the approver's own registered P-256 key outside the console (ECDSA with SHA-256, DER signature), for example with `openssl dgst -sha256 -sign`.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string, enum: [approve, reject] }
+                  claim: { type: string, pattern: '^trust-platform/profile-decision/v1;' }
+                  key_id: { type: string }
+                  issued_at: { type: string, format: date-time }
+                  valid_for_seconds: { type: integer, const: 600 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-policy-approver role, CA outside the signed scope, no server-owned policy-approver grant, no active registered key, or the caller authored or submitted the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: The revision is not submitted, is already approved or rejected, or this approver already decided }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/decisions:
+    post:
+      summary: Record a signed approval or rejection of a submitted revision (laboratory, migration 0023)
+      description: The API rebuilds the claim in the database and verifies the signature with the approver's registered key inside the transaction that records it; a signature that does not verify is refused and nothing is kept. Two approvals by distinct approvers with distinct keys make the revision APPROVED; one rejection makes it REJECTED. APPROVED does not activate the profile or authorize issuance (ADR-0011, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this decision. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, issued_at, signature_der_base64]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                issued_at: { type: string, format: date-time, description: The issued_at of the claim that was signed }
+                signature_der_base64: { type: string, description: Base64 of the DER ECDSA P-256/SHA-256 signature over the exact claim bytes }
+      responses:
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDecision' }
+        '200':
+          description: Replay of a recorded decision with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileDecision' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-policy-approver role, CA outside the signed scope, no server-owned policy-approver grant, no active registered key, or the caller authored or submitted the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: Idempotency key reused, claim expired or not yet valid, revision not submitted or already decided, or this approver already decided }
+        '422': { description: The signature does not verify over the claim with the approver's registered key; nothing was recorded }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/activation:
+    post:
+      summary: Activate an approved revision (laboratory, migration 0024)
+      description: The revision must be APPROVED and never activated, and the request names its exact digest. The CA's policy version must equal the revision's, every proposed suite must be declared for the CA by the owner and be in the typed algorithm catalogue. Any active revision of the profile becomes SUPERSEDED. No issuance path reads the active revision yet (ADR-0012, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [snapshot_sha256]
+              properties:
+                snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      responses:
+        '201':
+          description: Revision activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '200':
+          description: Replay of a recorded activation with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-operator role, CA outside the signed scope, no server-owned ca-operator grant, or (activation) the caller wrote, submitted or decided on the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: Idempotency key reused, the revision is not APPROVED or was already activated, or the digest does not match it }
+        '422': { description: Incompatible with the CA (policy version, a suite the CA does not declare, or a suite outside the catalogue); nothing was recorded }
+  /v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/retirement:
+    post:
+      summary: Retire the active revision of a profile (laboratory, migration 0024)
+      description: Only the ACTIVE revision can be retired, once. Nothing replaces it until another approved revision is activated. The body is an empty JSON object.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: profile_id
+          required: true
+          schema: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        - in: path
+          name: revision
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 1000000 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: Revision retired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '200':
+          description: Replay of a recorded retirement with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProfileActivation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-operator role, CA outside the signed scope, no server-owned ca-operator grant, or (activation) the caller wrote, submitted or decided on the revision }
+        '404': { description: No such revision in the authorized CA }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+        '409': { description: Idempotency key reused, or the revision is not the active one }
+  /v1/cas/{ca_id}/certificates:
+    get:
+      summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
+        - $ref: '#/components/parameters/CertificateCnPrefix'
+        - $ref: '#/components/parameters/CertificateSanDns'
+        - $ref: '#/components/parameters/CertificateNotAfterBefore'
+        - $ref: '#/components/parameters/HistoryOrder'
+      responses:
+        '200':
+          description: Metadata only; certificate DER is not exposed. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates/{request_id}:
+    get:
+      summary: Read one certificate metadata record in a scoped CA
+      description: Returns metadata only after checking the signed CA scope and current server-owned reader grant. Certificate DER is not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Certificate metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No certificate metadata for that request in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/certificates/by-serial/{serial_hex}:
+    get:
+      summary: Find one certificate metadata record by issuer-scoped hexadecimal serial
+      description: Accepts positive hexadecimal serials as plain digits, optionally prefixed with 0x or written as colon-separated byte pairs, case-insensitively. The input is normalized to minimal positive DER-content hex before lookup; the response serial_hex is canonical. Decimal notation is not accepted. The signed CA scope and current server-owned reader grant are checked before the restricted metadata view is queried. Certificate DER is not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: serial_hex
+          required: true
+          schema: { type: string, pattern: '^(?:0[xX])?(?:[0-9A-Fa-f]{1,40}|[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){1,19})$', maxLength: 61 }
+      responses:
+        '200':
+          description: Certificate metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Certificate'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No certificate with that serial in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/audit:
+    get:
+      summary: Read one ordered page of audit event metadata for a scoped CA, at most 100
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - $ref: '#/components/parameters/HistoryCursor'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditUntil'
+        - $ref: '#/components/parameters/AuditEventType'
+        - $ref: '#/components/parameters/AuditDecision'
+        - $ref: '#/components/parameters/AuditPolicyVersion'
+        - $ref: '#/components/parameters/HistoryOrder'
+      responses:
+        '200':
+          description: Audit metadata without actor identifiers. Repeat with X-Next-Cursor until the header is absent.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the final page.
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/cas/{ca_id}/audit/{event_id}:
+    get:
+      summary: Read one audit event metadata record in a scoped CA
+      description: Returns the limited audit projection after checking signed CA scope and current server-owned reader grant. Actor identifiers are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Audit event metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEvent'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: No audit event metadata for that identifier in the authorized CA }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    oidcAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids; issuer/subject/CA must also have a server-managed grant.
+  parameters:
+    CaId:
+      in: path
+      name: ca_id
+      required: true
+      schema: { type: string, format: uuid }
+    HistoryCursor:
+      in: query
+      name: before
+      required: false
+      description: Pass the previous page's X-Next-Cursor unchanged. Malformed values, including impossible calendar times, return 400.
+      schema: { type: string, maxLength: 61 }
+    HistoryOrder:
+      in: query
+      name: order
+      required: false
+      description: Newest (default) or oldest timestamp and ID order over the full scoped history. Keep the same order on every cursor page.
+      schema: { type: string, enum: [newest, oldest] }
+    CertificateCnPrefix:
+      in: query
+      name: cn
+      required: false
+      description: Case-insensitive literal CN prefix over the selected CA's full history. Percent, underscore and backslash are escaped as literals. Keep the same prefix on every page.
+      schema: { type: string, minLength: 2, maxLength: 255 }
+    CertificateSanDns:
+      in: query
+      name: san_dns
+      required: false
+      description: Exact, case-insensitive ASCII DNS SAN over metadata recorded after independent certificate verification. Historical null SANs do not match. May be combined with cn; keep both filters on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 253, pattern: '^[A-Za-z0-9.*_-]+$' }
+    CertificateNotAfterBefore:
+      in: query
+      name: not_after_before
+      required: false
+      description: Exclusive UTC cutoff for recorded X.509 notAfter metadata. Historical null dates do not match. This is not a trust or revocation decision. Keep the cutoff on each cursor page.
+      schema: { type: string, maxLength: 24, pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$' }
+    AuditFrom:
+      in: query
+      name: from
+      required: false
+      description: Inclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format.
+      schema: { type: string, maxLength: 24 }
+    AuditUntil:
+      in: query
+      name: until
+      required: false
+      description: Exclusive UTC timestamp in YYYY-MM-DDTHH:mm:ss.SSSZ format; must follow from.
+      schema: { type: string, maxLength: 24 }
+    AuditEventType:
+      in: query
+      name: event_type
+      required: false
+      description: Exact event type in the selected CA's full audit history.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    AuditDecision:
+      in: query
+      name: decision
+      required: false
+      description: Exact decision in the selected CA's full audit history; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    AuditPolicyVersion:
+      in: query
+      name: policy_version
+      required: false
+      description: Exact non-null policy version in the selected CA's full audit history; keep on each cursor page.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    CaCursor:
+      in: query
+      name: after
+      required: false
+      description: Pass the previous CA page's opaque X-Next-Cursor unchanged. It carries the last displayed name and CA identifier, so paging can continue if that CA's grant is revoked. Malformed values return 400; concurrent renames or inserts do not form a snapshot.
+      schema: { type: string, maxLength: 4096 }
+    CaSearch:
+      in: query
+      name: q
+      required: false
+      description: Case-insensitive literal prefix of CA display name or policy version over all signed and granted CAs. Keep this query on subsequent cursor pages.
+      schema: { type: string, minLength: 2, maxLength: 255 }
+  schemas:
+    CA:
+      type: object
+      required: [ca_id, parent_ca_id, display_name, policy_version, created_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        parent_ca_id: { type: [string, 'null'], format: uuid }
+        display_name: { type: string }
+        policy_version: { type: string }
+        created_at: { type: string, format: date-time }
+    ProfileDraft:
+      type: object
+      required: [ca_id, profile_id, revision, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by, created_at, status, submitted_at, approval_count, decided_at, activated_at, ended_at, proposal_warnings, snapshot_sha256]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        display_name: { type: string }
+        policy_version: { type: string }
+        max_validity_days: { type: integer }
+        max_dns_sans: { type: integer }
+        proposed_dns_zones: { type: array, items: { type: string } }
+        proposed_signature_suites: { type: array, items: { type: string } }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, APPROVED, REJECTED, ACTIVE, SUPERSEDED, RETIRED]
+          description: SUBMITTED revisions await two signed approvals; an operator activates an APPROVED revision, which a later activation supersedes or a retirement ends. No issuance path reads ACTIVE yet, so no state authorizes issuance.
+        submitted_at: { type: [string, 'null'], format: date-time, description: Submission time; null for a DRAFT }
+        approval_count: { type: integer, minimum: 0, maximum: 2, description: Signed approvals recorded for this revision }
+        decided_at: { type: [string, 'null'], format: date-time, description: Time of the deciding decision; null before a revision is approved or rejected }
+        activated_at: { type: [string, 'null'], format: date-time, description: Activation time; null unless ACTIVE, SUPERSEDED or RETIRED }
+        ended_at: { type: [string, 'null'], format: date-time, description: Supersession or retirement time; null unless SUPERSEDED or RETIRED }
+        proposal_warnings:
+          type: array
+          description: Advisory syntax findings only. An empty array is not an approval, provider capability check or issuance authorization.
+          items: { type: string, enum: [blank_display_name, blank_policy_version, invalid_dns_zone, duplicate_dns_zone, invalid_suite_id, duplicate_suite_id] }
+        snapshot_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the v1 length-prefixed proposal-policy envelope. It is not signed, approved or bound to an issued certificate.
+    ProfileDraftCreate:
+      type: object
+      additionalProperties: false
+      required: [profile_id, display_name, policy_version, max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites]
+      properties:
+        profile_id: { type: string, pattern: '^[a-z][a-z0-9-]{1,63}$', maxLength: 64 }
+        display_name: { type: string, minLength: 1, maxLength: 255 }
+        policy_version: { type: string, minLength: 1, maxLength: 128 }
+        max_validity_days: { type: integer, minimum: 1, maximum: 825 }
+        max_dns_sans: { type: integer, minimum: 1, maximum: 100 }
+        proposed_dns_zones: { type: array, minItems: 1, maxItems: 32, items: { type: string, maxLength: 253 } }
+        proposed_signature_suites: { type: array, minItems: 1, maxItems: 16, items: { type: string, maxLength: 64 } }
+    ProfileActivation:
+      type: object
+      required: [ca_id, profile_id, revision, status, superseded_revision]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
+        superseded_revision: { type: [integer, 'null'], description: The revision this activation superseded; null when none was active, and for a retirement }
+    ProfileDecision:
+      type: object
+      required: [ca_id, profile_id, revision, decision, status, approval_count]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        decision: { type: string, enum: [approve, reject] }
+        status: { type: string, enum: [SUBMITTED, APPROVED, REJECTED] }
+        approval_count: { type: integer, minimum: 0, maximum: 2 }
+    ProfileSubmission:
+      type: object
+      required: [ca_id, profile_id, revision, status, snapshot_sha256, submitted_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        profile_id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, const: SUBMITTED }
+        snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        submitted_at: { type: string, format: date-time }
+    Certificate:
+      type: object
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
+      properties:
+        ca_id: { type: string, format: uuid }
+        serial_hex: { type: string }
+        fingerprint_sha256: { type: string }
+        request_id: { type: string, format: uuid }
+        state: { type: string }
+        signed_at: { type: string, format: date-time }
+        published_at: { type: [string, 'null'], format: date-time }
+        subject_cn: { type: [string, 'null'], description: Recorded subject CN when available; null for historical or unsupported subjects. Disposable lab fixtures may use synthetic values. }
+        not_before: { type: [string, 'null'], format: date-time, description: Validity start parsed from independently verified certificate DER; null for historical records. }
+        not_after: { type: [string, 'null'], format: date-time, description: Validity end parsed from independently verified certificate DER; null for historical records. }
+        san_dns: { type: [array, 'null'], items: { type: string }, description: DNS SANs parsed from independently verified certificate DER; empty when no DNS SAN exists, null for historical records. }
+    AuditEvent:
+      type: object
+      required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]
+      properties:
+        event_id: { type: string, format: uuid }
+        ca_id: { type: string, format: uuid }
+        event_type: { type: string }
+        decision: { type: string }
+        policy_version: { type: [string, 'null'] }
+        recorded_at: { type: string, format: date-time }
+  responses:
+    BadRequest: { description: Invalid identifier or cursor }
+    Unauthorized: { description: Missing or invalid access token }
+    Forbidden: { description: Role, signed CA scope or server-managed grant denied }
+    Unavailable: { description: Management data request capacity exhausted or read database unavailable }

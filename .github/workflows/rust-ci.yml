@@ -1,0 +1,411 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install repository-pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+          rustc --version --verbose
+          cargo --version
+          git rev-parse HEAD 'HEAD^{tree}'
+      - name: Default-feature regression tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Build and test with committed lockfile
+        run: cargo test --workspace --all-targets --all-features --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: CP/CPS generation stays draft only
+        run: |
+          cargo run --locked -p trust-pki-core --example draft_cp_cps -- "$RUNNER_TEMP/governance-lab"
+          test -s "$RUNNER_TEMP/governance-lab/certificate-policy.DRAFT.md"
+          test -s "$RUNNER_TEMP/governance-lab/certification-practice-statement.DRAFT.md"
+          grep -q 'DO NOT PUBLISH' "$RUNNER_TEMP/governance-lab/certificate-policy.DRAFT.md"
+          grep -q 'PENDING HUMAN VALIDATION' "$RUNNER_TEMP/governance-lab/certification-practice-statement.DRAFT.md"
+          if find "$RUNNER_TEMP/governance-lab" -type f ! -name '*.DRAFT.md' | grep -q .; then
+            echo 'Unexpected published-looking CP/CPS file' >&2
+            exit 1
+          fi
+      - name: RSA-PSS OpenSSL conformance (lab only)
+        run: bash tests/rsa_pss_openssl_lab.sh
+      - name: RSA-PSS X.509 OpenSSL interoperability (lab only)
+        run: bash tests/rsa_pss_x509_openssl_lab.sh
+      - name: Native RSA-PSS X.509 root verified by OpenSSL (lab only)
+        run: |
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_root_lab -- "$RUNNER_TEMP/native-rsa-root.der"
+          openssl x509 -inform DER -in "$RUNNER_TEMP/native-rsa-root.der" -out "$RUNNER_TEMP/native-rsa-root.pem"
+          openssl verify -CAfile "$RUNNER_TEMP/native-rsa-root.pem" -check_ss_sig "$RUNNER_TEMP/native-rsa-root.pem"
+          openssl x509 -in "$RUNNER_TEMP/native-rsa-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: Typed RSA-PSS SHA-384/512 native roots verified by OpenSSL (lab only)
+        run: |
+          for digest in sha384 sha512; do
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_root_agile_lab -- "$digest" "$RUNNER_TEMP/pss-$digest-root.der"
+            openssl x509 -inform DER -in "$RUNNER_TEMP/pss-$digest-root.der" -out "$RUNNER_TEMP/pss-$digest-root.pem"
+            openssl verify -CAfile "$RUNNER_TEMP/pss-$digest-root.pem" -check_ss_sig "$RUNNER_TEMP/pss-$digest-root.pem"
+            openssl x509 -in "$RUNNER_TEMP/pss-$digest-root.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+          done
+      - name: ECDSA P384/P521 and Ed25519/Ed448 TLS server chains verified by OpenSSL
+        run: |
+          for scheme in p384 p521 ed25519 ed448; do
+            output="$RUNNER_TEMP/classical-$scheme-server"
+            mkdir -p "$output"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_openssl_classical_server_lab -- "$scheme" "$output"
+            openssl x509 -inform DER -in "$output/root.der" -out "$output/root.pem"
+            openssl x509 -inform DER -in "$output/leaf.der" -out "$output/leaf.pem"
+            openssl verify -CAfile "$output/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$output/leaf.pem"
+          done
+      - name: ECDSA P384/P521 and Ed25519/Ed448 lab roots verified by OpenSSL
+        run: |
+          for scheme in p384 p521 ed25519 ed448; do
+            der="$RUNNER_TEMP/classical-$scheme.der"
+            pem="$RUNNER_TEMP/classical-$scheme.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_openssl_classical_root_lab -- "$scheme" "$der"
+            openssl x509 -inform DER -in "$der" -out "$pem"
+            openssl verify -CAfile "$pem" -check_ss_sig "$pem"
+          done
+      - name: Native RSA PKCS1 SHA256/384/512 roots independently verified by OpenSSL (lab only)
+        run: |
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/pkcs1-$digest-$bits.der"
+            pem="$RUNNER_TEMP/pkcs1-$digest-$bits.pem"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pkcs1_root_lab -- "$digest" "$bits" "$der"
+            openssl x509 -inform DER -in "$der" -out "$pem"
+            openssl verify -CAfile "$pem" -check_ss_sig "$pem"
+            openssl x509 -in "$pem" -noout -text | grep -q "Signature Algorithm: sha.*WithRSAEncryption"
+            openssl x509 -in "$pem" -pubkey -noout | openssl pkey -pubin -text -noout | grep -q "($bits bit)"
+          done
+      - name: Native RSA-PSS server chain verified by OpenSSL (lab only)
+        run: |
+          mkdir -p "$RUNNER_TEMP/rsa-pss-server"
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_server_lab -- "$RUNNER_TEMP/rsa-pss-server"
+          openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/root.der" -out "$RUNNER_TEMP/rsa-pss-server/root.pem"
+          openssl x509 -inform DER -in "$RUNNER_TEMP/rsa-pss-server/leaf.der" -out "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
+          openssl verify -CAfile "$RUNNER_TEMP/rsa-pss-server/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$RUNNER_TEMP/rsa-pss-server/leaf.pem"
+          openssl x509 -in "$RUNNER_TEMP/rsa-pss-server/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+      - name: OpenSSL RSA PKCS10 SHA256/384/512 proof-of-possession interoperability (lab only)
+        run: |
+          set -euo pipefail
+          for selection in sha256:2048 sha384:3072 sha512:4096; do
+            digest="${selection%%:*}"
+            bits="${selection##*:}"
+            der="$RUNNER_TEMP/csr-$digest-$bits.der"
+            key="$RUNNER_TEMP/csr-$digest-$bits.key"
+            openssl req -new -newkey "rsa:$bits" -nodes -keyout "$key" -out "$der" -outform DER "-$digest" -subj "/CN=api.lab.invalid"
+            openssl req -in "$der" -inform DER -noout -verify
+            cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "$bits"
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" "$digest" "8192"; then
+              echo "Accepted a forged RSA modulus size"
+              exit 1
+            fi
+            if cargo run --locked -p trust-pki-core --features lab-software --example verify_rsa_pkcs1_csr_lab -- "$der" sha999 "$bits"; then
+              echo "Accepted an unsupported digest"
+              exit 1
+            fi
+          done
+      - name: Native RSA-PSS SHA384/512 server chains verified by OpenSSL (lab only)
+        run: |
+          for digest in sha384 sha512; do
+            output="$RUNNER_TEMP/rsa-pss-$digest-server"
+            mkdir -p "$output"
+            cargo run --locked -p trust-pki-core --features lab-software --example issue_rsa_pss_agile_server_lab -- "$digest" "$output"
+            openssl x509 -inform DER -in "$output/root.der" -out "$output/root.pem"
+            openssl x509 -inform DER -in "$output/leaf.der" -out "$output/leaf.pem"
+            openssl verify -CAfile "$output/root.pem" -purpose sslserver -verify_hostname api.lab.invalid "$output/leaf.pem"
+            openssl x509 -in "$output/leaf.pem" -noout -text | grep 'Signature Algorithm: rsassaPss'
+            openssl x509 -in "$output/leaf.pem" -noout -text | grep "Hash Algorithm: $digest"
+          done
+      - name: Native CA to OpenSSL interop (lab only)
+        run: |
+          cargo run --locked -p trust-pki-core --features lab-software --example issue_lab -- "$RUNNER_TEMP/trust-lab"
+          openssl verify -CAfile "$RUNNER_TEMP/trust-lab/root.pem" -purpose sslserver "$RUNNER_TEMP/trust-lab/leaf.pem"
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'DNS:api.lab.invalid'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/root.pem" -noout -text | grep 'X509v3 Subject Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep 'X509v3 Authority Key Identifier'
+          openssl x509 -in "$RUNNER_TEMP/trust-lab/leaf.pem" -noout -text | grep -A3 'X509v3 Certificate Policies' | grep '1.3.6.1.4.1.55555.1.1'
+
+
+  schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Database integration tests must fail, not silently skip, if DB settings disappear.
+      TRUST_REQUIRE_DATABASE: "1"
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trust_ci
+          POSTGRES_PASSWORD: test-only-not-secret
+          POSTGRES_DB: trust_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trust_ci -d trust_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install repository-pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
+          rustc --version --verbose
+          cargo --version
+          git rev-parse HEAD 'HEAD^{tree}'
+      - name: Apply proposed schema to disposable database
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0001_foundation.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0002_transactional_issuance.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0003_signing_intent.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0004_signing_recovery.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0005_reconciliation_review.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0006_collector_evidence_receipt.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0007_ca_observation_policy_draft_trace.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0008_policy_approval_presign_gate.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0009_signed_policy_receipts.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0010_policy_approval_challenge_lab.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0011_policy_gate_serialization.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0012_management_read_views.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0013_management_reader_grants.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0014_certificate_subject_cn.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0015_verified_certificate_metadata.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0016_profile_draft_catalogue.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0017_management_history_window.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0018_management_certificate_san.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0019_management_certificate_cn_lower.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0020_management_history_bounds.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0021_management_reader_isolation.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0022_profile_draft_submission.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0023_profile_draft_decision.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0024_profile_revision_activation.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_draft.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_san.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_reader_isolation.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_lifecycle.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_decision.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_activation.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
+          bash tests/transactional_concurrency.sh "$CONTAINER"
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/signing_intent.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/signing_recovery.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/reconciliation_review.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/collector_evidence_receipt.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/ca_observation_policy_draft_trace.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/policy_approval_presign_gate.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/signed_policy_receipts.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/policy_approval_challenge_lab.sql
+          bash tests/recovery_concurrency.sh "$CONTAINER"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO ca(ca_id,display_name,policy_version) VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Rust Lab Adapter CA','v1'),('ffffffff-ffff-4fff-8fff-ffffffffffff','Unprovisioned Lab CA','v1')"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES ('https://other-issuer.example.test','operator','ffffffff-ffff-4fff-8fff-ffffffffffff')"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_api_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_api_reader TO trust_api_ci"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor')"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_writer_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_profile_writer TO trust_writer_ci"
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_decision_api_seed.sql
+          TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            TRUST_API_WRITER_TEST_DATABASE_URL="postgresql://trust_writer_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo test -p trust-management-api --locked
+          # Every decision the API tests recorded must verify independently.
+          TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo run --locked -p trust-management-api --bin lab_verify_profile_decisions
+          # Negative test: strict mode must fail if a DB-dependent test has no URL.
+          if env -u TRUST_CI_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked; then
+            echo "FAIL: DB-dependent test passed without its mandatory DB URL" >&2
+            exit 1
+          fi
+          echo "PASS: DB-dependent test rejects missing DB URL in strict CI"
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test postgres_store --features postgres-store --locked
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test lab_verified_issuance --features postgres-store,lab-software --locked
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test lab_policy_gate --features postgres-store,lab-software --locked
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" cargo test -p trust-pki-core --test policy_decisions --features postgres-store,lab-software --locked
+          cargo build -p trust-pki-core --example crash_recovery_lab --features postgres-store,lab-software --locked
+          TRUST_CI_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" bash tests/crash_recovery_sigkill.sh "$CONTAINER"
+      - name: Page scoped management history beyond 100 rows
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
+          DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql; do
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+          done
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_profile_draft_api_seed.sql >/dev/null
+          # Simulate an existing disposable fixture whose CN metadata predates 0014.
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "UPDATE certificate SET subject_cn=NULL WHERE ca_id='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'" >/dev/null
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f scripts/lab/restore-pagination-fixture-cn.sql >/dev/null
+          TRUST_REQUIRE_DATABASE=1 \
+          TRUST_API_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
+            cargo test -p trust-management-api --bin trust-management-api history_pagination_reads_all_scoped_rows --locked -- --nocapture
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -f tests/management_history_filter_plan_seed.sql >/dev/null
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -v ca_id=eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee \
+            -v issuer=https://issuer.example.test -v subject=operator \
+            -f tests/management_history_filter_plan.sql
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_ca_pagination_seed.sql >/dev/null
+          TRUST_REQUIRE_DATABASE=1 \
+          TRUST_API_CA_PAGINATION_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination" \
+          TRUST_API_CA_PAGINATION_ADMIN_URL="$DATABASE_URL" \
+            cargo test -p trust-management-api --bin trust-management-api ca_pagination_reads_all_scoped_rows --locked -- --nocapture
+      - name: Read sliced management history in order
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_history_window
+          DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_history_window"
+          for migration in migrations/0*.sql; do
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+          done
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_window_seed.sql >/dev/null
+          # Every page of every order and filter must equal one unsliced
+          # statement through the same views, as the reader login.
+          TRUST_API_WINDOW_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_history_window" \
+            cargo test -p trust-management-api --bin trust-management-api history_slices_read_every_row_in_order --locked -- --nocapture 2>&1 | tee history-window.txt
+          if grep -q '^SKIP:' history-window.txt; then
+            echo 'FAIL: the sliced-history test skipped although its database is configured' >&2
+            exit 1
+          fi
+      - name: Measure history query plans on a multi-CA load fixture
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_history_load
+          DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_history_load"
+          for migration in migrations/0*.sql; do
+            psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+          done
+          # A reduced fixture keeps the job short; the documented run uses big=200000.
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -v big=50000 \
+            -f tests/management_history_load_seed.sql
+          # Fails if the reader can see the ungranted authority; prints every plan.
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+            -f tests/management_history_load_plans.sql | tee history-load-plans.txt
+          grep -E '^### | Execution Time' history-load-plans.txt | paste - -
+      - name: Upgrade populated management database
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade
+          TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+            bash tests/management_populated_upgrade.sh
+      - name: Retry interrupted management migration
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_upgrade_retry
+          TRUST_UPGRADE_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade_retry" \
+            bash tests/management_migration_retry.sh
+      - name: Apply ledgered management migrations
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_main
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_fault
+          cargo build -p trust-management-api --bin lab_migrate_management --locked
+          TRUST_LEDGER_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_main" \
+          TRUST_LEDGER_FAULT_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_fault" \
+          TRUST_LEDGER_UNTRACKED_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+            bash tests/management_migration_ledger.sh
+      - name: Restore ledgered management database
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_ledger_restored
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_fault" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ledger_restored" \
+            bash tests/management_ledger_restore.sh
+      - name: Restore populated management snapshot
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_restored
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_restored" \
+            bash tests/management_dump_restore.sh
+          if TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+             TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_restored" \
+             bash tests/management_dump_restore.sh; then
+            echo 'FAIL: restore accepted a populated target' >&2
+            exit 1
+          fi
+          echo 'PASS: restore refuses a populated target'
+      - name: Restore management snapshot into fresh cluster
+        run: |
+          set -euo pipefail
+          FRESH="trust-fresh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --detach --rm --name "$FRESH" \
+            -e POSTGRES_USER=trust_restore_ci \
+            -e POSTGRES_PASSWORD=test-only-not-secret \
+            -e POSTGRES_DB=trust_fresh \
+            -p 127.0.0.1:55433:5432 postgres:16 >/dev/null
+          trap 'docker rm -f "$FRESH" >/dev/null 2>&1 || true' EXIT
+          TARGET_URL="postgresql://trust_restore_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh"
+          for attempt in $(seq 1 30); do
+            if docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh >/dev/null 2>&1 \
+               && psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$FRESH" pg_isready -U trust_restore_ci -d trust_fresh
+          test "$(psql "$TARGET_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT 1')" = 1
+          SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade"
+          if output=$(TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" \
+             TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
+             bash tests/management_dump_restore.sh 2>&1); then
+            echo 'FAIL: restore accepted a fresh cluster without the reader role' >&2
+            exit 1
+          fi
+          if [[ "$output" != 'Restore target requires NOLOGIN trust_api_reader role' ]]; then
+            printf 'FAIL: unexpected missing-role refusal: %s\n' "$output" >&2
+            exit 1
+          fi
+          echo 'PASS: restore refuses a fresh cluster without the reader role'
+          docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \
+            -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN' -c 'CREATE ROLE trust_profile_writer NOLOGIN'
+          TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
+            bash tests/management_dump_restore.sh
+          docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \
+            -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_restore_login_ci LOGIN PASSWORD 'test-only-not-secret'"
+          TRUST_RESTORE_ADMIN_URL="$TARGET_URL" \
+          TRUST_RESTORE_READER_URL="postgresql://trust_restore_login_ci:test-only-not-secret@127.0.0.1:55433/trust_fresh" \
+            bash tests/management_restored_login.sh
+      - name: Roll back interrupted management restore
+        run: |
+          set -euo pipefail
+          CONTAINER="$(docker ps -q --filter ancestor=postgres:16 | head -n 1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" createdb -U trust_ci trust_atomic
+          TRUST_RESTORE_SOURCE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_upgrade" \
+          TRUST_RESTORE_TARGET_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_atomic" \
+            bash tests/management_restore_atomicity.sh
