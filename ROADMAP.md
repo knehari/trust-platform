@@ -1,6 +1,6 @@
 # Trust Platform — Product & Engineering Roadmap
 
-> Status date: 2026-10-26 · Owner: Trust Platform · Repository: `knehari/trust-platform`
+> Status date: 2026-11-07 · Owner: Trust Platform · Repository: `knehari/trust-platform`
 > **This is a technical roadmap, not a release announcement.** Versions below label laboratory increments and proposed future milestones, not published production releases.
 
 ## Status conventions
@@ -8,13 +8,13 @@
 - **LAB-VALIDATED**: code and relevant tests evidenced on an exact laboratory tree; the change may still be in a Draft PR and is not production approved.
 - **LAB-PROTOTYPE**: scoped code/contract and tests available; full integration, CI and independent review may remain open.
 - **PLANNED**: proposed scope, no implementation claim. Future version numbers are planning labels, subject to architecture review.
-- **G0 BLOCKED**: legal/employment/IP separation and independent security review required before merge or commercialization.
+- **G0 EVIDENCE PENDING**: the owner confirmed legal/IP clearance and independent security review on 2026-11-07; the corresponding review artifacts have not been linked to this repository checkpoint.
 
 ## Current baseline and release hygiene
 
-- **`main` is not a shipped CA.** Part of the laboratory application stack has been merged, while later work through [Draft #164](https://github.com/knehari/trust-platform/pull/164) remains in stacked PRs. The version history below records **development milestones**, not GitHub releases.
+- **`main` is not a shipped CA.** The first integration phase brings the laboratory profile lifecycle, console, IAM and read API stack into the code baseline. Experimental revocation/CRL and signed administration from [Draft #94](https://github.com/knehari/trust-platform/pull/94) remain in an [incomplete integration branch](https://github.com/knehari/trust-platform/tree/codex/revocation-port-onto-profile). The version history below records **development milestones**, not GitHub releases.
 - Technical test success is not production readiness; no eIDAS/ETSI/ANSSI qualification, no QTSP certification, no audited production HSM custody or network-facing production CA claimed.
-- Do not bulk-merge stacked work. Resolve G0, review each diff and migration in dependency order, assess security and cryptographic algorithms, validate isolated CI, then merge through authorized review gates.
+- Integrate stacked work in dependency order, assess security and cryptographic algorithms, validate migrations and isolated CI, then merge through authorized review gates. The owner's G0 and independent-review confirmation does not substitute for linking the evidence to the release record.
 
 ## MVP: controlled single-tenant PKI pilot
 
