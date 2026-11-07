@@ -42,11 +42,15 @@
       },
       {
         "name": "trust-policy-approver",
-        "description": "Reserved: approve an exact profile revision. No API route accepts it yet."
+        "description": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA)."
       },
       {
         "name": "trust-ca-operator",
-        "description": "Reserved: request activation of an approved profile. No API route accepts it yet."
+        "description": "Activate or retire an approved profile revision (with a ca-operator grant for the CA)."
+      },
+      {
+        "name": "trust-ca-administrator",
+        "description": "Propose a CA and register its self-signed issuer certificate (with a ca-administrator platform grant)."
       }
     ]
   },
@@ -200,7 +204,8 @@
         "trust-ca-reader",
         "trust-profile-editor",
         "trust-policy-approver",
-        "trust-ca-operator"
+        "trust-ca-operator",
+        "trust-ca-administrator"
       ]
     },
     {
@@ -209,7 +214,8 @@
         "trust-ca-reader",
         "trust-profile-editor",
         "trust-policy-approver",
-        "trust-ca-operator"
+        "trust-ca-operator",
+        "trust-ca-administrator"
       ]
     }
   ],
@@ -430,6 +436,28 @@
       "realmRoles": [
         "trust-ca-reader",
         "trust-profile-editor"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000012",
+      "username": "lab-ca-admin",
+      "enabled": true,
+      "firstName": "lab-ca-admin",
+      "lastName": "Laboratory",
+      "email": "lab-ca-admin@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_ADMIN}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-administrator"
       ]
     },
     {

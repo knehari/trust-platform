@@ -19,3 +19,6 @@ INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
 INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ecdsa-p256-sha256'),
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','p256-sha256');
+-- CA proposals (migration 0025): one platform administrator.
+INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
+  ('https://issuer.example.test','ca-admin-http','ca-administrator');

@@ -415,6 +415,107 @@ paths:
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
         '409': { description: Idempotency key reused, or the revision is not the active one }
+  /v1/ca-proposals:
+    get:
+      summary: List CA proposals (laboratory, migration 0025)
+      description: Newest first, at most 100. Requires the trust-ca-administrator role; the database returns rows only when the caller holds the owner-granted ca-administrator platform grant, and an empty list otherwise. A proposal is not a CA and issues nothing (ADR-0013, Proposed).
+      responses:
+        '200':
+          description: Proposals visible to the caller
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items: { $ref: '#/components/schemas/CaProposal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role }
+        '503': { description: The database is unavailable }
+    post:
+      summary: Propose a CA (laboratory, migration 0025)
+      description: Records a PROPOSED CA. The database draws its identifier. Only the ecdsa-p256-sha256 suite can be proposed. No CA row, grant or issuance results (ADR-0013, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [display_name, policy_version, suite_id]
+              properties:
+                display_name: { type: string, minLength: 1, maxLength: 255, description: 'No control characters or surrounding spaces. The issuer certificate''s common name must equal it.' }
+                policy_version: { type: string, minLength: 1, maxLength: 128 }
+                suite_id: { type: string, enum: [ecdsa-p256-sha256] }
+      responses:
+        '201':
+          description: Proposal recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaProposalCreated' }
+        '200':
+          description: Replay of a recorded proposal with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaProposalCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or no server-owned ca-administrator platform grant }
+        '409': { description: Idempotency key reused for another request }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: A suite other than ecdsa-p256-sha256 }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/ca-proposals/{ca_id}/issuer-certificate:
+    post:
+      summary: Register a proposal's self-signed issuer certificate (laboratory, migration 0025)
+      description: "The private key is generated outside the platform; send only the certificate. The API accepts one PEM certificate in canonical DER: X.509 v3, ecdsa-with-SHA256, a P-256 named-curve key, a subject of exactly one common name equal to the issuer, only basicConstraints (critical, cA), keyUsage (critical, keyCertSign and cRLSign), subjectKeyIdentifier and authorityKeyIdentifier, a current validity, and a signature that verifies under its own key. The database then requires the common name to equal the proposal's display name, the key to match its suite, no earlier certificate for the proposal and no reuse of the public key. The proposal becomes KEY_ATTESTED (ADR-0013, Proposed)."
+      parameters:
+        - in: path
+          name: ca_id
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [certificate_pem]
+              properties:
+                certificate_pem: { type: string, maxLength: 16000 }
+      responses:
+        '201':
+          description: Certificate verified and recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaIssuerCertificateRegistered' }
+        '200':
+          description: Replay of a recorded registration with the same Idempotency-Key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaIssuerCertificateRegistered' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing trust-ca-administrator role or no server-owned ca-administrator platform grant }
+        '404': { description: No such proposal }
+        '409': { description: Idempotency key reused, the proposal already has a certificate, or the public key is registered for another proposal }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422':
+          description: "Certificate refused. When the API's verifier refuses it, the body names the first failed rule (reason: Encoding, Version, SignatureAlgorithm, KeyAlgorithm, Subject, NotSelfIssued, Extensions, BasicConstraints, KeyUsage, Validity or Signature); when the database refuses it (name, suite or validity mismatch), there is no body. Nothing was recorded."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, reason]
+                properties:
+                  error: { type: string, enum: [certificate_refused] }
+                  reason: { type: string }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -545,6 +646,12 @@ components:
       bearerFormat: JWT
       description: RS256 OIDC access token with typ at+jwt, role trust-ca-reader and explicit ca_ids; issuer/subject/CA must also have a server-managed grant.
   parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      description: "A UUID chosen by the client for this change. Repeating the same request with the same key returns the recorded result (200, with header Idempotent-Replayed set to true); any other request with that key returns 409."
+      schema: { type: string, format: uuid }
     CaId:
       in: path
       name: ca_id
@@ -705,6 +812,36 @@ components:
         status: { type: string, const: SUBMITTED }
         snapshot_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         submitted_at: { type: string, format: date-time }
+    CaProposal:
+      type: object
+      required: [ca_id, display_name, policy_version, suite_id, lifecycle_status, proposed_at, certificate_sha256, spki_sha256, not_before, not_after, custody, registered_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        display_name: { type: string }
+        policy_version: { type: string }
+        suite_id: { type: string }
+        lifecycle_status: { type: string, enum: [PROPOSED, KEY_ATTESTED], description: Neither state is a CA or authorizes issuance. }
+        proposed_at: { type: string, format: date-time }
+        certificate_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        spki_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        not_before: { type: [string, 'null'], format: date-time }
+        not_after: { type: [string, 'null'], format: date-time }
+        custody: { type: [string, 'null'], enum: [lab-software-file, null], description: A software key file; not custody evidence. }
+        registered_at: { type: [string, 'null'], format: date-time }
+    CaProposalCreated:
+      type: object
+      required: [ca_id, lifecycle_status, proposed_at]
+      properties:
+        ca_id: { type: string, format: uuid }
+        lifecycle_status: { type: string, enum: [PROPOSED] }
+        proposed_at: { type: string, format: date-time }
+    CaIssuerCertificateRegistered:
+      type: object
+      required: [ca_id, lifecycle_status, certificate_sha256]
+      properties:
+        ca_id: { type: string, format: uuid }
+        lifecycle_status: { type: string, enum: [KEY_ATTESTED] }
+        certificate_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     Certificate:
       type: object
       required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
