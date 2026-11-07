@@ -29,7 +29,7 @@ export interface AuditEvent {
   recorded_at: string;
 }
 
-export type ProfileLifecycleStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+export type ProfileLifecycleStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'ACTIVE' | 'SUPERSEDED' | 'RETIRED';
 
 export interface ProfileDraft {
   ca_id: string;
@@ -43,11 +43,13 @@ export interface ProfileDraft {
   proposed_signature_suites: string[];
   created_by: string;
   created_at: string;
-  /** No state authorizes issuance: APPROVED is not active (ADR-0011). */
+  /** No state authorizes issuance: no issuance path reads ACTIVE yet (ADR-0012). */
   status: ProfileLifecycleStatus;
   submitted_at: string | null;
   approval_count: number;
   decided_at: string | null;
+  activated_at: string | null;
+  ended_at: string | null;
   proposal_warnings: string[];
   snapshot_sha256: string;
 }
@@ -99,7 +101,7 @@ const WRITE_MESSAGES: Record<number, string> = {
   404: 'That revision no longer exists for this authority.',
   409: 'This change conflicts with the recorded state: the revision may be stale, already submitted, or its digest changed. Reload and try again.',
   413: 'The request is too large.',
-  422: 'The request was refused: a revision with advisory syntax warnings cannot be submitted, and a decision needs a signature by your registered key over the exact claim.',
+  422: 'The request was refused: a revision with syntax warnings cannot be submitted, a decision needs a signature by your registered key over the exact claim, and activation needs the CA policy version and suites the CA declares.',
   503: 'Profile changes are unavailable: the management API or its write database is not configured or not reachable.',
 };
 

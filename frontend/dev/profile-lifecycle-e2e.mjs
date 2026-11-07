@@ -53,6 +53,7 @@ const author = await token('lab-author', 'TRUST_LAB_PW_AUTHOR');
 const reader = await token('lab-reader', 'TRUST_LAB_PW_READER');
 const approver1 = await token('lab-approver-1', 'TRUST_LAB_PW_APPROVER_1');
 const approver2 = await token('lab-approver-2', 'TRUST_LAB_PW_APPROVER_2');
+const operator = await token('lab-operator', 'TRUST_LAB_PW_OPERATOR');
 const keys = fileURLToPath(new URL('../../.lab-keys/', import.meta.url));
 // Signs exactly like an approver at the command line: OpenSSL, the
 // approver's own key from scripts/lab/init-env.sh, DER output.
@@ -155,6 +156,35 @@ await check('one signed rejection ends a revision', async () => {
   assert.equal((await get(`${base}/${profileId}/${revision}`, reader)).body.status, 'REJECTED');
 });
 
+await check('activation needs the CA declared suites and an independent operator, then retirement ends it', async () => {
+  // Revision 2 is APPROVED but proposes "P256-SHA256", which the CA does not declare.
+  assert.equal((await post(`${base}/${profileId}/2/activation`, operator, { snapshot_sha256: second.body.snapshot_sha256 })).status, 422);
+  assert.equal((await get(`${base}/${profileId}/2`, reader)).body.status, 'APPROVED');
+  // A compatible revision: catalogue suite declared for the CA, CA policy v1.
+  const compatible = await post(base, author, draft({ display_name: 'Activatable', proposed_signature_suites: ['ecdsa-p256-sha256'] }));
+  const revision = compatible.body.revision;
+  const digest = compatible.body.snapshot_sha256;
+  assert.equal((await post(`${base}/${profileId}/${revision}/submission`, author, { snapshot_sha256: digest })).status, 201);
+  for (const [accessToken, keyName] of [[approver1, 'lab-approver-1'], [approver2, 'lab-approver-2']]) {
+    const claim = await post(`${base}/${profileId}/${revision}/decision-claims`, accessToken, { decision: 'approve' });
+    assert.equal((await post(`${base}/${profileId}/${revision}/decisions`, accessToken,
+      { decision: 'approve', issued_at: claim.body.issued_at, signature_der_base64: sign(keyName, claim.body.claim) })).status, 201);
+  }
+  const activation = `${base}/${profileId}/${revision}/activation`;
+  assert.equal((await post(activation, author, { snapshot_sha256: digest })).status, 403);
+  assert.equal((await post(activation, approver1, { snapshot_sha256: digest })).status, 403);
+  assert.equal((await post(activation, operator, { snapshot_sha256: second.body.snapshot_sha256 })).status, 409);
+  const active = await post(activation, operator, { snapshot_sha256: digest });
+  assert.deepEqual([active.status, active.body.status], [201, 'ACTIVE']);
+  assert.equal((await get(`${base}/${profileId}/${revision}`, reader)).body.status, 'ACTIVE');
+  const retired = await post(`${base}/${profileId}/${revision}/retirement`, operator, {});
+  assert.deepEqual([retired.status, retired.body.status], [201, 'RETIRED']);
+  assert.equal((await post(`${base}/${profileId}/${revision}/retirement`, operator, {})).status, 409);
+  const detail = await get(`${base}/${profileId}/${revision}`, reader);
+  assert.equal(detail.body.status, 'RETIRED');
+  assert.ok(detail.body.activated_at && detail.body.ended_at);
+});
+
 await check('each write left an audit event readers can see', async () => {
   const audit = await get(`/v1/cas/${allowedCa}/audit?order=newest`, reader);
   assert.equal(audit.status, 200);
@@ -163,6 +193,7 @@ await check('each write left an audit event readers can see', async () => {
   assert.ok(types.includes('profile.draft.submitted'));
   assert.equal(types.filter(type => type === 'profile.draft.approval').length >= 2, true);
   assert.ok(types.includes('profile.draft.rejection'));
+  assert.ok(types.includes('profile.revision.activation') && types.includes('profile.revision.retirement'));
   assert.ok(audit.body.every(event => !('actor_id' in event)));
 });
 

@@ -9,7 +9,7 @@ import { canonicalProfileId, canonicalProfileRevision } from './profile-revision
 import { MAX_CSV_ROWS, profileDraftCsv } from './selected-csv';
 import { visibleProfileDrafts } from './profile-draft-filter';
 import { ProfileDraftForm } from './ProfileDraftForm';
-import { POLICY_APPROVER_ROLE, PROFILE_EDITOR_ROLE, tokenRoles } from './roles';
+import { CA_OPERATOR_ROLE, POLICY_APPROVER_ROLE, PROFILE_EDITOR_ROLE, tokenRoles } from './roles';
 
 interface Props {
   caId: string;
@@ -62,6 +62,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
   const [lifecycleNotice, setLifecycleNotice] = useState<string | null>(null);
   const canEdit = tokenRoles(token).includes(PROFILE_EDITOR_ROLE);
   const canApprove = tokenRoles(token).includes(POLICY_APPROVER_ROLE);
+  const canOperate = tokenRoles(token).includes(CA_OPERATOR_ROLE);
   const detailController = useRef<AbortController | null>(null);
   const moreController = useRef<AbortController | null>(null);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -312,7 +313,7 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
 
   return <div className="detail-content">
     <div className="table-heading"><h3>Profile proposals</h3><span>{items.length}{cursor ? '+' : ''} revisions loaded</span></div>
-    <div className="subtle-panel profile-draft-notice"><b>Not active</b><p>These proposals are drafts, submitted, or approved or rejected by two signing approvers. None is active, and none can authorize certificate issuance. Activation, CA creation and signing remain unavailable in this console.</p></div>
+    <div className="subtle-panel profile-draft-notice"><b>No issuance effect</b><p>Revisions move from draft to submitted, approved or rejected by two signing approvers, then active, superseded or retired by a CA operator. No issuance path uses the active revision yet, so none can authorize certificates. CA creation and signing remain unavailable in this console.</p></div>
     {canEdit && <div className="subtle-panel profile-compare-controls"><span>You hold the profile editor role. The server also requires your editor grant for this authority.</span><button type="button" onClick={() => { setLifecycleNotice(null); setFormSource(null); }}>Propose a revision</button></div>}
     {lifecycleNotice && <p className="copy-feedback" role="status">{lifecycleNotice}</p>}
     <div className="subtle-panel profile-compare-controls"><span>{exportSelection.length}/{MAX_CSV_ROWS} loaded proposals selected for metadata CSV export.</span><button type="button" className="link-button" disabled={exportSelection.length === 0} onClick={downloadSelected}>Export selected proposals CSV</button>{exportSelection.length > 0 && <button type="button" className="link-button" onClick={() => setExportSelection([])}>Clear selection</button>}</div>
@@ -364,6 +365,17 @@ export function ProfileDraftPanel({ caId, token, onUnauthorized, linkedDetail, o
           setSelected({ ...selected, status, approval_count: approvalCount, decided_at: status === 'APPROVED' || status === 'REJECTED' ? new Date().toISOString() : null });
           setLifecycleNotice(status === 'SUBMITTED' ? `Your approval of revision ${selected.revision} of ${selected.profile_id} was recorded (${approvalCount}/2).`
             : `Revision ${selected.revision} of ${selected.profile_id} is now ${status}.`);
+          setRetry(value => value + 1);
+        },
+      } : null}
+      operator={canOperate ? {
+        caId, token, onUnauthorized,
+        onChanged: (status, supersededRevision) => {
+          const now = new Date().toISOString();
+          setSelected({ ...selected, status, activated_at: status === 'ACTIVE' ? now : selected.activated_at, ended_at: status === 'RETIRED' ? now : null });
+          setLifecycleNotice(status === 'ACTIVE'
+            ? `Revision ${selected.revision} of ${selected.profile_id} is now ACTIVE${supersededRevision ? `; revision ${supersededRevision} is superseded` : ''}.`
+            : `Revision ${selected.revision} of ${selected.profile_id} is now RETIRED.`);
           setRetry(value => value + 1);
         },
       } : null} />}

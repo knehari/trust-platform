@@ -13,7 +13,8 @@ owner's decision and an independent security review (AGENTS.md).
 
 **Not here:**
 - **No activation, retirement or issuance.** `APPROVED` changes nothing for
-  issuance, and no activation exists.
+  issuance. Activation and retirement came later, in
+  [ADR-0012](ADR-0012-profile-revision-activation.md).
 - **No CA lifecycle.**
 
 ## Context

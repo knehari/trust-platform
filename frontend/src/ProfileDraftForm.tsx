@@ -22,7 +22,9 @@ export function ProfileDraftForm({ caId, token, initial, onCreated, onUnauthoriz
     maxValidityDays: initial ? String(initial.max_validity_days) : '90',
     maxDnsSans: initial ? String(initial.max_dns_sans) : '5',
     zones: initial?.proposed_dns_zones.join(', ') ?? '',
-    suites: initial?.proposed_signature_suites.join(', ') ?? 'P256-SHA256',
+    // A catalogue identifier, so the revision can later be activated on a
+    // CA that declares it (ADR-0012).
+    suites: initial?.proposed_signature_suites.join(', ') ?? 'ecdsa-p256-sha256',
   });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);

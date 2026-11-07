@@ -135,6 +135,9 @@ pub(crate) fn write_status(error: &postgres::Error) -> StatusCode {
         StatusCode::NOT_FOUND
     } else if code.code() == "TP409" || *code == SqlState::UNIQUE_VIOLATION {
         StatusCode::CONFLICT
+    } else if code.code() == "TP422" {
+        // Incompatible with the CA (migration 0024): policy version or suites.
+        StatusCode::UNPROCESSABLE_ENTITY
     } else if code.code().starts_with("22") || code.code().starts_with("23") {
         StatusCode::BAD_REQUEST
     } else {
@@ -267,6 +270,8 @@ pub(crate) async fn create_profile_draft(
         submitted_at: None,
         approval_count: 0,
         decided_at: None,
+        activated_at: None,
+        ended_at: None,
         proposal_warnings,
         snapshot_sha256: String::new(),
     };
@@ -392,7 +397,8 @@ pub(crate) fn restricted_writer_role(db: &mut postgres::Client) -> Result<bool, 
              WHERE n.nspname='public' AND c.relkind IN ('r','p','m','f','v') \
              AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) \
          AND management_profile_lifecycle_version() = 1 \
-         AND management_profile_decision_version() = 1",
+         AND management_profile_decision_version() = 1 \
+         AND management_profile_activation_version() = 1",
         &[],
     )
     .map(|row| row.get::<_, bool>(0))

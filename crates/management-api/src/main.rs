@@ -1,4 +1,5 @@
 mod auth;
+mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
@@ -39,7 +40,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count \
+     , p.lifecycle_status, p.approval_count, p.activated_at \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -112,6 +113,8 @@ struct ProfileDraft {
     submitted_at: Option<String>,
     approval_count: i32,
     decided_at: Option<String>,
+    activated_at: Option<String>,
+    ended_at: Option<String>,
     proposal_warnings: Vec<&'static str>,
     snapshot_sha256: String,
 }
@@ -558,7 +561,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0023")?;
+    .map_err(|_| "management views unavailable or older than migration 0024")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -624,6 +627,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/decisions",
             axum::routing::post(profile_decision::record_decision),
+        )
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/activation",
+            axum::routing::post(profile_activation::activate_revision),
+        )
+        .route(
+            "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/retirement",
+            axum::routing::post(profile_activation::retire_revision),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -1043,7 +1054,7 @@ async fn list_profile_drafts(
         )?.get(0);
         if !granted { return Ok(None); }
         let query = format!("SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at,activated_at,ended_at \
              FROM management_profile_draft WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (profile_id,revision){comparison}($4,$5)) \
@@ -1103,11 +1114,16 @@ fn profile_draft_from_row(row: Row) -> ProfileDraft {
             "SUBMITTED" => "SUBMITTED",
             "APPROVED" => "APPROVED",
             "REJECTED" => "REJECTED",
+            "ACTIVE" => "ACTIVE",
+            "SUPERSEDED" => "SUPERSEDED",
+            "RETIRED" => "RETIRED",
             _ => "UNKNOWN",
         },
         submitted_at: row.get(12),
         approval_count: row.get(13),
         decided_at: row.get(14),
+        activated_at: row.get(15),
+        ended_at: row.get(16),
         proposal_warnings,
         snapshot_sha256: String::new(),
     };
@@ -1136,7 +1152,7 @@ async fn get_profile_draft_revision(
         if !granted { return Ok(None); }
         db.query_opt(
             "SELECT ca_id,profile_id,revision,display_name,policy_version,max_validity_days,max_dns_sans,\
-             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at \
+             proposed_dns_zones,proposed_signature_suites,created_by,created_at,lifecycle_status,submitted_at,approval_count,decided_at,activated_at,ended_at \
              FROM management_profile_draft WHERE ca_id=$1 AND profile_id=$2 AND revision=$3 \
              AND EXISTS (SELECT 1 FROM management_reader_scope WHERE issuer=$4 AND subject=$5 AND ca_id=$1)",
             &[&ca_id, &profile_id, &revision, &issuer, &subject],
@@ -2122,6 +2138,302 @@ mod tests {
                 .0,
             StatusCode::CONFLICT
         );
+    }
+
+    /// Activation and retirement against PostgreSQL (migration 0024). CI
+    /// seeds the operator grant and CA E's declared capabilities in
+    /// tests/management_profile_decision_api_seed.sql.
+    #[tokio::test]
+    async fn approved_revisions_activate_one_at_a_time_and_retire() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: profile activation needs TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"activation-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("activation-test".into());
+        const CA: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[CA]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let editor = token(
+            "operator",
+            json!(["trust-profile-editor", "trust-ca-reader"]),
+        );
+        let approvers = [
+            (
+                token("approver-http-1", json!(["trust-policy-approver"])),
+                SigningKey::from_slice(&[0x11; 32]).unwrap(),
+            ),
+            (
+                token("approver-http-2", json!(["trust-policy-approver"])),
+                SigningKey::from_slice(&[0x22; 32]).unwrap(),
+            ),
+        ];
+        let operator = token("operator-http", json!(["trust-ca-operator"]));
+        let approver_as_operator = token("approver-http-1", json!(["trust-ca-operator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        });
+        let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            if key {
+                request = request.header("idempotency-key", random_uuid().to_string());
+            }
+            let request = request.body(Body::from(body.to_string())).unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let base = format!("/v1/cas/{CA}/profile-drafts");
+        // Records, submits and approves the next revision; returns its digest.
+        let approved = |profile: String, suite: &'static str| {
+            let (editor, base, approvers, post) =
+                (editor.clone(), base.clone(), approvers.clone(), post);
+            async move {
+                let (status, draft) = post(
+                    &editor,
+                    base.clone(),
+                    json!({"profile_id":profile, "display_name":"Activation",
+                    "policy_version":"v1", "max_validity_days":90, "max_dns_sans":5,
+                    "proposed_dns_zones":["lab.invalid"], "proposed_signature_suites":[suite]}),
+                    true,
+                )
+                .await;
+                assert_eq!(status, StatusCode::CREATED);
+                let revision = draft["revision"].as_i64().unwrap();
+                let digest = draft["snapshot_sha256"].as_str().unwrap().to_owned();
+                assert_eq!(
+                    post(
+                        &editor,
+                        format!("{base}/{profile}/{revision}/submission"),
+                        json!({"snapshot_sha256":digest}),
+                        true
+                    )
+                    .await
+                    .0,
+                    StatusCode::CREATED
+                );
+                for (token, key) in &approvers {
+                    let (_, claim) = post(
+                        token,
+                        format!("{base}/{profile}/{revision}/decision-claims"),
+                        json!({"decision":"approve"}),
+                        false,
+                    )
+                    .await;
+                    let text = claim["claim"].as_str().unwrap().to_owned();
+                    let signature: Signature = key.sign(text.as_bytes());
+                    let body = json!({"decision":"approve", "issued_at":claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())});
+                    assert_eq!(
+                        post(
+                            token,
+                            format!("{base}/{profile}/{revision}/decisions"),
+                            body,
+                            true
+                        )
+                        .await
+                        .0,
+                        StatusCode::CREATED
+                    );
+                }
+                (revision, digest)
+            }
+        };
+        let profile = format!("act-{}", &random_uuid().simple().to_string()[..12]);
+        let (first, first_digest) = approved(profile.clone(), "ecdsa-p256-sha256").await;
+        let (second, second_digest) = approved(profile.clone(), "ecdsa-p256-sha256").await;
+        let activate = |revision: i64| format!("{base}/{profile}/{revision}/activation");
+        let retire = |revision: i64| format!("{base}/{profile}/{revision}/retirement");
+
+        // Refusals: no operator role, an approver of the revision holding the
+        // operator role, an altered digest, a declared suite outside the
+        // catalogue (rolled back by the API).
+        assert_eq!(
+            post(
+                &editor,
+                activate(first),
+                json!({"snapshot_sha256":first_digest}),
+                true
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                &approver_as_operator,
+                activate(first),
+                json!({"snapshot_sha256":first_digest}),
+                true
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                &operator,
+                activate(first),
+                json!({"snapshot_sha256":"0".repeat(64)}),
+                true
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let uncatalogued = format!("cat-{}", &random_uuid().simple().to_string()[..12]);
+        let (cat_revision, cat_digest) = approved(uncatalogued.clone(), "p256-sha256").await;
+        assert_eq!(
+            post(
+                &operator,
+                format!("{base}/{uncatalogued}/{cat_revision}/activation"),
+                json!({"snapshot_sha256":cat_digest}),
+                true
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let (_, detail) = detail_response(
+            &app,
+            &editor,
+            &format!("{base}/{uncatalogued}/{cat_revision}"),
+        )
+        .await;
+        assert_eq!(detail["status"], "APPROVED");
+
+        // Activate revision 1, replay, then revision 2 supersedes it.
+        let key = random_uuid().to_string();
+        let activate_with = |revision: i64, digest: &str, key: &str| {
+            let request = Request::builder()
+                .method("POST")
+                .uri(activate(revision))
+                .header("authorization", format!("Bearer {operator}"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", key)
+                .body(Body::from(json!({"snapshot_sha256":digest}).to_string()))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                )
+            }
+        };
+        let (status, body) = activate_with(first, &first_digest, &key).await;
+        assert_eq!(
+            (status, body["status"].as_str()),
+            (StatusCode::CREATED, Some("ACTIVE"))
+        );
+        assert!(body["superseded_revision"].is_null());
+        assert_eq!(
+            activate_with(first, &first_digest, &key).await.0,
+            StatusCode::OK
+        );
+        let (status, body) = post(
+            &operator,
+            activate(second),
+            json!({"snapshot_sha256":second_digest}),
+            true,
+        )
+        .await;
+        assert_eq!(
+            (status, body["superseded_revision"].as_i64()),
+            (StatusCode::CREATED, Some(first))
+        );
+        assert_eq!(
+            post(
+                &operator,
+                activate(first),
+                json!({"snapshot_sha256":first_digest}),
+                true
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (_, detail) =
+            detail_response(&app, &editor, &format!("{base}/{profile}/{first}")).await;
+        assert_eq!(detail["status"], "SUPERSEDED");
+        assert!(detail["ended_at"].is_string());
+
+        // Retirement: only the active revision, once.
+        assert_eq!(
+            post(&operator, retire(first), json!({}), true).await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            post(&operator, retire(second), json!({"reason":"x"}), true)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, body) = post(&operator, retire(second), json!({}), true).await;
+        assert_eq!(
+            (status, body["status"].as_str()),
+            (StatusCode::CREATED, Some("RETIRED"))
+        );
+        assert_eq!(
+            post(&operator, retire(second), json!({}), true).await.0,
+            StatusCode::CONFLICT
+        );
+        let (_, detail) =
+            detail_response(&app, &editor, &format!("{base}/{profile}/{second}")).await;
+        assert_eq!(detail["status"], "RETIRED");
+        assert!(detail["activated_at"].is_string() && detail["ended_at"].is_string());
     }
 
     /// A random (version 4) UUID from the test RNG; the crate builds uuid
