@@ -1,7 +1,7 @@
 // Shared console building blocks: one icon set, notices that stay until
 // dismissed, status badges with consistent colours, and tabs. Display only:
 // nothing here decides authorization; the API does.
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { CATEGORY_LABELS, describeEvent, describeOutcome, humanizeStatus, relativeTime, type EventCategory } from './labels';
 
 const ICON_PATHS = {
@@ -85,7 +85,7 @@ export function EventLabel({ type }: { type: string }) {
   const event = describeEvent(type);
   return <span className="ui-event">
     <span className={`ui-event-icon ui-cat-${event.category}`} title={CATEGORY_LABELS[event.category]}><Icon name={CATEGORY_ICONS[event.category]} size={15} /></span>
-    <span className="ui-event-text"><span className="ui-event-label">{event.label}</span><code className="ui-event-code">{event.code}</code></span>
+    <span className="ui-event-text"><span className="ui-event-label">{event.label}</span><code className="ui-event-code">{event.code.split('.').map((part, index) => <Fragment key={index}>{index > 0 && <>.<wbr /></>}{part}</Fragment>)}</code></span>
   </span>;
 }
 
@@ -149,4 +149,15 @@ export function Disclosure({ summary, active, className, children }: {
     onToggle={event => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
     <summary>{summary}</summary>{children}
   </details>;
+}
+
+/** A row of toggle chips with counts; one value is active at a time. */
+export function FilterChips<T extends string>({ label, options, value, onChange }: {
+  label: string; options: { id: T; label: string; count: number; tone?: string }[]; value: T; onChange: (id: T) => void;
+}) {
+  return <div className="ui-chips" role="group" aria-label={label}>{options.map(option =>
+    <button key={option.id} type="button" aria-pressed={option.id === value} disabled={option.count === 0 && option.id !== value}
+      className={`ui-chip-toggle${option.id === value ? ' on' : ''}${option.tone ? ` ui-tone-${option.tone}` : ''}`} onClick={() => onChange(option.id === value ? options[0].id : option.id)}>
+      {option.tone && <span className="ui-badge-dot" aria-hidden="true" />}{option.label}<span className="ui-chip-count">{option.count}</span>
+    </button>)}</div>;
 }

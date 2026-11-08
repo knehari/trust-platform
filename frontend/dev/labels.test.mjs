@@ -44,3 +44,12 @@ test('relative times stay short and fall back to a date', () => {
   assert.equal(relativeTime('2026-11-08T14:00:00Z', now), 'in 2 h');
   assert.equal(relativeTime('not a date', now), 'not a date');
 });
+
+test('outcomes fall into quick-filter families', async () => {
+  const { outcomeGroup } = await import('../src/labels.ts');
+  assert.equal(outcomeGroup('allow'), 'allowed');
+  assert.equal(outcomeGroup('deny'), 'denied');
+  assert.equal(outcomeGroup('SIGNING -> RECONCILIATION_REQUIRED'), 'attention');
+  assert.equal(outcomeGroup('SIGNING -> SIGNED'), 'other');
+  assert.equal(outcomeGroup('persisted'), 'other');
+});

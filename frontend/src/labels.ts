@@ -137,3 +137,13 @@ export function relativeTime(value: string, now: Date): string {
   if (days < 7) return say(days, 'days');
   return date.toLocaleDateString();
 }
+
+export type OutcomeGroup = 'allowed' | 'denied' | 'attention' | 'other';
+
+/** Coarse outcome families used by the audit quick filters. */
+export function outcomeGroup(decision: string): OutcomeGroup {
+  const outcome = describeOutcome(decision);
+  if (outcome.kind === 'decision') return outcome.status === 'allow' ? 'allowed' : 'denied';
+  if (outcome.kind === 'transition') return /RECONCILIATION|FAILED|REJECTED/u.test(outcome.to) ? 'attention' : 'other';
+  return 'other';
+}
