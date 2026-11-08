@@ -12,6 +12,14 @@
 //! very TBS and was claimed exactly once by the signer, and that the
 //! application was approved by a registration officer.
 //!
+//! For each core revocation of such a certificate (migration 0030, ADR-0018)
+//! it checks that an approved revocation request carries the same reason,
+//! and that a registration officer other than the one who asked approved
+//! it. For each published CRL it rebuilds the CRL from the database's own
+//! entries, number and instants, and verifies the stored DER against the
+//! issuer certificate's key; it checks the stored digests and exactly one
+//! signer claim.
+//!
 //! PostgreSQL verifies neither X.509 nor ECDSA, so a compromised API or
 //! writer login could store what the API would refuse; this tool is how that
 //! is detected. Run it as the database owner:
@@ -21,6 +29,7 @@ use std::{env, error::Error, io, process::ExitCode, time::SystemTime};
 use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
+    application_crl::{build_crl_tbs, parse_utc_seconds, verify_crl, CrlEntry, CrlFacts},
     application_leaf::{verify_server_leaf, LeafFacts},
     csr::verify_pkcs10_p256,
 };
@@ -109,6 +118,118 @@ fn problems(record: &Issued) -> Vec<String> {
     found
 }
 
+/// Revocations without an approved request of the same reason, by an
+/// officer other than the requester.
+fn revocation_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgres::Error> {
+    Ok(db
+        .query(
+            "SELECT encode(r.serial_der_content, 'hex'), concat_ws('; ', \
+                 CASE WHEN q.revocation_id IS NULL THEN 'no approved revocation request' END, \
+                 CASE WHEN q.reason_code <> r.reason_code THEN 'reason differs from the request' END, \
+                 CASE WHEN qe.actor_issuer = de.actor_issuer AND qe.actor_subject = de.actor_subject \
+                      THEN 'approved by its requester' END, \
+                 CASE WHEN de.event_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM management_role_grant g \
+                      WHERE g.issuer = de.actor_issuer AND g.subject = de.actor_subject \
+                        AND g.ca_id = r.ca_id AND g.lifecycle_role = 'registration-officer') \
+                      THEN 'approver holds no registration-officer grant' END) \
+             FROM revocation r \
+             JOIN certificate c ON c.ca_id = r.ca_id AND c.serial_der_content = r.serial_der_content \
+             JOIN certificate_application_issuance i ON i.ca_id = c.ca_id AND i.request_id = c.request_id \
+             LEFT JOIN certificate_revocation_request q ON q.ca_id = r.ca_id \
+                  AND q.serial_der_content = r.serial_der_content \
+                  AND EXISTS (SELECT 1 FROM certificate_revocation_decision d \
+                              WHERE d.revocation_id = q.revocation_id AND d.decision = 'approve') \
+             LEFT JOIN certificate_application_event qe ON qe.event_id = q.requested_event_id \
+             LEFT JOIN certificate_revocation_decision dd ON dd.revocation_id = q.revocation_id \
+             LEFT JOIN certificate_application_event de ON de.event_id = dd.decided_event_id",
+            &[],
+        )?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, String>(1)))
+        .filter(|(_, reasons)| !reasons.is_empty())
+        .collect())
+}
+
+/// Published CRLs that do not verify against the database's own facts.
+fn crl_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>), postgres::Error> {
+    let crls = db.query(
+        "SELECT d.ca_id::text || '#' || d.crl_number, i.intent_id::text, d.crl_der, d.crl_sha256, \
+                p.crl_sha256, i.crl_number, \
+                to_char(i.this_update AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                to_char(i.next_update AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                k.certificate_der, i.outcome, i.tbs_sha256, \
+                (SELECT count(*) FROM lab_signer_crl_claim l WHERE l.intent_id = i.intent_id) \
+           FROM crl_document d \
+           JOIN crl_signing_intent i ON i.intent_id = d.intent_id \
+           JOIN ca_issuer_certificate k ON k.ca_id = d.ca_id \
+           LEFT JOIN crl_publication p ON p.ca_id = d.ca_id AND p.crl_number = d.crl_number \
+          ORDER BY d.ca_id, d.crl_number",
+        &[],
+    )?;
+    let mut found = Vec::new();
+    for row in &crls {
+        let label: String = row.get(0);
+        let intent: String = row.get(1);
+        let der: Vec<u8> = row.get(2);
+        let mut reasons = Vec::new();
+        if row.get::<_, Vec<u8>>(3) != Sha256::digest(&der).to_vec()
+            || row.get::<_, Option<Vec<u8>>>(4) != Some(Sha256::digest(&der).to_vec())
+        {
+            reasons.push("stored digests are not the CRL's".to_owned());
+        }
+        if row.get::<_, String>(9) != "PUBLISHED" || row.get::<_, i64>(11) != 1 {
+            reasons.push("intent not published after exactly one signer claim".to_owned());
+        }
+        let entries = db
+            .query(
+                "SELECT serial, to_char(revoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                 reason_code FROM crl_intent_entries($1::text::uuid)",
+                &[&intent],
+            )?
+            .iter()
+            .map(|entry| {
+                Some(CrlEntry {
+                    serial: entry.get(0),
+                    revoked_at: parse_utc_seconds(&entry.get::<_, String>(1)).ok()?,
+                    reason_code: u8::try_from(entry.get::<_, i16>(2)).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        let (Some(entries), Ok(this_update), Ok(next_update), Ok(number), Ok(issuer)) = (
+            entries,
+            parse_utc_seconds(&row.get::<_, String>(6)),
+            parse_utc_seconds(&row.get::<_, String>(7)),
+            u64::try_from(row.get::<_, i64>(5)),
+            Certificate::from_der(&row.get::<_, Vec<u8>>(8)),
+        ) else {
+            reasons.push("unreadable CRL facts".to_owned());
+            found.push((label, reasons.join("; ")));
+            continue;
+        };
+        let facts = CrlFacts {
+            crl_number: number,
+            this_update,
+            next_update,
+            entries: &entries,
+        };
+        match build_crl_tbs(&issuer, &facts).map(|tbs| tbs.to_der()) {
+            Ok(Ok(tbs_der)) => {
+                if Some(Sha256::digest(&tbs_der).to_vec()) != row.get::<_, Option<Vec<u8>>>(10) {
+                    reasons.push("journaled TBS digest is not the rebuilt CRL's".to_owned());
+                }
+                if let Err(reason) = verify_crl(&issuer, &facts, &tbs_der, &der) {
+                    reasons.push(format!("CRL does not verify ({reason:?})"));
+                }
+            }
+            _ => reasons.push("the CRL facts cannot be rebuilt".to_owned()),
+        }
+        if !reasons.is_empty() {
+            found.push((label, reasons.join("; ")));
+        }
+    }
+    Ok((crls.len(), found))
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
@@ -159,12 +280,29 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             );
         }
     }
+    let revocations = revocation_problems(&mut db)?;
+    for (serial, reasons) in &revocations {
+        failed += 1;
+        eprintln!("FAIL revocation of serial {serial}: {reasons}");
+    }
+    let revoked: i64 = db
+        .query_one(
+            "SELECT count(*) FROM revocation r JOIN certificate c USING (ca_id, serial_der_content) \
+             JOIN certificate_application_issuance i ON i.ca_id = c.ca_id AND i.request_id = c.request_id",
+            &[],
+        )?
+        .get(0);
+    let (crl_count, crls) = crl_problems(&mut db)?;
+    for (label, reasons) in &crls {
+        failed += 1;
+        eprintln!("FAIL CRL {label}: {reasons}");
+    }
     if failed > 0 {
-        eprintln!("{failed} problem(s) in the issued certificates");
+        eprintln!("{failed} problem(s) in the issued certificates, revocations or CRLs");
         return Ok(ExitCode::FAILURE);
     }
     println!(
-        "PASS: {} certificate(s) issued for applications verified independently",
+        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s) and {crl_count} CRL(s) verified independently",
         rows.len()
     );
     Ok(ExitCode::SUCCESS)

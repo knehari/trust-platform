@@ -6,10 +6,13 @@
 // a profile through the profile lifecycle (ADR-0010 to ADR-0012), then
 // submits OpenSSL CSRs. Approved applications are issued by the lab signer
 // (ADR-0017) and the certificates are checked with `openssl verify` against
-// the root that create-lab-root.sh made.
+// the root that create-lab-root.sh made. The certificate is then revoked
+// (a requester asks, a registration officer approves; ADR-0018) and the
+// signed CRLs are checked with `openssl crl -verify` and
+// `openssl verify -crl_check`.
 // Run on a fresh stack with .env.lab loaded, after the other suites.
 import assert from 'node:assert/strict';
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -64,8 +67,15 @@ const approvers = [await token('lab-approver-1', 'TRUST_LAB_PW_APPROVER_1'), awa
 const operator = await token('lab-operator', 'TRUST_LAB_PW_OPERATOR');
 let applicationId;
 let serial;
+let issuedCertificate;
 const issuingRoot = join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.crt');
 const openssl = (args, input) => execFileSync('openssl', args, { input, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+// stdout and stderr together, and whether OpenSSL succeeded.
+const opensslOutcome = args => {
+  const run = spawnSync('openssl', args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+  return { ok: run.status === 0, output: `${run.stdout}${run.stderr}` };
+};
+let crlNumber;
 
 try {
   await check('the lab issuing CA is proposed with its identifier, attested, approved and activated', async () => {
@@ -136,7 +146,8 @@ try {
     const issued = await send('POST', issuance, requester, {});
     assert.deepEqual([issued.status, issued.body.status], [201, 'ISSUED']);
     serial = issued.body.serial_hex;
-    const certificate = join(keys, 'issued.crt');
+    issuedCertificate = join(keys, 'issued.crt');
+    const certificate = issuedCertificate;
     writeFileSync(certificate, issued.body.certificate_pem);
     assert.equal(openssl(['verify', '-CAfile', issuingRoot, '-purpose', 'sslserver', certificate]).trim(), `${certificate}: OK`);
     const text = openssl(['x509', '-in', certificate, '-noout', '-subject', '-ext', 'subjectAltName,basicConstraints,extendedKeyUsage']);
@@ -156,6 +167,60 @@ try {
     assert.deepEqual([mine.status, mine.certificate_serial_hex], ['ISSUED', serial]);
   });
 
+  const crls = `/v1/cas/${issuingCa}/crls`;
+  const publish = async () => {
+    const published = await send('POST', crls, officer, {});
+    assert.deepEqual([published.status, published.body.status], [201, 'PUBLISHED']);
+    const file = join(keys, `crl-${published.body.crl_number}.pem`);
+    writeFileSync(file, published.body.crl_pem);
+    return { published, file };
+  };
+
+  await check('a registration officer publishes a CRL signed by the lab signer; OpenSSL verifies it and the certificate', async () => {
+    assert.equal((await send('POST', crls, requester, {})).status, 403);
+    const { published, file } = await publish();
+    assert.equal(published.body.entry_count, 0);
+    crlNumber = published.body.crl_number;
+    const verified = opensslOutcome(['crl', '-in', file, '-CAfile', issuingRoot, '-noout', '-verify']);
+    assert.ok(verified.ok && /verify OK/.test(verified.output), verified.output);
+    const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', file, issuedCertificate]);
+    assert.ok(checked.ok, checked.output);
+  });
+
+  await check('the requester asks for revocation, a registration officer approves it, and the next CRL revokes the certificate', async () => {
+    const requests = `${applications}/${applicationId}/revocation-requests`;
+    assert.equal((await send('POST', requests, requester, { reason_code: 2, reason: 'not an end-entity reason' })).status, 400);
+    const requested = await send('POST', requests, requester, { reason_code: 1, reason: 'private key exposed' });
+    assert.deepEqual([requested.status, requested.body.status], [201, 'REVOCATION_REQUESTED']);
+    assert.equal((await send('POST', requests, officer, { reason_code: 4, reason: 'again' })).status, 409);
+    const decision = `${requests}/${requested.body.revocation_id}/decision`;
+    assert.equal((await send('POST', decision, requester, { decision: 'approve', reason: 'self' })).status, 403);
+    const decided = await send('POST', decision, officer, { decision: 'approve', reason: 'exposure confirmed' });
+    assert.deepEqual([decided.status, decided.body.status], [201, 'REVOKED']);
+    const listed = await send('GET', applications, officer);
+    const mine = listed.body.find(item => item.application_id === applicationId);
+    assert.deepEqual([mine.status, mine.revocation_reason_code], ['REVOKED', 1]);
+
+    const { published, file } = await publish();
+    assert.deepEqual([published.body.crl_number > crlNumber, published.body.entry_count], [true, 1]);
+    const verified = opensslOutcome(['crl', '-in', file, '-CAfile', issuingRoot, '-noout', '-verify']);
+    assert.ok(verified.ok && /verify OK/.test(verified.output), verified.output);
+    const text = openssl(['crl', '-in', file, '-noout', '-text']);
+    assert.match(text, new RegExp(`Serial Number: ${serial.toUpperCase()}`));
+    assert.match(text, /Key Compromise/);
+    assert.match(text, new RegExp(`X509v3 CRL Number:\\s+${published.body.crl_number}`));
+    const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', file, issuedCertificate]);
+    assert.ok(!checked.ok && /certificate revoked/.test(checked.output), checked.output);
+    // Readers list the CRLs and fetch the same DER the officer received.
+    const list = await send('GET', crls, officer);
+    assert.deepEqual(list.body.map(item => item.crl_number).slice(0, 2), [published.body.crl_number, crlNumber]);
+    const der = await fetch(`${api}${crls}/${published.body.crl_number}`, { headers: { authorization: `Bearer ${officer}` } });
+    assert.equal(der.headers.get('content-type'), 'application/pkix-crl');
+    const derFile = join(keys, 'fetched.crl');
+    writeFileSync(derFile, Buffer.from(await der.arrayBuffer()));
+    assert.equal(openssl(['crl', '-inform', 'DER', '-in', derFile, '-outform', 'PEM']), openssl(['crl', '-in', file, '-outform', 'PEM']));
+  });
+
   await check('a rejected application, or one never decided, is not issued', async () => {
     const rejected = await apply('old.lab.invalid', ['old.lab.invalid']);
     assert.equal(rejected.status, 201);
@@ -172,4 +237,4 @@ try {
   rmSync(issuingRoot, { force: true });
 }
 
-console.log(`Laboratory certificate application suite passed: ${results.length} cases (application ${applicationId}; certificate serial ${serial}).`);
+console.log(`Laboratory certificate application suite passed: ${results.length} cases (application ${applicationId}; certificate serial ${serial}, revoked; CRLs from ${crlNumber}).`);

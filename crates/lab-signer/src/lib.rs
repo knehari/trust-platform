@@ -16,6 +16,12 @@
 //!
 //! Only then does it sign, once. A compromised API therefore cannot use it
 //! as a signing oracle, nor get one intent signed twice.
+//!
+//! CRLs (ADR-0018, Proposed) follow the same rule: the CRL intent exists for
+//! its CA, is journaled, is the CA's latest and was never claimed; the TBS
+//! digest is the intent's; the key is the CA's; the TBS is exactly the CRL
+//! the database's own revocation entries describe
+//! (`trust_pki_core::application_crl::check_crl_tbs`); then one claim.
 
 use std::time::SystemTime;
 
@@ -27,10 +33,12 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
+    application_crl::{check_crl_tbs, parse_utc_seconds, CrlEntry, CrlError, CrlFacts},
     application_leaf::{check_server_leaf_tbs, LeafError, LeafFacts},
     csr::verify_pkcs10_p256,
 };
 use x509_cert::{
+    crl::TbsCertList,
     der::{
         asn1::{BitString, ObjectIdentifier},
         Any, Decode, Encode,
@@ -41,6 +49,8 @@ use x509_cert::{
 
 /// Largest TBS the signer accepts.
 pub const MAX_TBS_BYTES: usize = 16 * 1024;
+/// Largest CRL TBS the signer accepts.
+pub const MAX_CRL_TBS_BYTES: usize = 512 * 1024;
 
 /// What the signer's read-only view returns for an intent.
 #[derive(Debug, Clone)]
@@ -76,6 +86,7 @@ pub enum Refusal {
     KeyNotTheCa,
     Csr,
     Tbs(LeafError),
+    Crl(CrlError),
     ClaimRefused,
     Database,
 }
@@ -84,6 +95,7 @@ impl Refusal {
     pub fn code(&self) -> String {
         match self {
             Refusal::Tbs(error) => format!("Tbs{error:?}"),
+            Refusal::Crl(error) => format!("Crl{error:?}"),
             other => format!("{other:?}"),
         }
     }
@@ -93,6 +105,28 @@ impl Refusal {
 pub trait IntentStore {
     fn intent(&mut self, intent_id: &str) -> Result<Option<IntentRecord>, Refusal>;
     fn claim(&mut self, intent_id: &str, tbs_sha256: &[u8]) -> Result<(), Refusal>;
+}
+
+/// What the signer's read-only views return for a CRL intent.
+#[derive(Debug, Clone)]
+pub struct CrlIntentRecord {
+    pub ca_id: String,
+    pub crl_number: i64,
+    pub tbs_sha256: Option<Vec<u8>>,
+    pub this_update: String,
+    pub next_update: String,
+    pub issuer_certificate_der: Vec<u8>,
+    pub issuer_spki_sha256: Vec<u8>,
+    pub signable: bool,
+    pub claimed: bool,
+    /// Serial, revocation instant (`YYYY-MM-DDTHH:MM:SSZ`) and reason code.
+    pub entries: Vec<(Vec<u8>, String, i16)>,
+}
+
+/// The signer's access for CRLs: read one intent and its entries, claim it.
+pub trait CrlStore {
+    fn crl_intent(&mut self, intent_id: &str) -> Result<Option<CrlIntentRecord>, Refusal>;
+    fn claim_crl(&mut self, intent_id: &str, tbs_sha256: &[u8]) -> Result<(), Refusal>;
 }
 
 /// The DER SubjectPublicKeyInfo of a P-256 key, named-curve form, as in the
@@ -121,6 +155,88 @@ pub fn parse_key_pem(pem: &str) -> Result<SecretKey, Refusal> {
         .map_err(|_| Refusal::KeyFile)
 }
 
+/// The CA's registered issuer certificate, once the key is shown to be the
+/// one the approvers attested for this CA.
+fn ca_issuer(
+    key: &SecretKey,
+    issuer_certificate_der: &[u8],
+    issuer_spki_sha256: &[u8],
+) -> Result<Certificate, Refusal> {
+    if sha256(&spki_der(key)?)[..] != issuer_spki_sha256[..] {
+        return Err(Refusal::KeyNotTheCa);
+    }
+    let issuer = Certificate::from_der(issuer_certificate_der).map_err(|_| Refusal::Database)?;
+    if sha256(
+        &issuer
+            .tbs_certificate
+            .subject_public_key_info
+            .to_der()
+            .map_err(|_| Refusal::Database)?,
+    )[..]
+        != issuer_spki_sha256[..]
+    {
+        return Err(Refusal::KeyNotTheCa);
+    }
+    Ok(issuer)
+}
+
+/// Decides and, when everything holds, signs the CRL `tbs_der` for the CRL
+/// intent `intent_id`.
+pub fn sign_crl_intent<S: CrlStore>(
+    store: &mut S,
+    ca_id: &str,
+    key: &SecretKey,
+    intent_id: &str,
+    tbs_der: &[u8],
+) -> Result<Vec<u8>, Refusal> {
+    if tbs_der.is_empty() || tbs_der.len() > MAX_CRL_TBS_BYTES {
+        return Err(Refusal::BadRequest);
+    }
+    let record = store.crl_intent(intent_id)?.ok_or(Refusal::UnknownIntent)?;
+    if record.ca_id != ca_id {
+        return Err(Refusal::OtherCa);
+    }
+    if record.claimed {
+        return Err(Refusal::AlreadyClaimed);
+    }
+    if !record.signable {
+        return Err(Refusal::NotSignable);
+    }
+    if record.tbs_sha256.as_deref() != Some(&sha256(tbs_der)[..]) {
+        return Err(Refusal::TbsDigest);
+    }
+    let issuer = ca_issuer(
+        key,
+        &record.issuer_certificate_der,
+        &record.issuer_spki_sha256,
+    )?;
+    let tbs = TbsCertList::from_der(tbs_der).map_err(|_| Refusal::BadRequest)?;
+    if tbs.to_der().map_err(|_| Refusal::BadRequest)? != tbs_der {
+        return Err(Refusal::BadRequest);
+    }
+    let entries = record
+        .entries
+        .iter()
+        .map(|(serial, revoked_at, reason)| {
+            Ok(CrlEntry {
+                serial: serial.clone(),
+                revoked_at: parse_utc_seconds(revoked_at).map_err(Refusal::Crl)?,
+                reason_code: u8::try_from(*reason).map_err(|_| Refusal::Database)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    let facts = CrlFacts {
+        crl_number: u64::try_from(record.crl_number).map_err(|_| Refusal::Database)?,
+        this_update: parse_utc_seconds(&record.this_update).map_err(Refusal::Crl)?,
+        next_update: parse_utc_seconds(&record.next_update).map_err(Refusal::Crl)?,
+        entries: &entries,
+    };
+    check_crl_tbs(&issuer, &facts, &tbs).map_err(Refusal::Crl)?;
+    store.claim_crl(intent_id, &sha256(tbs_der))?;
+    let signature: Signature = SigningKey::from(key.clone()).sign(tbs_der);
+    Ok(signature.to_der().as_bytes().to_vec())
+}
+
 /// Decides and, when everything holds, signs `tbs_der` for `intent_id`.
 pub fn sign_intent<S: IntentStore>(
     store: &mut S,
@@ -146,23 +262,11 @@ pub fn sign_intent<S: IntentStore>(
     if sha256(tbs_der)[..] != record.tbs_sha256[..] {
         return Err(Refusal::TbsDigest);
     }
-    // The key must be the one the approvers attested for this CA.
-    if sha256(&spki_der(key)?)[..] != record.issuer_spki_sha256[..] {
-        return Err(Refusal::KeyNotTheCa);
-    }
-    let issuer =
-        Certificate::from_der(&record.issuer_certificate_der).map_err(|_| Refusal::Database)?;
-    if sha256(
-        &issuer
-            .tbs_certificate
-            .subject_public_key_info
-            .to_der()
-            .map_err(|_| Refusal::Database)?,
-    )[..]
-        != record.issuer_spki_sha256[..]
-    {
-        return Err(Refusal::KeyNotTheCa);
-    }
+    let issuer = ca_issuer(
+        key,
+        &record.issuer_certificate_der,
+        &record.issuer_spki_sha256,
+    )?;
     // The CSR again: proof of possession and the exact approved CN.
     let csr = verify_pkcs10_p256(&record.csr_der, &record.subject_cn).map_err(|_| Refusal::Csr)?;
     if sha256(
@@ -208,9 +312,12 @@ pub mod service {
     use postgres::{Client, NoTls};
     use serde::Deserialize;
 
-    use crate::{parse_key_pem, sign_intent, IntentRecord, IntentStore, Refusal};
+    use crate::{
+        parse_key_pem, sign_crl_intent, sign_intent, CrlIntentRecord, CrlStore, IntentRecord,
+        IntentStore, Refusal,
+    };
 
-    const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+    const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
 
     pub struct PgIntentStore<'a> {
         pub db: &'a mut Client,
@@ -254,9 +361,62 @@ pub mod service {
         }
     }
 
+    impl CrlStore for PgIntentStore<'_> {
+        fn crl_intent(&mut self, intent_id: &str) -> Result<Option<CrlIntentRecord>, Refusal> {
+            let Some(row) = self
+                .db
+                .query_opt(
+                    "SELECT ca_id, crl_number, tbs_sha256, this_update, next_update, \
+                     issuer_certificate_der, issuer_spki_sha256, signable, claimed \
+                     FROM lab_signer_crl_intent WHERE intent_id = $1",
+                    &[&intent_id],
+                )
+                .map_err(|_| Refusal::Database)?
+            else {
+                return Ok(None);
+            };
+            let entries = self
+                .db
+                .query(
+                    "SELECT serial, revoked_at, reason_code FROM lab_signer_crl_entry \
+                     WHERE intent_id = $1 ORDER BY serial",
+                    &[&intent_id],
+                )
+                .map_err(|_| Refusal::Database)?
+                .into_iter()
+                .map(|entry| (entry.get(0), entry.get(1), entry.get(2)))
+                .collect();
+            Ok(Some(CrlIntentRecord {
+                ca_id: row.get(0),
+                crl_number: row.get(1),
+                tbs_sha256: row.get(2),
+                this_update: row.get(3),
+                next_update: row.get(4),
+                issuer_certificate_der: row.get(5),
+                issuer_spki_sha256: row.get(6),
+                signable: row.get(7),
+                claimed: row.get(8),
+                entries,
+            }))
+        }
+
+        fn claim_crl(&mut self, intent_id: &str, tbs_sha256: &[u8]) -> Result<(), Refusal> {
+            self.db
+                .execute(
+                    "SELECT claim_lab_crl_intent($1::text::uuid, $2)",
+                    &[&intent_id, &tbs_sha256],
+                )
+                .map(|_| ())
+                .map_err(|_| Refusal::ClaimRefused)
+        }
+    }
+
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct SignRequest {
+        /// `certificate` (the default) or `crl`.
+        #[serde(default)]
+        kind: Option<String>,
         intent_id: String,
         tbs_der_base64: String,
     }
@@ -309,14 +469,20 @@ pub mod service {
         let mut db =
             Client::connect(&config.database_url, NoTls).map_err(|_| fail(Refusal::Database))?;
         let mut store = PgIntentStore { db: &mut db };
-        let signature = sign_intent(
-            &mut store,
-            &config.ca_id,
-            &key,
-            &request.intent_id,
-            &tbs,
-            SystemTime::now(),
-        )
+        let signature = match request.kind.as_deref() {
+            None | Some("certificate") => sign_intent(
+                &mut store,
+                &config.ca_id,
+                &key,
+                &request.intent_id,
+                &tbs,
+                SystemTime::now(),
+            ),
+            Some("crl") => {
+                sign_crl_intent(&mut store, &config.ca_id, &key, &request.intent_id, &tbs)
+            }
+            Some(_) => Err(Refusal::BadRequest),
+        }
         .map_err(fail)?;
         Ok((intent, signature))
     }
@@ -328,6 +494,7 @@ pub mod service {
             .query_one(
                 "SELECT pg_has_role(current_user, 'trust_lab_signer', 'member') \
                  AND management_application_issuance_version() = 1 \
+                 AND management_revocation_crl_version() = 1 \
                  AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = current_user \
                      AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
                  AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -620,6 +787,174 @@ mod tests {
             parse_key_pem("-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----")
                 .unwrap_err(),
             Refusal::KeyFile
+        );
+    }
+
+    struct FakeCrlStore {
+        record: Option<CrlIntentRecord>,
+        claims: Vec<String>,
+    }
+
+    impl CrlStore for FakeCrlStore {
+        fn crl_intent(&mut self, intent_id: &str) -> Result<Option<CrlIntentRecord>, Refusal> {
+            Ok(self
+                .record
+                .clone()
+                .filter(|_| intent_id == "crl-1")
+                .map(|mut record| {
+                    record.claimed = self.claims.iter().any(|claim| claim == intent_id);
+                    record
+                }))
+        }
+        fn claim_crl(&mut self, intent_id: &str, _tbs_sha256: &[u8]) -> Result<(), Refusal> {
+            if self.claims.iter().any(|claim| claim == intent_id) {
+                return Err(Refusal::ClaimRefused);
+            }
+            self.claims.push(intent_id.to_owned());
+            Ok(())
+        }
+    }
+
+    struct CrlFixture {
+        ca_key: SecretKey,
+        store: FakeCrlStore,
+        tbs_der: Vec<u8>,
+        issuer: Certificate,
+    }
+
+    fn crl_fixture() -> CrlFixture {
+        use trust_pki_core::application_crl::build_crl_tbs;
+        let ca_key = SecretKey::random(&mut rand::rngs::OsRng);
+        let issuer = root(&ca_key);
+        let at = |text: &str| parse_utc_seconds(text).unwrap();
+        let entries = vec![
+            (vec![0x41, 0x01], "2026-11-07T10:00:00Z".to_owned(), 1i16),
+            (vec![0x42, 0x02], "2026-11-07T11:00:00Z".to_owned(), 0i16),
+        ];
+        let crl_entries: Vec<CrlEntry> = entries
+            .iter()
+            .map(|(serial, revoked_at, reason)| CrlEntry {
+                serial: serial.clone(),
+                revoked_at: at(revoked_at),
+                reason_code: *reason as u8,
+            })
+            .collect();
+        let tbs_der = build_crl_tbs(
+            &issuer,
+            &CrlFacts {
+                crl_number: 3,
+                this_update: at("2026-11-08T00:00:00Z"),
+                next_update: at("2026-11-15T00:00:00Z"),
+                entries: &crl_entries,
+            },
+        )
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let record = CrlIntentRecord {
+            ca_id: "ca-1".into(),
+            crl_number: 3,
+            tbs_sha256: Some(Sha256::digest(&tbs_der).to_vec()),
+            this_update: "2026-11-08T00:00:00Z".into(),
+            next_update: "2026-11-15T00:00:00Z".into(),
+            issuer_certificate_der: issuer.to_der().unwrap(),
+            issuer_spki_sha256: Sha256::digest(spki_der(&ca_key).unwrap()).to_vec(),
+            signable: true,
+            claimed: false,
+            entries,
+        };
+        CrlFixture {
+            ca_key,
+            store: FakeCrlStore {
+                record: Some(record),
+                claims: vec![],
+            },
+            tbs_der,
+            issuer,
+        }
+    }
+
+    fn record(f: &mut CrlFixture) -> &mut CrlIntentRecord {
+        f.store.record.as_mut().unwrap()
+    }
+
+    fn sign_crl(f: &mut CrlFixture) -> Result<Vec<u8>, Refusal> {
+        let key = f.ca_key.clone();
+        let tbs = f.tbs_der.clone();
+        sign_crl_intent(&mut f.store, "ca-1", &key, "crl-1", &tbs)
+    }
+
+    #[test]
+    fn signs_a_crl_intent_once_under_the_issuer_key() {
+        let mut f = crl_fixture();
+        let signature = sign_crl(&mut f).unwrap();
+        let point = f
+            .issuer
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .as_bytes()
+            .unwrap();
+        assert!(trust_pki_crypto_verify(point, &f.tbs_der, &signature));
+        assert_eq!(sign_crl(&mut f).unwrap_err(), Refusal::AlreadyClaimed);
+    }
+
+    #[test]
+    fn every_crl_check_refuses_before_any_claim() {
+        let edit = |change: &dyn Fn(&mut CrlFixture)| {
+            let mut f = crl_fixture();
+            change(&mut f);
+            let result = sign_crl(&mut f);
+            assert!(
+                f.store.claims.is_empty(),
+                "a refused CRL request claimed the intent"
+            );
+            result.unwrap_err()
+        };
+        assert_eq!(edit(&|f| f.store.record = None), Refusal::UnknownIntent);
+        assert_eq!(edit(&|f| record(f).ca_id = "ca-2".into()), Refusal::OtherCa);
+        assert_eq!(edit(&|f| record(f).signable = false), Refusal::NotSignable);
+        assert_eq!(edit(&|f| record(f).tbs_sha256 = None), Refusal::TbsDigest);
+        assert_eq!(edit(&|f| f.tbs_der.push(0)), Refusal::TbsDigest);
+        assert_eq!(
+            edit(&|f| f.ca_key = SecretKey::random(&mut rand::rngs::OsRng)),
+            Refusal::KeyNotTheCa
+        );
+        // The digest is the intent's, but the TBS is not what the database's
+        // entries, number or instants describe.
+        assert_eq!(
+            edit(&|f| {
+                record(f).entries.pop();
+            }),
+            Refusal::Crl(CrlError::Mismatch)
+        );
+        assert_eq!(
+            edit(&|f| record(f).entries[0].2 = 4),
+            Refusal::Crl(CrlError::Mismatch)
+        );
+        assert_eq!(
+            edit(&|f| record(f).crl_number = 4),
+            Refusal::Crl(CrlError::Mismatch)
+        );
+        assert_eq!(
+            edit(&|f| record(f).next_update = "2026-11-16T00:00:00Z".into()),
+            Refusal::Crl(CrlError::Mismatch)
+        );
+        assert_eq!(
+            edit(&|f| record(f).this_update = "2026-11-08 00:00:00".into()),
+            Refusal::Crl(CrlError::Times)
+        );
+        assert_eq!(
+            edit(&|f| record(f).entries[1].2 = 2),
+            Refusal::Crl(CrlError::Reason)
+        );
+        // A certificate TBS presented as a CRL is not even parsed as one.
+        assert_eq!(
+            edit(&|f| {
+                f.tbs_der = fixture().tbs_der;
+                record(f).tbs_sha256 = Some(Sha256::digest(&f.tbs_der).to_vec());
+            }),
+            Refusal::BadRequest
         );
     }
 }

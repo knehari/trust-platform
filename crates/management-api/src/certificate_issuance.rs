@@ -220,27 +220,33 @@ impl ExternalSigner for SocketSigner {
             .borrow()
             .clone()
             .ok_or(IssueError::SigningFailure)?;
-        let stream = UnixStream::connect(&self.socket).map_err(|_| IssueError::SigningFailure)?;
-        stream
-            .set_read_timeout(Some(SIGNER_TIMEOUT))
-            .and_then(|_| stream.set_write_timeout(Some(SIGNER_TIMEOUT)))
-            .map_err(|_| IssueError::SigningFailure)?;
-        let request =
-            serde_json::json!({"intent_id": intent, "tbs_der_base64": STANDARD.encode(tbs_der)});
-        writeln!(&stream, "{request}").map_err(|_| IssueError::SigningFailure)?;
-        let mut line = String::new();
-        BufReader::new(&stream)
-            .read_line(&mut line)
-            .map_err(|_| IssueError::SigningFailure)?;
-        let reply: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|_| IssueError::SigningFailure)?;
-        let signature = reply["signature_der_base64"]
-            .as_str()
-            .ok_or(IssueError::SigningFailure)?;
-        STANDARD
-            .decode(signature)
-            .map_err(|_| IssueError::SigningFailure)
+        ask_signer(&self.socket, None, &intent, tbs_der).ok_or(IssueError::SigningFailure)
     }
+}
+
+/// One request to the laboratory signer: the intent and the exact TBS. Any
+/// failure, refusal or timeout is `None`; the caller treats it as ambiguous.
+pub(crate) fn ask_signer(
+    socket: &std::path::Path,
+    kind: Option<&str>,
+    intent_id: &str,
+    tbs_der: &[u8],
+) -> Option<Vec<u8>> {
+    let stream = UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(SIGNER_TIMEOUT)).ok()?;
+    stream.set_write_timeout(Some(SIGNER_TIMEOUT)).ok()?;
+    let mut request =
+        serde_json::json!({"intent_id": intent_id, "tbs_der_base64": STANDARD.encode(tbs_der)});
+    if let Some(kind) = kind {
+        request["kind"] = serde_json::Value::from(kind);
+    }
+    writeln!(&stream, "{request}").ok()?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).ok()?;
+    let reply: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    STANDARD
+        .decode(reply["signature_der_base64"].as_str()?)
+        .ok()
 }
 
 struct Assembler;

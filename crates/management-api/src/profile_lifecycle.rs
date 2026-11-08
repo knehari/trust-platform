@@ -439,7 +439,8 @@ pub(crate) fn restricted_writer_role(db: &mut postgres::Client) -> Result<bool, 
          AND management_ca_activation_version() = 1 \
          AND management_ca_operation_version() = 1 \
          AND management_certificate_application_version() = 1 \
-         AND management_application_issuance_version() = 1",
+         AND management_application_issuance_version() = 1 \
+         AND management_revocation_crl_version() = 1",
         &[],
     )
     .map(|row| row.get::<_, bool>(0))
