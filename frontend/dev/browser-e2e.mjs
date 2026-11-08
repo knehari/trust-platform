@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
@@ -315,7 +316,11 @@ try {
   // through the console form and submits it; it becomes SUBMITTED, not
   // approved.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
-  await page.getByRole('heading', { name: 'Profile proposals' }).waitFor();
+  // The page title and the panel heading share this name: wait for both, so
+  // the assertion below runs once the panel, where the button would be, is
+  // rendered.
+  await page.getByRole('heading', { name: 'Profile proposals', level: 1 }).waitFor();
+  await page.getByRole('heading', { name: 'Profile proposals', level: 3 }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Propose a revision' }).count(), 0);
   if (process.env.TRUST_LAB_PW_AUTHOR) {
     const authorPage = await browser.newPage();
@@ -374,6 +379,61 @@ try {
     await operatorPage.close();
   }
 
+  // A CA administrator proposes a CA from the console and registers a root
+  // generated outside the platform by OpenSSL; only the certificate is pasted.
+  if (process.env.TRUST_LAB_PW_CA_ADMIN) {
+    const adminPage = await browser.newPage();
+    adminPage.setDefaultTimeout(15_000);
+    await adminPage.goto(`${origin}/?view=overview`);
+    await signIn(adminPage, 'lab-ca-admin', process.env.TRUST_LAB_PW_CA_ADMIN);
+    const panel = adminPage.getByRole('region', { name: 'CA proposals' });
+    const rootName = `Browser Lab Root ${Date.now().toString(36)}`;
+    await panel.getByLabel('Display name').fill(rootName);
+    await panel.getByRole('button', { name: 'Propose this CA' }).click();
+    const row = panel.getByRole('row').filter({ hasText: rootName });
+    await row.getByText('PROPOSED', { exact: true }).waitFor();
+    const repository = fileURLToPath(new URL('../../', import.meta.url));
+    const pem = execFileSync('sh', ['scripts/lab/create-lab-root.sh', rootName], { cwd: repository }).toString();
+    await row.getByLabel(/Certificate \(PEM\)/).fill(pem);
+    await row.getByRole('button', { name: 'Register certificate' }).click();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('KEY_ATTESTED', { exact: true }).waitFor();
+
+    // Two CA approvers sign the exact claim with their own laboratory keys,
+    // outside the browser; then the administrator activates the CA.
+    const keys = fileURLToPath(new URL('../../.lab-keys/', import.meta.url));
+    for (const index of [1, 2]) {
+      const approverPage = await browser.newPage();
+      approverPage.setDefaultTimeout(15_000);
+      await approverPage.goto(`${origin}/?view=overview`);
+      await signIn(approverPage, `lab-ca-approver-${index}`, process.env[`TRUST_LAB_PW_CA_APPROVER_${index}`]);
+      const approverRow = approverPage.getByRole('region', { name: 'CA proposals' }).getByRole('row').filter({ hasText: rootName });
+      await approverRow.getByRole('button', { name: 'Prepare CA approval' }).click();
+      const claim = await approverRow.getByLabel(/CA claim to sign/).inputValue();
+      assert.match(claim, /^trust-platform\/ca-decision\/v1;decision=approve;/);
+      const signature = execFileSync('openssl', ['dgst', '-sha256', '-sign', `${keys}lab-ca-approver-${index}.pem`], { input: claim }).toString('base64');
+      await approverRow.getByLabel('CA decision signature (base64, DER)').fill(signature);
+      await approverRow.getByRole('button', { name: 'Record CA approval' }).click();
+      await approverPage.getByRole('status').filter({ hasText: index === 1 ? 'was recorded (1/2)' : 'is now APPROVED' }).waitFor();
+      await approverPage.close();
+    }
+    await adminPage.reload();
+    const approvedRow = panel.getByRole('row').filter({ hasText: rootName });
+    await approvedRow.getByRole('button', { name: 'Activate this CA' }).click();
+    await adminPage.getByRole('status').filter({ hasText: 'is now an ACTIVE CA' }).waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('ACTIVE', { exact: true }).waitFor();
+
+    // The administrator suspends the CA at once from the console.
+    const activeRow = panel.getByRole('row').filter({ hasText: rootName });
+    await activeRow.getByLabel(`Reason for ${rootName}`).fill('browser key review');
+    await activeRow.getByRole('button', { name: 'Suspend this CA' }).click();
+    await adminPage.getByRole('status').filter({ hasText: 'is now SUSPENDED' }).waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('SUSPENDED', { exact: true }).first().waitFor();
+    const slug = rootName.toLowerCase().replaceAll(' ', '-');
+    rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.pem`, { force: true });
+    rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.crt`, { force: true });
+    await adminPage.close();
+  }
+
   // Signing out ends the Keycloak session too: signing in again asks for the
   // password instead of reusing the identity provider's session cookie.
   await page.getByRole('button', { name: 'Sign out' }).click();
@@ -381,7 +441,7 @@ try {
   await page.locator('#password').waitFor();
   assert.equal(await page.locator('#kc-form-login').count(), 1);
 
-  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
+  console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}${process.env.TRUST_LAB_PW_CA_ADMIN ? 'CA proposed, its OpenSSL root registered, approved by two signing CA approvers, activated and suspended from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
   console.error('Browser E2E failed at', page.url());
   console.error((await page.locator('main').innerText()).slice(0, 1800));

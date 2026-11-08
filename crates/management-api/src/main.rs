@@ -1,4 +1,12 @@
 mod auth;
+mod ca_certificate;
+mod ca_decision;
+mod ca_operation;
+mod ca_proposal;
+mod certificate_application;
+mod certificate_issuance;
+mod certificate_revocation;
+mod crl_publication;
 mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
@@ -40,9 +48,9 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number, cs.renewal_due, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
-     management_certificate_san s, management_history_bounds b LIMIT 0";
+     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -56,6 +64,9 @@ struct AppState {
     http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
     readiness_cache: Arc<Mutex<ReadinessCache>>,
+    /// Unix socket of the laboratory signer (ADR-0017). Without it, the
+    /// issuance route answers 503.
+    signer_socket: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -71,6 +82,9 @@ struct Ca {
     display_name: String,
     policy_version: String,
     created_at: String,
+    /// ACTIVE, SUSPENDED or RETIRED for a CA activated through the CA
+    /// lifecycle (migration 0028); null for a CA the owner created directly.
+    operational_state: Option<String>,
 }
 #[derive(Serialize)]
 struct Certificate {
@@ -561,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0024")?;
+    .map_err(|_| "management views unavailable or older than migration 0032")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -596,6 +610,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        signer_socket: env::var("TRUST_SIGNER_SOCKET")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from),
     });
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
@@ -635,6 +653,83 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/profile-drafts/{profile_id}/{revision}/retirement",
             axum::routing::post(profile_activation::retire_revision),
+        )
+        .route(
+            "/v1/ca-proposals",
+            get(ca_proposal::list_ca_proposals).post(ca_proposal::propose_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/issuer-certificate",
+            axum::routing::post(ca_proposal::register_issuer_certificate),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/decision-claims",
+            axum::routing::post(ca_decision::prepare_ca_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/decisions",
+            axum::routing::post(ca_decision::record_ca_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/activation",
+            axum::routing::post(ca_decision::activate_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/suspension",
+            axum::routing::post(ca_operation::suspend_ca),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests",
+            axum::routing::post(ca_operation::request_change),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/decision-claims",
+            axum::routing::post(ca_operation::prepare_change_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/decisions",
+            axum::routing::post(ca_operation::record_change_decision),
+        )
+        .route(
+            "/v1/ca-proposals/{ca_id}/change-requests/{request_id}/application",
+            axum::routing::post(ca_operation::apply_change),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications",
+            get(certificate_application::list_applications)
+                .post(certificate_application::submit_application),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/decision",
+            axum::routing::post(certificate_application::decide_application),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/issuance",
+            axum::routing::post(certificate_issuance::issue_application),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests",
+            axum::routing::post(certificate_revocation::request_revocation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision",
+            axum::routing::post(certificate_revocation::decide_revocation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crls",
+            get(crl_publication::list_crls).post(crl_publication::publish_crl),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crls/{crl_number}",
+            get(crl_publication::read_crl),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crl-status",
+            get(crl_publication::crl_status),
+        )
+        .route(
+            "/v1/public/crls/{ca_id}/latest.crl",
+            get(crl_publication::public_latest_crl),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -908,7 +1003,17 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_san) \
              AND NOT EXISTS (SELECT 1 FROM management_history_bounds) \
-             AND NOT EXISTS (SELECT 1 FROM management_profile_draft)",
+             AND NOT EXISTS (SELECT 1 FROM management_profile_draft) \
+             AND management_ca_proposal_version() = 1 \
+             AND management_ca_activation_version() = 1 \
+             AND management_ca_operation_version() = 1 \
+             AND management_certificate_application_version() = 1 \
+             AND management_application_issuance_version() = 1 \
+             AND management_revocation_crl_version() = 1 \
+             AND management_crl_publication_version() = 1 \
+             AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
+             AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
+             AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
         .get(0))
@@ -935,7 +1040,7 @@ async fn list_cas(
     let subject = claims.sub;
     let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         db.query(
-            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+            "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at,c.operational_state \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=ANY($1::text[]) AND g.issuer=$2 AND g.subject=$3 \
          AND ($4::text IS NULL OR (c.display_name,c.ca_id) > ($4,$5)) \
@@ -955,6 +1060,7 @@ async fn list_cas(
             display_name: r.get(2),
             policy_version: r.get(3),
             created_at: r.get(4),
+            operational_state: r.get(5),
         })
         .collect();
     let next =
@@ -977,7 +1083,7 @@ async fn get_ca(
         (issuer.clone(), subject.clone()),
         move |db| {
             db.query_opt(
-                "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at \
+                "SELECT c.ca_id,c.parent_ca_id,c.display_name,c.policy_version,c.created_at,c.operational_state \
          FROM management_ca c JOIN management_reader_scope g ON g.ca_id=c.ca_id \
          WHERE c.ca_id=$1 AND g.issuer=$2 AND g.subject=$3",
                 &[&ca_id, &issuer, &subject],
@@ -992,6 +1098,7 @@ async fn get_ca(
         display_name: row.get(2),
         policy_version: row.get(3),
         created_at: row.get(4),
+        operational_state: row.get(5),
     }))
 }
 
@@ -1013,8 +1120,9 @@ async fn list_profile_drafts(
     let (comparison, direction) = history_order(Some(page.order.as_deref().unwrap_or("oldest")))?;
     let search = literal_prefix(page.q)?;
     let policy_version = page.policy_version.map(|value| value.trim().to_owned());
+    // Characters, not bytes: drafts store up to 128 characters of any script.
     if policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1593,6 +1701,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         };
         let app = router(state.clone());
         let post = |token: &str, path: &str, key: Option<String>, body: String| {
@@ -1854,11 +1963,14 @@ mod tests {
 
     /// Public keys of the deterministic approver test keys ([0x11; 32],
     /// [0x22; 32], [0x33; 32]); CI registers them for approver-http-1,
-    /// approver-http-2 and operator (migration 0023).
-    const APPROVER_TEST_KEYS: [(u8, &str); 3] = [
+    /// approver-http-2 and operator (migration 0023), and [0x44; 32],
+    /// [0x55; 32] for ca-approver-http-1 and -2 (migration 0027).
+    const APPROVER_TEST_KEYS: [(u8, &str); 5] = [
         (0x11, "040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794"),
         (0x22, "04d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf350185e895372df6221ea3a137557e473fddb6755f05bd507c3c533fce9c91285"),
         (0x33, "0451a7580833898ea1b183cbd7350a4099078c6ef1c1e18e970cd7683035f25e7d0110522712b0b5a7cff081685486984a94e6831edac46e7360fa9d834a7a81a1"),
+        (0x44, "045b36890dacbd7c9a96bb74a1ee28b3d2d75b72e09a20ef25cf8e6fd8a9f0350d0e14bed8d4682a34d83538bdff5b96e89a6666ec0db5745d02fa1210072df75a"),
+        (0x55, "0457e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34c5ab3770ba573bdff5414065640ffb5b346dfa84dec4db4d68e5f59cc471c2ec"),
     ];
 
     #[test]
@@ -1941,6 +2053,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         });
         let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
             let mut request = Request::builder()
@@ -2214,6 +2327,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         });
         let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
             let mut request = Request::builder()
@@ -2441,6 +2555,3173 @@ mod tests {
         assert!(detail["activated_at"].is_string() && detail["ended_at"].is_string());
     }
 
+    /// CA proposals and issuer certificates against PostgreSQL (migration
+    /// 0026). CI seeds the `ca-admin-http` platform grant in
+    /// tests/management_profile_decision_api_seed.sql.
+    #[tokio::test]
+    async fn ca_proposals_record_one_verified_root_per_key() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA proposals need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-proposal-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-proposal-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let reader = token(
+            "ca-admin-http",
+            json!(["trust-ca-reader", "trust-ca-operator"]),
+        );
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        let proposal = |name: &str| json!({"display_name":name, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"});
+        const CN: &str = "Sovereign Trust Lab Root";
+
+        // Proposal refusals: no role, no grant, an unproposable suite,
+        // unknown fields, no idempotency key.
+        let path = || "/v1/ca-proposals".to_owned();
+        assert_eq!(
+            send("POST", &reader, path(), Some(proposal(CN)), key())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &ungranted, path(), Some(proposal(CN)), key())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &admin, path(),
+                Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p384-sha384"})), key())
+            .await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                path(),
+                Some(
+                    json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256",
+                            "ca_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"})
+                ),
+                key()
+            )
+            .await
+            .0,
+            // A chosen identifier that names an existing CA is refused.
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                path(),
+                Some(
+                    json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256",
+                            "ca_id":"not-a-uuid"})
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let chosen = random_uuid().to_string();
+        let (status, chosen_proposal) = send(
+            "POST",
+            &admin,
+            path(),
+            Some(json!({"display_name":"Chosen Root", "policy_version":"v1",
+                        "suite_id":"ecdsa-p256-sha256", "ca_id": chosen})),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, chosen_proposal["ca_id"].as_str()),
+            (StatusCode::CREATED, Some(chosen.as_str()))
+        );
+        assert_eq!(
+            send("POST", &admin, path(), Some(proposal(CN)), None)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // A proposal, and its replay.
+        let operation = key();
+        let (status, first) = send(
+            "POST",
+            &admin,
+            path(),
+            Some(proposal(CN)),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(first["lifecycle_status"], "PROPOSED");
+        let ca = first["ca_id"].as_str().unwrap().to_owned();
+        let (status, replay) = send(
+            "POST",
+            &admin,
+            path(),
+            Some(proposal(CN)),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (status, &replay["ca_id"]),
+            (StatusCode::OK, &first["ca_id"])
+        );
+        assert_eq!(
+            send("POST", &admin, path(), Some(proposal("Other")), operation)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+
+        // Certificate refusals: each leaves the proposal PROPOSED.
+        let certificate = |pem: String| Some(json!({"certificate_pem": pem}));
+        let register = |ca: &str| format!("/v1/ca-proposals/{ca}/issuer-certificate");
+        let vector = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/testdata/ca-root/{name}.crt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let (status, refused) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(vector("openssl-p384-root")),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("KeyAlgorithm"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(vector("openssl-p256-not-ca")),
+                key()
+            )
+            .await
+            .1["reason"],
+            "BasicConstraints"
+        );
+        // A valid root whose CN is not the proposed name (refused by the database).
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(vector("openssl-p256-root")),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let pem = root.to_pem(PemLineEnding::LF).unwrap();
+        let mut tampered = root.clone();
+        tampered.signature = EphemeralLabCa::new(CN)
+            .unwrap()
+            .root_certificate()
+            .signature
+            .clone();
+        let (status, refused) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(tampered.to_pem(PemLineEnding::LF).unwrap()),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("Signature"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                register(&ca),
+                certificate(pem.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&random_uuid().to_string()),
+                certificate(pem.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+
+        // Registration, replay, then no second certificate and no key reuse.
+        let operation = key();
+        let (status, registered) = send(
+            "POST",
+            &admin,
+            register(&ca),
+            certificate(pem.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(registered["lifecycle_status"], "KEY_ATTESTED");
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(registered["certificate_sha256"], fingerprint.as_str());
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(pem.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let other_root = EphemeralLabCa::new(CN)
+            .unwrap()
+            .root_certificate()
+            .to_pem(PemLineEnding::LF)
+            .unwrap();
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(&ca),
+                certificate(other_root),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (_, second) = send("POST", &admin, path(), Some(proposal(CN)), key()).await;
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                register(second["ca_id"].as_str().unwrap()),
+                certificate(pem),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Listing: administrators with the grant see both; the role without
+        // the grant sees nothing; other roles are refused.
+        let (status, listed) = send("GET", &admin, path(), None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let states: HashSet<(String, String)> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["ca_id"] == ca.as_str() || item["ca_id"] == second["ca_id"])
+            .map(|item| {
+                (
+                    item["ca_id"].as_str().unwrap().to_owned(),
+                    item["lifecycle_status"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            HashSet::from([
+                (ca.clone(), "KEY_ATTESTED".to_owned()),
+                (
+                    second["ca_id"].as_str().unwrap().to_owned(),
+                    "PROPOSED".to_owned()
+                ),
+            ])
+        );
+        let (status, hidden) = send("GET", &ungranted, path(), None, None).await;
+        assert_eq!((status, hidden), (StatusCode::OK, json!([])));
+        assert_eq!(
+            send("GET", &reader, path(), None, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        // A proposal is not a CA.
+        assert_eq!(
+            send("GET", &reader, format!("/v1/cas/{ca}"), None, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// Signed CA approval and activation against PostgreSQL (migration
+    /// 0027). CI seeds the CA approvers and their keys ([0x44; 32],
+    /// [0x55; 32]) in tests/management_profile_decision_api_seed.sql.
+    #[tokio::test]
+    async fn ca_proposals_are_approved_by_two_signers_then_activated() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA approval and activation need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-activation-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-activation-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let approver_1 = token(
+            "ca-approver-http-1",
+            json!(["trust-ca-approver", "trust-ca-administrator"]),
+        );
+        let approver_2 = token("ca-approver-http-2", json!(["trust-ca-approver"]));
+        // A profile approver: the CA approver role without the platform grant.
+        let profile_approver = token("approver-http-1", json!(["trust-ca-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x55; 32]).unwrap();
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        const CN: &str = "Sovereign Trust Lab Root";
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+            key(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, base) = (send, base.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{base}/decision-claims"),
+                    Some(json!({"decision":decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        // Before the certificate, nothing can be decided.
+        assert_eq!(
+            claim_for(approver_2.clone(), "approve").await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/issuer-certificate"),
+                Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+
+        // Claim refusals: no approver role, the role without the grant.
+        assert_eq!(
+            claim_for(admin.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            claim_for(profile_approver.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let decide = |token: String,
+                      signer: SigningKey,
+                      claim: serde_json::Value,
+                      operation: Option<String>| {
+            let (send, base) = (send, base.clone());
+            async move {
+                let text = claim["claim"].as_str().unwrap().to_owned();
+                let signature: Signature = signer.sign(text.as_bytes());
+                send("POST", &token, format!("{base}/decisions"),
+                    Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    operation).await
+            }
+        };
+
+        // The first approval, its replay, and a second decision by the same approver.
+        let (status, claim_1) = claim_for(approver_1.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(claim_1["claim"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("certificate_sha256={fingerprint}")));
+        let operation = key();
+        let (status, first) = decide(
+            approver_1.clone(),
+            key_1.clone(),
+            claim_1.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                first["lifecycle_status"].as_str(),
+                first["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("KEY_ATTESTED"), Some(1))
+        );
+        assert_eq!(
+            decide(approver_1.clone(), key_1.clone(), claim_1, operation)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            claim_for(approver_1.clone(), "reject").await.0,
+            StatusCode::CONFLICT
+        );
+
+        // A signature by another key, or over other text, is refused and leaves nothing.
+        let (_, claim_2) = claim_for(approver_2.clone(), "approve").await;
+        assert_eq!(
+            decide(approver_2.clone(), key_1.clone(), claim_2.clone(), key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut altered = claim_2.clone();
+        altered["claim"] = json!(claim_2["claim"]
+            .as_str()
+            .unwrap()
+            .replace("decision=approve", "decision=reject"));
+        assert_eq!(
+            decide(approver_2.clone(), key_2.clone(), altered, key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Activation before approval is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, second) = decide(approver_2.clone(), key_2.clone(), claim_2, key()).await;
+        assert_eq!(
+            (
+                status,
+                second["lifecycle_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("APPROVED"), Some(2))
+        );
+
+        // Activation: an approver holding the administrator role, another
+        // digest, unknown fields; then the activation and its replay.
+        let activation = |digest: String| Some(json!({"certificate_sha256": digest}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation("0".repeat(64)),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint, "suite_id": "ecdsa-p384-sha384"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let operation = key();
+        let (status, active) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            activation(fingerprint.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                active["lifecycle_status"].as_str(),
+                active["suite_id"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("ACTIVE"),
+                Some("ecdsa-p256-sha256")
+            )
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Approvers list proposals too; the activated one shows its record.
+        let (status, listed) =
+            send("GET", &approver_2, "/v1/ca-proposals".into(), None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ca_id"] == ca.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (
+                item["lifecycle_status"].as_str(),
+                item["approval_count"].as_i64()
+            ),
+            (Some("ACTIVE"), Some(2))
+        );
+        assert!(item["decided_at"].is_string() && item["activated_at"].is_string());
+    }
+
+    /// Certificate applications against PostgreSQL (migration 0029). The CA
+    /// is created through the API; the owner login provisions the grants and
+    /// the active profile revision, as only the owner can.
+    #[tokio::test]
+    async fn certificate_applications_need_a_verified_csr_an_active_profile_and_an_officer() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url), Ok(owner_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+            env::var("TRUST_API_OWNER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: certificate applications need TRUST_API_TEST_DATABASE_URL, TRUST_API_WRITER_TEST_DATABASE_URL and TRUST_API_OWNER_TEST_DATABASE_URL (the owner provisions grants and the active profile); CI sets all three");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"application-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("application-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let approver_1 = token(
+            "ca-approver-http-1",
+            json!(["trust-ca-approver", "trust-ca-administrator"]),
+        );
+        let approver_2 = token("ca-approver-http-2", json!(["trust-ca-approver"]));
+        // A profile approver: the CA approver role without the platform grant.
+        let profile_approver = token("approver-http-1", json!(["trust-ca-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x55; 32]).unwrap();
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        const CN: &str = "Sovereign Trust Lab Root";
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+            key(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, base) = (send, base.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{base}/decision-claims"),
+                    Some(json!({"decision":decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        // Before the certificate, nothing can be decided.
+        assert_eq!(
+            claim_for(approver_2.clone(), "approve").await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/issuer-certificate"),
+                Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+
+        // Claim refusals: no approver role, the role without the grant.
+        assert_eq!(
+            claim_for(admin.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            claim_for(profile_approver.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let decide = |token: String,
+                      signer: SigningKey,
+                      claim: serde_json::Value,
+                      operation: Option<String>| {
+            let (send, base) = (send, base.clone());
+            async move {
+                let text = claim["claim"].as_str().unwrap().to_owned();
+                let signature: Signature = signer.sign(text.as_bytes());
+                send("POST", &token, format!("{base}/decisions"),
+                    Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    operation).await
+            }
+        };
+
+        // The first approval, its replay, and a second decision by the same approver.
+        let (status, claim_1) = claim_for(approver_1.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(claim_1["claim"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("certificate_sha256={fingerprint}")));
+        let operation = key();
+        let (status, first) = decide(
+            approver_1.clone(),
+            key_1.clone(),
+            claim_1.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                first["lifecycle_status"].as_str(),
+                first["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("KEY_ATTESTED"), Some(1))
+        );
+        assert_eq!(
+            decide(approver_1.clone(), key_1.clone(), claim_1, operation)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            claim_for(approver_1.clone(), "reject").await.0,
+            StatusCode::CONFLICT
+        );
+
+        // A signature by another key, or over other text, is refused and leaves nothing.
+        let (_, claim_2) = claim_for(approver_2.clone(), "approve").await;
+        assert_eq!(
+            decide(approver_2.clone(), key_1.clone(), claim_2.clone(), key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut altered = claim_2.clone();
+        altered["claim"] = json!(claim_2["claim"]
+            .as_str()
+            .unwrap()
+            .replace("decision=approve", "decision=reject"));
+        assert_eq!(
+            decide(approver_2.clone(), key_2.clone(), altered, key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Activation before approval is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, second) = decide(approver_2.clone(), key_2.clone(), claim_2, key()).await;
+        assert_eq!(
+            (
+                status,
+                second["lifecycle_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("APPROVED"), Some(2))
+        );
+
+        // Activation: an approver holding the administrator role, another
+        // digest, unknown fields; then the activation and its replay.
+        let activation = |digest: String| Some(json!({"certificate_sha256": digest}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation("0".repeat(64)),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint, "suite_id": "ecdsa-p384-sha384"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let operation = key();
+        let (status, active) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            activation(fingerprint.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                active["lifecycle_status"].as_str(),
+                active["suite_id"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("ACTIVE"),
+                Some("ecdsa-p256-sha256")
+            )
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // The owner provisions what only the owner can: grants on the new CA
+        // and an active profile revision (zones lab.invalid, 3 names, 90 days).
+        let owner_ca = ca.clone();
+        query_db(owner_url, Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
+                    ('https://issuer.example.test', 'requester-http', '{owner_ca}'),
+                    ('https://issuer.example.test', 'officer-http', '{owner_ca}');
+                 INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
+                    ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'certificate-requester'),
+                    ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'registration-officer'),
+                    ('https://issuer.example.test', 'officer-http', '{owner_ca}', 'registration-officer');
+                 INSERT INTO certificate_profile_draft (ca_id, profile_id, revision, display_name, policy_version,
+                    max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by)
+                 VALUES ('{owner_ca}', 'server', 1, 'Server', 'v1', 90, 3, ARRAY['lab.invalid'],
+                    ARRAY['ecdsa-p256-sha256'], 'owner-fixture');
+                 WITH e AS (INSERT INTO profile_lifecycle_event (operation_id, request_sha256, action, ca_id, profile_id,
+                    revision, snapshot_sha256, policy_version, actor_issuer, actor_subject)
+                    VALUES (gen_random_uuid(), decode(repeat('11', 32), 'hex'), 'draft.submitted', '{owner_ca}', 'server',
+                    1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), 'v1', 'owner', 'owner') RETURNING event_id)
+                 INSERT INTO certificate_profile_submission (ca_id, profile_id, revision, snapshot_sha256, event_id)
+                    SELECT '{owner_ca}', 'server', 1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), event_id FROM e;
+                 WITH e AS (INSERT INTO profile_lifecycle_event (operation_id, request_sha256, action, ca_id, profile_id,
+                    revision, snapshot_sha256, policy_version, actor_issuer, actor_subject)
+                    VALUES (gen_random_uuid(), decode(repeat('11', 32), 'hex'), 'revision.activation', '{owner_ca}',
+                    'server', 1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), 'v1', 'owner', 'owner')
+                    RETURNING event_id)
+                 INSERT INTO certificate_profile_active (ca_id, profile_id, revision, activated_event_id)
+                    SELECT '{owner_ca}', 'server', 1, event_id FROM e;"
+            ))
+        })
+        .await
+        .unwrap();
+        let scoped = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[ca.clone()]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let requester = scoped(
+            "requester-http",
+            json!([
+                "trust-certificate-requester",
+                "trust-ca-reader",
+                "trust-registration-officer"
+            ]),
+        );
+        let officer = scoped(
+            "officer-http",
+            json!(["trust-registration-officer", "trust-ca-reader"]),
+        );
+        let outsider = scoped("ca-admin-http", json!(["trust-certificate-requester"]));
+
+        // A CSR for `cn` signed by a fresh P-256 key; `forged` signs with another key.
+        let csr = |cn: &str, forged: bool| {
+            use x509_cert::{
+                der::{asn1::BitString, DecodePem as _, EncodePem},
+                request::{CertReq, CertReqInfo},
+                spki::{AlgorithmIdentifierOwned, ObjectIdentifier, SubjectPublicKeyInfoOwned},
+            };
+            let key = SigningKey::random(&mut rand::rngs::OsRng);
+            let point = key.verifying_key().to_encoded_point(false);
+            let info = CertReqInfo {
+                version: x509_cert::request::Version::V1,
+                subject: format!("CN={cn}").parse().unwrap(),
+                public_key: SubjectPublicKeyInfoOwned {
+                    algorithm: AlgorithmIdentifierOwned {
+                        oid: ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
+                        parameters: Some(x509_cert::der::Any::from(ObjectIdentifier::new_unwrap(
+                            "1.2.840.10045.3.1.7",
+                        ))),
+                    },
+                    subject_public_key: BitString::from_bytes(point.as_bytes()).unwrap(),
+                },
+                attributes: Default::default(),
+            };
+            let signing = if forged {
+                SigningKey::random(&mut rand::rngs::OsRng)
+            } else {
+                key.clone()
+            };
+            let signature: Signature = signing.sign(&info.to_der().unwrap());
+            let request = CertReq {
+                info,
+                algorithm: AlgorithmIdentifierOwned {
+                    oid: ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2"),
+                    parameters: None,
+                },
+                signature: BitString::from_bytes(signature.to_der().as_bytes()).unwrap(),
+            };
+            let pem = request.to_pem(PemLineEnding::LF).unwrap();
+            assert!(CertReq::from_pem(&pem).is_ok());
+            pem
+        };
+        let apps = format!("/v1/cas/{ca}/certificate-applications");
+        let application = |pem: String, cn: &str, names: serde_json::Value, days: i64| {
+            Some(
+                json!({"profile_id":"server", "csr_pem": pem, "common_name": cn, "dns_names": names, "validity_days": days}),
+            )
+        };
+
+        // Refusals: no role or grant, malformed request, CSR checks, policy.
+        let good = csr("www.lab.invalid", false);
+        assert_eq!(
+            send(
+                "POST",
+                &outsider,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "www.lab.invalid",
+                    json!(["www.lab.invalid"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "www.lab.invalid",
+                    json!(["www.lab.invalid"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "www.lab.invalid",
+                    json!(["www.lab.invalid", "*.lab.invalid"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "api.lab.invalid",
+                    json!(["www.lab.invalid"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, refused) = send(
+            "POST",
+            &requester,
+            apps.clone(),
+            application(
+                good.clone(),
+                "api.lab.invalid",
+                json!(["api.lab.invalid"]),
+                30,
+            ),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("SubjectMismatch"))
+        );
+        let (status, refused) = send(
+            "POST",
+            &requester,
+            apps.clone(),
+            application(
+                csr("www.lab.invalid", true),
+                "www.lab.invalid",
+                json!(["www.lab.invalid"]),
+                30,
+            ),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, refused["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("InvalidSignature"))
+        );
+        let root_pem = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ca-root/openssl-p256-root.crt"
+        ))
+        .unwrap();
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps.clone(),
+                application(root_pem, "www.lab.invalid", json!(["www.lab.invalid"]), 30),
+                key()
+            )
+            .await
+            .1["reason"],
+            "Encoding"
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "www.example.com",
+                    json!(["www.example.com"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps.clone(),
+                application(
+                    good.clone(),
+                    "www.lab.invalid",
+                    json!(["www.lab.invalid"]),
+                    91
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(send("POST", &requester, apps.clone(),
+            Some(json!({"profile_id":"mail", "csr_pem": good.clone(), "common_name": "www.lab.invalid", "dns_names": ["www.lab.invalid"], "validity_days": 30})),
+            key()).await.0, StatusCode::NOT_FOUND);
+
+        // Submission and replay; the requester cannot decide; the officer does, once.
+        let operation = key();
+        let body = application(
+            good.clone(),
+            "www.lab.invalid",
+            json!(["www.lab.invalid", "api.lab.invalid"]),
+            90,
+        );
+        let (status, submitted) = send(
+            "POST",
+            &requester,
+            apps.clone(),
+            body.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                submitted["status"].as_str(),
+                submitted["revision"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("SUBMITTED"), Some(1))
+        );
+        let id = submitted["application_id"].as_str().unwrap().to_owned();
+        let (status, replay) = send("POST", &requester, apps.clone(), body, operation).await;
+        assert_eq!(
+            (status, replay["application_id"].as_str()),
+            (StatusCode::OK, Some(id.as_str()))
+        );
+        let decision = format!("{apps}/{id}/decision");
+        let decide =
+            |decision: &str| Some(json!({"decision": decision, "reason": "names checked"}));
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                decision.clone(),
+                decide("approve"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &officer, decision.clone(), decide("sign"), key())
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, approved) =
+            send("POST", &officer, decision.clone(), decide("approve"), key()).await;
+        assert_eq!(
+            (status, approved["status"].as_str()),
+            (StatusCode::CREATED, Some("APPROVED"))
+        );
+        assert_eq!(
+            send("POST", &officer, decision, decide("reject"), key())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+
+        // Readers of the CA list applications without actor identities.
+        let (status, listed) = send("GET", &officer, apps.clone(), None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let item = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["application_id"] == id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (item["status"].as_str(), item["subject_cn"].as_str()),
+            (Some("APPROVED"), Some("www.lab.invalid"))
+        );
+        assert!(item.get("requested_by").is_none() && item.get("actor_subject").is_none());
+
+        // A suspended CA takes no application.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("/v1/ca-proposals/{ca}/suspension"),
+                Some(json!({"reason":"test"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                apps,
+                application(
+                    csr("x.lab.invalid", false),
+                    "x.lab.invalid",
+                    json!(["x.lab.invalid"]),
+                    30
+                ),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    /// Issuance of approved applications (migration 0030), then their
+    /// revocation and CRLs (migration 0031), against PostgreSQL, with the
+    /// real laboratory signer in-process on a Unix socket and
+    /// its own restricted login (TRUST_API_SIGNER_TEST_DATABASE_URL).
+    #[tokio::test]
+    async fn approved_applications_are_issued_revoked_and_published_through_the_lab_signer() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, DecodePem, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url), Ok(owner_url), Ok(signer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+            env::var("TRUST_API_OWNER_TEST_DATABASE_URL"),
+            env::var("TRUST_API_SIGNER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: issuance needs TRUST_API_TEST_DATABASE_URL, TRUST_API_WRITER_TEST_DATABASE_URL, TRUST_API_OWNER_TEST_DATABASE_URL and TRUST_API_SIGNER_TEST_DATABASE_URL; CI sets all four");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"issuance-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("issuance-test".into());
+        let token = |sub: &str, roles: serde_json::Value, ca_ids: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles,
+                        "ca_ids":ca_ids}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let admin = token(
+            "ca-admin-http",
+            json!(["trust-ca-administrator"]),
+            json!([]),
+        );
+        let approvers = [
+            (
+                token(
+                    "ca-approver-http-1",
+                    json!(["trust-ca-approver"]),
+                    json!([]),
+                ),
+                SigningKey::from_slice(&[0x44; 32]).unwrap(),
+            ),
+            (
+                token(
+                    "ca-approver-http-2",
+                    json!(["trust-ca-approver"]),
+                    json!([]),
+                ),
+                SigningKey::from_slice(&[0x55; 32]).unwrap(),
+            ),
+        ];
+        let key_dir = std::env::temp_dir().join(format!("trust-signer-test-{}", random_uuid()));
+        std::fs::create_dir_all(&key_dir).unwrap();
+        let socket = key_dir.join("signer.sock");
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: Some(socket.clone()),
+        });
+        let send =
+            |method: &'static str, token: &str, path: String, body: Option<serde_json::Value>| {
+                let mut request = Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"));
+                if body.is_some() {
+                    request = request
+                        .header("content-type", "application/json")
+                        .header("idempotency-key", random_uuid().to_string());
+                }
+                let request = request
+                    .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                    .unwrap();
+                let app = app.clone();
+                async move {
+                    let response = app.oneshot(request).await.unwrap();
+                    let status = response.status();
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    (
+                        status,
+                        serde_json::from_slice::<serde_json::Value>(&body)
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                }
+            };
+
+        // A CA whose key the lab signer reads, activated by two approvers.
+        const CN: &str = "Sovereign Trust Issuance Test Root";
+        let ca_key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let root = lab_root(CN, &ca_key);
+        let key_file = key_dir.join("ca.pem");
+        std::fs::write(
+            &key_file,
+            ca_key
+                .to_sec1_pem(p256::pkcs8::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let fingerprint = hex_bytes(&<sha2::Sha256 as sha2::Digest>::digest(
+            root.to_der().unwrap(),
+        ));
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let (status, _) = send(
+            "POST",
+            &admin,
+            format!("{base}/issuer-certificate"),
+            Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        for (approver, approver_key) in &approvers {
+            let (status, claim) = send(
+                "POST",
+                approver,
+                format!("{base}/decision-claims"),
+                Some(json!({"decision":"approve"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let signature: Signature =
+                approver_key.sign(claim["claim"].as_str().unwrap().as_bytes());
+            let (status, _) = send("POST", approver, format!("{base}/decisions"),
+                Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                    "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})))
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let (status, _) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            Some(json!({"certificate_sha256": fingerprint})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // The owner provisions the grants and the active revision.
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
+                    ('https://issuer.example.test', 'requester-http', '{owner_ca}'),
+                    ('https://issuer.example.test', 'officer-http', '{owner_ca}');
+                 INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
+                    ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'certificate-requester'),
+                    ('https://issuer.example.test', 'officer-http', '{owner_ca}', 'registration-officer');
+                 INSERT INTO certificate_profile_draft (ca_id, profile_id, revision, display_name, policy_version,
+                    max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by)
+                 VALUES ('{owner_ca}', 'server', 1, 'Server', 'v1', 90, 3, ARRAY['lab.invalid'],
+                    ARRAY['ecdsa-p256-sha256'], 'owner-fixture');
+                 WITH e AS (INSERT INTO profile_lifecycle_event (operation_id, request_sha256, action, ca_id, profile_id,
+                    revision, snapshot_sha256, policy_version, actor_issuer, actor_subject)
+                    VALUES (gen_random_uuid(), decode(repeat('11', 32), 'hex'), 'draft.submitted', '{owner_ca}', 'server',
+                    1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), 'v1', 'owner', 'owner') RETURNING event_id)
+                 INSERT INTO certificate_profile_submission (ca_id, profile_id, revision, snapshot_sha256, event_id)
+                    SELECT '{owner_ca}', 'server', 1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), event_id FROM e;
+                 WITH e AS (INSERT INTO profile_lifecycle_event (operation_id, request_sha256, action, ca_id, profile_id,
+                    revision, snapshot_sha256, policy_version, actor_issuer, actor_subject)
+                    VALUES (gen_random_uuid(), decode(repeat('11', 32), 'hex'), 'revision.activation', '{owner_ca}',
+                    'server', 1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), 'v1', 'owner', 'owner')
+                    RETURNING event_id)
+                 INSERT INTO certificate_profile_active (ca_id, profile_id, revision, activated_event_id)
+                    SELECT '{owner_ca}', 'server', 1, event_id FROM e;
+                 INSERT INTO ca_crl_distribution_point (ca_id, base_url)
+                    VALUES ('{owner_ca}', 'http://crl.lab.invalid:8081');"
+            ))
+        })
+        .await
+        .unwrap();
+        let requester = token(
+            "requester-http",
+            json!(["trust-certificate-requester", "trust-ca-reader"]),
+            json!([ca.clone()]),
+        );
+        let officer = token(
+            "officer-http",
+            json!(["trust-registration-officer", "trust-ca-reader"]),
+            json!([ca.clone()]),
+        );
+
+        // The lab signer on `socket`, reading `key_file` with its own login;
+        // a previous signer's socket file is replaced.
+        let start_signer = |key_file: std::path::PathBuf| {
+            let (socket, signer_url, ca) = (socket.clone(), signer_url.clone(), ca.clone());
+            std::thread::spawn(move || {
+                assert!(trust_lab_signer::service::restricted_login(&signer_url).unwrap());
+                let _ = std::fs::remove_file(&socket);
+                let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+                let config = trust_lab_signer::service::Config {
+                    database_url: signer_url,
+                    ca_id: ca,
+                    key_file,
+                };
+                (listener, config)
+            })
+            .join()
+            .map(|(listener, config)| {
+                std::thread::spawn(move || trust_lab_signer::service::serve(&config, &listener))
+            })
+            .unwrap()
+        };
+        start_signer(key_file.clone());
+
+        let apps = format!("/v1/cas/{ca}/certificate-applications");
+        // An application for `cn` with a fresh subject key, approved or not.
+        let submit = |cn: &'static str| {
+            let (send, apps, requester) = (send, apps.clone(), requester.clone());
+            async move {
+                let subject_key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+                let (status, submitted) = send(
+                    "POST",
+                    &requester,
+                    apps,
+                    Some(
+                        json!({"profile_id":"server", "csr_pem": lab_csr(cn, &subject_key),
+                                "common_name": cn, "dns_names": [cn, format!("www.{cn}")],
+                                "validity_days": 30}),
+                    ),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CREATED);
+                (
+                    submitted["application_id"].as_str().unwrap().to_owned(),
+                    subject_key,
+                )
+            }
+        };
+        let approve = |id: String| {
+            let (send, apps, officer) = (send, apps.clone(), officer.clone());
+            async move {
+                let (status, _) = send(
+                    "POST",
+                    &officer,
+                    format!("{apps}/{id}/decision"),
+                    Some(json!({"decision":"approve", "reason":"checked"})),
+                )
+                .await;
+                assert_eq!(status, StatusCode::CREATED);
+            }
+        };
+        let issue = |token: String, id: String| {
+            let (send, apps) = (send, apps.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{apps}/{id}/issuance"),
+                    Some(json!({})),
+                )
+                .await
+            }
+        };
+        let listed = |id: String| {
+            let (send, apps, officer) = (send, apps.clone(), officer.clone());
+            async move {
+                let (_, listed) = send("GET", &officer, apps, None).await;
+                listed
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["application_id"] == id.as_str())
+                    .unwrap()
+                    .clone()
+            }
+        };
+
+        // Not approved yet: no issuance, and no intent was recorded.
+        let (first, subject_key) = submit("app.lab.invalid").await;
+        assert_eq!(
+            issue(requester.clone(), first.clone()).await.0,
+            StatusCode::CONFLICT
+        );
+        // Unknown fields in the body are refused.
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                format!("{apps}/{first}/issuance"),
+                Some(json!({"tbs":"x"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        approve(first.clone()).await;
+
+        // The requester collects their certificate.
+        let (status, issued) = issue(requester.clone(), first.clone()).await;
+        assert_eq!(
+            (status, issued["status"].as_str()),
+            (StatusCode::CREATED, Some("ISSUED"))
+        );
+        let certificate =
+            x509_cert::Certificate::from_pem(issued["certificate_pem"].as_str().unwrap()).unwrap();
+        let tbs = &certificate.tbs_certificate;
+        assert_eq!(tbs.issuer, root.tbs_certificate.subject);
+        assert_eq!(tbs.subject.to_string(), "CN=app.lab.invalid");
+        assert_eq!(
+            Some(hex_bytes(tbs.serial_number.as_bytes()).as_str()),
+            issued["serial_hex"].as_str()
+        );
+        assert_eq!(
+            tbs.subject_public_key_info.subject_public_key.raw_bytes(),
+            lab_spki(&subject_key).subject_public_key.raw_bytes()
+        );
+        // It names where the CA's CRLs are published (migration 0032).
+        let distribution_point =
+            format!("http://crl.lab.invalid:8081/v1/public/crls/{ca}/latest.crl");
+        {
+            use x509_cert::ext::pkix::{
+                crl::CrlDistributionPoints,
+                name::{DistributionPointName, GeneralName},
+            };
+            let extension = tbs
+                .extensions
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|extension| extension.extn_id.to_string() == "2.5.29.31")
+                .unwrap();
+            let points = <CrlDistributionPoints as x509_cert::der::Decode>::from_der(
+                extension.extn_value.as_bytes(),
+            )
+            .unwrap();
+            let Some(DistributionPointName::FullName(names)) = &points.0[0].distribution_point
+            else {
+                panic!("no full name");
+            };
+            assert_eq!(
+                names,
+                &vec![GeneralName::UniformResourceIdentifier(
+                    x509_cert::der::asn1::Ia5String::new(&distribution_point).unwrap()
+                )]
+            );
+        }
+        // The CA key signed it: checked with the CA's public key alone.
+        {
+            use p256::ecdsa::{signature::Verifier, VerifyingKey};
+            let verifying = VerifyingKey::from(ca_key.public_key());
+            let signature = Signature::from_der(certificate.signature.raw_bytes()).unwrap();
+            assert!(verifying.verify(&tbs.to_der().unwrap(), &signature).is_ok());
+        }
+        // Issued once: asking again returns the record, never a new signature.
+        let (status, again) = issue(officer.clone(), first.clone()).await;
+        assert_eq!(
+            (
+                status,
+                again["status"].as_str(),
+                again["certificate_pem"].is_null()
+            ),
+            (StatusCode::OK, Some("ISSUED"), true)
+        );
+        let item = listed(first.clone()).await;
+        assert_eq!(
+            (item["status"].as_str(), item["certificate_sha256"].as_str()),
+            (Some("ISSUED"), issued["certificate_sha256"].as_str())
+        );
+
+        // A signer holding another key refuses before claiming: for the API
+        // the outcome is ambiguous, and the request is never signed again.
+        let other_key = key_dir.join("other.pem");
+        std::fs::write(
+            &other_key,
+            p256::SecretKey::random(&mut rand::rngs::OsRng)
+                .to_sec1_pem(p256::pkcs8::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        start_signer(other_key.clone());
+        let (second, _) = submit("other.lab.invalid").await;
+        approve(second.clone()).await;
+        let (status, uncertain) = issue(officer.clone(), second.clone()).await;
+        assert_eq!(
+            (status, uncertain["status"].as_str()),
+            (StatusCode::BAD_GATEWAY, Some("RECONCILIATION_REQUIRED"))
+        );
+        start_signer(key_file.clone());
+        assert_eq!(
+            issue(officer.clone(), second.clone()).await.0,
+            StatusCode::CONFLICT
+        );
+        let item = listed(second).await;
+        assert_eq!(
+            (
+                item["status"].as_str(),
+                item["certificate_sha256"].is_null()
+            ),
+            (Some("RECONCILIATION_REQUIRED"), true)
+        );
+
+        // A signer that answers with another key's signature: the API's own
+        // verification refuses the certificate, which is never stored.
+        let _ = std::fs::remove_file(&socket);
+        let liar = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let lying = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let (stream, _) = liar.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let tbs = base64::engine::general_purpose::STANDARD
+                .decode(request["tbs_der_base64"].as_str().unwrap())
+                .unwrap();
+            let signature: Signature = SigningKey::random(&mut rand::rngs::OsRng).sign(&tbs);
+            writeln!(
+                &stream,
+                "{}",
+                json!({"signature_der_base64":
+                base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
+            )
+            .unwrap();
+        });
+        let (third, _) = submit("third.lab.invalid").await;
+        approve(third.clone()).await;
+        let (status, refused) = issue(officer.clone(), third.clone()).await;
+        lying.join().unwrap();
+        assert_eq!(
+            (
+                status,
+                refused["status"].as_str(),
+                refused["certificate_pem"].is_null()
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                Some("RECONCILIATION_REQUIRED"),
+                true
+            )
+        );
+        let item = listed(third).await;
+        assert_eq!(
+            (
+                item["status"].as_str(),
+                item["certificate_sha256"].is_null()
+            ),
+            (Some("RECONCILIATION_REQUIRED"), true)
+        );
+
+        // Revocation and CRLs (migration 0031), with the real signer again.
+        start_signer(key_file.clone());
+        let crls = format!("/v1/cas/{ca}/crls");
+        let crl_der = |pem: &str| {
+            let (label, der) = x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap();
+            assert_eq!(label, "X509 CRL");
+            der
+        };
+        let verifying = p256::ecdsa::VerifyingKey::from(ca_key.public_key());
+        let crl_verifies = |der: &[u8]| {
+            use p256::ecdsa::signature::Verifier;
+            let crl =
+                <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(der).unwrap();
+            let signature = Signature::from_der(crl.signature.raw_bytes()).unwrap();
+            verifying
+                .verify(&crl.tbs_cert_list.to_der().unwrap(), &signature)
+                .is_ok()
+        };
+        // Nothing is public before the first CRL; renewal is due.
+        let public = |path: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .map(|value| value.to_str().unwrap().to_owned());
+                let body = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .to_vec();
+                (status, content_type, body)
+            }
+        };
+        let public_path = format!("/v1/public/crls/{ca}/latest.crl");
+        assert_eq!(public(public_path.clone()).await.0, StatusCode::NOT_FOUND);
+        let (_, status_before) =
+            send("GET", &officer, format!("/v1/cas/{ca}/crl-status"), None).await;
+        assert_eq!(
+            (
+                status_before["distribution_point"].as_str(),
+                status_before["latest_crl_number"].is_null(),
+                status_before["renewal_due"].as_bool()
+            ),
+            (Some(distribution_point.as_str()), true, Some(true))
+        );
+        // A requester does not publish; an officer publishes an empty CRL.
+        assert_eq!(
+            send("POST", &requester, crls.clone(), Some(json!({})))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, empty) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                empty["crl_number"].as_i64(),
+                empty["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(1), Some(0))
+        );
+        assert!(crl_verifies(&crl_der(empty["crl_pem"].as_str().unwrap())));
+
+        // The requester asks, with a reason from the closed list only; an
+        // officer approves; the requester cannot decide.
+        let revocations = format!("{apps}/{first}/revocation-requests");
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                revocations.clone(),
+                Some(json!({"reason_code": 6, "reason": "on hold"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, requested) = send(
+            "POST",
+            &requester,
+            revocations.clone(),
+            Some(json!({"reason_code": 1, "reason": "key leaked"})),
+        )
+        .await;
+        assert_eq!(
+            (status, requested["status"].as_str()),
+            (StatusCode::CREATED, Some("REVOCATION_REQUESTED"))
+        );
+        let decision = format!(
+            "{revocations}/{}/decision",
+            requested["revocation_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                decision.clone(),
+                Some(json!({"decision": "approve", "reason": "self"}))
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, decided) = send(
+            "POST",
+            &officer,
+            decision.clone(),
+            Some(json!({"decision": "approve", "reason": "confirmed"})),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                decided["status"].as_str(),
+                decided["revoked_at"].is_string()
+            ),
+            (StatusCode::CREATED, Some("REVOKED"), true)
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                decision,
+                Some(json!({"decision": "reject", "reason": "again"}))
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let item = listed(first.clone()).await;
+        assert_eq!(
+            (
+                item["status"].as_str(),
+                item["revocation_reason_code"].as_i64()
+            ),
+            (Some("REVOKED"), Some(1))
+        );
+
+        // The next CRL lists it, under the CA key, with its reason.
+        let (status, published) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                published["crl_number"].as_i64(),
+                published["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(2), Some(1))
+        );
+        let der = crl_der(published["crl_pem"].as_str().unwrap());
+        assert!(crl_verifies(&der));
+        let crl =
+            <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(&der).unwrap();
+        let entries = crl.tbs_cert_list.revoked_certificates.unwrap();
+        assert_eq!(
+            hex_bytes(entries[0].serial_number.as_bytes()),
+            issued["serial_hex"].as_str().unwrap()
+        );
+        assert_eq!(crl.tbs_cert_list.issuer, root.tbs_certificate.subject);
+
+        // Anyone fetches the latest CRL, without a token; other paths are 404.
+        let (status, content_type, public_der) = public(public_path.clone()).await;
+        assert_eq!(
+            (status, content_type.as_deref(), public_der == der),
+            (StatusCode::OK, Some("application/pkix-crl"), true)
+        );
+        assert_eq!(
+            public(format!("/v1/public/crls/{}/latest.crl", random_uuid()))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            public("/v1/public/crls/not-a-uuid/latest.crl".into())
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, status_after) =
+            send("GET", &officer, format!("/v1/cas/{ca}/crl-status"), None).await;
+        assert_eq!(
+            (
+                status_after["latest_crl_number"].as_i64(),
+                status_after["renewal_due"].as_bool(),
+                status_after["expired"].as_bool()
+            ),
+            (Some(2), Some(false), Some(false))
+        );
+        // Readers list the CRLs and fetch the exact DER.
+        let (_, list) = send("GET", &officer, crls.clone(), None).await;
+        assert_eq!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["crl_number"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        let fetched = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{crls}/2"))
+                    .header("authorization", format!("Bearer {officer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fetched.headers()["content-type"].to_str().unwrap(),
+            "application/pkix-crl"
+        );
+        assert_eq!(
+            fetched
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+            der
+        );
+
+        // The same key again returns the CRL's record without a new
+        // signature; unknown fields are refused.
+        let post_with_key = |path: String, body: serde_json::Value, key: String| {
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {officer}"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", key)
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+                )
+            }
+        };
+        let key = random_uuid().to_string();
+        let (status, fifth) = post_with_key(crls.clone(), json!({}), key.clone()).await;
+        assert_eq!(
+            (status, fifth["crl_number"].as_i64()),
+            (StatusCode::CREATED, Some(3))
+        );
+        let (status, again) = post_with_key(crls.clone(), json!({}), key).await;
+        assert_eq!(
+            (
+                status,
+                again["crl_number"].as_i64(),
+                again["crl_pem"].is_null()
+            ),
+            (StatusCode::OK, Some(3), true)
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                crls.clone(),
+                Some(json!({"crl_number": 9}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // A signer holding another key: ambiguous, recorded as such, never
+        // sent again under the same key, and the next CRL takes a new number.
+        start_signer(other_key);
+        let key = random_uuid().to_string();
+        let (status, uncertain) = post_with_key(crls.clone(), json!({}), key.clone()).await;
+        assert_eq!(
+            (
+                status,
+                uncertain["status"].as_str(),
+                uncertain["crl_number"].as_i64()
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                Some("RECONCILIATION_REQUIRED"),
+                Some(4)
+            )
+        );
+        start_signer(key_file.clone());
+        assert_eq!(
+            post_with_key(crls.clone(), json!({}), key).await.0,
+            StatusCode::CONFLICT
+        );
+        let owner = owner_url.clone();
+        let ca_for_owner = ca.clone();
+        let outcomes = query_db(owner, Arc::new(Semaphore::new(1)), move |db| {
+            db.query(
+                "SELECT string_agg(crl_number || ':' || outcome, ',' ORDER BY crl_number) \
+                 FROM crl_signing_intent WHERE ca_id = $1::text::uuid",
+                &[&ca_for_owner],
+            )
+            .map(|rows| rows[0].get::<_, String>(0))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            outcomes,
+            "1:PUBLISHED,2:PUBLISHED,3:PUBLISHED,4:RECONCILIATION_REQUIRED"
+        );
+
+        // A signer that answers with another key's signature: the API's own
+        // verification refuses the CRL, which is never stored.
+        let _ = std::fs::remove_file(&socket);
+        let liar_url = signer_url.clone();
+        let liar = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let lying = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let (stream, _) = liar.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["kind"].as_str(), Some("crl"));
+            let tbs = base64::engine::general_purpose::STANDARD
+                .decode(request["tbs_der_base64"].as_str().unwrap())
+                .unwrap();
+            // A faulty signer: it claims the intent like the real one, then
+            // signs with the wrong key.
+            let mut db = postgres::Client::connect(&liar_url, postgres::NoTls).unwrap();
+            db.execute(
+                "SELECT claim_lab_crl_intent($1::text::uuid, $2)",
+                &[
+                    &request["intent_id"].as_str().unwrap(),
+                    &<sha2::Sha256 as sha2::Digest>::digest(&tbs).to_vec(),
+                ],
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::random(&mut rand::rngs::OsRng).sign(&tbs);
+            writeln!(
+                &stream,
+                "{}",
+                json!({"signature_der_base64":
+                base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
+            )
+            .unwrap();
+        });
+        let (status, refused) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        lying.join().unwrap();
+        assert_eq!(
+            (
+                status,
+                refused["crl_number"].as_i64(),
+                refused["crl_pem"].is_null()
+            ),
+            (StatusCode::BAD_GATEWAY, Some(5), true)
+        );
+        start_signer(key_file);
+        let (status, next) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                next["crl_number"].as_i64(),
+                next["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(6), Some(1))
+        );
+        let (_, list) = send("GET", &officer, crls.clone(), None).await;
+        assert_eq!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["crl_number"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![6, 3, 2, 1]
+        );
+        let _ = std::fs::remove_dir_all(key_dir);
+    }
+
+    /// Suspension, reactivation and retirement against PostgreSQL
+    /// (migration 0028), with the seeded CA approvers of migration 0027.
+    #[tokio::test]
+    async fn activated_cas_are_suspended_then_reactivated_or_retired_with_two_signers() {
+        use trust_pki_core::lab_ca::EphemeralLabCa;
+        use x509_cert::der::{pem::LineEnding as PemLineEnding, Encode, EncodePem};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_TEST_DATABASE_URL"),
+            env::var("TRUST_API_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: CA suspension and retirement need TRUST_API_TEST_DATABASE_URL and TRUST_API_WRITER_TEST_DATABASE_URL; CI sets both");
+            return;
+        };
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"ca-operation-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("ca-operation-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let approver_1 = token(
+            "ca-approver-http-1",
+            json!(["trust-ca-approver", "trust-ca-administrator"]),
+        );
+        let approver_2 = token("ca-approver-http-2", json!(["trust-ca-approver"]));
+        // A profile approver: the CA approver role without the platform grant.
+        let profile_approver = token("approver-http-1", json!(["trust-ca-approver"]));
+        let key_1 = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let key_2 = SigningKey::from_slice(&[0x55; 32]).unwrap();
+        // The token role without the server-side platform grant.
+        let ungranted = token("operator", json!(["trust-ca-administrator"]));
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
+        });
+        let send = |method: &'static str,
+                    token: &str,
+                    path: String,
+                    body: Option<serde_json::Value>,
+                    key: Option<String>| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"));
+            if body.is_some() {
+                request = request.header("content-type", "application/json");
+            }
+            if let Some(key) = key {
+                request = request.header("idempotency-key", key);
+            }
+            let request = request
+                .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let key = || Some(random_uuid().to_string());
+        const CN: &str = "Sovereign Trust Lab Root";
+        let root = EphemeralLabCa::new(CN).unwrap().root_certificate().clone();
+        let fingerprint = <sha2::Sha256 as sha2::Digest>::digest(root.to_der().unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let (status, proposal) = send(
+            "POST",
+            &admin,
+            "/v1/ca-proposals".into(),
+            Some(json!({"display_name":CN, "policy_version":"v1", "suite_id":"ecdsa-p256-sha256"})),
+            key(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let ca = proposal["ca_id"].as_str().unwrap().to_owned();
+        let base = format!("/v1/ca-proposals/{ca}");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, base) = (send, base.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    format!("{base}/decision-claims"),
+                    Some(json!({"decision":decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        // Before the certificate, nothing can be decided.
+        assert_eq!(
+            claim_for(approver_2.clone(), "approve").await.0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/issuer-certificate"),
+                Some(json!({"certificate_pem": root.to_pem(PemLineEnding::LF).unwrap()})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CREATED
+        );
+
+        // Claim refusals: no approver role, the role without the grant.
+        assert_eq!(
+            claim_for(admin.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            claim_for(profile_approver.clone(), "approve").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let decide = |token: String,
+                      signer: SigningKey,
+                      claim: serde_json::Value,
+                      operation: Option<String>| {
+            let (send, base) = (send, base.clone());
+            async move {
+                let text = claim["claim"].as_str().unwrap().to_owned();
+                let signature: Signature = signer.sign(text.as_bytes());
+                send("POST", &token, format!("{base}/decisions"),
+                    Some(json!({"decision": claim["decision"], "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    operation).await
+            }
+        };
+
+        // The first approval, its replay, and a second decision by the same approver.
+        let (status, claim_1) = claim_for(approver_1.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(claim_1["claim"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("certificate_sha256={fingerprint}")));
+        let operation = key();
+        let (status, first) = decide(
+            approver_1.clone(),
+            key_1.clone(),
+            claim_1.clone(),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                first["lifecycle_status"].as_str(),
+                first["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("KEY_ATTESTED"), Some(1))
+        );
+        assert_eq!(
+            decide(approver_1.clone(), key_1.clone(), claim_1, operation)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            claim_for(approver_1.clone(), "reject").await.0,
+            StatusCode::CONFLICT
+        );
+
+        // A signature by another key, or over other text, is refused and leaves nothing.
+        let (_, claim_2) = claim_for(approver_2.clone(), "approve").await;
+        assert_eq!(
+            decide(approver_2.clone(), key_1.clone(), claim_2.clone(), key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let mut altered = claim_2.clone();
+        altered["claim"] = json!(claim_2["claim"]
+            .as_str()
+            .unwrap()
+            .replace("decision=approve", "decision=reject"));
+        assert_eq!(
+            decide(approver_2.clone(), key_2.clone(), altered, key())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Activation before approval is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, second) = decide(approver_2.clone(), key_2.clone(), claim_2, key()).await;
+        assert_eq!(
+            (
+                status,
+                second["lifecycle_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("APPROVED"), Some(2))
+        );
+
+        // Activation: an approver holding the administrator role, another
+        // digest, unknown fields; then the activation and its replay.
+        let activation = |digest: String| Some(json!({"certificate_sha256": digest}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation("0".repeat(64)),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                Some(json!({"certificate_sha256": fingerprint, "suite_id": "ecdsa-p384-sha384"})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &ungranted,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let operation = key();
+        let (status, active) = send(
+            "POST",
+            &admin,
+            format!("{base}/activation"),
+            activation(fingerprint.clone()),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                active["lifecycle_status"].as_str(),
+                active["suite_id"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("ACTIVE"),
+                Some("ecdsa-p256-sha256")
+            )
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint.clone()),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/activation"),
+                activation(fingerprint),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // Suspension: only administrators, only from ACTIVE.
+        let reason = |text: &str| Some(json!({"reason": text}));
+        assert_eq!(
+            send(
+                "POST",
+                &approver_2,
+                format!("{base}/suspension"),
+                reason("x"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason(" padded"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let operation = key();
+        let (status, suspended) = send(
+            "POST",
+            &admin,
+            format!("{base}/suspension"),
+            reason("key review"),
+            operation.clone(),
+        )
+        .await;
+        assert_eq!(
+            (status, suspended["operational_state"].as_str()),
+            (StatusCode::CREATED, Some("SUSPENDED"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("key review"),
+                operation
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("again"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+
+        // A change is requested, approved by two signers, then applied.
+        let changes = format!("{base}/change-requests");
+        let change =
+            |action: &str| Some(json!({"action": action, "reason": format!("lab {action}")}));
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("suspend"), key())
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, requested) =
+            send("POST", &admin, changes.clone(), change("reactivate"), key()).await;
+        assert_eq!(
+            (status, requested["from_state"].as_str()),
+            (StatusCode::CREATED, Some("SUSPENDED"))
+        );
+        let request = format!("{changes}/{}", requested["request_id"].as_str().unwrap());
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("retire"), key())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let approve = |token: String, signer: SigningKey, request: String| async move {
+            let (status, claim) = send(
+                "POST",
+                &token,
+                format!("{request}/decision-claims"),
+                Some(json!({"decision":"approve"})),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let text = claim["claim"].as_str().unwrap().to_owned();
+            assert!(text.starts_with("trust-platform/ca-change-decision/v1;decision=approve;"));
+            let signature: Signature = signer.sign(text.as_bytes());
+            send("POST", &token, format!("{request}/decisions"),
+                    Some(json!({"decision":"approve", "issued_at": claim["issued_at"],
+                        "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})),
+                    Some(random_uuid().to_string())).await
+        };
+        // The requester cannot decide; another key's signature is refused.
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{request}/decision-claims"),
+                Some(json!({"decision":"approve"})),
+                None
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            approve(approver_1.clone(), key_2.clone(), request.clone())
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let (status, first) = approve(approver_1.clone(), key_1.clone(), request.clone()).await;
+        assert_eq!(
+            (status, first["request_status"].as_str()),
+            (StatusCode::CREATED, Some("OPEN"))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{request}/application"),
+                Some(json!({})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (_, second) = approve(approver_2.clone(), key_2.clone(), request.clone()).await;
+        assert_eq!(
+            (
+                second["request_status"].as_str(),
+                second["approval_count"].as_i64()
+            ),
+            (Some("APPROVED"), Some(2))
+        );
+        // An approver holding the administrator role cannot apply it.
+        assert_eq!(
+            send(
+                "POST",
+                &approver_1,
+                format!("{request}/application"),
+                Some(json!({})),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, applied) = send(
+            "POST",
+            &admin,
+            format!("{request}/application"),
+            Some(json!({})),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (status, applied["operational_state"].as_str()),
+            (StatusCode::CREATED, Some("ACTIVE"))
+        );
+
+        // Retirement from ACTIVE, then nothing more.
+        let (_, requested) = send("POST", &admin, changes.clone(), change("retire"), key()).await;
+        let request = format!("{changes}/{}", requested["request_id"].as_str().unwrap());
+        approve(approver_1.clone(), key_1.clone(), request.clone()).await;
+        approve(approver_2.clone(), key_2.clone(), request.clone()).await;
+        let (status, retired) = send(
+            "POST",
+            &admin,
+            format!("{request}/application"),
+            Some(json!({})),
+            key(),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                retired["operational_state"].as_str(),
+                retired["retired_revisions"].as_i64()
+            ),
+            (StatusCode::CREATED, Some("RETIRED"), Some(0))
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &admin,
+                format!("{base}/suspension"),
+                reason("x"),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            send("POST", &admin, changes.clone(), change("reactivate"), key())
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        let (_, listed) = send("GET", &approver_2, "/v1/ca-proposals".into(), None, None).await;
+        let item = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ca_id"] == ca.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(item["lifecycle_status"], "RETIRED");
+        assert!(item["change_request_id"].is_null() && item["state_changed_at"].is_string());
+    }
+
+    /// A compromised writer path records a certificate the API would refuse
+    /// (the database does not parse X.509): activation must still refuse it.
+    /// It leaves that forged record behind, which lab_verify_ca_lifecycle
+    /// reports, so it runs only on a separate disposable database seeded like
+    /// the API test database: set TRUST_API_FORGERY_TEST_DATABASE_URL (reader
+    /// login) and TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL.
+    #[tokio::test]
+    async fn activation_reverifies_a_certificate_recorded_without_the_api() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let (Ok(reader_url), Ok(writer_url)) = (
+            env::var("TRUST_API_FORGERY_TEST_DATABASE_URL"),
+            env::var("TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL"),
+        ) else {
+            eprintln!("SKIP: forged-certificate activation needs TRUST_API_FORGERY_TEST_DATABASE_URL and TRUST_API_FORGERY_WRITER_TEST_DATABASE_URL (a separate disposable database); not set in CI");
+            return;
+        };
+        // The writer login, used directly as a compromised API would: an
+        // RSA root (refused by the API's verifier) recorded as a P-256 one.
+        let pem = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ca-root/openssl-rsa-root.crt"
+        ))
+        .unwrap();
+        let der = ca_certificate::certificate_der_from_pem(&pem).unwrap();
+        let fingerprint: String = <sha2::Sha256 as sha2::Digest>::digest(&der)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let name = "Trust Lab RSA Root".to_string();
+        let ca = query_db(writer_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            let op1 = random_uuid().to_string();
+            let op2 = random_uuid().to_string();
+            let spki: Vec<u8> = <sha2::Sha256 as sha2::Digest>::digest(op2.as_bytes()).to_vec();
+            let ca: String = db
+                .query_one(
+                    "SELECT ca_id::text FROM propose_ca_lab('https://issuer.example.test', 'ca-admin-http', \
+                     NULL, $1, 'v1', 'ecdsa-p256-sha256', $2::text::uuid, decode(repeat('01', 32), 'hex'))",
+                    &[&name, &op1],
+                )?
+                .get(0);
+            db.execute(
+                "SELECT register_ca_issuer_certificate_lab('https://issuer.example.test', 'ca-admin-http', \
+                 $1::text::uuid, $2, $3, $4, now() - interval '1 hour', now() + interval '1 year', 'p256', \
+                 $5::text::uuid, decode(repeat('02', 32), 'hex'))",
+                &[&ca, &der, &spki, &name, &op2],
+            )?;
+            Ok(ca)
+        })
+        .await
+        .unwrap();
+        let private = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private.to_public_key();
+        let jwks = serde_json::from_value(json!({"keys":[{
+            "kty":"RSA", "use":"sig", "alg":"RS256", "kid":"forgery-test",
+            "n":URL_SAFE_NO_PAD.encode(public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(public.e().to_bytes_be())
+        }]}))
+        .unwrap();
+        let verifier = OidcVerifier::from_jwks(
+            "https://issuer.example.test",
+            "trust-api",
+            "trust-console",
+            jwks,
+        )
+        .unwrap();
+        let signer =
+            EncodingKey::from_rsa_pem(private.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes())
+                .unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.typ = Some("at+jwt".into());
+        header.kid = Some("forgery-test".into());
+        let token = |sub: &str, roles: serde_json::Value| {
+            let now = jsonwebtoken::get_current_timestamp();
+            encode(
+                &header,
+                &json!({"iss":"https://issuer.example.test", "aud":"trust-api", "sub":sub,
+                        "iat":now, "azp":"trust-console", "exp":now+120, "roles":roles, "ca_ids":[]}),
+                &signer,
+            )
+            .unwrap()
+        };
+        let app = router(AppState {
+            verifier,
+            database_url: reader_url,
+            writer_database_url: Some(writer_url),
+            database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
+            http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
+            readiness_slots: Arc::new(Semaphore::new(1)),
+            readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
+        });
+        let post = |token: String, path: String, body: serde_json::Value, key: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json");
+            if key {
+                request = request.header("idempotency-key", random_uuid().to_string());
+            }
+            let request = request.body(Body::from(body.to_string())).unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+                )
+            }
+        };
+        let base = format!("/v1/ca-proposals/{ca}");
+        for (subject, scalar) in [("ca-approver-http-1", 0x44u8), ("ca-approver-http-2", 0x55)] {
+            let approver = token(subject, json!(["trust-ca-approver"]));
+            let (_, claim) = post(
+                approver.clone(),
+                format!("{base}/decision-claims"),
+                json!({"decision":"approve"}),
+                false,
+            )
+            .await;
+            let text = claim["claim"].as_str().unwrap().to_owned();
+            let signature: Signature = SigningKey::from_slice(&[scalar; 32])
+                .unwrap()
+                .sign(text.as_bytes());
+            let (status, _) = post(approver, format!("{base}/decisions"),
+                json!({"decision":"approve", "issued_at":claim["issued_at"],
+                       "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())}),
+                true).await;
+            assert_eq!(status, StatusCode::CREATED);
+        }
+        let admin = token("ca-admin-http", json!(["trust-ca-administrator"]));
+        let (status, _) = post(
+            admin,
+            format!("{base}/activation"),
+            json!({"certificate_sha256": fingerprint}),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    fn hex_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn lab_spki(key: &p256::SecretKey) -> x509_cert::spki::SubjectPublicKeyInfoOwned {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        x509_cert::spki::SubjectPublicKeyInfoOwned {
+            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                oid: x509_cert::spki::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
+                parameters: Some(x509_cert::der::Any::from(
+                    x509_cert::spki::ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7"),
+                )),
+            },
+            subject_public_key: x509_cert::der::asn1::BitString::from_bytes(
+                key.public_key().to_encoded_point(false).as_bytes(),
+            )
+            .unwrap(),
+        }
+    }
+
+    /// A root like scripts/lab/create-lab-root.sh makes, for a key the test holds.
+    fn lab_root(cn: &str, key: &p256::SecretKey) -> x509_cert::Certificate {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use x509_cert::der::{asn1::OctetString, Encode};
+        use x509_cert::ext::{
+            pkix::{BasicConstraints, KeyUsage, KeyUsages},
+            Extension,
+        };
+        let ecdsa = x509_cert::spki::AlgorithmIdentifierOwned {
+            oid: x509_cert::spki::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2"),
+            parameters: None,
+        };
+        let name: x509_cert::name::Name = format!("CN={cn}").parse().unwrap();
+        let spki = lab_spki(key);
+        let key_id = {
+            use sha2::Digest;
+            let hash = sha2::Sha256::digest(spki.subject_public_key.as_bytes().unwrap());
+            OctetString::new(&hash[..20]).unwrap().to_der().unwrap()
+        };
+        let extension = |oid: &str, critical: bool, der: Vec<u8>| Extension {
+            extn_id: x509_cert::spki::ObjectIdentifier::new_unwrap(oid),
+            critical,
+            extn_value: OctetString::new(der).unwrap(),
+        };
+        let tbs = x509_cert::TbsCertificate {
+            version: x509_cert::Version::V3,
+            serial_number: x509_cert::serial_number::SerialNumber::new(&[0x01]).unwrap(),
+            signature: ecdsa.clone(),
+            issuer: name.clone(),
+            validity: x509_cert::time::Validity::from_now(std::time::Duration::from_secs(
+                365 * 86400,
+            ))
+            .unwrap(),
+            subject: name,
+            subject_public_key_info: spki,
+            issuer_unique_id: None,
+            subject_unique_id: None,
+            extensions: Some(vec![
+                extension(
+                    "2.5.29.19",
+                    true,
+                    BasicConstraints {
+                        ca: true,
+                        path_len_constraint: None,
+                    }
+                    .to_der()
+                    .unwrap(),
+                ),
+                extension(
+                    "2.5.29.15",
+                    true,
+                    KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign)
+                        .to_der()
+                        .unwrap(),
+                ),
+                extension("2.5.29.14", false, key_id),
+            ]),
+        };
+        let signature: Signature = SigningKey::from(key.clone()).sign(&tbs.to_der().unwrap());
+        x509_cert::Certificate {
+            tbs_certificate: tbs,
+            signature_algorithm: ecdsa,
+            signature: x509_cert::der::asn1::BitString::from_bytes(signature.to_der().as_bytes())
+                .unwrap(),
+        }
+    }
+
+    /// A PKCS#10 CSR for `cn` signed by `key`, as OpenSSL makes one.
+    fn lab_csr(cn: &str, key: &p256::SecretKey) -> String {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        use x509_cert::der::{Encode, EncodePem};
+        let info = x509_cert::request::CertReqInfo {
+            version: x509_cert::request::Version::V1,
+            subject: format!("CN={cn}").parse().unwrap(),
+            public_key: lab_spki(key),
+            attributes: Default::default(),
+        };
+        let signature: Signature = SigningKey::from(key.clone()).sign(&info.to_der().unwrap());
+        x509_cert::request::CertReq {
+            info,
+            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                oid: x509_cert::spki::ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2"),
+                parameters: None,
+            },
+            signature: x509_cert::der::asn1::BitString::from_bytes(signature.to_der().as_bytes())
+                .unwrap(),
+        }
+        .to_pem(x509_cert::der::pem::LineEnding::LF)
+        .unwrap()
+    }
+
     /// A random (version 4) UUID from the test RNG; the crate builds uuid
     /// without its `v4` feature.
     fn random_uuid() -> uuid::Uuid {
@@ -2633,6 +5914,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         });
         let draft_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/profile-drafts";
         let (status, cursor, first) = history_page(&app, &token, draft_base).await;
@@ -3277,6 +6559,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         });
         let (status, cursor, first) = history_page(&app, &token, "/v1/cas").await;
         assert_eq!(status, StatusCode::OK);
@@ -3422,6 +6705,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         });
         // The expected order is one unsliced statement through the same views,
         // as the reader login (the full scan the slices replace).
@@ -3489,6 +6773,7 @@ mod tests {
             display_name: "\n".repeat(255),
             policy_version: "v1".into(),
             created_at: "2026-10-01T12:00:00.000Z".into(),
+            operational_state: None,
         };
         let cursor = encode_ca_cursor(&ca);
         assert!(cursor.len() <= 4096);
@@ -3641,6 +6926,7 @@ mod tests {
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
         };
         let app = router(state.clone());
         let held_http = state
@@ -3727,6 +7013,7 @@ mod tests {
             database_url:
                 "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing".into(),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            signer_socket: None,
             ..state.clone()
         });
         let liveness = unavailable_app

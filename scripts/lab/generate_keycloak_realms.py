@@ -9,10 +9,17 @@ CONSOLE = "http://127.0.0.1:5173"
 TRUST_ROLES = {
     "trust-ca-reader": "Read the CAs, certificates, audit events and profile drafts granted to the user.",
     "trust-profile-editor": "Record and submit certificate-profile draft revisions (with a profile-editor grant for the CA).",
-    "trust-policy-approver": "Reserved: approve an exact profile revision. No API route accepts it yet.",
-    "trust-ca-operator": "Reserved: request activation of an approved profile. No API route accepts it yet.",
+    "trust-policy-approver": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA).",
+    "trust-ca-operator": "Activate or retire an approved profile revision (with a ca-operator grant for the CA).",
+    "trust-ca-administrator": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant).",
+    "trust-ca-approver": "Approve or reject a key-attested CA proposal, or a CA reactivation or retirement, with a registered key (with a ca-approver platform grant).",
+    "trust-certificate-requester": "Submit certificate applications for a CA's active profiles (with a certificate-requester grant for the CA).",
+    "trust-registration-officer": "Approve or reject certificate applications of others (with a registration-officer grant for the CA).",
 }
 def uid(n): return f"7c1a0000-0000-4000-8000-{n:012d}"
+# The laboratory issuing CA (ADR-0016): proposed with this identifier through
+# the API so that token CA scopes can name it before it exists.
+LAB_ISSUING_CA = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 def mappers(access_only=True):
     common = {"access.token.claim": "true", "id.token.claim": "false",
               "userinfo.token.claim": "false", "introspection.token.claim": "true"}
@@ -73,13 +80,18 @@ def realm(name, display, users, clients, scope_roles):
 lab_users = [
     user(1, "lab-reader", "TRUST_LAB_PW_READER", ["trust-ca-reader"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
     user(2, "lab-editor", "TRUST_LAB_PW_EDITOR", ["trust-profile-editor"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
-    user(3, "lab-approver-1", "TRUST_LAB_PW_APPROVER_1", ["trust-ca-reader", "trust-policy-approver"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
-    user(4, "lab-approver-2", "TRUST_LAB_PW_APPROVER_2", ["trust-ca-reader", "trust-policy-approver"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
-    user(5, "lab-operator", "TRUST_LAB_PW_OPERATOR", ["trust-ca-reader", "trust-ca-operator"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
+    user(3, "lab-approver-1", "TRUST_LAB_PW_APPROVER_1", ["trust-ca-reader", "trust-policy-approver"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", LAB_ISSUING_CA]),
+    user(4, "lab-approver-2", "TRUST_LAB_PW_APPROVER_2", ["trust-ca-reader", "trust-policy-approver"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", LAB_ISSUING_CA]),
+    user(5, "lab-operator", "TRUST_LAB_PW_OPERATOR", ["trust-ca-reader", "trust-ca-operator"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", LAB_ISSUING_CA]),
     user(6, "lab-outsider", "TRUST_LAB_PW_OUTSIDER", [], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
     user(7, "lab-disabled", "TRUST_LAB_PW_DISABLED", ["trust-ca-reader"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"], enabled=False),
     user(8, "lab-other-ca", "TRUST_LAB_PW_OTHER_CA", ["trust-ca-reader"], ["ffffffff-ffff-4fff-8fff-ffffffffffff"]),
-    user(11, "lab-author", "TRUST_LAB_PW_AUTHOR", ["trust-ca-reader", "trust-profile-editor"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]),
+    user(11, "lab-author", "TRUST_LAB_PW_AUTHOR", ["trust-ca-reader", "trust-profile-editor"], ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", LAB_ISSUING_CA]),
+    user(12, "lab-ca-admin", "TRUST_LAB_PW_CA_ADMIN", ["trust-ca-administrator"], []),
+    user(13, "lab-ca-approver-1", "TRUST_LAB_PW_CA_APPROVER_1", ["trust-ca-approver"], []),
+    user(14, "lab-ca-approver-2", "TRUST_LAB_PW_CA_APPROVER_2", ["trust-ca-approver"], []),
+    user(15, "lab-requester", "TRUST_LAB_PW_REQUESTER", ["trust-ca-reader", "trust-certificate-requester"], [LAB_ISSUING_CA]),
+    user(16, "lab-ra-officer", "TRUST_LAB_PW_RA_OFFICER", ["trust-ca-reader", "trust-registration-officer"], [LAB_ISSUING_CA]),
     {"id": uid(9), "username": "service-account-trust-lab-workload", "enabled": True,
      "serviceAccountClientId": "trust-lab-workload",
      "attributes": {"ca_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]},

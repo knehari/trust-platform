@@ -4,6 +4,8 @@ export interface CertificateAuthority {
   display_name: string;
   policy_version: string;
   created_at: string;
+  /** ACTIVE, SUSPENDED or RETIRED for a CA activated through the CA lifecycle; null for an owner-created CA (ADR-0015). */
+  operational_state?: 'ACTIVE' | 'SUSPENDED' | 'RETIRED' | null;
 }
 
 export interface Certificate {

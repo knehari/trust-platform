@@ -42,11 +42,27 @@
       },
       {
         "name": "trust-policy-approver",
-        "description": "Reserved: approve an exact profile revision. No API route accepts it yet."
+        "description": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA)."
       },
       {
         "name": "trust-ca-operator",
-        "description": "Reserved: request activation of an approved profile. No API route accepts it yet."
+        "description": "Activate or retire an approved profile revision (with a ca-operator grant for the CA)."
+      },
+      {
+        "name": "trust-ca-administrator",
+        "description": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant)."
+      },
+      {
+        "name": "trust-ca-approver",
+        "description": "Approve or reject a key-attested CA proposal, or a CA reactivation or retirement, with a registered key (with a ca-approver platform grant)."
+      },
+      {
+        "name": "trust-certificate-requester",
+        "description": "Submit certificate applications for a CA's active profiles (with a certificate-requester grant for the CA)."
+      },
+      {
+        "name": "trust-registration-officer",
+        "description": "Approve or reject certificate applications of others (with a registration-officer grant for the CA)."
       }
     ]
   },
@@ -200,7 +216,11 @@
         "trust-ca-reader",
         "trust-profile-editor",
         "trust-policy-approver",
-        "trust-ca-operator"
+        "trust-ca-operator",
+        "trust-ca-administrator",
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     },
     {
@@ -209,7 +229,11 @@
         "trust-ca-reader",
         "trust-profile-editor",
         "trust-policy-approver",
-        "trust-ca-operator"
+        "trust-ca-operator",
+        "trust-ca-administrator",
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     }
   ],
@@ -272,7 +296,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -297,7 +322,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -322,7 +348,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -417,7 +444,8 @@
       "emailVerified": true,
       "attributes": {
         "ca_ids": [
-          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+          "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         ]
       },
       "credentials": [
@@ -430,6 +458,122 @@
       "realmRoles": [
         "trust-ca-reader",
         "trust-profile-editor"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000012",
+      "username": "lab-ca-admin",
+      "enabled": true,
+      "firstName": "lab-ca-admin",
+      "lastName": "Laboratory",
+      "email": "lab-ca-admin@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_ADMIN}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-administrator"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000013",
+      "username": "lab-ca-approver-1",
+      "enabled": true,
+      "firstName": "lab-ca-approver-1",
+      "lastName": "Laboratory",
+      "email": "lab-ca-approver-1@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_APPROVER_1}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000014",
+      "username": "lab-ca-approver-2",
+      "enabled": true,
+      "firstName": "lab-ca-approver-2",
+      "lastName": "Laboratory",
+      "email": "lab-ca-approver-2@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": []
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_CA_APPROVER_2}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-approver"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000015",
+      "username": "lab-requester",
+      "enabled": true,
+      "firstName": "lab-requester",
+      "lastName": "Laboratory",
+      "email": "lab-requester@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_REQUESTER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-certificate-requester"
+      ]
+    },
+    {
+      "id": "7c1a0000-0000-4000-8000-000000000016",
+      "username": "lab-ra-officer",
+      "enabled": true,
+      "firstName": "lab-ra-officer",
+      "lastName": "Laboratory",
+      "email": "lab-ra-officer@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_RA_OFFICER}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-registration-officer"
       ]
     },
     {

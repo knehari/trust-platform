@@ -85,6 +85,49 @@ pub(crate) async fn write_context(
         return Err(StatusCode::FORBIDDEN);
     }
     let ca_id = scoped_ca_id(raw_ca, &claims)?;
+    let (writer_url, operation) = request_checks(state, headers, body, idempotent)?;
+    Ok(WriteContext {
+        issuer: claims.iss,
+        subject: claims.sub,
+        ca_id,
+        operation,
+        request_sha256: Sha256::digest(body).to_vec(),
+        writer_url,
+    })
+}
+
+/// Writes that are not scoped to one CA (CA proposals, ADR-0013 and
+/// ADR-0014): the token role, then the same request checks as
+/// `write_context`. `ca_id` is empty.
+pub(crate) async fn platform_write_context(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: &Bytes,
+    required_role: &str,
+    idempotent: bool,
+) -> Result<WriteContext, StatusCode> {
+    let claims = authenticate(headers, &state.verifier).await?;
+    if !claims.roles.iter().any(|role| role == required_role) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let (writer_url, operation) = request_checks(state, headers, body, idempotent)?;
+    Ok(WriteContext {
+        issuer: claims.iss,
+        subject: claims.sub,
+        ca_id: String::new(),
+        operation,
+        request_sha256: Sha256::digest(body).to_vec(),
+        writer_url,
+    })
+}
+
+/// The writer login, content type, body size and idempotency key.
+fn request_checks(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: &Bytes,
+    idempotent: bool,
+) -> Result<(String, String), StatusCode> {
     let writer_url = state
         .writer_database_url
         .clone()
@@ -114,14 +157,7 @@ pub(crate) async fn write_context(
     } else {
         String::new()
     };
-    Ok(WriteContext {
-        issuer: claims.iss,
-        subject: claims.sub,
-        ca_id,
-        operation,
-        request_sha256: Sha256::digest(body).to_vec(),
-        writer_url,
-    })
+    Ok((writer_url, operation))
 }
 
 /// Maps the lifecycle functions' SQLSTATEs (migrations 0022–0023) to HTTP.
@@ -398,7 +434,14 @@ pub(crate) fn restricted_writer_role(db: &mut postgres::Client) -> Result<bool, 
              AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) \
          AND management_profile_lifecycle_version() = 1 \
          AND management_profile_decision_version() = 1 \
-         AND management_profile_activation_version() = 1",
+         AND management_profile_activation_version() = 1 \
+         AND management_ca_proposal_version() = 1 \
+         AND management_ca_activation_version() = 1 \
+         AND management_ca_operation_version() = 1 \
+         AND management_certificate_application_version() = 1 \
+         AND management_application_issuance_version() = 1 \
+         AND management_revocation_crl_version() = 1 \
+         AND management_crl_publication_version() = 1",
         &[],
     )
     .map(|row| row.get::<_, bool>(0))

@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012–0025.
+//! Transactional laboratory runner for management migrations 0012–0032.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, NoTls, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 14] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 21] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -152,6 +152,101 @@ const MIGRATIONS: [(&str, &str, &[&str]); 14] = [
         )),
         &[],
     ),
+    (
+        "0026_ca_proposal",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0026_ca_proposal.sql"
+        )),
+        &[
+            "public.management_platform_grant",
+            "public.ca_lifecycle_event",
+            "public.ca_proposal",
+            "public.ca_issuer_certificate",
+            "public.management_ca_proposal",
+        ],
+    ),
+    (
+        "0027_ca_approval_activation",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0027_ca_approval_activation.sql"
+        )),
+        &[
+            "public.ca_approver_key",
+            "public.ca_decision",
+            "public.ca_activation",
+        ],
+    ),
+    (
+        "0028_ca_suspension_retirement",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0028_ca_suspension_retirement.sql"
+        )),
+        &[
+            "public.ca_operational_state",
+            "public.ca_state_change",
+            "public.ca_change_request",
+            "public.ca_change_decision",
+            "public.ca_change_application",
+        ],
+    ),
+    (
+        "0029_certificate_application",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0029_certificate_application.sql"
+        )),
+        &[
+            "public.certificate_application_event",
+            "public.certificate_application",
+            "public.certificate_application_decision",
+            "public.management_certificate_application",
+        ],
+    ),
+    (
+        "0030_application_issuance",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0030_application_issuance.sql"
+        )),
+        &[
+            "public.certificate_application_issuance",
+            "public.lab_signer_claim",
+            "public.lab_signer_intent",
+        ],
+    ),
+    (
+        "0031_revocation_crl",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0031_revocation_crl.sql"
+        )),
+        &[
+            "public.certificate_revocation_request",
+            "public.certificate_revocation_decision",
+            "public.crl_signing_intent",
+            "public.lab_signer_crl_claim",
+            "public.crl_document",
+            "public.lab_signer_crl_intent",
+            "public.lab_signer_crl_entry",
+            "public.management_certificate_crl",
+        ],
+    ),
+    (
+        "0032_crl_publication",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0032_crl_publication.sql"
+        )),
+        &[
+            "public.ca_crl_distribution_point",
+            "public.signing_intent_crl_distribution_point",
+            "public.public_crl_latest",
+            "public.management_crl_status",
+        ],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -166,7 +261,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0025 recorded and current");
+    println!("PASS: management migrations 0012–0032 recorded and current");
     Ok(())
 }
 
@@ -296,6 +391,69 @@ fn schema_present(
             &[],
         )?;
         return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all));
+    }
+    if version == "0032_crl_publication" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_crl_publication_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0031_revocation_crl" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_revocation_crl_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0030_application_issuance" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_application_issuance_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0029_certificate_application" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_certificate_application_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0028_ca_suspension_retirement" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_ca_operation_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0027_ca_approval_activation" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_ca_activation_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
+    }
+    if version == "0026_ca_proposal" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_ca_proposal_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
     }
     if version == "0024_profile_revision_activation" {
         let present: bool = tx
