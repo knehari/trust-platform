@@ -2,6 +2,7 @@
 // dismissed, status badges with consistent colours, and tabs. Display only:
 // nothing here decides authorization; the API does.
 import { useEffect, useState, type ReactNode } from 'react';
+import { CATEGORY_LABELS, describeEvent, describeOutcome, humanizeStatus, relativeTime, type EventCategory } from './labels';
 
 const ICON_PATHS = {
   overview: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
@@ -26,6 +27,9 @@ const ICON_PATHS = {
   key: 'M14 4a6 6 0 11-4.7 9.7L4 19v1h3v-2h2v-2h2l1.3-1.3A6 6 0 0114 4zM16 8v.5',
   publish: 'M12 16V4M7 9l5-5 5 5M5 14v6h14v-6',
   filter: 'M4 5h16l-6 8v6l-4-2v-4z',
+  policy: 'M6 3h12v18H6zM9 12l2 2 4-4M9 7h6',
+  arrow: 'M5 12h14M13 6l6 6-6 6',
+  command: 'M9 6a3 3 0 10-3 3h12a3 3 0 10-3-3v12a3 3 0 103-3H6a3 3 0 103 3z',
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;
@@ -55,15 +59,59 @@ export function Notice({ tone, children, onDismiss, action }: {
 }
 
 const STATUS_TONES: Record<string, string> = {
-  ACTIVE: 'good', APPROVED: 'good', ISSUED: 'good', SIGNED: 'good', PUBLISHED: 'good', allow: 'good', KEY_ATTESTED: 'info',
-  SUBMITTED: 'info', PROPOSED: 'info', DRAFT: 'neutral', ISSUING: 'info', REVOCATION_REQUESTED: 'warn',
-  SUSPENDED: 'warn', RECONCILIATION_REQUIRED: 'warn', SUPERSEDED: 'neutral', persisted: 'neutral',
-  REJECTED: 'bad', REVOKED: 'bad', RETIRED: 'neutral', deny: 'bad', EXPIRED: 'bad',
-  CURRENT: 'good', RENEWAL_DUE: 'warn', NO_CRL: 'neutral',
+  ACTIVE: 'good', APPROVED: 'good', ISSUED: 'good', SIGNED: 'good', PUBLISHED: 'good', CURRENT: 'good', allow: 'good',
+  accepted: 'good', persisted: 'good', created: 'good', published: 'good', signed: 'good',
+  KEY_ATTESTED: 'info', SUBMITTED: 'info', PROPOSED: 'info', ISSUING: 'info', SIGNING: 'info', RECEIVED: 'info',
+  CSR_VALIDATED: 'info', AUTHORIZED: 'info', SERIAL_RESERVED: 'info',
+  REVOCATION_REQUESTED: 'warn', SUSPENDED: 'warn', RECONCILIATION_REQUIRED: 'warn', RENEWAL_DUE: 'warn',
+  REJECTED: 'bad', REVOKED: 'bad', EXPIRED: 'bad', FAILED: 'bad', deny: 'bad', failed: 'bad', rejected: 'bad',
+  DRAFT: 'neutral', SUPERSEDED: 'neutral', RETIRED: 'neutral', NO_CRL: 'neutral',
 };
 
+/** A status as words with a coloured dot; the raw code is kept as a tooltip and data attribute. */
 export function StatusBadge({ status }: { status: string }) {
-  return <span className={`ui-badge ui-badge-${STATUS_TONES[status] ?? 'neutral'}`}>{status}</span>;
+  return <span className={`ui-badge ui-badge-${STATUS_TONES[status] ?? 'neutral'}`} title={status} data-status={status}>
+    <span className="ui-badge-dot" aria-hidden="true" />{humanizeStatus(status)}
+  </span>;
+}
+
+const CATEGORY_ICONS: Record<EventCategory, IconName> = {
+  certificate: 'certificate', request: 'request', signing: 'key', crl: 'revocation',
+  profile: 'profile', authority: 'authority', policy: 'policy', other: 'info',
+};
+
+/** An audit event type as a label with its category; the code is shown beneath. */
+export function EventLabel({ type }: { type: string }) {
+  const event = describeEvent(type);
+  return <span className="ui-event">
+    <span className={`ui-event-icon ui-cat-${event.category}`} title={CATEGORY_LABELS[event.category]}><Icon name={CATEGORY_ICONS[event.category]} size={15} /></span>
+    <span className="ui-event-text"><span className="ui-event-label">{event.label}</span><code className="ui-event-code">{event.code}</code></span>
+  </span>;
+}
+
+/** The audit decision column, whatever its shape, as badges. */
+export function OutcomeBadge({ decision }: { decision: string }) {
+  const outcome = describeOutcome(decision);
+  switch (outcome.kind) {
+    case 'decision': return <StatusBadge status={outcome.status} />;
+    case 'result': return <StatusBadge status={outcome.status} />;
+    case 'transition': return <span className="ui-transition" aria-label={`${humanizeStatus(outcome.from)} to ${humanizeStatus(outcome.to)}`}>
+      <StatusBadge status={outcome.from} /><Icon name="arrow" size={14} /><StatusBadge status={outcome.to} /></span>;
+    case 'reference': return <span className="ui-transition"><StatusBadge status={outcome.status} /><code className="ui-ref" title={outcome.reference}>{outcome.reference.length > 13 ? `${outcome.reference.slice(0, 8)}…` : outcome.reference}</code></span>;
+    default: return <span className="ui-sub">{outcome.text}</span>;
+  }
+}
+
+/** A small label with a tone, for values that are not workflow statuses. */
+export function Tag({ tone = 'neutral', children, title }: { tone?: 'good' | 'info' | 'warn' | 'bad' | 'neutral'; children: ReactNode; title?: string }) {
+  return <span className={`ui-badge ui-badge-soft ui-badge-${tone}`} title={title}><span className="ui-badge-dot" aria-hidden="true" />{children}</span>;
+}
+
+/** A relative time that shows the exact local time on hover. */
+export function TimeAgo({ value, now }: { value: string; now: Date }) {
+  const date = new Date(value);
+  const exact = Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
+  return <time dateTime={value} title={exact} className="ui-time"><span>{relativeTime(value, now)}</span><small>{exact}</small></time>;
 }
 
 export function Tabs<T extends string>({ label, tabs, value, onChange }: {

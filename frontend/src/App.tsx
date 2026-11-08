@@ -17,11 +17,14 @@ import { canonicalSerialHex } from './serial';
 import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
+import { CommandPalette, type PaletteItem } from './CommandPalette';
 import { RequestsPanel } from './RequestsPanel';
 import { CrlPanel } from './CrlPanel';
 import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CA_READER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
 import { addWithin, headerState, toggleOne, toggleVisible } from './selection';
-import { Disclosure, HeaderCheckbox, Icon, Notice, StatusBadge, type IconName } from './ui';
+import { Disclosure, EventLabel, HeaderCheckbox, Icon, Notice, OutcomeBadge, StatusBadge, Tag, TimeAgo, type IconName } from './ui';
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform || navigator.userAgent);
 
 function displayDate(value: string | null): string {
   if (!value) return '—';
@@ -116,6 +119,14 @@ export function App() {
   const [selectedCertificateIds, setSelectedCertificateIds] = useState<string[]>([]);
   const [selectedAuditIds, setSelectedAuditIds] = useState<string[]>([]);
   const [validityClock, setValidityClock] = useState(() => Date.now());
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(value => !value); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setValidityClock(Date.now()), 60_000);
@@ -741,6 +752,10 @@ export function App() {
     { id: 'revocation', label: 'Revocation & CRLs', icon: 'revocation', show: isReader },
     { id: 'audit', label: 'Audit trail', icon: 'audit', show: isReader },
   ];
+  const paletteItems: PaletteItem[] = [
+    ...navItems.filter(item => item.show).map(item => ({ id: `section-${item.id}`, group: 'Sections', label: item.label, icon: item.icon, hint: section === item.id ? 'Current' : undefined, run: () => setSection(item.id) })),
+    ...cas.map(ca => ({ id: `ca-${ca.ca_id}`, group: 'Authorities', label: ca.display_name, icon: 'authority' as IconName, hint: `${shortId(ca.ca_id)} · ${ca.policy_version}`, run: () => { setSelectedCaId(ca.ca_id); if (section === 'overview') setSection('authorities'); } })),
+  ];
   const headings: Record<Section, [string, string]> = {
     overview: [`Welcome, ${name}.`, 'What you can do in this workspace, by role.'],
     authorities: ['Certificate authorities', 'Authorities in your scope and, for CA administrators and approvers, the CA lifecycle.'],
@@ -778,7 +793,7 @@ export function App() {
     </aside>
     <div className="main-column">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {navItems.find(item => item.id === section)?.label}{needsAuthority && selectedCa && <><span>/</span> {selectedCa.display_name}</>}</div>
-        <div className="top-actions"><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span>
+        <div className="top-actions"><button type="button" className="ui-search-trigger" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K"><Icon name="search" size={15} />Go to…<span className="ui-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span></button><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span>
           <button className="ui-icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}><Icon name="refresh" /></button>
           <div className="ui-user"><div className="user-avatar" aria-hidden="true">{String(name).slice(0, 1).toUpperCase()}</div><span>{name}</span></div>
           <button className="ui-button ui-button-ghost ui-button-sm" onClick={() => void userManager?.signoutRedirect()}><Icon name="signOut" size={15} />Sign out</button></div></header>
@@ -841,7 +856,7 @@ export function App() {
               </div></Disclosure>
               {certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : scopedCertificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="No certificate metadata matches the active server filters in this authority, or no certificates are recorded." /> : filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records. Search the full history above.</p> : <>
                 {selectionBar('certificate', selectedCertificateRows.length, sortedCertificates.length)}
-                <div className="table-wrap"><table className="certificate-table ui-table"><thead><tr><th className="selection-column"><HeaderCheckbox state={certificateHeader} label="Select all visible certificates" onChange={() => selectRows('certificate', 'toggle-visible')} /></th><th>CN</th><th>SERIAL</th><th>STATE</th><th>RECORDED PERIOD</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{sortedCertificates.map(cert => <tr key={cert.request_id} className={selectedCertificateIds.includes(cert.request_id) ? 'ui-row-selected' : undefined}><td><input type="checkbox" aria-label={`Select certificate ${cert.serial_hex} for CSV export`} checked={selectedCertificateIds.includes(cert.request_id)} disabled={!selectedCertificateIds.includes(cert.request_id) && selectedCertificateIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('certificate', cert.request_id)} /></td><td className="certificate-cn" title={cert.subject_cn ?? 'CN not recorded'}>{cert.subject_cn ? <button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate for ${cert.subject_cn}`}>{cert.subject_cn}</button> : <span className="muted">—</span>}</td><td className="mono"><button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><StatusBadge status={cert.state} /></td><td title="Based only on recorded X.509 dates; this is not a trust or revocation check">{recordedValidityStatus(cert, validityClock)}</td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table className="certificate-table ui-table"><thead><tr><th className="selection-column"><HeaderCheckbox state={certificateHeader} label="Select all visible certificates" onChange={() => selectRows('certificate', 'toggle-visible')} /></th><th>Common name</th><th>Serial</th><th>State</th><th>Recorded period</th><th>Signed</th><th>SHA-256</th></tr></thead><tbody>{sortedCertificates.map(cert => <tr key={cert.request_id} className={selectedCertificateIds.includes(cert.request_id) ? 'ui-row-selected' : undefined}><td><input type="checkbox" aria-label={`Select certificate ${cert.serial_hex} for CSV export`} checked={selectedCertificateIds.includes(cert.request_id)} disabled={!selectedCertificateIds.includes(cert.request_id) && selectedCertificateIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('certificate', cert.request_id)} /></td><td className="certificate-cn" title={cert.subject_cn ?? 'CN not recorded'}>{cert.subject_cn ? <button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate for ${cert.subject_cn}`}>{cert.subject_cn}</button> : <span className="muted">—</span>}</td><td className="mono"><button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><StatusBadge status={cert.state} /></td><td>{(() => { const period = recordedValidityStatus(cert, validityClock); return <Tag tone={period === 'Within period' ? 'good' : period === 'Period ended' ? 'bad' : period === 'Not yet in period' ? 'info' : 'neutral'} title="Based only on recorded X.509 dates; this is not a trust or revocation check">{period}</Tag>; })()}</td><td className="ui-nowrap">{cert.signed_at ? <TimeAgo value={cert.signed_at} now={new Date(validityClock)} /> : <span className="ui-sub">Not signed</span>}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>
                 <p className="ui-hint">The state is the issuance record; revocation status is shown under Requests and on the CRLs.</p>
               </>}
               {certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="ui-button ui-button-secondary ui-button-sm pagination-action" disabled={certificateMoreLoading} onClick={() => void loadOlder('certificates')}>{certificateMoreLoading ? 'Loading…' : 'Load older certificates'}</button>)}
@@ -860,8 +875,8 @@ export function App() {
               </Disclosure>
               {auditLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setAuditReload(value => value + 1)} /> : scopedAuditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events match the active server filters, or no events are recorded for this authority." /> : filteredAuditEvents.length === 0 ? <p className="filter-empty">No matching event among loaded records.</p> : <>
                 {selectionBar('audit', selectedAuditRows.length, sortedAuditEvents.length)}
-                <div className="table-wrap"><table className="ui-table ui-table-compact" aria-label="Audit events"><thead><tr><th className="selection-column"><HeaderCheckbox state={auditHeader} label="Select all visible audit events" onChange={() => selectRows('audit', 'toggle-visible')} /></th><th>Recorded</th><th>Event</th><th>Decision</th><th>Policy</th></tr></thead>
-                  <tbody>{sortedAuditEvents.map(event => <tr key={event.event_id} className={selectedAuditIds.includes(event.event_id) ? 'ui-row-selected' : undefined}><td><input type="checkbox" aria-label={`Select audit event ${event.event_id} for CSV export`} checked={selectedAuditIds.includes(event.event_id)} disabled={!selectedAuditIds.includes(event.event_id) && selectedAuditIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('audit', event.event_id)} /></td><td className="ui-nowrap">{displayDate(event.recorded_at)}</td><td><button className="record-link" onClick={() => openAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button></td><td>{event.decision === 'allow' || event.decision === 'deny' ? <StatusBadge status={event.decision} /> : <span className="ui-sub">{event.decision}</span>}</td><td>{event.policy_version ?? <span className="muted">—</span>}</td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table className="ui-table ui-table-compact" aria-label="Audit events"><thead><tr><th className="selection-column"><HeaderCheckbox state={auditHeader} label="Select all visible audit events" onChange={() => selectRows('audit', 'toggle-visible')} /></th><th>When</th><th>Event</th><th>Outcome</th><th>Policy</th></tr></thead>
+                  <tbody>{sortedAuditEvents.map(event => <tr key={event.event_id} className={selectedAuditIds.includes(event.event_id) ? 'ui-row-selected ui-row-clickable' : 'ui-row-clickable'} onClick={clicked => { if (!(clicked.target as HTMLElement).closest('input, button, a')) openAuditEvent(event); }}><td><input type="checkbox" aria-label={`Select audit event ${event.event_id} for CSV export`} checked={selectedAuditIds.includes(event.event_id)} disabled={!selectedAuditIds.includes(event.event_id) && selectedAuditIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('audit', event.event_id)} /></td><td className="ui-nowrap"><TimeAgo value={event.recorded_at} now={new Date(validityClock)} /></td><td><button type="button" className="ui-row-button" onClick={() => openAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}><EventLabel type={event.event_type} /></button></td><td><OutcomeBadge decision={event.decision} /></td><td>{event.policy_version ? <span className="ui-chip">{event.policy_version}</span> : <span className="ui-sub" title="No policy version recorded for this event">—<span className="sr-only">No policy version recorded</span></span>}</td></tr>)}</tbody></table></div>
               </>}
               {auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="ui-button ui-button-secondary ui-button-sm pagination-action" disabled={auditMoreLoading} onClick={() => void loadOlder('audit')}>{auditMoreLoading ? 'Loading…' : 'Load older audit events'}</button>)}
             </div>}
@@ -873,6 +888,7 @@ export function App() {
       {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} />}
       {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={closeDetail} />}
     </div>
+    <CommandPalette items={paletteItems} open={paletteOpen} onClose={() => setPaletteOpen(false)} />
   </div>;
 }
 
@@ -931,7 +947,7 @@ function Info({ label, value }: { label: string; value: string }) {
   return <div className="info-cell"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function LoadingRows() { return <div className="loading-detail"><span className="spinner" /> Loading records…</div>; }
+function LoadingRows() { return <div className="ui-skeleton" role="status" aria-label="Loading records">{[0, 1, 2, 3, 4].map(row => <div key={row} className="ui-skeleton-row" style={{ opacity: 1 - row * .15 }} />)}</div>; }
 function LoadFailure({ message, onRetry }: { message: string; onRetry: () => void }) {
   return <Notice tone="error" action={<button type="button" className="ui-button ui-button-secondary ui-button-sm" onClick={onRetry}>Retry</button>}>{message}</Notice>;
 }

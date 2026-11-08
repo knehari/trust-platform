@@ -394,12 +394,12 @@ try {
     await panel.getByLabel('Display name').fill(rootName);
     await panel.getByRole('button', { name: 'Propose this CA' }).click();
     const row = panel.getByRole('row').filter({ hasText: rootName });
-    await row.getByText('PROPOSED', { exact: true }).waitFor();
+    await row.getByText('Proposed', { exact: true }).waitFor();
     const repository = fileURLToPath(new URL('../../', import.meta.url));
     const pem = execFileSync('sh', ['scripts/lab/create-lab-root.sh', rootName], { cwd: repository }).toString();
     await row.getByLabel(/Certificate \(PEM\)/).fill(pem);
     await row.getByRole('button', { name: 'Register certificate' }).click();
-    await panel.getByRole('row').filter({ hasText: rootName }).getByText('KEY_ATTESTED', { exact: true }).waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('Key attested', { exact: true }).waitFor();
 
     // Two CA approvers sign the exact claim with their own laboratory keys,
     // outside the browser; then the administrator activates the CA.
@@ -423,7 +423,7 @@ try {
     const approvedRow = panel.getByRole('row').filter({ hasText: rootName });
     await approvedRow.getByRole('button', { name: 'Activate this CA' }).click();
     await adminPage.getByRole('status').filter({ hasText: 'is now an ACTIVE CA' }).waitFor();
-    await panel.getByRole('row').filter({ hasText: rootName }).getByText('ACTIVE', { exact: true }).waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('Active', { exact: true }).waitFor();
 
     // The administrator suspends the CA at once from the console.
     await panel.getByRole('row').filter({ hasText: rootName }).getByRole('button', { name: 'Operations' }).click();
@@ -431,7 +431,7 @@ try {
     await activeRow.getByLabel(`Reason for ${rootName}`).fill('browser key review');
     await activeRow.getByRole('button', { name: 'Suspend this CA' }).click();
     await adminPage.getByRole('status').filter({ hasText: 'is now SUSPENDED' }).waitFor();
-    await panel.getByRole('row').filter({ hasText: rootName }).getByText('SUSPENDED', { exact: true }).first().waitFor();
+    await panel.getByRole('row').filter({ hasText: rootName }).getByText('Suspended', { exact: true }).first().waitFor();
     const slug = rootName.toLowerCase().replaceAll(' ', '-');
     rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.pem`, { force: true });
     rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.crt`, { force: true });
