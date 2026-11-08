@@ -12,7 +12,9 @@
 //! - exactly these extensions: basicConstraints (critical, not a CA),
 //!   keyUsage (critical, digitalSignature), extendedKeyUsage serverAuth,
 //!   subjectAltName with exactly the approved DNS names in order,
-//!   subjectKeyIdentifier and authorityKeyIdentifier.
+//!   subjectKeyIdentifier and authorityKeyIdentifier, then, when the CA
+//!   publishes its CRLs (ADR-0019), cRLDistributionPoints with exactly the
+//!   one URL its signing intent was journaled under.
 //!
 //! Nothing here holds or uses a private key. It builds and checks
 //! structures; signature verification uses the reviewed verifier of
@@ -29,8 +31,9 @@ use x509_cert::{
     },
     ext::{
         pkix::{
-            name::GeneralName, BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages,
-            SubjectAltName,
+            crl::{dp::DistributionPoint, CrlDistributionPoints},
+            name::{DistributionPointName, GeneralName},
+            BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName,
         },
         Extension,
     },
@@ -47,6 +50,7 @@ const KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.15");
 const EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37");
 const SUBJECT_ALT_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 const SUBJECT_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.14");
+const CRL_DISTRIBUTION_POINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.31");
 const SERVER_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.1");
 /// How far the start of validity may be from the checking clock.
 pub const START_SKEW: Duration = Duration::from_secs(5 * 60);
@@ -75,6 +79,16 @@ pub struct LeafFacts<'a> {
     pub validity_days: u32,
     /// Positive DER content octets of the reserved serial.
     pub serial: &'a [u8],
+    /// The CRL URL the signing intent was journaled under, when the CA
+    /// publishes its CRLs.
+    pub crl_distribution_point: Option<&'a str>,
+}
+
+/// An http(s) URL of printable ASCII without spaces, as the database builds.
+fn valid_distribution_point(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && url.len() <= 300
+        && url.bytes().all(|b| b.is_ascii_graphic())
 }
 
 fn ecdsa_sha256() -> AlgorithmIdentifierOwned {
@@ -132,7 +146,7 @@ fn expected_extensions(
         .collect::<Result<Vec<_>, _>>()?;
     let subject_key_id = x509_extensions::key_identifier(facts.subject_public_key)
         .map_err(|_| LeafError::SubjectKey)?;
-    Ok(vec![
+    Ok([
         extension(
             BASIC_CONSTRAINTS,
             true,
@@ -156,7 +170,25 @@ fn expected_extensions(
             .map_err(|_| LeafError::Extensions)?,
         x509_extensions::authority_key_identifier(&issuer_key_identifier(issuer)?)
             .map_err(|_| LeafError::Extensions)?,
-    ])
+    ]
+    .into_iter()
+    .chain(match facts.crl_distribution_point {
+        None => None,
+        Some(url) => Some(extension(
+            CRL_DISTRIBUTION_POINTS,
+            false,
+            &CrlDistributionPoints(vec![DistributionPoint {
+                distribution_point: Some(DistributionPointName::FullName(vec![
+                    GeneralName::UniformResourceIdentifier(
+                        Ia5String::new(url).map_err(|_| LeafError::Extensions)?,
+                    ),
+                ])),
+                reasons: None,
+                crl_issuer: None,
+            }]),
+        )?),
+    })
+    .collect())
 }
 
 fn subject_name(common_name: &str) -> Result<Name, LeafError> {
@@ -176,6 +208,12 @@ fn checked_facts(facts: &LeafFacts<'_>) -> Result<(), LeafError> {
     }
     if facts.serial.is_empty() || facts.serial.len() > 20 || facts.serial[0] & 0x80 != 0 {
         return Err(LeafError::Serial);
+    }
+    if facts
+        .crl_distribution_point
+        .is_some_and(|url| !valid_distribution_point(url))
+    {
+        return Err(LeafError::Extensions);
     }
     Ok(())
 }
@@ -337,6 +375,7 @@ mod tests {
             subject_public_key: &key,
             validity_days: 1,
             serial: &[0x41, 0x02],
+            crl_distribution_point: None,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -391,6 +430,7 @@ mod tests {
             subject_public_key: &key,
             validity_days: 1,
             serial: &[0x41, 0x02],
+            crl_distribution_point: None,
         };
         let now = SystemTime::now();
         let good = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -492,6 +532,76 @@ mod tests {
             subject_public_key: facts.subject_public_key,
             validity_days: facts.validity_days,
             serial: facts.serial,
+            crl_distribution_point: facts.crl_distribution_point,
+        }
+    }
+
+    #[test]
+    fn the_distribution_point_is_exactly_the_journaled_one() {
+        let ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let issuer = ca.root_certificate().clone();
+        let key = subject_key();
+        let names = names();
+        let url = "http://127.0.0.1:8081/v1/public/crls/ca/latest.crl";
+        let facts = LeafFacts {
+            subject_cn: "www.lab.invalid",
+            dns_names: &names,
+            subject_public_key: &key,
+            validity_days: 1,
+            serial: &[0x41, 0x02],
+            crl_distribution_point: Some(url),
+        };
+        let now = SystemTime::now();
+        let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
+        assert_eq!(check_server_leaf_tbs(&issuer, &facts, &tbs, now), Ok(()));
+        let last = tbs.extensions.as_ref().unwrap().last().unwrap();
+        assert_eq!(
+            (last.extn_id, last.critical),
+            (CRL_DISTRIBUTION_POINTS, false)
+        );
+        let points = CrlDistributionPoints::from_der(last.extn_value.as_bytes()).unwrap();
+        assert_eq!(
+            points.0[0].distribution_point,
+            Some(DistributionPointName::FullName(vec![
+                GeneralName::UniformResourceIdentifier(Ia5String::new(url).unwrap())
+            ]))
+        );
+        // Without the point, with another one, or with one missing from the TBS.
+        let without = LeafFacts {
+            crl_distribution_point: None,
+            ..facts_clone(&facts)
+        };
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &without, &tbs, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        let other = LeafFacts {
+            crl_distribution_point: Some("http://evil.invalid/latest.crl"),
+            ..facts_clone(&facts)
+        };
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &other, &tbs, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        let bare = build_server_leaf_tbs(&issuer, &without, now).unwrap();
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &facts, &bare, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        for bad in [
+            "ftp://crl.lab.invalid/x.crl",
+            "http://a b",
+            "http://é.invalid",
+        ] {
+            let invalid = LeafFacts {
+                crl_distribution_point: Some(bad),
+                ..facts_clone(&facts)
+            };
+            assert_eq!(
+                build_server_leaf_tbs(&issuer, &invalid, now).unwrap_err(),
+                LeafError::Extensions,
+                "{bad}"
+            );
         }
     }
 }

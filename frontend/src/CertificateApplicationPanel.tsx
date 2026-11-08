@@ -32,6 +32,14 @@ interface PublishedCrl {
   entry_count: number;
 }
 
+interface CrlStatus {
+  distribution_point: string | null;
+  latest_crl_number: number | null;
+  next_update: string | null;
+  renewal_due: boolean;
+  expired: boolean;
+}
+
 interface CrlPublication {
   status: 'PUBLISHED' | 'RECONCILIATION_REQUIRED';
   crl_number: number;
@@ -94,6 +102,7 @@ export function CertificateApplicationPanel({ caId, token, canRequest, canDecide
   const [revocationCode, setRevocationCode] = useState<Record<string, number>>({});
   const [crls, setCrls] = useState<PublishedCrl[] | null>(null);
   const [crl, setCrl] = useState<{ number: number; pem: string } | null>(null);
+  const [crlStatus, setCrlStatus] = useState<CrlStatus | null>(null);
   const key = useRef(crypto.randomUUID());
   const base = `/v1/cas/${encodeURIComponent(caId)}/certificate-applications`;
 
@@ -131,6 +140,9 @@ export function CertificateApplicationPanel({ caId, token, canRequest, canDecide
     apiGet<PublishedCrl[]>(`/v1/cas/${encodeURIComponent(caId)}/crls`, token, controller.signal)
       .then(rows => setCrls(rows))
       .catch(() => { if (!controller.signal.aborted) setCrls(null); });
+    apiGet<CrlStatus>(`/v1/cas/${encodeURIComponent(caId)}/crl-status`, token, controller.signal)
+      .then(status => setCrlStatus(status))
+      .catch(() => { if (!controller.signal.aborted) setCrlStatus(null); });
     return () => controller.abort();
   }, [caId, token, reload]);
 
@@ -178,6 +190,11 @@ export function CertificateApplicationPanel({ caId, token, canRequest, canDecide
     <div className="panel-header"><h2 id="certificate-applications-title">Certificate applications</h2></div>
     <p>Applications are checked against the authority's active profile revision and approved by a registration officer. Approved applications are signed once by the laboratory signer, a software key with no custody or hardware protection. Issued certificates are revoked when a registration officer approves a request, and appear on the next CRL an officer publishes.</p>
     {notice && <p role="status">{notice}</p>}
+    {crlStatus?.expired && <div className="notice error" role="alert">The latest CRL (number {crlStatus.latest_crl_number}) expired at {crlStatus.next_update}: relying parties may reject this authority's certificates until a new CRL is published.</div>}
+    {crlStatus && !crlStatus.expired && crlStatus.renewal_due && <div className="notice" role="status">{crlStatus.latest_crl_number === null
+      ? 'No CRL has been published for this authority yet.'
+      : `The latest CRL (number ${crlStatus.latest_crl_number}) must be renewed before ${crlStatus.next_update}.`}</div>}
+    {crlStatus?.distribution_point && <p><small>CRLs are published without authentication at <code>{crlStatus.distribution_point}</code>, the distribution point new certificates carry.</small></p>}
     {canDecide && <div className="form-actions">
       <button type="button" disabled={busy} onClick={() => void publishCrl()}>Publish CRL</button>
     </div>}

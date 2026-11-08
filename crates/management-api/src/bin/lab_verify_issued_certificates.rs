@@ -7,7 +7,8 @@
 //! describes: signed by the CA's registered issuer certificate, for the
 //! subject key of the stored CSR (whose proof-of-possession is re-verified),
 //! with the application's common name and DNS names, the reserved serial and
-//! the profile's extensions. It also checks that the stored fingerprint is
+//! the profile's extensions, including the CRL distribution point
+//! snapshotted with the signing intent (migration 0031). It also checks that the stored fingerprint is
 //! the certificate's, that the signing intent journaled the digest of this
 //! very TBS and was claimed exactly once by the signer, and that the
 //! application was approved by a registration officer.
@@ -53,6 +54,7 @@ struct Issued {
     outcome: String,
     claims: i64,
     decision: Option<String>,
+    crl_distribution_point: Option<String>,
 }
 
 fn problems(record: &Issued) -> Vec<String> {
@@ -105,6 +107,7 @@ fn problems(record: &Issued) -> Vec<String> {
         subject_public_key: csr.subject_public_key(),
         validity_days: u32::try_from(record.validity_days).unwrap_or(0),
         serial: &record.serial,
+        crl_distribution_point: record.crl_distribution_point.as_deref(),
     };
     if let Err(reason) = verify_server_leaf(
         &issuer,
@@ -240,13 +243,14 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
                 c.serial_der_content, c.certificate_der, c.fingerprint_sha256, c.signed_at, \
                 k.certificate_der, s.tbs_sha256, s.outcome, \
                 (SELECT count(*) FROM lab_signer_claim l WHERE l.intent_id = s.intent_id), \
-                d.decision \
+                d.decision, dp.url \
            FROM certificate_application_issuance i \
            JOIN certificate_application a ON a.application_id = i.application_id \
            JOIN certificate c ON c.ca_id = i.ca_id AND c.request_id = i.request_id \
            JOIN ca_issuer_certificate k ON k.ca_id = i.ca_id \
            LEFT JOIN signing_intent s ON s.ca_id = i.ca_id AND s.request_id = i.request_id \
            LEFT JOIN certificate_application_decision d ON d.application_id = i.application_id \
+           LEFT JOIN signing_intent_crl_distribution_point dp ON dp.intent_id = s.intent_id \
           ORDER BY i.started_at",
         &[],
     )?;
@@ -269,6 +273,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
                 .unwrap_or_else(|| "missing".into()),
             claims: row.get(12),
             decision: row.get(13),
+            crl_distribution_point: row.get(14),
         };
         let found = problems(&record);
         if !found.is_empty() {

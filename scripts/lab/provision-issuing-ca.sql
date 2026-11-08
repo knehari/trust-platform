@@ -1,4 +1,5 @@
--- Laboratory owner action (ADR-0016): grants on the lab issuing CA once it
+-- Laboratory owner action (ADR-0016, ADR-0019): grants and CRL publication
+-- on the lab issuing CA once it
 -- has been proposed, attested, approved and activated through the API. Only
 -- the database owner holds grants; the API exposes no grant-write route.
 -- Usage: psql -v ON_ERROR_STOP=1 -v ca=dddddddd-dddd-4ddd-8ddd-dddddddddddd -f provision-issuing-ca.sql
@@ -22,5 +23,11 @@ INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
 SELECT :'issuer', '7c1a0000-0000-4000-8000-0000000000' || n, :'ca'::uuid, r
 FROM (VALUES ('11', 'profile-editor'), ('03', 'policy-approver'), ('04', 'policy-approver'),
              ('05', 'ca-operator'), ('15', 'certificate-requester'), ('16', 'registration-officer')) AS g(n, r)
+ON CONFLICT DO NOTHING;
+-- Public CRL publication (migration 0031, ADR-0019): certificates of this CA
+-- name the API's unauthenticated latest-CRL route, on the laboratory's
+-- loopback address.
+INSERT INTO ca_crl_distribution_point (ca_id, base_url)
+VALUES (:'ca'::uuid, 'http://127.0.0.1:8081')
 ON CONFLICT DO NOTHING;
 COMMIT;
