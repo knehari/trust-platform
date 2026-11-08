@@ -56,8 +56,10 @@ try {
   await table.getByRole('row').nth(100).waitFor();
   await page.getByRole('button', { name: 'Load older certificates' }).click();
   await table.getByRole('row').nth(101).waitFor();
+  // The full-history searches sit in a collapsed section; it stays open.
+  await page.getByText('Search the full history', { exact: false }).click();
   if (!process.env.TRUST_E2E_SKIP_CN) {
-    const cnSearch = page.getByLabel('Search CN prefix across this authority’s full certificate history');
+    const cnSearch = page.getByLabel('CN prefix', { exact: true });
     await cnSearch.fill(expectedCn.slice(0, -'.lab.invalid'.length));
     await cnSearch.locator('..').getByRole('button', { name: 'Search', exact: true }).click();
     await table.getByRole('button', { name: `View certificate for ${expectedCn}` }).waitFor();
@@ -82,7 +84,7 @@ try {
   if (!process.env.TRUST_E2E_SKIP_CN) {
     await page.getByRole('button', { name: 'Clear', exact: true }).click();
   }
-  const sanSearch = page.getByLabel('Search exact DNS SAN across this authority’s full certificate history');
+  const sanSearch = page.getByLabel('Exact DNS SAN', { exact: true });
   await sanSearch.fill('PAGED-0102.LAB.INVALID');
   const sanPage = page.waitForResponse(response => response.status() === 200
     && response.url().includes('/certificates?')
@@ -101,7 +103,7 @@ try {
   // Historical rows without recorded X.509 dates are excluded by this server
   // filter. The synthetic fixture expires before 2028, but not before 2027.
   await page.getByRole('button', { name: 'Clear SAN' }).click();
-  const expiryBefore = page.getByLabel('Recorded valid-until before this UTC date (exclusive)');
+  const expiryBefore = page.getByLabel('Valid until before (UTC, exclusive)');
   await expiryBefore.fill('2028-01-01');
   const expiryPage = page.waitForResponse(response => response.status() === 200
     && response.url().includes('/certificates?')
@@ -122,18 +124,17 @@ try {
 
   // Profile drafts are readable only under the signed and granted CA scope.
   await page.goto(`${origin}/?view=profiles&ca=${allowedCa}`);
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
-  await page.getByText('No issuance path uses the active revision yet', { exact: false }).waitFor();
+  await page.getByRole('table', { name: 'Profile proposals' }).getByText('Laboratory server proposal', { exact: true }).first().waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).check();
   await page.getByText('No advisory syntax warnings in the loaded revisions.').waitFor();
   await page.getByRole('checkbox', { name: /Show proposals with advisory syntax warnings among loaded revisions only/ }).uncheck();
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByRole('table', { name: 'Profile proposals' }).getByText('Laboratory server proposal', { exact: true }).first().waitFor();
   await page.locator('#profile-draft-search').fill('server-lab');
   const proposalSearch = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).searchParams.get('q') === 'server-lab');
   await page.getByRole('button', { name: 'Search proposals' }).click();
   await proposalSearch;
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByRole('table', { name: 'Profile proposals' }).getByText('Laboratory server proposal', { exact: true }).first().waitFor();
   await page.locator('#profile-draft-search').fill('hidden');
   const hiddenProposalSearch = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).searchParams.get('q') === 'hidden');
@@ -141,7 +142,7 @@ try {
   await hiddenProposalSearch;
   await page.getByText('No proposals match “hidden”').waitFor();
   await page.getByRole('button', { name: 'Clear search' }).click();
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByRole('table', { name: 'Profile proposals' }).getByText('Laboratory server proposal', { exact: true }).first().waitFor();
   await page.getByText('Advanced filters (0 active)').click();
   await page.locator('#profile-draft-policy-filter').fill('v2');
   const policyFilterResponse = page.waitForResponse(response => response.status() === 200
@@ -185,13 +186,13 @@ try {
     && new URL(response.url()).searchParams.get('profile_id') === 'server-lab');
   await page.getByRole('button', { name: 'Filter revisions' }).click();
   await profileFilter;
-  await page.getByRole('heading', { name: 'Laboratory server proposal' }).first().waitFor();
+  await page.getByRole('table', { name: 'Profile proposals' }).getByText('Laboratory server proposal', { exact: true }).first().waitFor();
   const newestProfilePage = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).searchParams.get('profile_id') === 'server-lab'
     && new URL(response.url()).searchParams.get('order') === 'newest');
   await page.getByRole('combobox', { name: 'Revision order' }).selectOption('newest');
   await newestProfilePage;
-  await page.waitForFunction(() => document.querySelector('.profile-draft-card .mono')?.textContent?.includes('revision 2'));
+  await page.waitForFunction(() => document.querySelector('.profile-draft-row .mono')?.textContent?.includes('revision 2'));
   const unfilteredProfiles = page.waitForResponse(response => response.status() === 200
     && new URL(response.url()).pathname.endsWith('/profile-drafts')
     && !new URL(response.url()).searchParams.has('profile_id'));
@@ -236,8 +237,9 @@ try {
   await freshPage.getByRole('dialog', { name: 'Revision 2' }).waitFor();
   assert.equal(new URL(freshPage.url()).searchParams.get('profile'), 'server-lab');
   await freshPage.close();
-  await page.getByRole('button', { name: 'Select for comparison' }).first().click();
-  await page.getByRole('button', { name: 'Select for comparison' }).click();
+  const proposalTable = page.getByRole('table', { name: 'Profile proposals' });
+  await proposalTable.getByRole('button', { name: 'Compare', exact: true, pressed: false }).first().click();
+  await proposalTable.getByRole('button', { name: 'Compare', exact: true, pressed: false }).click();
   await page.getByRole('button', { name: 'Compare selected revisions' }).click();
   const comparison = page.getByRole('dialog', { name: 'Revision comparison' });
   await comparison.waitFor();
@@ -303,6 +305,7 @@ try {
   await auditDialog.getByRole('button', { name: /Close audit event detail/i }).click();
   await auditDialog.waitFor({ state: 'hidden' });
 
+  await page.getByText('Filter the full history', { exact: false }).click();
   await page.getByRole('searchbox', { name: 'Exact decision' }).fill('allow');
   await page.getByRole('searchbox', { name: 'Exact policy version' }).fill('v1');
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -384,7 +387,7 @@ try {
   if (process.env.TRUST_LAB_PW_CA_ADMIN) {
     const adminPage = await browser.newPage();
     adminPage.setDefaultTimeout(15_000);
-    await adminPage.goto(`${origin}/?view=overview`);
+    await adminPage.goto(`${origin}/?view=authorities`);
     await signIn(adminPage, 'lab-ca-admin', process.env.TRUST_LAB_PW_CA_ADMIN);
     const panel = adminPage.getByRole('region', { name: 'CA proposals' });
     const rootName = `Browser Lab Root ${Date.now().toString(36)}`;
@@ -404,7 +407,7 @@ try {
     for (const index of [1, 2]) {
       const approverPage = await browser.newPage();
       approverPage.setDefaultTimeout(15_000);
-      await approverPage.goto(`${origin}/?view=overview`);
+      await approverPage.goto(`${origin}/?view=authorities`);
       await signIn(approverPage, `lab-ca-approver-${index}`, process.env[`TRUST_LAB_PW_CA_APPROVER_${index}`]);
       const approverRow = approverPage.getByRole('region', { name: 'CA proposals' }).getByRole('row').filter({ hasText: rootName });
       await approverRow.getByRole('button', { name: 'Prepare CA approval' }).click();
@@ -423,6 +426,7 @@ try {
     await panel.getByRole('row').filter({ hasText: rootName }).getByText('ACTIVE', { exact: true }).waitFor();
 
     // The administrator suspends the CA at once from the console.
+    await panel.getByRole('row').filter({ hasText: rootName }).getByRole('button', { name: 'Operations' }).click();
     const activeRow = panel.getByRole('row').filter({ hasText: rootName });
     await activeRow.getByLabel(`Reason for ${rootName}`).fill('browser key review');
     await activeRow.getByRole('button', { name: 'Suspend this CA' }).click();

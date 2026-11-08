@@ -1,6 +1,8 @@
 import type { AuditEvent, Certificate, ProfileDraft } from './api';
 
-export const MAX_CSV_ROWS = 100;
+// Bounded in the browser: a page loads at most 100 rows, and a person can
+// select every loaded row across a few pages.
+export const MAX_CSV_ROWS = 1000;
 
 function cell(value: string | null): string {
   const text = value ?? '';
@@ -9,7 +11,7 @@ function cell(value: string | null): string {
 }
 
 export function csv(header: string[], rows: (string | null)[][]): string {
-  if (rows.length === 0 || rows.length > MAX_CSV_ROWS) throw new Error('Select 1–100 rows to export.');
+  if (rows.length === 0 || rows.length > MAX_CSV_ROWS) throw new Error(`Select 1–${MAX_CSV_ROWS} rows to export.`);
   return [header, ...rows].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
 }
 

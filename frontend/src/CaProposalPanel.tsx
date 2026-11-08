@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
 import { CaDecision } from './CaDecision';
 import { CaOperation } from './CaOperation';
+import { Icon, Notice, StatusBadge } from './ui';
 
 export interface CaProposal {
   ca_id: string;
@@ -67,6 +68,7 @@ export function CaProposalPanel({ token, canAdminister, canApprove, onUnauthoriz
   const [pem, setPem] = useState<Record<string, string>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
+  const [open, setOpen] = useState<string | null>(null);
   // One key per intended change, so a retry after a lost response is a replay.
   const proposeKey = useRef(crypto.randomUUID());
   const registerKeys = useRef<Record<string, string>>({});
@@ -121,39 +123,59 @@ export function CaProposalPanel({ token, canAdminister, canApprove, onUnauthoriz
     }
   }
 
-  return <section className="panel ca-proposals" aria-labelledby="ca-proposals-title">
-    <div className="panel-header"><h2 id="ca-proposals-title">CA proposals</h2></div>
-    <p>A proposal is not a certificate authority until two CA approvers approve it and an administrator activates it. No issuance path uses an activated CA yet.</p>
-    {notice && <p role="status">{notice}</p>}
-    {canAdminister && <form className="subtle-panel" onSubmit={event => void propose(event)}>
-      <label>Display name <input value={name} maxLength={255} onChange={event => setName(event.target.value)} required /></label>
-      <label>Policy version <input value={policy} maxLength={128} onChange={event => setPolicy(event.target.value)} required /></label>
-      <p>Signing suite: <code>{SUITE}</code> (the only suite a laboratory CA can be proposed with).</p>
-      <button type="submit" disabled={busy || !name.trim() || !policy.trim()}>{busy ? 'Saving…' : 'Propose this CA'}</button>
-      {formError && <p className="lookup-error" role="alert">{formError}</p>}
+  // A row needs a decision from this person: show its actions at once.
+  const pending = (item: CaProposal) => (canAdminister && (item.lifecycle_status === 'PROPOSED' || item.lifecycle_status === 'APPROVED'))
+    || (canApprove && item.lifecycle_status === 'KEY_ATTESTED')
+    || (item.change_status === 'OPEN' && canApprove) || (item.change_status === 'APPROVED' && canAdminister);
+  const operable = (item: CaProposal) => canAdminister && (item.lifecycle_status === 'ACTIVE' || item.lifecycle_status === 'SUSPENDED');
+
+  return <section className="ui-stack ca-proposals" aria-labelledby="ca-proposals-title">
+    <div className="ui-section-header"><div><h2 id="ca-proposals-title">CA proposals</h2>
+      <p>A proposal becomes a certificate authority only after two CA approvers approve it and an administrator who did not decide activates it.</p></div></div>
+    {notice && <Notice tone="success" onDismiss={() => setNotice('')}>{notice}</Notice>}
+    {canAdminister && <form className="ui-card" onSubmit={event => void propose(event)}>
+      <div className="ui-inline-form">
+        <label className="ui-field ui-field-grow"><span>Display name</span><input value={name} maxLength={255} placeholder="Lab Issuing CA" onChange={event => setName(event.target.value)} required /></label>
+        <label className="ui-field"><span>Policy version</span><input value={policy} maxLength={128} onChange={event => setPolicy(event.target.value)} required /></label>
+        <button type="submit" className="ui-button ui-button-primary" disabled={busy || !name.trim() || !policy.trim()}><Icon name="plus" size={16} />{busy ? 'Saving…' : 'Propose this CA'}</button>
+      </div>
+      <p className="ui-hint">Signing suite: <code>{SUITE}</code>, the only suite a laboratory CA can be proposed with.</p>
+      {formError && <Notice tone="error" onDismiss={() => setFormError(null)}>{formError}</Notice>}
     </form>}
-    {loadError && <div className="notice error" role="alert">{loadError}</div>}
-    {items && items.length === 0 && <p>No CA proposals are visible to your account.</p>}
-    {items && items.length > 0 && <table className="data-table" aria-label="CA proposals">
-      <thead><tr><th>Display name</th><th>Status</th><th>Policy</th><th>Issuer certificate</th></tr></thead>
-      <tbody>{items.map(item => <tr key={item.ca_id} data-ca-proposal={item.ca_id}>
-        <td><b>{item.display_name}</b><br /><small>{item.ca_id}</small></td>
-        <td><span className="status-pill">{item.lifecycle_status}</span>{item.approval_count > 0 && <><br /><small>{item.approval_count}/2 approvals</small></>}</td>
-        <td>{item.policy_version}<br /><small>{item.suite_id}</small></td>
-        <td>{item.lifecycle_status !== 'PROPOSED'
-          ? <><small>SHA-256 {item.certificate_sha256}</small><br /><small>Valid {item.not_before} – {item.not_after}</small><br /><small>Custody: {item.custody} (software key, laboratory only)</small>
+    {loadError && <Notice tone="error">{loadError}</Notice>}
+    <div className="ui-card">
+      {!items && !loadError && <p className="ui-empty">Loading CA proposals…</p>}
+      {items && items.length === 0 && <p className="ui-empty">No CA proposals are visible to your account.</p>}
+      {items && items.length > 0 && <div className="ui-table-wrap"><table className="ui-table" aria-label="CA proposals">
+        <thead><tr><th>Authority</th><th>Status</th><th>Policy</th><th>Issuer certificate</th><th className="ui-col-actions">Actions</th></tr></thead>
+        <tbody>{items.map(item => {
+          const showActions = pending(item) || open === item.ca_id;
+          return [<tr key={item.ca_id} data-ca-proposal={item.ca_id} className={showActions ? 'ui-row-open' : undefined}>
+            <td><strong>{item.display_name}</strong><div className="ui-sub mono">{item.ca_id}</div></td>
+            <td><StatusBadge status={item.lifecycle_status} />{item.approval_count > 0 && <div className="ui-sub">{item.approval_count}/2 approvals</div>}
+              {item.change_status && <div className="ui-sub">Change {item.change_status.toLowerCase()}</div>}</td>
+            <td>{item.policy_version}<div className="ui-sub">{item.suite_id}</div></td>
+            <td>{item.certificate_sha256
+              ? <><span className="mono" title={item.certificate_sha256}>{item.certificate_sha256.slice(0, 16)}…</span><div className="ui-sub">{item.not_before?.slice(0, 10)} → {item.not_after?.slice(0, 10)} · {item.custody}</div></>
+              : <span className="muted">Not registered</span>}</td>
+            <td className="ui-col-actions">{operable(item) && !pending(item) && <button type="button" className="ui-button ui-button-secondary ui-button-sm" aria-expanded={open === item.ca_id}
+              onClick={() => setOpen(open === item.ca_id ? null : item.ca_id)}>Operations</button>}</td>
+          </tr>,
+          showActions && <tr key={`${item.ca_id}-actions`} className="ui-row-detail"><td colSpan={5}><div className="ca-actions">
+            <span className="sr-only">Actions for {item.display_name}</span>
+            {item.lifecycle_status === 'PROPOSED' && canAdminister && <div className="ui-stack">
+              <label className="ui-field"><span>Certificate (PEM) for “{item.display_name}”</span><textarea rows={4} value={pem[item.ca_id] ?? ''} placeholder="-----BEGIN CERTIFICATE-----" onChange={event => setPem(values => ({ ...values, [item.ca_id]: event.target.value }))} /></label>
+              <p className="ui-hint">Generate the key and the root outside the platform: <code>scripts/lab/create-lab-root.sh "{item.display_name}"</code>. Never paste a private key.</p>
+              <div className="ui-actions"><button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy || !(pem[item.ca_id] ?? '').trim()} onClick={() => void register(item.ca_id)}>Register certificate</button></div>
+              {rowError[item.ca_id] && <Notice tone="error" onDismiss={() => setRowError(errors => ({ ...errors, [item.ca_id]: '' }))}>{rowError[item.ca_id]}</Notice>}
+            </div>}
             <CaDecision token={token} proposal={item} canDecide={canApprove} canActivate={canAdminister}
               onChanged={message => { setNotice(message); setReload(value => value + 1); }} onUnauthorized={onUnauthorized} />
             <CaOperation token={token} proposal={item} canAdminister={canAdminister} canApprove={canApprove}
-              onChanged={message => { setNotice(message); setReload(value => value + 1); }} onUnauthorized={onUnauthorized} /></>
-          : canAdminister && <>
-            <label>Certificate (PEM) for “{item.display_name}”<textarea rows={4} value={pem[item.ca_id] ?? ''} onChange={event => setPem(values => ({ ...values, [item.ca_id]: event.target.value }))} /></label>
-            <button type="button" disabled={busy || !(pem[item.ca_id] ?? '').trim()} onClick={() => void register(item.ca_id)}>Register certificate</button>
-            {rowError[item.ca_id] && <p className="lookup-error" role="alert">{rowError[item.ca_id]}</p>}
-            <p><small>Generate the key and certificate outside the platform: <code>scripts/lab/create-lab-root.sh "{item.display_name}"</code>. Never paste a private key.</small></p>
-          </>}
-        </td>
-      </tr>)}</tbody>
-    </table>}
+              onChanged={message => { setNotice(message); setOpen(null); setReload(value => value + 1); }} onUnauthorized={onUnauthorized} />
+          </div></td></tr>];
+        })}</tbody>
+      </table></div>}
+    </div>
   </section>;
 }
