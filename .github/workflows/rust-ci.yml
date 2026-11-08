@@ -200,6 +200,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0026_ca_approval_activation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0027_ca_suspension_retirement.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0028_certificate_application.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0029_application_issuance.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_draft.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_san.sql
@@ -211,6 +212,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_ca_activation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_ca_operation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_application.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_application_issuance.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
@@ -229,10 +231,12 @@ jobs:
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_api_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_api_reader TO trust_api_ci"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES ('https://issuer.example.test','operator','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor')"
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_writer_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_profile_writer TO trust_writer_ci"
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "CREATE ROLE trust_signer_ci LOGIN INHERIT PASSWORD 'test-only-not-secret'; GRANT trust_lab_signer TO trust_signer_ci"
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_decision_api_seed.sql
           TRUST_API_TEST_DATABASE_URL="postgresql://trust_api_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             TRUST_API_WRITER_TEST_DATABASE_URL="postgresql://trust_writer_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             TRUST_API_OWNER_TEST_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            TRUST_API_SIGNER_TEST_DATABASE_URL="postgresql://trust_signer_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo test -p trust-management-api --locked
           # Every decision the API tests recorded must verify independently.
           TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
@@ -240,6 +244,9 @@ jobs:
           # Every CA certificate, decision and activation they recorded too.
           TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo run --locked -p trust-management-api --bin lab_verify_ca_lifecycle
+          # And every certificate issued for an application, with its signer claim.
+          TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo run --locked -p trust-management-api --bin lab_verify_issued_certificates
           # Negative test: strict mode must fail if a DB-dependent test has no URL.
           if env -u TRUST_CI_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked; then
             echo "FAIL: DB-dependent test passed without its mandatory DB URL" >&2
@@ -260,7 +267,7 @@ jobs:
           test -n "$CONTAINER"
           docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
           DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
-          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql; do
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql migrations/0029*.sql; do
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null
@@ -404,7 +411,8 @@ jobs:
           fi
           echo 'PASS: restore refuses a fresh cluster without the reader role'
           docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \
-            -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN' -c 'CREATE ROLE trust_profile_writer NOLOGIN'
+            -v ON_ERROR_STOP=1 -c 'CREATE ROLE trust_api_reader NOLOGIN' -c 'CREATE ROLE trust_profile_writer NOLOGIN' \
+            -c 'CREATE ROLE trust_lab_signer NOLOGIN'
           TRUST_RESTORE_SOURCE_URL="$SOURCE_URL" TRUST_RESTORE_TARGET_URL="$TARGET_URL" \
             bash tests/management_dump_restore.sh
           docker exec "$FRESH" psql -U trust_restore_ci -d trust_fresh \

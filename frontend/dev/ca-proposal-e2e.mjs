@@ -171,8 +171,8 @@ try {
   // Software keys from this run are not kept.
   for (const slug of [name, `E2E Other Root ${suffix}`, `${name}B`]) {
     const file = slug.toLowerCase().replaceAll(' ', '-').replaceAll('.', '-');
-    rmSync(`${repository}.lab-keys/ca-root-${file}.pem`, { force: true });
-    rmSync(`${repository}.lab-keys/ca-root-${file}.crt`, { force: true });
+    rmSync(`${repository}.lab-keys/ca/ca-root-${file}.pem`, { force: true });
+    rmSync(`${repository}.lab-keys/ca/ca-root-${file}.crt`, { force: true });
   }
 }
 

@@ -429,8 +429,8 @@ try {
     await adminPage.getByRole('status').filter({ hasText: 'is now SUSPENDED' }).waitFor();
     await panel.getByRole('row').filter({ hasText: rootName }).getByText('SUSPENDED', { exact: true }).first().waitFor();
     const slug = rootName.toLowerCase().replaceAll(' ', '-');
-    rmSync(`${repository}.lab-keys/ca-root-${slug}.pem`, { force: true });
-    rmSync(`${repository}.lab-keys/ca-root-${slug}.crt`, { force: true });
+    rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.pem`, { force: true });
+    rmSync(`${repository}.lab-keys/ca/ca-root-${slug}.crt`, { force: true });
     await adminPage.close();
   }
 

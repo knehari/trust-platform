@@ -1,0 +1,10 @@
+# Laboratory signer (ADR-0017, Proposed). Lab only: a software key read from
+# a read-only bind mount, no custody, ceremony or hardware protection.
+FROM rust:1.99.0-bookworm AS build
+WORKDIR /app
+COPY . .
+RUN cargo build -p trust-lab-signer --release --locked
+
+FROM debian:bookworm-slim
+COPY --from=build /app/target/release/trust-lab-signer /usr/local/bin/trust-lab-signer
+ENTRYPOINT ["trust-lab-signer"]

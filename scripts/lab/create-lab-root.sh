@@ -3,8 +3,9 @@ set -eu
 
 # Laboratory only (ADR-0013). Generates a P-256 key and a self-signed root
 # certificate for a proposed CA, outside the platform: the key stays in the
-# ignored .lab-keys/ directory (modes 700/600) and never reaches the API,
-# the database or the browser. Only the certificate is printed, for the CA
+# ignored .lab-keys/ca/ directory (modes 700/600) and never reaches the API,
+# the database or the browser; only the lab signer container mounts that
+# directory, read-only (ADR-0017). Only the certificate is printed, for the CA
 # administrator to register with the proposal.
 #
 # Usage: scripts/lab/create-lab-root.sh "<proposed display name>" [days]
@@ -20,11 +21,11 @@ case "$name" in
 esac
 case "$days" in ''|*[!0-9]*) echo 'days: a positive integer' >&2; exit 2 ;; esac
 umask 077
-mkdir -p .lab-keys
-chmod 700 .lab-keys
+mkdir -p .lab-keys/ca
+chmod 700 .lab-keys .lab-keys/ca
 slug=$(printf '%s' "$name" | tr 'A-Z .' 'a-z--')
-key=".lab-keys/ca-root-$slug.pem"
-certificate=".lab-keys/ca-root-$slug.crt"
+key=".lab-keys/ca/ca-root-$slug.pem"
+certificate=".lab-keys/ca/ca-root-$slug.crt"
 if [ -e "$key" ]; then
   echo "$key already exists; a root key is never overwritten" >&2
   exit 1

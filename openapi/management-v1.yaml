@@ -924,6 +924,44 @@ paths:
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/issuance:
+    post:
+      summary: Issue an approved certificate application through the laboratory signer (laboratory, migration 0029)
+      description: "Requires the trust-registration-officer role with a registration-officer grant, or the trust-certificate-requester role for the application's own requester while still granted; the CA in scope. The database requires the application APPROVED, the CA ACTIVE and its revision still active, then reserves an issuer-scoped serial. The API builds the server leaf TBS from the stored CSR's key and the application's names, journals the signing intent, and asks the laboratory signer over a Unix socket; the signer re-checks everything independently and claims the intent once. The API verifies the certificate independently before it is stored. An intent is never signed twice. Laboratory software key only (ADR-0017, Proposed)."
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '201':
+          description: Issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateIssuance' }
+        '200':
+          description: Already issued; the certificate is not returned again (it is listed by its serial and digest)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateIssuance' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or a requester asking for another requester's application }
+        '404': { description: No such application for this CA }
+        '409': { description: Idempotency key reused; the application is not APPROVED; the CA or revision is no longer active; or a signing intent already exists (ISSUING or RECONCILIATION_REQUIRED) }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '422': { description: The stored CSR or issuer certificate no longer verifies; nothing was signed }
+        '502':
+          description: The signing outcome is ambiguous (the signer refused or failed after the intent, or the certificate failed independent verification); the request is RECONCILIATION_REQUIRED and is never signed again
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CertificateIssuance' }
+        '503': { description: No laboratory signer socket is configured, or the database is unavailable }
   /v1/cas/{ca_id}/certificates:
     get:
       summary: Read one ordered page of certificate metadata for a scoped CA, at most 100
@@ -1248,7 +1286,7 @@ components:
         change_reason: { type: [string, 'null'] }
     CertificateApplication:
       type: object
-      required: [application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, dns_names, validity_days, status, decision_reason, submitted_at, decided_at]
+      required: [application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, dns_names, validity_days, status, decision_reason, submitted_at, decided_at, certificate_serial_hex, certificate_sha256, certificate_request_id]
       properties:
         application_id: { type: string, format: uuid }
         ca_id: { type: string, format: uuid }
@@ -1258,10 +1296,26 @@ components:
         subject_cn: { type: string }
         dns_names: { type: array, items: { type: string } }
         validity_days: { type: integer }
-        status: { type: string, enum: [SUBMITTED, APPROVED, REJECTED], description: No status means a certificate exists; nothing is signed yet. }
+        status:
+          type: string
+          enum: [SUBMITTED, APPROVED, REJECTED, ISSUING, ISSUED, RECONCILIATION_REQUIRED]
+          description: ISSUING while an intent is open; RECONCILIATION_REQUIRED when the signing outcome was ambiguous (never signed again) (migration 0029).
         decision_reason: { type: [string, 'null'] }
         submitted_at: { type: string, format: date-time }
         decided_at: { type: [string, 'null'], format: date-time }
+        certificate_serial_hex: { type: [string, 'null'], pattern: '^[0-9a-f]+$', description: Set once ISSUED }
+        certificate_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$', description: Set once ISSUED }
+        certificate_request_id: { type: [string, 'null'], format: uuid, description: The core issuance request, once issuance started }
+    CertificateIssuance:
+      type: object
+      required: [ca_id, application_id, status, certificate_pem, serial_hex, certificate_sha256]
+      properties:
+        ca_id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        status: { type: string, enum: [ISSUED, RECONCILIATION_REQUIRED] }
+        certificate_pem: { type: [string, 'null'], description: Only on the 201 that issued it }
+        serial_hex: { type: [string, 'null'], pattern: '^[0-9a-f]+$' }
+        certificate_sha256: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
     CertificateApplicationSubmitted:
       type: object
       required: [ca_id, application_id, profile_id, revision, status, csr_sha256]
