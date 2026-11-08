@@ -90,6 +90,10 @@ struct Application {
     certificate_serial_hex: Option<String>,
     certificate_sha256: Option<String>,
     certificate_request_id: Option<String>,
+    open_revocation_id: Option<String>,
+    open_revocation_reason_code: Option<i16>,
+    revocation_reason_code: Option<i16>,
+    revoked_at: Option<String>,
 }
 
 /// A lowercase LDH DNS name of at least two labels; no wildcard. The
@@ -341,7 +345,8 @@ pub(crate) async fn list_applications(
             db.query(
                 "SELECT application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, \
                  dns_names, validity_days, status, decision_reason, submitted_at, decided_at, \
-                 certificate_serial_hex, certificate_sha256, certificate_request_id \
+                 certificate_serial_hex, certificate_sha256, certificate_request_id, \
+                 open_revocation_id, open_revocation_reason_code, revocation_reason_code, revoked_at \
                  FROM management_certificate_application WHERE ca_id = $1 \
                  ORDER BY submitted_at DESC, application_id LIMIT 100",
                 &[&ca_id],
@@ -367,6 +372,10 @@ pub(crate) async fn list_applications(
             certificate_serial_hex: row.get(12),
             certificate_sha256: row.get(13),
             certificate_request_id: row.get(14),
+            open_revocation_id: row.get(15),
+            open_revocation_reason_code: row.get(16),
+            revocation_reason_code: row.get(17),
+            revoked_at: row.get(18),
         })
         .collect();
     Ok(with_replay_header(Json(items).into_response(), false))

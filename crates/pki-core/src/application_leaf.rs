@@ -99,7 +99,7 @@ fn extension<T: Encode>(
 
 /// The issuer's key identifier: its own subjectKeyIdentifier when it has a
 /// 20-byte one (as OpenSSL writes), otherwise derived from its key.
-fn issuer_key_identifier(issuer: &Certificate) -> Result<[u8; 20], LeafError> {
+pub(crate) fn issuer_key_identifier(issuer: &Certificate) -> Result<[u8; 20], LeafError> {
     let declared = issuer
         .tbs_certificate
         .extensions

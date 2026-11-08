@@ -5,6 +5,8 @@ mod ca_operation;
 mod ca_proposal;
 mod certificate_application;
 mod certificate_issuance;
+mod certificate_revocation;
+mod crl_publication;
 mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
@@ -46,9 +48,9 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256 \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
-     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap LIMIT 0";
+     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -573,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0029")?;
+    .map_err(|_| "management views unavailable or older than migration 0030")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -704,6 +706,22 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/issuance",
             axum::routing::post(certificate_issuance::issue_application),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests",
+            axum::routing::post(certificate_revocation::request_revocation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision",
+            axum::routing::post(certificate_revocation::decide_revocation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crls",
+            get(crl_publication::list_crls).post(crl_publication::publish_crl),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crls/{crl_number}",
+            get(crl_publication::read_crl),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -978,6 +996,8 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_ca_operation_version() = 1 \
              AND management_certificate_application_version() = 1 \
              AND management_application_issuance_version() = 1 \
+             AND management_revocation_crl_version() = 1 \
+             AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
@@ -3999,11 +4019,12 @@ mod tests {
         );
     }
 
-    /// Issuance of approved applications against PostgreSQL (migration
-    /// 0029), with the real laboratory signer in-process on a Unix socket and
+    /// Issuance of approved applications (migration 0029), then their
+    /// revocation and CRLs (migration 0030), against PostgreSQL, with the
+    /// real laboratory signer in-process on a Unix socket and
     /// its own restricted login (TRUST_API_SIGNER_TEST_DATABASE_URL).
     #[tokio::test]
-    async fn approved_applications_are_issued_once_through_the_lab_signer() {
+    async fn approved_applications_are_issued_revoked_and_published_through_the_lab_signer() {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
         use x509_cert::der::{pem::LineEnding as PemLineEnding, DecodePem, Encode, EncodePem};
         let (Ok(reader_url), Ok(writer_url), Ok(owner_url), Ok(signer_url)) = (
@@ -4172,7 +4193,7 @@ mod tests {
 
         // The owner provisions the grants and the active revision.
         let owner_ca = ca.clone();
-        query_db(owner_url, Arc::new(Semaphore::new(1)), move |db| {
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
             db.batch_execute(&format!(
                 "INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
                     ('https://issuer.example.test', 'requester-http', '{owner_ca}'),
@@ -4371,7 +4392,7 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap();
-        start_signer(other_key);
+        start_signer(other_key.clone());
         let (second, _) = submit("other.lab.invalid").await;
         approve(second.clone()).await;
         let (status, uncertain) = issue(officer.clone(), second.clone()).await;
@@ -4379,7 +4400,7 @@ mod tests {
             (status, uncertain["status"].as_str()),
             (StatusCode::BAD_GATEWAY, Some("RECONCILIATION_REQUIRED"))
         );
-        start_signer(key_file);
+        start_signer(key_file.clone());
         assert_eq!(
             issue(officer.clone(), second.clone()).await.0,
             StatusCode::CONFLICT
@@ -4440,6 +4461,329 @@ mod tests {
                 item["certificate_sha256"].is_null()
             ),
             (Some("RECONCILIATION_REQUIRED"), true)
+        );
+
+        // Revocation and CRLs (migration 0030), with the real signer again.
+        start_signer(key_file.clone());
+        let crls = format!("/v1/cas/{ca}/crls");
+        let crl_der = |pem: &str| {
+            let (label, der) = x509_cert::der::pem::decode_vec(pem.as_bytes()).unwrap();
+            assert_eq!(label, "X509 CRL");
+            der
+        };
+        let verifying = p256::ecdsa::VerifyingKey::from(ca_key.public_key());
+        let crl_verifies = |der: &[u8]| {
+            use p256::ecdsa::signature::Verifier;
+            let crl =
+                <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(der).unwrap();
+            let signature = Signature::from_der(crl.signature.raw_bytes()).unwrap();
+            verifying
+                .verify(&crl.tbs_cert_list.to_der().unwrap(), &signature)
+                .is_ok()
+        };
+        // A requester does not publish; an officer publishes an empty CRL.
+        assert_eq!(
+            send("POST", &requester, crls.clone(), Some(json!({})))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, empty) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                empty["crl_number"].as_i64(),
+                empty["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(1), Some(0))
+        );
+        assert!(crl_verifies(&crl_der(empty["crl_pem"].as_str().unwrap())));
+
+        // The requester asks, with a reason from the closed list only; an
+        // officer approves; the requester cannot decide.
+        let revocations = format!("{apps}/{first}/revocation-requests");
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                revocations.clone(),
+                Some(json!({"reason_code": 6, "reason": "on hold"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, requested) = send(
+            "POST",
+            &requester,
+            revocations.clone(),
+            Some(json!({"reason_code": 1, "reason": "key leaked"})),
+        )
+        .await;
+        assert_eq!(
+            (status, requested["status"].as_str()),
+            (StatusCode::CREATED, Some("REVOCATION_REQUESTED"))
+        );
+        let decision = format!(
+            "{revocations}/{}/decision",
+            requested["revocation_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &requester,
+                decision.clone(),
+                Some(json!({"decision": "approve", "reason": "self"}))
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, decided) = send(
+            "POST",
+            &officer,
+            decision.clone(),
+            Some(json!({"decision": "approve", "reason": "confirmed"})),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                decided["status"].as_str(),
+                decided["revoked_at"].is_string()
+            ),
+            (StatusCode::CREATED, Some("REVOKED"), true)
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                decision,
+                Some(json!({"decision": "reject", "reason": "again"}))
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let item = listed(first.clone()).await;
+        assert_eq!(
+            (
+                item["status"].as_str(),
+                item["revocation_reason_code"].as_i64()
+            ),
+            (Some("REVOKED"), Some(1))
+        );
+
+        // The next CRL lists it, under the CA key, with its reason.
+        let (status, published) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                published["crl_number"].as_i64(),
+                published["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(2), Some(1))
+        );
+        let der = crl_der(published["crl_pem"].as_str().unwrap());
+        assert!(crl_verifies(&der));
+        let crl =
+            <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(&der).unwrap();
+        let entries = crl.tbs_cert_list.revoked_certificates.unwrap();
+        assert_eq!(
+            hex_bytes(entries[0].serial_number.as_bytes()),
+            issued["serial_hex"].as_str().unwrap()
+        );
+        assert_eq!(crl.tbs_cert_list.issuer, root.tbs_certificate.subject);
+
+        // Readers list the CRLs and fetch the exact DER.
+        let (_, list) = send("GET", &officer, crls.clone(), None).await;
+        assert_eq!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["crl_number"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        let fetched = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{crls}/2"))
+                    .header("authorization", format!("Bearer {officer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fetched.headers()["content-type"].to_str().unwrap(),
+            "application/pkix-crl"
+        );
+        assert_eq!(
+            fetched
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+            der
+        );
+
+        // The same key again returns the CRL's record without a new
+        // signature; unknown fields are refused.
+        let post_with_key = |path: String, body: serde_json::Value, key: String| {
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("authorization", format!("Bearer {officer}"))
+                .header("content-type", "application/json")
+                .header("idempotency-key", key)
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+                )
+            }
+        };
+        let key = random_uuid().to_string();
+        let (status, fifth) = post_with_key(crls.clone(), json!({}), key.clone()).await;
+        assert_eq!(
+            (status, fifth["crl_number"].as_i64()),
+            (StatusCode::CREATED, Some(3))
+        );
+        let (status, again) = post_with_key(crls.clone(), json!({}), key).await;
+        assert_eq!(
+            (
+                status,
+                again["crl_number"].as_i64(),
+                again["crl_pem"].is_null()
+            ),
+            (StatusCode::OK, Some(3), true)
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                crls.clone(),
+                Some(json!({"crl_number": 9}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // A signer holding another key: ambiguous, recorded as such, never
+        // sent again under the same key, and the next CRL takes a new number.
+        start_signer(other_key);
+        let key = random_uuid().to_string();
+        let (status, uncertain) = post_with_key(crls.clone(), json!({}), key.clone()).await;
+        assert_eq!(
+            (
+                status,
+                uncertain["status"].as_str(),
+                uncertain["crl_number"].as_i64()
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                Some("RECONCILIATION_REQUIRED"),
+                Some(4)
+            )
+        );
+        start_signer(key_file.clone());
+        assert_eq!(
+            post_with_key(crls.clone(), json!({}), key).await.0,
+            StatusCode::CONFLICT
+        );
+        let owner = owner_url.clone();
+        let ca_for_owner = ca.clone();
+        let outcomes = query_db(owner, Arc::new(Semaphore::new(1)), move |db| {
+            db.query(
+                "SELECT string_agg(crl_number || ':' || outcome, ',' ORDER BY crl_number) \
+                 FROM crl_signing_intent WHERE ca_id = $1::text::uuid",
+                &[&ca_for_owner],
+            )
+            .map(|rows| rows[0].get::<_, String>(0))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            outcomes,
+            "1:PUBLISHED,2:PUBLISHED,3:PUBLISHED,4:RECONCILIATION_REQUIRED"
+        );
+
+        // A signer that answers with another key's signature: the API's own
+        // verification refuses the CRL, which is never stored.
+        let _ = std::fs::remove_file(&socket);
+        let liar_url = signer_url.clone();
+        let liar = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let lying = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let (stream, _) = liar.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["kind"].as_str(), Some("crl"));
+            let tbs = base64::engine::general_purpose::STANDARD
+                .decode(request["tbs_der_base64"].as_str().unwrap())
+                .unwrap();
+            // A faulty signer: it claims the intent like the real one, then
+            // signs with the wrong key.
+            let mut db = postgres::Client::connect(&liar_url, postgres::NoTls).unwrap();
+            db.execute(
+                "SELECT claim_lab_crl_intent($1::text::uuid, $2)",
+                &[
+                    &request["intent_id"].as_str().unwrap(),
+                    &<sha2::Sha256 as sha2::Digest>::digest(&tbs).to_vec(),
+                ],
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::random(&mut rand::rngs::OsRng).sign(&tbs);
+            writeln!(
+                &stream,
+                "{}",
+                json!({"signature_der_base64":
+                base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())})
+            )
+            .unwrap();
+        });
+        let (status, refused) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        lying.join().unwrap();
+        assert_eq!(
+            (
+                status,
+                refused["crl_number"].as_i64(),
+                refused["crl_pem"].is_null()
+            ),
+            (StatusCode::BAD_GATEWAY, Some(5), true)
+        );
+        start_signer(key_file);
+        let (status, next) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                next["crl_number"].as_i64(),
+                next["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(6), Some(1))
+        );
+        let (_, list) = send("GET", &officer, crls.clone(), None).await;
+        assert_eq!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["crl_number"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![6, 3, 2, 1]
         );
         let _ = std::fs::remove_dir_all(key_dir);
     }

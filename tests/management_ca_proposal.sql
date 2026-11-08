@@ -9,7 +9,8 @@ CREATE FUNCTION pg_temp.expect_state(p_sql text, p_state text) RETURNS void
 LANGUAGE plpgsql AS $fn$
 BEGIN
     EXECUTE p_sql;
-    RAISE EXCEPTION 'expected SQLSTATE % from: %', p_state, p_sql;
+    -- A distinct code: success must never pass for an expected P0001.
+    RAISE EXCEPTION 'expected SQLSTATE % from: %', p_state, p_sql USING ERRCODE = 'TP000';
 EXCEPTION WHEN OTHERS THEN
     IF SQLSTATE <> p_state THEN
         RAISE EXCEPTION 'expected SQLSTATE %, got % (%) from: %', p_state, SQLSTATE, SQLERRM, p_sql;
