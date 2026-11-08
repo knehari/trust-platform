@@ -5,6 +5,7 @@ on:
     paths:
       - compose.lab.yaml
       - Dockerfile.api
+      - Dockerfile.control-api
       - Dockerfile.jobs
       - frontend/**
       - scripts/lab/**
@@ -33,6 +34,19 @@ jobs:
           docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
       - name: Build and start laboratory services
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 300
+      - name: Verify separate control API logins and anonymous refusal
+        run: |
+          set -euo pipefail
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8083/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/pending-status-changes)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8084/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/pending-admin-changes)" = 401
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          docker exec "$DB_CONTAINER" psql -U trust_lab -d trust_lab -tAc \
+            "SELECT pg_has_role('trust_revocation_api_lab','trust_revocation_officer_api','member')
+                    AND NOT pg_has_role('trust_revocation_api_lab','trust_ca_admin','member')
+                    AND pg_has_role('trust_ca_admin_api_lab','trust_ca_admin','member')
+                    AND NOT pg_has_role('trust_ca_admin_api_lab','trust_revocation_officer_api','member')
+                    AND NOT has_table_privilege('trust_revocation_api_lab','revocation','SELECT,INSERT,UPDATE,DELETE')
+                    AND NOT has_table_privilege('trust_ca_admin_api_lab','ca_issuer_certificate','SELECT,INSERT,UPDATE,DELETE')" | grep -qx t
       - name: Exercise Keycloak sign-in, code/PKCE and scoped database reads
         run: |
           set -a; . ./.env.lab; set +a

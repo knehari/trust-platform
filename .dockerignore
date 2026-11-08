@@ -1,5 +1,6 @@
 .git
 .env.lab
+.lab-keys
 **/node_modules
 **/target
 **/dist

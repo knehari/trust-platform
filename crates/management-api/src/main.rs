@@ -1,4 +1,5 @@
 mod auth;
+mod database;
 mod http_serve;
 mod http_tls;
 mod profile_activation;
@@ -21,7 +22,10 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use postgres::{types::ToSql, Client, IsolationLevel, NoTls, Row, Transaction};
+use database::Database;
+#[cfg(test)]
+use postgres::NoTls;
+use postgres::{types::ToSql, Client, IsolationLevel, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -53,14 +57,16 @@ static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone)]
 struct AppState {
     verifier: OidcVerifier,
-    database_url: String,
+    database_url: Database,
     /// Login holding only `trust_profile_writer` (migration 0022). Without
     /// it, the profile write routes answer 503.
-    writer_database_url: Option<String>,
+    writer_database_url: Option<Database>,
     database_slots: Arc<Semaphore>,
     http_data_slots: Arc<Semaphore>,
     readiness_slots: Arc<Semaphore>,
     readiness_cache: Arc<Mutex<ReadinessCache>>,
+    limiter: Arc<rate_limit::RateLimiter>,
+    peers: Arc<rate_limit::RateLimiter>,
 }
 
 #[derive(Default)]
@@ -252,9 +258,9 @@ fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
     if event_type.as_ref().is_some_and(|value| {
         value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) || decision.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) || policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -539,6 +545,7 @@ fn history_anchor(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_tls = http_tls::from_env()?;
+    let trusted_proxies = rate_limit::trusted_proxies_from_env()?;
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     http_tls::check_bind(&http_tls, &listener)?;
@@ -550,7 +557,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The OAuth client of the human console. Tokens issued to any other
     // client of the issuer (workloads included) are refused.
     let client_id = env::var("TRUST_OIDC_CLIENT_ID")?;
-    let database_url = env::var("TRUST_DATABASE_URL")?;
+    let database_tls = database::tls_from_settings(
+        env::var(database::TLS_MODE_ENV).ok().as_deref(),
+        env::var(database::CA_FILE_ENV).ok().as_deref(),
+    )?;
+    if matches!(database_tls, database::DatabaseTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"management_database_tls_disabled_lab"}));
+    }
+    let database_url = Database::new(
+        env::var("TRUST_DATABASE_URL")?,
+        database_tls.clone(),
+        MAX_DATABASE_REQUESTS + 1,
+    );
     let verifier = OidcVerifier::discover(&issuer, &audience, &client_id).await?;
     let database_slots = Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS));
     let safe_db_role = query_db(
@@ -587,7 +605,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Optional second login for the profile write routes (migration 0022).
     let writer_database_url = env::var("TRUST_WRITER_DATABASE_URL")
         .ok()
-        .filter(|url| !url.is_empty());
+        .filter(|url| !url.is_empty())
+        .map(|url| Database::new(url, database_tls, 0));
     if let Some(url) = &writer_database_url {
         let restricted = query_db(
             url.clone(),
@@ -608,10 +627,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+        peers: Arc::new(
+            rate_limit::RateLimiter::peers_per_minute().trusting(trusted_proxies.clone()),
+        ),
     });
     let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
     write_log(serde_json::json!({"event":"management_api_started","bind":bind,"tls":tls}));
-    http_tls::serve(listener, app, http_tls, http_serve::Limits::default()).await?;
+    http_tls::serve(
+        listener,
+        app,
+        http_tls,
+        http_serve::Limits {
+            trusted_proxies,
+            ..http_serve::Limits::default()
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -664,6 +696,10 @@ fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             limit_data_requests,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.peers.clone(),
+            rate_limit::limit_peers,
         ));
     Router::new()
         .route("/v1/health", get(health))
@@ -780,7 +816,7 @@ fn restricted_reader_role(db: &mut Client) -> Result<bool, postgres::Error> {
 }
 
 /// Verifies the bearer token only: 401 when it is missing or invalid.
-async fn authenticate(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
+async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Claims, StatusCode> {
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -788,16 +824,20 @@ async fn authenticate(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Cl
     let token = raw
         .strip_prefix("Bearer ")
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let claims = verifier
+    let claims = state
+        .verifier
         .verify(token)
         .await
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if !state.limiter.allow(&claims.iss, &claims.sub) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     Ok(claims)
 }
 
 /// Read routes: a verified token with the reader role (403 without it).
-async fn authorize(headers: &HeaderMap, verifier: &OidcVerifier) -> Result<Claims, StatusCode> {
-    let claims = authenticate(headers, verifier).await?;
+async fn authorize(headers: &HeaderMap, state: &AppState) -> Result<Claims, StatusCode> {
+    let claims = authenticate(headers, state).await?;
     if !claims.roles.iter().any(|role| role == "trust-ca-reader") {
         return Err(StatusCode::FORBIDDEN);
     }
@@ -857,7 +897,7 @@ fn canonical_serial_hex(raw: &str) -> Result<String, StatusCode> {
 }
 
 async fn query_db<T: Send + 'static>(
-    url: String,
+    target: impl Into<Database> + Send + 'static,
     slots: Arc<Semaphore>,
     query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
 ) -> Result<T, StatusCode> {
@@ -866,20 +906,12 @@ async fn query_db<T: Send + 'static>(
     let permit = slots
         .try_acquire_owned()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let target = target.into();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut config: postgres::Config =
-            url.parse().map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        config.connect_timeout(Duration::from_secs(3));
-        // Apply the limit at session startup so every management read, including
-        // startup checks, is bounded even after the connection succeeds.
-        config.options(&format!(
-            "-c statement_timeout={DATABASE_STATEMENT_TIMEOUT_MS}"
-        ));
-        let mut db = config
-            .connect(NoTls)
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        query(&mut db).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
+        target
+            .run_once(DATABASE_STATEMENT_TIMEOUT_MS, query)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
     })
     .await
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
@@ -891,13 +923,14 @@ async fn query_db<T: Send + 'static>(
 /// connection that declares none. The API's own CA predicates and grant checks
 /// stay in every query: the database filter is a second, independent layer.
 async fn query_db_as<T: Send + 'static>(
-    url: String,
+    target: impl Into<Database> + Send + 'static,
     slots: Arc<Semaphore>,
     principal: (String, String),
     query: impl FnOnce(&mut Client) -> Result<T, postgres::Error> + Send + 'static,
 ) -> Result<T, StatusCode> {
-    query_db(url, slots, move |db| {
-        // Session settings: each request opens its own connection and drops it.
+    query_db(target, slots, move |db| {
+        // The connection is cleared with DISCARD ALL before returning to the
+        // idle cache, so the next request cannot inherit this principal.
         db.execute(
             "SELECT set_config('trust.reader_issuer', $1, false), \
              set_config('trust.reader_subject', $2, false)",
@@ -931,7 +964,7 @@ async fn list_cas(
     headers: HeaderMap,
     Query(page): Query<CaPaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Ca>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let search = literal_prefix(page.q)?;
     let after = parse_ca_cursor(page.after)?;
     let (after_name, after_id) = after.map_or((None, None), |cursor| {
@@ -979,7 +1012,7 @@ async fn get_ca(
     headers: HeaderMap,
     Path(ca_id): Path<String>,
 ) -> Result<Json<Ca>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let issuer = claims.iss;
     let subject = claims.sub;
@@ -1013,7 +1046,7 @@ async fn list_profile_drafts(
     Path(ca_id): Path<String>,
     Query(page): Query<ProfileDraftQuery>,
 ) -> Result<(HeaderMap, Json<Vec<ProfileDraft>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     if page
         .profile_id
@@ -1026,7 +1059,7 @@ async fn list_profile_drafts(
     let search = literal_prefix(page.q)?;
     let policy_version = page.policy_version.map(|value| value.trim().to_owned());
     if policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -1153,7 +1186,7 @@ async fn get_profile_draft_revision(
     headers: HeaderMap,
     Path((ca_id, profile_id, revision)): Path<(String, String, String)>,
 ) -> Result<Json<ProfileDraft>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     if !valid_profile_id(&profile_id) {
         return Err(StatusCode::BAD_REQUEST);
@@ -1185,7 +1218,7 @@ async fn list_certificates(
     Path(ca_id): Path<String>,
     Query(page): Query<PaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Certificate>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let (comparison, direction) = history_order(page.order.as_deref())?;
     let cursor = parse_history_cursor(page.before)?;
@@ -1372,7 +1405,7 @@ async fn get_certificate(
     headers: HeaderMap,
     Path((ca_id, request_id)): Path<(String, String)>,
 ) -> Result<Json<Certificate>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let request_id = uuid::Uuid::parse_str(&request_id)
         .map_err(|_| StatusCode::BAD_REQUEST)?
@@ -1401,7 +1434,7 @@ async fn get_certificate_by_serial(
     headers: HeaderMap,
     Path((ca_id, serial_hex)): Path<(String, String)>,
 ) -> Result<Json<Certificate>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let serial_hex = canonical_serial_hex(&serial_hex)?;
     let issuer = claims.iss;
@@ -1429,7 +1462,7 @@ async fn list_audit(
     Path(ca_id): Path<String>,
     Query(page): Query<PaginationQuery>,
 ) -> Result<(HeaderMap, Json<Vec<Audit>>), StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let (comparison, direction) = history_order(page.order.as_deref())?;
     let filters = audit_filters(&page)?;
@@ -1498,7 +1531,7 @@ async fn get_audit_event(
     headers: HeaderMap,
     Path((ca_id, event_id)): Path<(String, String)>,
 ) -> Result<Json<Audit>, StatusCode> {
-    let claims = authorize(&headers, &state.verifier).await?;
+    let claims = authorize(&headers, &state).await?;
     let ca_id = scoped_ca_id(&ca_id, &claims)?;
     let event_id = uuid::Uuid::parse_str(&event_id)
         .map_err(|_| StatusCode::BAD_REQUEST)?
@@ -1599,12 +1632,14 @@ mod tests {
         );
         let state = AppState {
             verifier,
-            database_url: reader_url,
-            writer_database_url: Some(writer_url),
+            database_url: Database::lab_plaintext(reader_url),
+            writer_database_url: Some(Database::lab_plaintext(writer_url)),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         };
         let app = router(state.clone());
         let post = |token: &str, path: &str, key: Option<String>, body: String| {
@@ -1947,12 +1982,14 @@ mod tests {
         };
         let app = router(AppState {
             verifier,
-            database_url: reader_url,
-            writer_database_url: Some(writer_url),
+            database_url: Database::lab_plaintext(reader_url),
+            writer_database_url: Some(Database::lab_plaintext(writer_url)),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
             let mut request = Request::builder()
@@ -2220,12 +2257,14 @@ mod tests {
         let approver_as_operator = token("approver-http-1", json!(["trust-ca-operator"]));
         let app = router(AppState {
             verifier,
-            database_url: reader_url,
-            writer_database_url: Some(writer_url),
+            database_url: Database::lab_plaintext(reader_url),
+            writer_database_url: Some(Database::lab_plaintext(writer_url)),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let post = |token: &str, path: String, body: serde_json::Value, key: bool| {
             let mut request = Request::builder()
@@ -2639,12 +2678,14 @@ mod tests {
         .unwrap();
         let app = router(AppState {
             verifier,
-            database_url,
+            database_url: Database::lab_plaintext(database_url),
             writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let draft_base = "/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/profile-drafts";
         let (status, cursor, first) = history_page(&app, &token, draft_base).await;
@@ -3283,12 +3324,14 @@ mod tests {
         .unwrap();
         let app = router(AppState {
             verifier,
-            database_url,
+            database_url: Database::lab_plaintext(database_url),
             writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         let (status, cursor, first) = history_page(&app, &token, "/v1/cas").await;
         assert_eq!(status, StatusCode::OK);
@@ -3428,12 +3471,14 @@ mod tests {
         .unwrap();
         let app = router(AppState {
             verifier,
-            database_url: database_url.clone(),
+            database_url: Database::lab_plaintext(database_url.clone()),
             writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         });
         // The expected order is one unsliced statement through the same views,
         // as the reader login (the full scan the slices replace).
@@ -3647,12 +3692,14 @@ mod tests {
         let database_url = env::var("TRUST_API_TEST_DATABASE_URL").unwrap_or_default();
         let state = AppState {
             verifier,
-            database_url: database_url.clone(),
+            database_url: Database::lab_plaintext(database_url.clone()),
             writer_database_url: None,
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
         };
         let app = router(state.clone());
         let held_http = state
@@ -3736,9 +3783,13 @@ mod tests {
         assert_eq!(concurrent_probe.status(), StatusCode::SERVICE_UNAVAILABLE);
         drop(refresh_in_progress);
         let unavailable_app = router(AppState {
-            database_url:
-                "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing".into(),
+            database_url: Database::lab_plaintext(
+                "host=/nonexistent/trust-db-socket port=55432 user=missing dbname=missing"
+                    .to_owned(),
+            ),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+            limiter: Arc::new(rate_limit::RateLimiter::new(300, Duration::from_secs(60))),
+            peers: Arc::new(rate_limit::RateLimiter::peers_per_minute()),
             ..state.clone()
         });
         let liveness = unavailable_app
@@ -3831,6 +3882,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_role.status(), StatusCode::FORBIDDEN);
+        let limited_app = router(AppState {
+            limiter: Arc::new(rate_limit::RateLimiter::new(1, Duration::from_secs(60))),
+            ..state.clone()
+        });
+        for expected in [StatusCode::FORBIDDEN, StatusCode::TOO_MANY_REQUESTS] {
+            let response = limited_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/cas")
+                        .header("authorization", format!("Bearer {no_role_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
         assert_ne!(
             no_role
                 .headers()

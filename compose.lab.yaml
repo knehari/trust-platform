@@ -9,6 +9,8 @@ services:
       POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_WRITER_PASSWORD: ${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_REVOCATION_API_PASSWORD: ${TRUST_LAB_REVOCATION_API_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_CA_ADMIN_API_PASSWORD: ${TRUST_LAB_CA_ADMIN_API_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_HOUSEKEEPING_PASSWORD: ${TRUST_LAB_HOUSEKEEPING_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_AUDITOR_PASSWORD: ${TRUST_LAB_AUDITOR_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_SEALER_PASSWORD: ${TRUST_LAB_SEALER_PASSWORD:?Run scripts/lab/init-env.sh first}
@@ -63,6 +65,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:8081:8081" # API shares this network namespace for exact loopback OIDC issuer URL.
+      - "127.0.0.1:8083:8083" # Revocation API shares the same loopback OIDC issuer.
+      - "127.0.0.1:8084:8084" # CA administration API.
     healthcheck:
       # The image has no curl; bash's /dev/tcp reads the management health endpoint.
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
@@ -88,10 +92,63 @@ services:
       # Plain HTTP on the Compose network only (lab opt-out, logged); the
       # published port binds host loopback.
       TRUST_HTTP_TLS: disable-lab
+      TRUST_DATABASE_TLS: disable-lab
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_WRITER_DATABASE_URL: postgresql://trust_api_writer_lab:${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  revocation_api:
+    image: trust-lab-control-api
+    build:
+      context: .
+      dockerfile: Dockerfile.control-api
+    entrypoint: ["/usr/local/bin/revocation_api"]
+    network_mode: service:issuer
+    depends_on:
+      db: {condition: service_healthy}
+      issuer: {condition: service_healthy}
+    environment:
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
+      TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_OIDC_CLIENT_ID: trust-console
+      TRUST_REVOCATION_BIND: 0.0.0.0:8083
+      TRUST_HTTP_TLS: disable-lab
+      TRUST_DATABASE_TLS: disable-lab
+      TRUST_REVOCATION_DATABASE_URL: postgresql://trust_revocation_api_lab:${TRUST_LAB_REVOCATION_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_WEBAUTHN_RP_ID: officer.lab.invalid
+      TRUST_WEBAUTHN_ORIGIN: https://officer.lab.invalid
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8083/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/pending-status-changes)\" = 401"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  ca_admin_api:
+    image: trust-lab-control-api
+    build:
+      context: .
+      dockerfile: Dockerfile.control-api
+    entrypoint: ["/usr/local/bin/ca_admin_api"]
+    network_mode: service:issuer
+    depends_on:
+      db: {condition: service_healthy}
+      issuer: {condition: service_healthy}
+    environment:
+      TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
+      TRUST_OIDC_AUDIENCE: trust-api
+      TRUST_OIDC_CLIENT_ID: trust-console
+      TRUST_CA_ADMIN_BIND: 0.0.0.0:8084
+      TRUST_HTTP_TLS: disable-lab
+      TRUST_DATABASE_TLS: disable-lab
+      TRUST_CA_ADMIN_DATABASE_URL: postgresql://trust_ca_admin_api_lab:${TRUST_LAB_CA_ADMIN_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_WEBAUTHN_RP_ID: officer.lab.invalid
+      TRUST_WEBAUTHN_ORIGIN: https://officer.lab.invalid
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8084/v1/cas/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/pending-admin-changes)\" = 401"]
       interval: 3s
       timeout: 3s
       retries: 30

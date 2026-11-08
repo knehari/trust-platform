@@ -110,6 +110,35 @@ impl Database {
         Ok(value)
     }
 
+    /// Runs a request that owns its captured inputs. Reused sessions are
+    /// checked before the request, then cleared before another principal may
+    /// receive them. A failed cleanup discards the session.
+    pub fn run_once<T>(
+        &self,
+        statement_timeout_ms: u64,
+        query: impl FnOnce(&mut Client) -> Result<T, postgres::Error>,
+    ) -> Result<T, ()> {
+        let mut client = if let Some(mut idle) = self.take_idle() {
+            if idle.simple_query("SELECT 1").is_ok() {
+                idle
+            } else {
+                self.connect(statement_timeout_ms)?
+            }
+        } else {
+            self.connect(statement_timeout_ms)?
+        };
+        client
+            .simple_query(&format!("SET statement_timeout = {statement_timeout_ms}"))
+            .map_err(|_| ())?;
+        let result = query(&mut client).map_err(|_| ())?;
+        // DISCARD ALL resets trust.reader_issuer/subject, prepared statements
+        // and any other session state left by this request. The next checkout
+        // reapplies the timeout before running caller SQL.
+        client.simple_query("DISCARD ALL").map_err(|_| ())?;
+        self.put_idle(client);
+        Ok(result)
+    }
+
     fn take_idle(&self) -> Option<Client> {
         let mut idle = self
             .idle
@@ -143,6 +172,13 @@ impl Database {
 
     fn connect(&self, statement_timeout_ms: u64) -> Result<Client, ()> {
         connect_client(&self.url, &self.tls, statement_timeout_ms)
+    }
+}
+
+#[cfg(test)]
+impl From<String> for Database {
+    fn from(url: String) -> Self {
+        Self::lab_plaintext(url)
     }
 }
 
@@ -265,6 +301,38 @@ mod tests {
                 .query_one("SELECT pg_backend_pid()", &[])
                 .map(|row| row.get::<_, i32>(0))
         })
+    }
+
+    #[test]
+    fn reused_request_session_forgets_the_previous_reader() {
+        let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
+            return;
+        };
+        let db = Database::lab_plaintext(url);
+        let first = db
+            .run_once(3_000, |client| {
+                client.execute(
+                    "SELECT set_config('trust.reader_issuer', $1, false)",
+                    &[&"https://first.invalid"],
+                )?;
+                client
+                    .query_one("SELECT pg_backend_pid()", &[])
+                    .map(|row| row.get::<_, i32>(0))
+            })
+            .unwrap();
+        let (second, principal, timeout): (i32, Option<String>, String) = db.run_once(3_000, |client| {
+            let row = client.query_one(
+                "SELECT pg_backend_pid(), current_setting('trust.reader_issuer', true), current_setting('statement_timeout')",
+                &[],
+            )?;
+            Ok((row.get(0), row.get(1), row.get(2)))
+        }).unwrap();
+        assert_eq!(second, first, "the same connection should be reused");
+        assert!(
+            principal.unwrap_or_default().is_empty(),
+            "reader identity must be cleared"
+        );
+        assert_eq!(timeout, "3s");
     }
 
     /// Uses the restricted CI login (TRUST_API_TEST_DATABASE_URL).

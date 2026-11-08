@@ -1,0 +1,12 @@
+FROM rust:1.99.0-bookworm AS build
+WORKDIR /app
+COPY . .
+RUN cargo build -p trust-management-api --release --locked \
+    --bin revocation_api --bin ca_admin_api
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/target/release/revocation_api /usr/local/bin/revocation_api
+COPY --from=build /app/target/release/ca_admin_api /usr/local/bin/ca_admin_api
+USER nobody

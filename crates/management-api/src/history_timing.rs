@@ -91,12 +91,17 @@ fn app_and_token(database_url: String, slots: usize) -> (Router, String) {
     .unwrap();
     let app = router(AppState {
         verifier,
-        database_url,
+        database_url: crate::database::Database::lab_plaintext(database_url),
         writer_database_url: None,
         database_slots: Arc::new(Semaphore::new(slots)),
         http_data_slots: Arc::new(Semaphore::new(slots)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        limiter: Arc::new(crate::rate_limit::RateLimiter::new(
+            300,
+            Duration::from_secs(60),
+        )),
+        peers: Arc::new(crate::rate_limit::RateLimiter::peers_per_minute()),
     });
     (app, token)
 }

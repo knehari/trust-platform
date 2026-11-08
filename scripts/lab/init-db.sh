@@ -9,6 +9,8 @@ for migration in "$migrations_dir"/*.sql; do
 done
 
 psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" \
+  -v revocation_api_password="$TRUST_LAB_REVOCATION_API_PASSWORD" \
+  -v ca_admin_api_password="$TRUST_LAB_CA_ADMIN_API_PASSWORD" \
   -v housekeeping_password="$TRUST_LAB_HOUSEKEEPING_PASSWORD" \
   -v auditor_password="$TRUST_LAB_AUDITOR_PASSWORD" -v sealer_password="$TRUST_LAB_SEALER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
@@ -19,6 +21,11 @@ GRANT trust_api_reader TO trust_api_lab;
 -- the two lifecycle functions, and holds no table or view privilege.
 SELECT format('CREATE ROLE trust_api_writer_lab LOGIN INHERIT PASSWORD %L', :'writer_password') \gexec
 GRANT trust_profile_writer TO trust_api_writer_lab;
+-- The two control APIs have separate logins and only their capability roles.
+SELECT format('CREATE ROLE trust_revocation_api_lab LOGIN INHERIT PASSWORD %L', :'revocation_api_password') \gexec
+GRANT trust_revocation_officer_api TO trust_revocation_api_lab;
+SELECT format('CREATE ROLE trust_ca_admin_api_lab LOGIN INHERIT PASSWORD %L', :'ca_admin_api_password') \gexec
+GRANT trust_ca_admin TO trust_ca_admin_api_lab;
 -- Scheduled jobs each receive only their own database capability.
 SELECT format('CREATE ROLE trust_housekeeping_lab LOGIN INHERIT PASSWORD %L', :'housekeeping_password') \gexec
 GRANT trust_crl_operator TO trust_housekeeping_lab;

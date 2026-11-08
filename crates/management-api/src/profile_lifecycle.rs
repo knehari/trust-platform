@@ -67,7 +67,7 @@ pub(crate) struct WriteContext {
     /// The Idempotency-Key, or empty when the route records nothing.
     pub(crate) operation: String,
     pub(crate) request_sha256: Vec<u8>,
-    pub(crate) writer_url: String,
+    pub(crate) writer_url: crate::database::Database,
 }
 
 /// Verifies the token, the lifecycle role and the CA scope, then the
@@ -80,7 +80,7 @@ pub(crate) async fn write_context(
     required_role: &str,
     idempotent: bool,
 ) -> Result<WriteContext, StatusCode> {
-    let claims = authenticate(headers, &state.verifier).await?;
+    let claims = authenticate(headers, state).await?;
     if !claims.roles.iter().any(|role| role == required_role) {
         return Err(StatusCode::FORBIDDEN);
     }
