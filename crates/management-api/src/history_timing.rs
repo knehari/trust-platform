@@ -97,6 +97,7 @@ fn app_and_token(database_url: String, slots: usize) -> (Router, String) {
         http_data_slots: Arc::new(Semaphore::new(slots)),
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
+        signer_socket: None,
     });
     (app, token)
 }

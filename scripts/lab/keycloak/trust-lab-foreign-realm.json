@@ -42,11 +42,27 @@
       },
       {
         "name": "trust-policy-approver",
-        "description": "Reserved: approve an exact profile revision. No API route accepts it yet."
+        "description": "Approve or reject an exact submitted profile revision with a registered key (with a policy-approver grant for the CA)."
       },
       {
         "name": "trust-ca-operator",
-        "description": "Reserved: request activation of an approved profile. No API route accepts it yet."
+        "description": "Activate or retire an approved profile revision (with a ca-operator grant for the CA)."
+      },
+      {
+        "name": "trust-ca-administrator",
+        "description": "Propose a CA, register its self-signed issuer certificate and activate it once approved (with a ca-administrator platform grant)."
+      },
+      {
+        "name": "trust-ca-approver",
+        "description": "Approve or reject a key-attested CA proposal, or a CA reactivation or retirement, with a registered key (with a ca-approver platform grant)."
+      },
+      {
+        "name": "trust-certificate-requester",
+        "description": "Submit certificate applications for a CA's active profiles (with a certificate-requester grant for the CA)."
+      },
+      {
+        "name": "trust-registration-officer",
+        "description": "Approve or reject certificate applications of others (with a registration-officer grant for the CA)."
       }
     ]
   },
@@ -136,7 +152,11 @@
         "trust-ca-reader",
         "trust-profile-editor",
         "trust-policy-approver",
-        "trust-ca-operator"
+        "trust-ca-operator",
+        "trust-ca-administrator",
+        "trust-ca-approver",
+        "trust-certificate-requester",
+        "trust-registration-officer"
       ]
     }
   ],

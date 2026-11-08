@@ -94,6 +94,20 @@ fi
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f migrations/0025_profile_draft_revision_sequence.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0026_ca_proposal.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0027_ca_approval_activation.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0028_ca_suspension_retirement.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0029_certificate_application.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0030_application_issuance.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0031_revocation_crl.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0032_crl_publication.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_api_readonly.sql >/dev/null

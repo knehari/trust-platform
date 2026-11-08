@@ -5,6 +5,9 @@ on:
     paths:
       - compose.lab.yaml
       - Dockerfile.api
+      - Dockerfile.signer
+      - crates/lab-signer/**
+      - crates/pki-core/**
       - frontend/**
       - scripts/lab/**
       - tests/management_browser_e2e_seed.sql
@@ -61,6 +64,18 @@ jobs:
         run: |
           set -a; . ./.env.lab; set +a
           node frontend/dev/profile-lifecycle-e2e.mjs
+      - name: Propose a CA and register its OpenSSL root through Keycloak identities
+        run: |
+          set -a; . ./.env.lab; set +a
+          node frontend/dev/ca-proposal-e2e.mjs
+      - name: Submit, approve and issue certificate applications on the lab issuing CA
+        run: |
+          set -a; . ./.env.lab; set +a
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          test -n "$DB_CONTAINER"
+          # The database owner's own action: grants on the new issuing CA.
+          export TRUST_LAB_OWNER_PSQL="docker exec -i $DB_CONTAINER psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 -q"
+          node frontend/dev/certificate-application-e2e.mjs
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80

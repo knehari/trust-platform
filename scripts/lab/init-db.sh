@@ -8,8 +8,9 @@ for migration in "$migrations_dir"/*.sql; do
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"
 done
 
-psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" \
+psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" -v signer_password="$TRUST_LAB_SIGNER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
+  -v ca_approver1_sec1="$TRUST_LAB_CA_APPROVER_1_SEC1" -v ca_approver2_sec1="$TRUST_LAB_CA_APPROVER_2_SEC1" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
 SELECT format('CREATE ROLE trust_api_lab LOGIN INHERIT PASSWORD %L', :'api_password') \gexec
 GRANT trust_api_reader TO trust_api_lab;
@@ -17,6 +18,10 @@ GRANT trust_api_reader TO trust_api_lab;
 -- the two lifecycle functions, and holds no table or view privilege.
 SELECT format('CREATE ROLE trust_api_writer_lab LOGIN INHERIT PASSWORD %L', :'writer_password') \gexec
 GRANT trust_profile_writer TO trust_api_writer_lab;
+-- The lab signer's login (migration 0030, ADR-0017): it can only read the
+-- signer view and claim an intent once; it writes nothing else.
+SELECT format('CREATE ROLE trust_signer_lab LOGIN INHERIT PASSWORD %L', :'signer_password') \gexec
+GRANT trust_lab_signer TO trust_signer_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');
@@ -43,15 +48,27 @@ INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
--- Lifecycle role grants (migration 0022). lab-author (reader and editor) and
--- lab-editor (editor only) may record and submit drafts for CA E. Nobody may
--- for CA F, and no approver or operator grant exists: those routes do not.
+-- Lifecycle role grants (migrations 0022–0024). lab-author (reader and
+-- editor) and lab-editor (editor only) may record and submit drafts for CA E;
+-- lab-approver-1 and lab-approver-2 may decide on them, and lab-operator may
+-- activate and retire them. Nobody holds a grant for CA F.
 INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
   ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ca-operator');
+-- CA proposals (migration 0026): lab-ca-admin may propose CAs and register
+-- their issuer certificates. A proposal is not a CA and issues nothing.
+INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000012','ca-administrator'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013','ca-approver'),
+  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014','ca-approver');
+-- CA approver keys (migration 0027): the public halves of the keys
+-- init-env.sh generated; distinct from the profile approver keys.
+INSERT INTO ca_approver_key(key_id,issuer,subject,public_key_sec1) VALUES
+  ('lab-ca-approver-1-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013',decode(:'ca_approver1_sec1','hex')),
+  ('lab-ca-approver-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014',decode(:'ca_approver2_sec1','hex'));
 -- Signing capabilities the owner declares for the allowed CA (migration
 -- 0024). A declaration is not evidence that a provider or key can issue.
 INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES

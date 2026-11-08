@@ -12,9 +12,23 @@ follow [ADR-0011](../adr/ADR-0011-signed-profile-decisions.md) (Proposed).
 **Update, 7 November 2026:** activation and retirement follow
 [ADR-0012](../adr/ADR-0012-profile-revision-activation.md) (Proposed), against
 owner-declared CA signing capabilities and the CA's policy version; the issuer
-certificate is not checked because no CA key binding exists. Every CA
-transition remains unimplemented, and no issuance path reads the active
-revision. This contract refines
+certificate is not checked because no CA key binding exists. No issuance
+path reads the active revision.
+**Update, 7 November 2026:** a CA administrator can propose a CA and register
+its self-signed issuer certificate, verified by the API and bound to the
+proposal by the database
+([ADR-0013](../adr/ADR-0013-ca-proposal-and-issuer-certificate.md),
+Proposed). A proposal is not a CA.
+**Update, 7 November 2026:** two CA approvers with distinct registered keys
+approve a key-attested proposal and a non-approving administrator activates
+it, creating the CA with its attested suite as its only capability
+([ADR-0014](../adr/ADR-0014-ca-approval-and-activation.md), Proposed).
+**Update, 7 November 2026:** one administrator suspends an activated CA at
+once; reactivation and retirement need a change request approved by two CA
+approvers and applied by an administrator who did not decide. Suspended and
+retired CAs cannot gain active profiles, and retirement retires the active
+ones ([ADR-0015](../adr/ADR-0015-ca-suspension-and-retirement.md),
+Proposed). No issuance path uses CAs or profiles yet. This contract refines
 [ADR-0003](../adr/ADR-0003-authenticated-identity-and-csr-trust.md) and
 [ADR-0005](../adr/ADR-0005-rust-management-control-plane.md); independent PKI
 and security review, G0 and real identity provisioning remain open.

@@ -9,8 +9,8 @@ runner=${TRUST_LEDGER_BIN:-target/debug/lab_migrate_management}
 
 source_versions=$("$psql_bin" "$TRUST_RESTORE_SOURCE_URL" -XAt -v ON_ERROR_STOP=1 \
   -c "SELECT string_agg(version, ',' ORDER BY version) FROM management_migration_ledger")
-if [[ "$source_versions" != '0012_management_read_views,0013_management_reader_grants,0014_certificate_subject_cn,0015_verified_certificate_metadata,0016_profile_draft_catalogue,0017_management_history_window,0018_management_certificate_san,0019_management_certificate_cn_lower,0020_management_history_bounds,0021_management_reader_isolation,0022_profile_draft_submission,0023_profile_draft_decision,0024_profile_revision_activation,0025_profile_draft_revision_sequence' ]]; then
-  echo 'Restore source lacks the complete 0012–0025 migration ledger' >&2
+if [[ "$source_versions" != '0012_management_read_views,0013_management_reader_grants,0014_certificate_subject_cn,0015_verified_certificate_metadata,0016_profile_draft_catalogue,0017_management_history_window,0018_management_certificate_san,0019_management_certificate_cn_lower,0020_management_history_bounds,0021_management_reader_isolation,0022_profile_draft_submission,0023_profile_draft_decision,0024_profile_revision_activation,0025_profile_draft_revision_sequence,0026_ca_proposal,0027_ca_approval_activation,0028_ca_suspension_retirement,0029_certificate_application,0030_application_issuance,0031_revocation_crl,0032_crl_publication' ]]; then
+  echo 'Restore source lacks the complete 0012–0032 migration ledger' >&2
   exit 1
 fi
 
@@ -31,6 +31,13 @@ if [[ "$run_output" != *'SKIP: 0012_management_read_views already recorded with 
    [[ "$run_output" != *'SKIP: 0023_profile_draft_decision already recorded with matching checksum'* ]] ||
    [[ "$run_output" != *'SKIP: 0024_profile_revision_activation already recorded with matching checksum'* ]] ||
    [[ "$run_output" != *'SKIP: 0025_profile_draft_revision_sequence already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0026_ca_proposal already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0027_ca_approval_activation already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0028_ca_suspension_retirement already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0029_certificate_application already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0030_application_issuance already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0031_revocation_crl already recorded with matching checksum'* ]] ||
+   [[ "$run_output" != *'SKIP: 0032_crl_publication already recorded with matching checksum'* ]] ||
    [[ "$run_output" == *'APPLY:'* ]]; then
   echo 'Restored migration ledger was not recognized without reapplication' >&2
   echo "$run_output" >&2
