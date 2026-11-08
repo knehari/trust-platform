@@ -1,8 +1,13 @@
 mod auth;
+mod http_serve;
+mod http_tls;
 mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
+#[allow(dead_code)]
+mod rate_limit;
+mod response_headers;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -533,6 +538,13 @@ fn history_anchor(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let http_tls = http_tls::from_env()?;
+    let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    http_tls::check_bind(&http_tls, &listener)?;
+    if matches!(http_tls, http_tls::HttpTls::DisabledForLab) {
+        write_log(serde_json::json!({"event":"management_http_tls_disabled_lab"}));
+    }
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
     // The OAuth client of the human console. Tokens issued to any other
@@ -597,10 +609,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         readiness_slots: Arc::new(Semaphore::new(1)),
         readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
     });
-    let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    write_log(serde_json::json!({"event":"management_api_started","bind":bind}));
-    axum::serve(listener, app).await?;
+    let tls = matches!(http_tls, http_tls::HttpTls::Enabled(_));
+    write_log(serde_json::json!({"event":"management_api_started","bind":bind,"tls":tls}));
+    http_tls::serve(listener, app, http_tls, http_serve::Limits::default()).await?;
     Ok(())
 }
 
@@ -658,6 +669,7 @@ fn router(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/ready", get(ready))
         .merge(data_routes)
+        .layer(middleware::from_fn(response_headers::security_headers))
         .layer(middleware::from_fn(log_request))
         .with_state(state)
 }
