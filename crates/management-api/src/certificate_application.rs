@@ -87,6 +87,9 @@ struct Application {
     decision_reason: Option<String>,
     submitted_at: String,
     decided_at: Option<String>,
+    certificate_serial_hex: Option<String>,
+    certificate_sha256: Option<String>,
+    certificate_request_id: Option<String>,
 }
 
 /// A lowercase LDH DNS name of at least two labels; no wildcard. The
@@ -337,7 +340,8 @@ pub(crate) async fn list_applications(
         move |db| {
             db.query(
                 "SELECT application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, \
-                 dns_names, validity_days, status, decision_reason, submitted_at, decided_at \
+                 dns_names, validity_days, status, decision_reason, submitted_at, decided_at, \
+                 certificate_serial_hex, certificate_sha256, certificate_request_id \
                  FROM management_certificate_application WHERE ca_id = $1 \
                  ORDER BY submitted_at DESC, application_id LIMIT 100",
                 &[&ca_id],
@@ -360,6 +364,9 @@ pub(crate) async fn list_applications(
             decision_reason: row.get(9),
             submitted_at: row.get(10),
             decided_at: row.get(11),
+            certificate_serial_hex: row.get(12),
+            certificate_sha256: row.get(13),
+            certificate_request_id: row.get(14),
         })
         .collect();
     Ok(with_replay_header(Json(items).into_response(), false))

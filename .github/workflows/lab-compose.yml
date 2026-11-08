@@ -5,6 +5,9 @@ on:
     paths:
       - compose.lab.yaml
       - Dockerfile.api
+      - Dockerfile.signer
+      - crates/lab-signer/**
+      - crates/pki-core/**
       - frontend/**
       - scripts/lab/**
       - tests/management_browser_e2e_seed.sql
@@ -65,7 +68,7 @@ jobs:
         run: |
           set -a; . ./.env.lab; set +a
           node frontend/dev/ca-proposal-e2e.mjs
-      - name: Submit and approve certificate applications on the lab issuing CA
+      - name: Submit, approve and issue certificate applications on the lab issuing CA
         run: |
           set -a; . ./.env.lab; set +a
           DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"

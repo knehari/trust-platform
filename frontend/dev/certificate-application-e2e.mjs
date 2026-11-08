@@ -4,12 +4,14 @@
 // lifecycle (ADR-0013 to ADR-0014), lets the database owner provision grants
 // on it (TRUST_LAB_OWNER_PSQL, a psql command line for the owner), activates
 // a profile through the profile lifecycle (ADR-0010 to ADR-0012), then
-// submits OpenSSL CSRs. Nothing is signed: issuance is the next slice.
+// submits OpenSSL CSRs. Approved applications are issued by the lab signer
+// (ADR-0017) and the certificates are checked with `openssl verify` against
+// the root that create-lab-root.sh made.
 // Run on a fresh stack with .env.lab loaded, after the other suites.
 import assert from 'node:assert/strict';
 import { execFileSync, execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,8 +49,10 @@ const sign = (keyName, claim) => execFileSync('openssl', ['dgst', '-sha256', '-s
 const keys = mkdtempSync(join(tmpdir(), 'trust-csr-'));
 // A CSR made the way an applicant would: OpenSSL, a fresh P-256 key that
 // never leaves this temporary directory.
+const keyOf = new Map();
 function csr(commonName) {
   const key = join(keys, `${randomUUID()}.pem`);
+  keyOf.set(commonName, key);
   return execFileSync('openssl', ['req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes',
     '-keyout', key, '-subj', `/CN=${commonName}`, '-config', '/dev/null'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
 }
@@ -59,6 +63,9 @@ const author = await token('lab-author', 'TRUST_LAB_PW_AUTHOR');
 const approvers = [await token('lab-approver-1', 'TRUST_LAB_PW_APPROVER_1'), await token('lab-approver-2', 'TRUST_LAB_PW_APPROVER_2')];
 const operator = await token('lab-operator', 'TRUST_LAB_PW_OPERATOR');
 let applicationId;
+let serial;
+const issuingRoot = join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.crt');
+const openssl = (args, input) => execFileSync('openssl', args, { input, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
 
 try {
   await check('the lab issuing CA is proposed with its identifier, attested, approved and activated', async () => {
@@ -123,10 +130,46 @@ try {
     const mine = listed.body.find(item => item.application_id === applicationId);
     assert.deepEqual([mine.status, mine.subject_cn, mine.dns_names], ['APPROVED', 'www.lab.invalid', ['www.lab.invalid', 'api.lab.invalid']]);
   });
+
+  await check('the lab signer issues the approved application once; OpenSSL verifies it against the root', async () => {
+    const issuance = `${applications}/${applicationId}/issuance`;
+    const issued = await send('POST', issuance, requester, {});
+    assert.deepEqual([issued.status, issued.body.status], [201, 'ISSUED']);
+    serial = issued.body.serial_hex;
+    const certificate = join(keys, 'issued.crt');
+    writeFileSync(certificate, issued.body.certificate_pem);
+    assert.equal(openssl(['verify', '-CAfile', issuingRoot, '-purpose', 'sslserver', certificate]).trim(), `${certificate}: OK`);
+    const text = openssl(['x509', '-in', certificate, '-noout', '-subject', '-ext', 'subjectAltName,basicConstraints,extendedKeyUsage']);
+    assert.match(text, /subject=CN\s?=\s?www\.lab\.invalid/);
+    assert.match(text, /DNS:www\.lab\.invalid, DNS:api\.lab\.invalid/);
+    assert.match(text, /CA:FALSE/);
+    assert.match(text, /TLS Web Server Authentication/);
+    // The certificate carries the applicant's own key, never the CA's.
+    const applicantKey = openssl(['pkey', '-in', keyOf.get('www.lab.invalid'), '-pubout']);
+    assert.equal(openssl(['x509', '-in', certificate, '-noout', '-pubkey']), applicantKey);
+    assert.equal(openssl(['x509', '-in', certificate, '-noout', '-serial']).trim().toLowerCase(), `serial=${serial}`);
+    // Asking again never signs again.
+    const again = await send('POST', issuance, officer, {});
+    assert.deepEqual([again.status, again.body.status, again.body.certificate_pem], [200, 'ISSUED', null]);
+    const listed = await send('GET', applications, officer);
+    const mine = listed.body.find(item => item.application_id === applicationId);
+    assert.deepEqual([mine.status, mine.certificate_serial_hex], ['ISSUED', serial]);
+  });
+
+  await check('a rejected application, or one never decided, is not issued', async () => {
+    const rejected = await apply('old.lab.invalid', ['old.lab.invalid']);
+    assert.equal(rejected.status, 201);
+    const pending = await apply('new.lab.invalid', ['new.lab.invalid']);
+    assert.equal(pending.status, 201);
+    const decision = `${applications}/${rejected.body.application_id}/decision`;
+    assert.equal((await send('POST', decision, officer, { decision: 'reject', reason: 'not needed' })).status, 201);
+    assert.equal((await send('POST', `${applications}/${rejected.body.application_id}/issuance`, officer, {})).status, 409);
+    assert.equal((await send('POST', `${applications}/${pending.body.application_id}/issuance`, requester, {})).status, 409);
+  });
 } finally {
   rmSync(keys, { recursive: true, force: true });
-  rmSync(join(repository, '.lab-keys', 'ca-root-lab-issuing-ca.pem'), { force: true });
-  rmSync(join(repository, '.lab-keys', 'ca-root-lab-issuing-ca.crt'), { force: true });
+  rmSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem'), { force: true });
+  rmSync(issuingRoot, { force: true });
 }
 
-console.log(`Laboratory certificate application suite passed: ${results.length} cases (application ${applicationId}; nothing signed).`);
+console.log(`Laboratory certificate application suite passed: ${results.length} cases (application ${applicationId}; certificate serial ${serial}).`);

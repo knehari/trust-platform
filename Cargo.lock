@@ -1973,6 +1973,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-lab-signer"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "p256",
+ "postgres",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "trust-pki-core",
+ "x509-cert",
+]
+
+[[package]]
 name = "trust-management-api"
 version = "0.1.0"
 dependencies = [
@@ -1990,6 +2005,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower",
+ "trust-lab-signer",
  "trust-pki-core",
  "trust-pki-crypto",
  "uuid",

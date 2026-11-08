@@ -8,7 +8,7 @@ for migration in "$migrations_dir"/*.sql; do
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"
 done
 
-psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" \
+psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" -v signer_password="$TRUST_LAB_SIGNER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
   -v ca_approver1_sec1="$TRUST_LAB_CA_APPROVER_1_SEC1" -v ca_approver2_sec1="$TRUST_LAB_CA_APPROVER_2_SEC1" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
@@ -18,6 +18,10 @@ GRANT trust_api_reader TO trust_api_lab;
 -- the two lifecycle functions, and holds no table or view privilege.
 SELECT format('CREATE ROLE trust_api_writer_lab LOGIN INHERIT PASSWORD %L', :'writer_password') \gexec
 GRANT trust_profile_writer TO trust_api_writer_lab;
+-- The lab signer's login (migration 0029, ADR-0017): it can only read the
+-- signer view and claim an intent once; it writes nothing else.
+SELECT format('CREATE ROLE trust_signer_lab LOGIN INHERIT PASSWORD %L', :'signer_password') \gexec
+GRANT trust_lab_signer TO trust_signer_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');

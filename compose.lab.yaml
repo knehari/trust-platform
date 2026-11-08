@@ -9,6 +9,7 @@ services:
       POSTGRES_PASSWORD: ${TRUST_LAB_DB_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_WRITER_PASSWORD: ${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_SIGNER_PASSWORD: ${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}
       # Public keys only; the private keys stay in .lab-keys/ on the host.
       TRUST_LAB_APPROVER_1_SEC1: ${TRUST_LAB_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
@@ -74,6 +75,35 @@ services:
       start_period: 20s
     networks: [lab]
 
+  signer:
+    # Laboratory signer (ADR-0017, Proposed): an independent policy gate that
+    # signs approved intents of the lab issuing CA with a software key. It
+    # listens only on a Unix socket in a volume shared with the API, mounts
+    # only .lab-keys/ca/ read-only, and its database login can only read the
+    # signer view and claim an intent once. It runs as root to read the
+    # host-owned 0600 key file, and hands its 0600 socket to the API's user
+    # (nobody). No custody, ceremony or hardware protection: lab only.
+    build:
+      context: .
+      dockerfile: Dockerfile.signer
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
+      TRUST_SIGNER_SOCKET_OWNER: "65534:65534"
+      TRUST_SIGNER_DATABASE_URL: postgresql://trust_signer_lab:${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_SIGNER_CA_ID: dddddddd-dddd-4ddd-8ddd-dddddddddddd
+      TRUST_SIGNER_KEY_FILE: /lab-keys/ca/ca-root-lab-issuing-ca.pem
+    volumes:
+      - ./.lab-keys/ca:/lab-keys/ca:ro
+      - trust_signer_socket:/run/trust-signer
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/trust-signer/signer.sock"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks: [lab]
+
   api:
     build:
       context: .
@@ -82,6 +112,9 @@ services:
     depends_on:
       db: {condition: service_healthy}
       issuer: {condition: service_healthy}
+      signer: {condition: service_healthy}
+    volumes:
+      - trust_signer_socket:/run/trust-signer
     environment:
       TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       TRUST_OIDC_AUDIENCE: trust-api
@@ -89,6 +122,8 @@ services:
       TRUST_API_BIND: 0.0.0.0:8081
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_WRITER_DATABASE_URL: postgresql://trust_api_writer_lab:${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      # Issuance (ADR-0017): the lab signer's socket; without it issuance is 503.
+      TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
       interval: 3s
@@ -117,6 +152,7 @@ services:
 
 volumes:
   trust_lab_pg:
+  trust_signer_socket:
 
 networks:
   lab:
