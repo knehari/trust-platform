@@ -22,6 +22,7 @@ const STATUS_OVERRIDES: Record<string, string> = {
 
 /** `KEY_ATTESTED` → `Key attested`; `allow` → `Allowed`. */
 export function humanizeStatus(code: string): string {
+  code = String(code ?? '');
   if (STATUS_OVERRIDES[code]) return STATUS_OVERRIDES[code];
   const words = code.split(/[_\s]+/u).filter(Boolean);
   if (words.length === 0) return code;
@@ -85,6 +86,7 @@ export interface EventDescription { label: string; category: EventCategory; code
 
 /** A label and a category for an audit event type; unknown types stay readable. */
 export function describeEvent(type: string): EventDescription {
+  type = String(type ?? '');
   const category = CATEGORY_PREFIXES.find(([prefix]) => type.startsWith(prefix))?.[1] ?? 'other';
   if (EVENT_LABELS[type]) return { label: EVENT_LABELS[type], category, code: type };
   const parts = type.split('.').filter(Boolean);
@@ -111,7 +113,7 @@ export type Outcome =
  * reference (`created:<uuid>`) or a single result word (`persisted`).
  */
 export function describeOutcome(decision: string): Outcome {
-  const value = decision.trim();
+  const value = String(decision ?? '').trim();
   if (value === 'allow' || value === 'deny') return { kind: 'decision', status: value };
   const transition = /^([A-Z][A-Z0-9_]*)\s*->\s*([A-Z][A-Z0-9_]*)$/u.exec(value);
   if (transition) return { kind: 'transition', from: transition[1], to: transition[2] };
@@ -123,6 +125,7 @@ export function describeOutcome(decision: string): Outcome {
 
 /** `5 min ago`, `in 3 h`, `yesterday`; falls back to the date after a week. */
 export function relativeTime(value: string, now: Date): string {
+  if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
   const seconds = Math.round((date.valueOf() - now.valueOf()) / 1000);

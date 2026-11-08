@@ -368,3 +368,7 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--ui-accen
 table[aria-label='Audit events'] { min-width: 0; table-layout: auto; }
 table[aria-label='Audit events'] td:last-child, table[aria-label='Audit events'] th:last-child { width: 1%; white-space: nowrap; }
 .certificate-table td.mono { white-space: nowrap; }
+.ui-crash { max-width: 760px; margin: 12vh auto; padding: 28px; border: 1px solid var(--ui-border); border-radius: 14px; background: #fff; font-family: inherit; }
+.ui-crash h1 { margin: 0 0 8px; font-size: 22px; }
+.ui-crash p { color: var(--ui-text-2); }
+.ui-crash pre { max-height: 300px; overflow: auto; padding: 12px; border-radius: 8px; background: #0f2235; color: #d8e8f2; font-size: 12px; white-space: pre-wrap; }
