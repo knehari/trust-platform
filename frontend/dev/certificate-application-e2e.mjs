@@ -155,6 +155,9 @@ try {
     assert.match(text, /DNS:www\.lab\.invalid, DNS:api\.lab\.invalid/);
     assert.match(text, /CA:FALSE/);
     assert.match(text, /TLS Web Server Authentication/);
+    // It names the CA's public latest-CRL route (ADR-0019).
+    const points = openssl(['x509', '-in', certificate, '-noout', '-ext', 'crlDistributionPoints']);
+    assert.match(points, new RegExp(`URI:${api}/v1/public/crls/${issuingCa}/latest\\.crl`));
     // The certificate carries the applicant's own key, never the CA's.
     const applicantKey = openssl(['pkey', '-in', keyOf.get('www.lab.invalid'), '-pubout']);
     assert.equal(openssl(['x509', '-in', certificate, '-noout', '-pubkey']), applicantKey);
@@ -185,6 +188,12 @@ try {
     assert.ok(verified.ok && /verify OK/.test(verified.output), verified.output);
     const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', file, issuedCertificate]);
     assert.ok(checked.ok, checked.output);
+    // OpenSSL itself downloads the CRL from the certificate's distribution
+    // point, without a token.
+    const downloaded = opensslOutcome(['verify', '-crl_check', '-crl_download', '-CAfile', issuingRoot, issuedCertificate]);
+    assert.ok(downloaded.ok, downloaded.output);
+    const status = await send('GET', `/v1/cas/${issuingCa}/crl-status`, officer);
+    assert.deepEqual([status.body.latest_crl_number, status.body.renewal_due, status.body.expired], [crlNumber, false, false]);
   });
 
   await check('the requester asks for revocation, a registration officer approves it, and the next CRL revokes the certificate', async () => {
@@ -211,6 +220,10 @@ try {
     assert.match(text, new RegExp(`X509v3 CRL Number:\\s+${published.body.crl_number}`));
     const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', file, issuedCertificate]);
     assert.ok(!checked.ok && /certificate revoked/.test(checked.output), checked.output);
+    const downloaded = opensslOutcome(['verify', '-crl_check', '-crl_download', '-CAfile', issuingRoot, issuedCertificate]);
+    assert.ok(!downloaded.ok && /certificate revoked/.test(downloaded.output), downloaded.output);
+    const unauthenticated = await fetch(`${api}/v1/public/crls/${issuingCa}/latest.crl`);
+    assert.deepEqual([unauthenticated.status, unauthenticated.headers.get('content-type')], [200, 'application/pkix-crl']);
     // Readers list the CRLs and fetch the same DER the officer received.
     const list = await send('GET', crls, officer);
     assert.deepEqual(list.body.map(item => item.crl_number).slice(0, 2), [published.body.crl_number, crlNumber]);

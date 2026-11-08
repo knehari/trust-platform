@@ -355,6 +355,81 @@ pub(crate) async fn list_crls(
     Ok(with_replay_header(Json(items).into_response(), false))
 }
 
+#[derive(Serialize)]
+struct CrlStatus {
+    ca_id: String,
+    distribution_point: Option<String>,
+    latest_crl_number: Option<i64>,
+    next_update: Option<String>,
+    renewal_due: bool,
+    expired: bool,
+}
+
+/// `GET /v1/cas/{ca_id}/crl-status`: where the CA's CRLs are published, and
+/// whether the latest one must be renewed (nextUpdate within two days, or
+/// no CRL yet) or has expired.
+pub(crate) async fn crl_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(raw_ca): Path<String>,
+) -> Result<Response, StatusCode> {
+    let claims = authorize(&headers, &state.verifier).await?;
+    let ca_id = scoped_ca_id(&raw_ca, &claims)?;
+    let row = query_db_as(
+        state.database_url,
+        state.database_slots,
+        (claims.iss, claims.sub),
+        move |db| {
+            db.query_opt(
+                "SELECT ca_id, distribution_point, latest_crl_number, next_update, renewal_due, \
+                 expired FROM management_crl_status WHERE ca_id = $1",
+                &[&ca_id],
+            )
+        },
+    )
+    .await?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(with_replay_header(
+        Json(CrlStatus {
+            ca_id: row.get(0),
+            distribution_point: row.get(1),
+            latest_crl_number: row.get(2),
+            next_update: row.get(3),
+            renewal_due: row.get(4),
+            expired: row.get(5),
+        })
+        .into_response(),
+        false,
+    ))
+}
+
+/// `GET /v1/public/crls/{ca_id}/latest.crl`, WITHOUT authentication: the
+/// latest published CRL of a CA whose owner configured publication
+/// (migration 0031), as DER. CRLs are public by design; the view exposes
+/// nothing else. 404 for any other CA, or before its first CRL.
+pub(crate) async fn public_latest_crl(
+    State(state): State<AppState>,
+    Path(raw_ca): Path<String>,
+) -> Result<Response, StatusCode> {
+    let ca_id = uuid::Uuid::parse_str(&raw_ca)
+        .map_err(|_| StatusCode::NOT_FOUND)?
+        .to_string();
+    let row = query_db(state.database_url, state.database_slots, move |db| {
+        db.query_opt(
+            "SELECT crl_der FROM public_crl_latest WHERE ca_id = $1",
+            &[&ca_id],
+        )
+    })
+    .await?
+    .ok_or(StatusCode::NOT_FOUND)?;
+    let mut response = row.get::<_, Vec<u8>>(0).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pkix-crl"),
+    );
+    Ok(response)
+}
+
 /// `GET /v1/cas/{ca_id}/crls/{crl_number}`: one published CRL as DER.
 pub(crate) async fn read_crl(
     State(state): State<AppState>,

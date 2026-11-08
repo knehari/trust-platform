@@ -48,9 +48,9 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number, cs.renewal_due, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
-     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl LIMIT 0";
+     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -575,7 +575,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0030")?;
+    .map_err(|_| "management views unavailable or older than migration 0031")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -722,6 +722,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/crls/{crl_number}",
             get(crl_publication::read_crl),
+        )
+        .route(
+            "/v1/cas/{ca_id}/crl-status",
+            get(crl_publication::crl_status),
+        )
+        .route(
+            "/v1/public/crls/{ca_id}/latest.crl",
+            get(crl_publication::public_latest_crl),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -997,7 +1005,9 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_certificate_application_version() = 1 \
              AND management_application_issuance_version() = 1 \
              AND management_revocation_crl_version() = 1 \
+             AND management_crl_publication_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
+             AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
@@ -4217,7 +4227,9 @@ mod tests {
                     'server', 1, profile_draft_snapshot_sha256('{owner_ca}', 'server', 1), 'v1', 'owner', 'owner')
                     RETURNING event_id)
                  INSERT INTO certificate_profile_active (ca_id, profile_id, revision, activated_event_id)
-                    SELECT '{owner_ca}', 'server', 1, event_id FROM e;"
+                    SELECT '{owner_ca}', 'server', 1, event_id FROM e;
+                 INSERT INTO ca_crl_distribution_point (ca_id, base_url)
+                    VALUES ('{owner_ca}', 'http://crl.lab.invalid:8081');"
             ))
         })
         .await
@@ -4358,6 +4370,36 @@ mod tests {
             tbs.subject_public_key_info.subject_public_key.raw_bytes(),
             lab_spki(&subject_key).subject_public_key.raw_bytes()
         );
+        // It names where the CA's CRLs are published (migration 0031).
+        let distribution_point =
+            format!("http://crl.lab.invalid:8081/v1/public/crls/{ca}/latest.crl");
+        {
+            use x509_cert::ext::pkix::{
+                crl::CrlDistributionPoints,
+                name::{DistributionPointName, GeneralName},
+            };
+            let extension = tbs
+                .extensions
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|extension| extension.extn_id.to_string() == "2.5.29.31")
+                .unwrap();
+            let points = <CrlDistributionPoints as x509_cert::der::Decode>::from_der(
+                extension.extn_value.as_bytes(),
+            )
+            .unwrap();
+            let Some(DistributionPointName::FullName(names)) = &points.0[0].distribution_point
+            else {
+                panic!("no full name");
+            };
+            assert_eq!(
+                names,
+                &vec![GeneralName::UniformResourceIdentifier(
+                    x509_cert::der::asn1::Ia5String::new(&distribution_point).unwrap()
+                )]
+            );
+        }
         // The CA key signed it: checked with the CA's public key alone.
         {
             use p256::ecdsa::{signature::Verifier, VerifyingKey};
@@ -4481,6 +4523,41 @@ mod tests {
                 .verify(&crl.tbs_cert_list.to_der().unwrap(), &signature)
                 .is_ok()
         };
+        // Nothing is public before the first CRL; renewal is due.
+        let public = |path: String| {
+            let app = app.clone();
+            async move {
+                let response = app
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .map(|value| value.to_str().unwrap().to_owned());
+                let body = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .to_vec();
+                (status, content_type, body)
+            }
+        };
+        let public_path = format!("/v1/public/crls/{ca}/latest.crl");
+        assert_eq!(public(public_path.clone()).await.0, StatusCode::NOT_FOUND);
+        let (_, status_before) =
+            send("GET", &officer, format!("/v1/cas/{ca}/crl-status"), None).await;
+        assert_eq!(
+            (
+                status_before["distribution_point"].as_str(),
+                status_before["latest_crl_number"].is_null(),
+                status_before["renewal_due"].as_bool()
+            ),
+            (Some(distribution_point.as_str()), true, Some(true))
+        );
         // A requester does not publish; an officer publishes an empty CRL.
         assert_eq!(
             send("POST", &requester, crls.clone(), Some(json!({})))
@@ -4595,6 +4672,34 @@ mod tests {
         );
         assert_eq!(crl.tbs_cert_list.issuer, root.tbs_certificate.subject);
 
+        // Anyone fetches the latest CRL, without a token; other paths are 404.
+        let (status, content_type, public_der) = public(public_path.clone()).await;
+        assert_eq!(
+            (status, content_type.as_deref(), public_der == der),
+            (StatusCode::OK, Some("application/pkix-crl"), true)
+        );
+        assert_eq!(
+            public(format!("/v1/public/crls/{}/latest.crl", random_uuid()))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            public("/v1/public/crls/not-a-uuid/latest.crl".into())
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, status_after) =
+            send("GET", &officer, format!("/v1/cas/{ca}/crl-status"), None).await;
+        assert_eq!(
+            (
+                status_after["latest_crl_number"].as_i64(),
+                status_after["renewal_due"].as_bool(),
+                status_after["expired"].as_bool()
+            ),
+            (Some(2), Some(false), Some(false))
+        );
         // Readers list the CRLs and fetch the exact DER.
         let (_, list) = send("GET", &officer, crls.clone(), None).await;
         assert_eq!(

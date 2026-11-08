@@ -264,6 +264,7 @@ struct OwnedFacts {
     serial: Vec<u8>,
     subject_public_key: x509_cert::spki::SubjectPublicKeyInfoOwned,
     issuer: Certificate,
+    crl_distribution_point: Option<String>,
 }
 
 impl OwnedFacts {
@@ -274,6 +275,7 @@ impl OwnedFacts {
             subject_public_key: &self.subject_public_key,
             validity_days: self.validity_days,
             serial: &self.serial,
+            crl_distribution_point: self.crl_distribution_point.as_deref(),
         }
     }
 }
@@ -353,7 +355,22 @@ fn issue(
     let Ok(csr) = verify_pkcs10_p256(&csr_der, &subject_cn) else {
         return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
     };
+    // Where the CA publishes its CRLs (migration 0031); the journal records
+    // the same URL with the intent, and the signer refuses any other.
+    let crl_distribution_point: Option<String> = match db.query_one(
+        "SELECT application_crl_distribution_point_lab($1, $2, $3::text::uuid, $4::text::uuid)",
+        &[
+            &caller.issuer,
+            &caller.subject,
+            &caller.ca_id,
+            &caller.application_id,
+        ],
+    ) {
+        Ok(row) => row.get(0),
+        Err(error) => return Ok(Err(write_status(&error))),
+    };
     let facts = OwnedFacts {
+        crl_distribution_point,
         subject_cn,
         dns_names: row.get(6),
         validity_days: u32::try_from(validity_days).unwrap_or(0),

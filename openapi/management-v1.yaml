@@ -1098,6 +1098,46 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CrlPublication' }
         '503': { description: No laboratory signer socket is configured, or the database is unavailable }
+  /v1/cas/{ca_id}/crl-status:
+    get:
+      summary: Where the CA's CRLs are published and whether renewal is due (laboratory, migration 0031)
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: CRL publication status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ca_id, distribution_point, latest_crl_number, next_update, renewal_due, expired]
+                properties:
+                  ca_id: { type: string, format: uuid }
+                  distribution_point: { type: [string, 'null'], description: The public URL certificates carry, once the owner configured publication }
+                  latest_crl_number: { type: [integer, 'null'] }
+                  next_update: { type: [string, 'null'], format: date-time }
+                  renewal_due: { type: boolean, description: No CRL yet, or nextUpdate within two days }
+                  expired: { type: boolean, description: The latest CRL's nextUpdate has passed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing reader role or CA outside the signed scope }
+        '404': { description: Not a lifecycle-managed CA granted to the reader }
+        '503': { description: The database is unavailable }
+  /v1/public/crls/{ca_id}/latest.crl:
+    get:
+      summary: The latest published CRL of a CA, WITHOUT authentication (laboratory, migration 0031)
+      description: Served only for CAs whose database owner configured CRL publication; this is the cRLDistributionPoints URI their new certificates carry. CRLs are public and signed; nothing else is exposed (ADR-0019, Proposed).
+      security: []
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The CRL exactly as stored
+          content:
+            application/pkix-crl:
+              schema: { type: string, format: binary }
+        '404': { description: Not a UUID, not a publishing CA, or no CRL yet }
+        '503': { description: The database is unavailable or too many requests }
   /v1/cas/{ca_id}/crls/{crl_number}:
     get:
       summary: Read one published CRL as DER (laboratory, migration 0030)

@@ -67,6 +67,8 @@ pub struct IntentRecord {
     pub issuer_spki_sha256: Vec<u8>,
     pub signable: bool,
     pub claimed: bool,
+    /// The CRL distribution point snapshotted with the intent (migration 0031).
+    pub crl_distribution_point: Option<String>,
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
@@ -289,6 +291,7 @@ pub fn sign_intent<S: IntentStore>(
         subject_public_key: csr.subject_public_key(),
         validity_days,
         serial: &record.serial,
+        crl_distribution_point: record.crl_distribution_point.as_deref(),
     };
     check_server_leaf_tbs(&issuer, &facts, &tbs, now).map_err(Refusal::Tbs)?;
     // The database records the single claim; a second one is refused.
@@ -329,8 +332,8 @@ pub mod service {
                 .db
                 .query_opt(
                     "SELECT ca_id, tbs_sha256, serial, csr_der, spki_sha256, subject_cn, dns_names, \
-                     validity_days, issuer_certificate_der, issuer_spki_sha256, signable, claimed \
-                     FROM lab_signer_intent WHERE intent_id = $1",
+                     validity_days, issuer_certificate_der, issuer_spki_sha256, signable, claimed, \
+                     crl_distribution_point FROM lab_signer_intent WHERE intent_id = $1",
                     &[&intent_id],
                 )
                 .map_err(|_| Refusal::Database)?;
@@ -347,6 +350,7 @@ pub mod service {
                 issuer_spki_sha256: row.get(9),
                 signable: row.get(10),
                 claimed: row.get(11),
+                crl_distribution_point: row.get(12),
             }))
         }
 
@@ -495,6 +499,7 @@ pub mod service {
                 "SELECT pg_has_role(current_user, 'trust_lab_signer', 'member') \
                  AND management_application_issuance_version() = 1 \
                  AND management_revocation_crl_version() = 1 \
+                 AND management_crl_publication_version() = 1 \
                  AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = current_user \
                      AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
                  AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -649,6 +654,7 @@ mod tests {
             subject_public_key: &subject_spki,
             validity_days: 30,
             serial: &[0x55, 0x01],
+            crl_distribution_point: None,
         };
         let tbs_der = build_server_leaf_tbs(&issuer, &facts, SystemTime::now())
             .unwrap()
@@ -667,6 +673,7 @@ mod tests {
             issuer_spki_sha256: Sha256::digest(spki_der(&ca_key).unwrap()).to_vec(),
             signable: true,
             claimed: false,
+            crl_distribution_point: None,
         };
         Fixture {
             ca_key,
@@ -768,6 +775,15 @@ mod tests {
         assert_eq!(
             edit(&|f| f.store.record.as_mut().unwrap().validity_days = 31),
             Refusal::Tbs(LeafError::Validity)
+        );
+        // The intent was journaled under a CRL distribution point the TBS
+        // does not carry.
+        assert_eq!(
+            edit(
+                &|f| f.store.record.as_mut().unwrap().crl_distribution_point =
+                    Some("http://crl.lab.invalid/latest.crl".into())
+            ),
+            Refusal::Tbs(LeafError::Extensions)
         );
     }
 
