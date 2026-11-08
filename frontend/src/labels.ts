@@ -150,3 +150,15 @@ export function outcomeGroup(decision: string): OutcomeGroup {
   if (outcome.kind === 'transition') return /RECONCILIATION|FAILED|REJECTED/u.test(outcome.to) ? 'attention' : 'other';
   return 'other';
 }
+
+/** One plain sentence on what an audit outcome means. */
+export function explainOutcome(decision: string): string {
+  const outcome = describeOutcome(decision);
+  switch (outcome.kind) {
+    case 'decision': return outcome.status === 'allow' ? 'The platform authorized this operation under the recorded policy.' : 'The platform refused this operation; nothing was changed by it.';
+    case 'transition': return `The request moved from “${humanizeStatus(outcome.from)}” to “${humanizeStatus(outcome.to)}”.${outcome.to === 'RECONCILIATION_REQUIRED' ? ' The signing outcome was ambiguous: reconcile it before signing again.' : ''}`;
+    case 'reference': return `Result “${humanizeStatus(outcome.status)}”, referencing ${outcome.reference}.`;
+    case 'result': return `Recorded result: “${humanizeStatus(outcome.status)}”.`;
+    default: return `Recorded outcome: ${outcome.text || 'none'}.`;
+  }
+}

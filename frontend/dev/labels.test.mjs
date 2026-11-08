@@ -53,3 +53,11 @@ test('outcomes fall into quick-filter families', async () => {
   assert.equal(outcomeGroup('SIGNING -> SIGNED'), 'other');
   assert.equal(outcomeGroup('persisted'), 'other');
 });
+
+test('every outcome shape has a plain explanation', async () => {
+  const { explainOutcome } = await import('../src/labels.ts');
+  assert.match(explainOutcome('deny'), /refused/);
+  assert.match(explainOutcome('SIGNING -> RECONCILIATION_REQUIRED'), /reconcile it before signing again/);
+  assert.match(explainOutcome('created:abc'), /referencing abc/);
+  assert.match(explainOutcome(''), /none/);
+});

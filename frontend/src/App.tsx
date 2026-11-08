@@ -18,7 +18,8 @@ import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
 import { OverviewDashboard } from './OverviewDashboard';
-import { CATEGORY_LABELS, describeEvent, outcomeGroup, type EventCategory, type OutcomeGroup } from './labels';
+import { CopyJsonButton, DetailDrawer, DrawerSection, Fact } from './DetailDrawer';
+import { CATEGORY_LABELS, describeEvent, explainOutcome, outcomeGroup, type EventCategory, type OutcomeGroup } from './labels';
 import { dayLabel, lifetimeElapsed } from './dashboard';
 import { CommandPalette, type PaletteItem } from './CommandPalette';
 import { RequestsPanel } from './RequestsPanel';
@@ -918,8 +919,8 @@ export function App() {
         {needsAuthority && !isReader && section !== 'authorities' && section !== 'requests' && <div className="empty-state"><div className="empty-icon"><Icon name="authority" size={30} /></div><h2>Not in your roles</h2><p>This view needs the reader role and an authority in your scope.</p></div>}
         {section === 'requests' && !isReader && (isRequester || isOfficer) && <div className="empty-state"><div className="empty-icon"><Icon name="request" size={30} /></div><h2>No authority to choose</h2><p>Requests are listed per authority; your account also needs the reader role and an authority in its scope.</p></div>}
       </main>
-      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} />}
-      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={closeDetail} />}
+      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} {...neighbours(sortedCertificates, cert => cert.request_id === selectedCertificate.request_id, openCertificate)} />}
+      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} now={validityClock} onClose={closeDetail} {...neighbours(sortedAuditEvents, row => row.event_id === selectedAuditEvent.event_id, openAuditEvent)} />}
     </div>
     <CommandPalette items={paletteItems} open={paletteOpen} onClose={() => setPaletteOpen(false)} />
   </div>;
@@ -929,45 +930,88 @@ function RoleCard({ icon, title, text, action, onOpen }: { icon: IconName; title
   return <div className="ui-role-card"><div className="ui-role-icon"><Icon name={icon} size={20} /></div><h3>{title}</h3><p>{text}</p><button type="button" className="ui-button ui-button-secondary ui-button-sm" onClick={onOpen}>{action}<Icon name="chevron" size={15} /></button></div>;
 }
 
-function MetadataDialog({ titleId, title, eyebrow, fields, copyJson, note, onClose }: { titleId: string; title: string; eyebrow: string; fields: { label: string; value: string; copyable?: boolean }[]; copyJson: string; note: string; onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [copyFeedback, setCopyFeedback] = useState('');
-  async function copyValue(label: string, value: string, visible = true) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopyFeedback(`${label} copied.`);
-    } catch {
-      setCopyFeedback(visible ? `Could not copy ${label}. Select the value to copy it manually.` : `Could not copy ${label}.`);
-    }
-  }
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
-  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button type="button" className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span></button></div>
-    <div className="detail-grid">{fields.map(field => <div className="info-cell" key={field.label}><span>{field.label}</span><div className="metadata-value"><strong>{field.value}</strong>{field.copyable && <button type="button" className="link-button" aria-label={`Copy ${field.label.toLowerCase()}`} onClick={() => void copyValue(field.label, field.value)}>Copy</button>}</div></div>)}</div>
-    <button type="button" className="metadata-copy-json" onClick={() => void copyValue('metadata JSON', copyJson, false)}>Copy metadata JSON</button>
-    {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
-    <p className="dialog-note">{note}</p>
-  </dialog>;
+const DAY_MS = 86_400_000;
+
+/** Previous/next handlers and a position label for a record within a list. */
+function neighbours<T>(rows: T[], isCurrent: (row: T) => boolean, open: (row: T) => void) {
+  const index = rows.findIndex(isCurrent);
+  if (index < 0) return { onPrevious: null, onNext: null, position: '' };
+  return {
+    onPrevious: index > 0 ? () => open(rows[index - 1]) : null,
+    onNext: index < rows.length - 1 ? () => open(rows[index + 1]) : null,
+    position: `${index + 1} of ${rows.length}`,
+  };
 }
 
-function CertificateDialog({ certificate, now, onClose }: { certificate: Certificate; now: number; onClose: () => void }) {
-  return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
-    copyJson={certificateMetadataJson(certificate)}
-    fields={[{ label: 'CN', value: certificate.subject_cn || 'Not recorded' }, { label: 'DNS SAN', value: certificate.san_dns?.length ? certificate.san_dns.join(', ') : certificate.san_dns ? 'None' : 'Not recorded' }, { label: 'VALID FROM', value: displayDate(certificate.not_before) }, { label: 'VALID UNTIL', value: displayDate(certificate.not_after) }, { label: 'RECORDED PERIOD', value: recordedValidityStatus(certificate, now) }, { label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
-    note="For actual lab issuance, validity and SAN come from independently verified DER. This database may include synthetic fixtures. The recorded period is not a live path or revocation check." />;
+function ValiditySummary({ certificate, now }: { certificate: Certificate; now: number }) {
+  const elapsed = lifetimeElapsed(certificate, now);
+  if (elapsed === null) return <div className="ui-validity">
+    <div className="ui-validity-head"><span className="ui-summary-label">Recorded validity</span><Tag tone="neutral">Not recorded</Tag></div>
+    <p className="ui-sub">No X.509 validity dates are recorded for this certificate.</p>
+  </div>;
+  const end = Date.parse(certificate.not_after!);
+  const start = Date.parse(certificate.not_before!);
+  const days = Math.round((end - now) / DAY_MS);
+  const status = now < start ? 'Not yet valid' : days > 0 ? `${days} day${days === 1 ? '' : 's'} remaining` : `Ended ${-days} day${days === -1 ? '' : 's'} ago`;
+  const tone = now < start ? 'info' : days <= 0 ? 'bad' : days <= 30 ? 'warn' : 'good';
+  return <div className="ui-validity">
+    <div className="ui-validity-head"><span className="ui-summary-label">Recorded validity</span><Tag tone={tone}>{status}</Tag></div>
+    <div className={`ui-validity-bar ui-tone-${tone}`}><span style={{ width: `${Math.max(1.5, elapsed * 100)}%` }} /><i style={{ left: `${Math.min(100, Math.max(0, elapsed * 100))}%` }} title="Now" /></div>
+    <div className="ui-validity-dates"><div><small>Not before</small><strong>{displayDate(certificate.not_before)}</strong></div><div><small>Not after</small><strong>{displayDate(certificate.not_after)}</strong></div></div>
+  </div>;
 }
 
-function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
-  return <MetadataDialog titleId="audit-dialog-title" title="Audit event detail" eyebrow="AUDIT METADATA" onClose={onClose}
-    copyJson={auditMetadataJson(event)}
-    fields={[{ label: 'EVENT ID', value: event.event_id, copyable: true }, { label: 'EVENT TYPE', value: event.event_type }, { label: 'DECISION', value: event.decision }, { label: 'POLICY VERSION', value: event.policy_version ?? 'Not recorded' }, { label: 'RECORDED', value: displayDate(event.recorded_at) }]}
-    note="Database metadata only. This view does not include actor identity or independent audit integrity proof." />;
+function CertificateDialog({ certificate, now, onClose, onPrevious, onNext, position }: { certificate: Certificate; now: number; onClose: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; position: string }) {
+  const period = recordedValidityStatus(certificate, now);
+  return <DetailDrawer label="Certificate detail" eyebrow="Certificate" icon="certificate" tone="good" closeLabel="Close certificate detail" onClose={onClose}
+    onPrevious={onPrevious} onNext={onNext} position={position}
+    title={certificate.subject_cn || 'Common name not recorded'}
+    subtitle={<span className="mono">Serial {certificate.serial_hex}</span>}
+    badges={<><StatusBadge status={certificate.state} /><Tag tone={period === 'Within period' ? 'good' : period === 'Period ended' ? 'bad' : period === 'Not yet in period' ? 'info' : 'neutral'}>{period}</Tag></>}
+    actions={<CopyJsonButton json={certificateMetadataJson(certificate)} />}
+    summary={<ValiditySummary certificate={certificate} now={now} />}
+    note="For actual lab issuance, validity and SAN come from independently verified DER. This database may include synthetic fixtures. The recorded period is not a live path or revocation check.">
+    <DrawerSection title="Subject">
+      <Fact label="DNS names (SAN)">{certificate.san_dns?.length ? <span className="ui-chip-list">{certificate.san_dns.map(name => <span key={name} className="ui-chip">{name}</span>)}</span> : certificate.san_dns ? 'None' : 'Not recorded'}</Fact>
+      <Fact label="Recorded period">{period}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Identifiers">
+      <Fact label="Serial" copy={certificate.serial_hex} mono>{certificate.serial_hex}</Fact>
+      <Fact label="Fingerprint SHA-256" copy={certificate.fingerprint_sha256} mono>{certificate.fingerprint_sha256.match(/.{1,8}/gu)?.join(' ') ?? certificate.fingerprint_sha256}</Fact>
+      <Fact label="Request ID" copy={certificate.request_id} mono>{certificate.request_id}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Lifecycle">
+      <Fact label="Issuance state"><StatusBadge status={certificate.state} /></Fact>
+      <Fact label="Signed">{certificate.signed_at ? <TimeAgo value={certificate.signed_at} now={new Date(now)} /> : 'Not signed'}</Fact>
+      <Fact label="Published">{certificate.published_at ? <TimeAgo value={certificate.published_at} now={new Date(now)} /> : 'Not recorded'}</Fact>
+    </DrawerSection>
+  </DetailDrawer>;
 }
 
+function AuditDialog({ event, now, onClose, onPrevious, onNext, position }: { event: AuditEvent; now: number; onClose: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; position: string }) {
+  const described = describeEvent(event.event_type);
+  const group = outcomeGroup(event.decision);
+  return <DetailDrawer label="Audit event detail" eyebrow={`Audit event · ${CATEGORY_LABELS[described.category]}`} icon={CATEGORY_ICON[described.category]}
+    tone={group === 'denied' ? 'bad' : group === 'attention' ? 'warn' : group === 'allowed' ? 'good' : 'info'}
+    closeLabel="Close audit event detail" onClose={onClose} onPrevious={onPrevious} onNext={onNext} position={position}
+    title={described.label} subtitle={<code>{event.event_type}</code>}
+    badges={<><OutcomeBadge decision={event.decision} />{event.policy_version && <span className="ui-chip">policy {event.policy_version}</span>}</>}
+    actions={<CopyJsonButton json={auditMetadataJson(event)} />}
+    summary={<div className="ui-outcome-summary"><span className="ui-summary-label">What happened</span><p>{explainOutcome(event.decision)}</p><TimeAgo value={event.recorded_at} now={new Date(now)} /></div>}
+    note="Database metadata only. This view does not include actor identity or independent audit integrity proof.">
+    <DrawerSection title="Record">
+      <Fact label="Event ID" copy={event.event_id} mono>{event.event_id}</Fact>
+      <Fact label="Recorded decision" mono>{event.decision || '—'}</Fact>
+      <Fact label="Policy version">{event.policy_version ?? 'Not recorded'}</Fact>
+      <Fact label="Recorded at">{displayDate(event.recorded_at)}</Fact>
+      <Fact label="Authority ID" copy={event.ca_id} mono>{event.ca_id}</Fact>
+    </DrawerSection>
+  </DetailDrawer>;
+}
+
+const CATEGORY_ICON: Record<EventCategory, IconName> = {
+  certificate: 'certificate', request: 'request', signing: 'key', crl: 'revocation', profile: 'profile', authority: 'authority', policy: 'policy', other: 'info',
+};
 
 function AuthorityList({ cas, selectedCaId, onSelect, compact = false }: { cas: CertificateAuthority[]; selectedCaId: string | null; onSelect: (id: string) => void; compact?: boolean }) {
   return <div className={compact ? 'authority-list compact' : 'authority-list'}>{cas.map(ca => <button key={ca.ca_id} className={ca.ca_id === selectedCaId ? 'authority-row selected' : 'authority-row'} aria-pressed={ca.ca_id === selectedCaId} onClick={() => onSelect(ca.ca_id)}><span className="ca-emblem"><Icon name="authority" size={17} /></span><span className="ca-text"><strong>{ca.display_name}</strong><small>{shortId(ca.ca_id)} · Policy {ca.policy_version}{ca.operational_state && ca.operational_state !== 'ACTIVE' ? ` · ${ca.operational_state}` : ''}</small></span><span className="row-arrow"><Icon name="chevron" size={16} /></span></button>)}</div>;
