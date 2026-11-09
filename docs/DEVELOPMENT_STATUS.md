@@ -1,16 +1,16 @@
-# Development status — first integration phase
+# Development status — main after PR #190
 
-**Checked 2026-11-07.** This tree combines the Claude profile lifecycle stack, the distinct approval-key fix, the recovery audit, repository instructions and the local filter/revision work. It is laboratory code. **MVP progress remains 5/12 (42%)**: the CA half of criterion 6, authenticated issuance, revocation, custody, recovery and release gates remain open.
+**Checked 2026-11-08 against `main` at `8ea2446`.** The laboratory CA lifecycle, authenticated certificate applications, issuance through a separate software signer, revocation and signed CRL publication are now in `main` through [PR #190](https://github.com/knehari/trust-platform/pull/190). The earlier statement that these routes were absent from `main` is obsolete. The MVP score remains **5/12 (42%)** because the full criteria still require protected key custody, recovery, reconciliation and release evidence; partial laboratory flows do not close them.
 
-## Implemented in the combined tree
+## Current integration
 
-- The management API and console can record, submit, approve/reject and activate/retire profile revisions in the laboratory. Activation binds an exact digest and declared CA capability; issuance does not consume an active profile. The CA itself has no protected key and certificate lifecycle in this stack.
-- Migrations 0012–0024 provide scoped management reads and profile lifecycle operations. Migration 0025 adds a database trigger that rejects non-contiguous draft revisions, including bulk owner writes, without activating any profile.
-- The isolated Keycloak lab exercises human and workload tokens. Read access intersects signed CA scope with server-owned grants; profile writes require the lifecycle role and a separate writer login. This remains a loopback laboratory configuration without production MFA, TLS transport or key custody.
-- The console and OpenAPI contract include the local filter validation and cursor checks. The API's no-principal readiness gate checks all seven management views.
+- Migrations 0026–0032 belong to the CA/application/revocation/CRL stack merged through #190. The console and management API expose its laboratory flows, and the signer uses a software key mounted separately from the API.
+- [Draft PR #94](https://github.com/knehari/trust-platform/pull/94) and its [port PR #193](https://github.com/knehari/trust-platform/pull/193) contain a different signed-administration and revocation model. Their migrations also start at 0026 and continue to 0078. PR #193 cannot be merged into the current schema; it is retained as a comparison and recovery source.
+- The current main-based follow-up excludes `.lab-keys` from Docker build contexts and fixes Unicode audit-filter length validation. It does not change the database schema or revocation state machine.
 
-## Verification and remaining integration
+## Verification and remaining work
 
-The combined frontend has 57 passing tests and builds. Rust format, full workspace tests with and without all features, and management API tests pass (34 management tests without database variables). A fresh disposable PostgreSQL 16 database accepts migrations 0001–0025, and the profile revision, lifecycle, decision and activation SQL suites pass. A populated 0011→0025 upgrade preserves rows and reader grants; the 0025 migration rejects a pre-existing gap and serializes concurrent revision writes. Complete CI and database-backed HTTP tests remain open on the final integrated head. The 5173 instance still runs the earlier local integration, not this tree.
-
-The separate experimental PR #94 contains revocation, CRL and signed administration on an incompatible migration history beginning at 0014. An incomplete port is published on [`codex/revocation-port-onto-profile`](https://github.com/knehari/trust-platform/tree/codex/revocation-port-onto-profile); its roles, views, APIs, migration runner and recovery tests still need integration and exact-head verification before `main` can represent all requested PRs. The user confirmed completion of G0 legal/IP clearance and independent security review on 2026-11-07; the review artifacts have not been linked in this repository checkpoint.
+- The main-based management API suite passes (61 tests, Rust 1.99.0 in an isolated container); database-backed tests requiring `TRUST_API_TEST_DATABASE_URL` were skipped by their existing guards. A Docker build with a synthetic marker under `.lab-keys` confirms that the marker is absent after `COPY . .`. These are code and build-context checks, not a fresh end-to-end verification of #190.
+- The #94 port branch separately passed its 59 management API tests, 79 control API tests, PostgreSQL suites, seven-service laboratory Compose health checks, and a Keycloak code/PKCE smoke. These results do not validate the new #190 schema or a combined branch.
+- Reconcile the two models by mapping operations, permissions, durable evidence and migration paths before porting the unique features of #94. In particular, existing databases upgraded through #190 must never receive the competing 0026–0032 scripts.
+- Then validate the reconciled schema with a populated database upgrade, signed status-change and CRL recovery paths, scoped API authorization and a full isolated Compose run. Link the already confirmed G0 legal/IP and independent security review artifacts to the release record; production custody and operational pilot evidence remain open.

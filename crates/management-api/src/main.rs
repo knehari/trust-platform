@@ -261,9 +261,9 @@ fn audit_filters(page: &PaginationQuery) -> Result<AuditFilters, StatusCode> {
     if event_type.as_ref().is_some_and(|value| {
         value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) || decision.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) || policy_version.as_ref().is_some_and(|value| {
-        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+        value.is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -5739,6 +5739,28 @@ mod tests {
             outputs.push(handle.await.unwrap());
         }
         outputs
+    }
+
+    #[test]
+    fn audit_filters_count_unicode_characters() {
+        let mut page = PaginationQuery {
+            before: None,
+            cn: None,
+            san_dns: None,
+            not_after_before: None,
+            from: None,
+            until: None,
+            event_type: None,
+            decision: Some("é".repeat(128)),
+            policy_version: Some("é".repeat(128)),
+            order: None,
+        };
+        assert!(audit_filters(&page).is_ok());
+        page.decision = Some("é".repeat(129));
+        assert!(matches!(audit_filters(&page), Err(StatusCode::BAD_REQUEST)));
+        page.decision = None;
+        page.policy_version = Some("é".repeat(129));
+        assert!(matches!(audit_filters(&page), Err(StatusCode::BAD_REQUEST)));
     }
 
     #[test]
