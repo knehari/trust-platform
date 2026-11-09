@@ -7,6 +7,7 @@ Status: partially implemented laboratory architecture; no deployed application. 
 2. Signing Provider: software lab implementation; PKCS#11/HSM adapter in a later milestone. Signing requires explicit authorization context.
 3. PostgreSQL: durable certificate/serial/revocation/audit records.
 4. Control plane: future authenticated management API, RBAC, CLM, ACME; Go versus Rust requires an ADR before implementation.
+6. Registration (light RA) and CLM: own every end-user interaction, including identity proofing and domain-control validation for server certificates (ACME at the CLM). The CA signs the requests they authorize and the CRLs, and still enforces its profiles; it does not face subscribers ([ADR-0024](../adr/ADR-0024-ca-ra-responsibility-boundary.md), Proposed).
 5. React UI: future static console.
 
 The authorization/control plane must not bypass the CA signing policy. Offline root CA is operated separately.

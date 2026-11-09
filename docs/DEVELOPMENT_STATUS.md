@@ -76,4 +76,6 @@ The API requests a checkpoint every `TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS` (C
 - the four e2e suites (the certificate-application suite waits for a checkpoint);
 - on the fresh lab, the tool verifies the signer's three checkpoints with the OpenSSL public key; after an owner rebuild, the signer refuses (`AuditRollback`) and the tool fails.
 
-Open: hardware-protected audit key and rotation, a restored database together with the signer's state (not detected), an external log, retention. CI has not yet run on this branch.
+Open: hardware-protected audit key and rotation, a restored database together with the signer's state (not detected), an external log, retention. CI passed on Draft #199 (`5ea224d`, all seven jobs).
+
+CA/RA boundary (2026-11-09, ADR-0024 Proposed, documentation only): following the owner's direction, the CA and the PKI sign the certificate requests an authorized RA or CLM submits, and the CRLs. Identity proofing and domain-control validation belong to a light RA or the CLM (ACME later), never to the CA, which still enforces its profiles (zones, key policy, validity, fixed extensions). Domain-control validation leaves the CA's open items. The laboratory's requester and officer flow is reclassified as a stand-in for a light RA. The CA's next interface is an authenticated RA/CLM issuance channel with machine identity, to be designed in its own ADR. No code change.
