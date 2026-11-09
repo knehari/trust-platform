@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
-import { Icon, Notice, StatusBadge, Tabs, type NoticeTone } from './ui';
+import { Icon, Notice, StatusBadge, Tabs, toast, type NoticeTone } from './ui';
 
 export interface Application {
   application_id: string;
@@ -139,7 +139,8 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
     setBusy(true);
     try {
       const result = await apiPost<T>(path, token, body, key.current);
-      setNotice({ tone: 'success', text: done(result.value, result.status) });
+      setNotice(null);
+      toast(done(result.value, result.status));
       setOpen(null);
       setReason('');
       return result.value;

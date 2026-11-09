@@ -1,7 +1,7 @@
 // Shared console building blocks: one icon set, notices that stay until
 // dismissed, status badges with consistent colours, and tabs. Display only:
 // nothing here decides authorization; the API does.
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { CATEGORY_LABELS, describeEvent, describeOutcome, humanizeStatus, relativeTime, type EventCategory } from './labels';
 
 const ICON_PATHS = {
@@ -27,6 +27,9 @@ const ICON_PATHS = {
   key: 'M14 4a6 6 0 11-4.7 9.7L4 19v1h3v-2h2v-2h2l1.3-1.3A6 6 0 0114 4zM16 8v.5',
   publish: 'M12 16V4M7 9l5-5 5 5M5 14v6h14v-6',
   filter: 'M4 5h16l-6 8v6l-4-2v-4z',
+  sun: 'M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',
+  moon: 'M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z',
+  monitor: 'M3 4h18v12H3zM8 20h8M12 16v4',
   policy: 'M6 3h12v18H6zM9 12l2 2 4-4M9 7h6',
   arrow: 'M5 12h14M13 6l6 6-6 6',
   command: 'M9 6a3 3 0 10-3 3h12a3 3 0 10-3-3v12a3 3 0 103-3H6a3 3 0 103 3z',
@@ -110,8 +113,10 @@ export function Tag({ tone = 'neutral', children, title }: { tone?: 'good' | 'in
 /** A relative time that shows the exact local time on hover. */
 export function TimeAgo({ value, now }: { value: string; now: Date }) {
   const date = new Date(value);
-  const exact = Number.isNaN(date.valueOf()) ? value : date.toLocaleString();
-  return <time dateTime={value} title={exact} className="ui-time"><span>{relativeTime(value, now)}</span><small>{exact}</small></time>;
+  const valid = !Number.isNaN(date.valueOf());
+  const exact = valid ? date.toLocaleString() : value;
+  const short = valid ? date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : value;
+  return <time dateTime={value} title={exact} className="ui-time"><span>{relativeTime(value, now)}</span><small>{short}</small></time>;
 }
 
 export function Tabs<T extends string>({ label, tabs, value, onChange }: {
@@ -160,4 +165,34 @@ export function FilterChips<T extends string>({ label, options, value, onChange 
       className={`ui-chip-toggle${option.id === value ? ' on' : ''}${option.tone ? ` ui-tone-${option.tone}` : ''}`} onClick={() => onChange(option.id === value ? options[0].id : option.id)}>
       {option.tone && <span className="ui-badge-dot" aria-hidden="true" />}{option.label}<span className="ui-chip-count">{option.count}</span>
     </button>)}</div>;
+}
+
+// Transient confirmations. Successes fade after a few seconds (hover keeps
+// them); errors stay in the page as notices so they are never missed.
+interface ToastItem { id: number; text: string; tone: 'success' | 'info' }
+let toastItems: ToastItem[] = [];
+let toastSeq = 0;
+const toastListeners = new Set<() => void>();
+const emitToasts = () => toastListeners.forEach(listener => listener());
+export function dismissToast(id: number) { toastItems = toastItems.filter(item => item.id !== id); emitToasts(); }
+export function toast(text: string, tone: ToastItem['tone'] = 'success') {
+  const id = ++toastSeq;
+  toastItems = [...toastItems.slice(-3), { id, text, tone }];
+  emitToasts();
+  return id;
+}
+
+export function Toaster() {
+  const items = useSyncExternalStore(listener => { toastListeners.add(listener); return () => { toastListeners.delete(listener); }; }, () => toastItems);
+  return <div className="ui-toaster" aria-live="polite">{items.map(item => <ToastCard key={item.id} item={item} />)}</div>;
+}
+
+function ToastCard({ item }: { item: ToastItem }) {
+  const [paused, setPaused] = useState(false);
+  useEffect(() => { if (paused) return; const timer = window.setTimeout(() => dismissToast(item.id), 5000); return () => window.clearTimeout(timer); }, [paused, item.id]);
+  return <div className={`ui-toast ui-toast-${item.tone}`} role="status" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+    <span className="ui-toast-icon"><Icon name={item.tone === 'success' ? 'check' : 'info'} size={16} /></span>
+    <span className="ui-toast-text">{item.text}</span>
+    <button type="button" className="ui-icon-button" aria-label="Dismiss notification" onClick={() => dismissToast(item.id)}><Icon name="close" size={14} /></button>
+  </div>;
 }

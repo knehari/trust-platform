@@ -343,8 +343,8 @@ input[type='checkbox'] { width: 16px; height: 16px; accent-color: var(--ui-accen
 .ui-chip-toggle { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 10px; border: 1px solid var(--ui-border-strong); border-radius: 999px; background: #fff; color: var(--ui-text-2); font: 600 12.5px/1 inherit; font-family: inherit; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; }
 .ui-chip-toggle .ui-badge-dot { color: var(--tone); }
 .ui-chip-toggle:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-text); }
-.ui-chip-toggle.on { background: var(--ui-text); border-color: var(--ui-text); color: #fff; }
-.ui-chip-toggle.on .ui-chip-count { background: rgba(255, 255, 255, .18); color: #fff; }
+.ui-chip-toggle.on { background: #1d2f42; border-color: #1d2f42; color: #fff; }
+.ui-chip-toggle.on .ui-chip-count { background: #3c5266; color: #fff; }
 .ui-chip-toggle:disabled { opacity: .45; cursor: default; }
 .ui-chip-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: #eef2f5; color: var(--ui-text-2); font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
 
@@ -441,3 +441,13 @@ table[aria-label='Audit events'] td:last-child, table[aria-label='Audit events']
 @media (max-width: 560px) { .ui-fact { grid-template-columns: 1fr; gap: 4px; } }
 .ui-step.end:not(.bad) .ui-step-dot { border-color: #55697b; background: #55697b; color: #fff; }
 .ui-step.end:not(.bad)::before { background: #55697b; }
+
+/* Toasts: bottom-right, stacked, fade in. */
+.ui-toaster { position: fixed; right: 20px; bottom: 20px; z-index: 50; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.ui-toast { display: flex; align-items: center; gap: 10px; min-width: 280px; max-width: 420px; padding: 10px 8px 10px 12px; border-radius: 12px; background: #10253d; color: #eef4f8; box-shadow: 0 12px 32px rgba(16, 37, 61, .3); font-size: 13.5px; pointer-events: auto; animation: ui-toast-in .22s cubic-bezier(.2, .8, .2, 1) both; }
+.ui-toast-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #2f9d86; color: #fff; flex: none; }
+.ui-toast-info .ui-toast-icon { background: #3a74b8; }
+.ui-toast-text { flex: 1; line-height: 1.4; }
+.ui-toast .ui-icon-button { width: 28px; height: 28px; color: #a9bccb; }
+.ui-toast .ui-icon-button:hover { background: rgba(255, 255, 255, .08); color: #fff; }
+@keyframes ui-toast-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }

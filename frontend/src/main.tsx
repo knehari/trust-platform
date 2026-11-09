@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './style.css';
 import './ui.css';
+import './theme-dark.css';
+import { applyTheme, storedTheme } from './theme';
+
+applyTheme(storedTheme());
+window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme(storedTheme()));
 
 /** Shows what failed instead of a blank page, and offers a reload. */
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {

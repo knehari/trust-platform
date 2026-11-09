@@ -18,6 +18,7 @@ import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
 import { OverviewDashboard } from './OverviewDashboard';
+import { applyTheme, nextTheme, storedTheme, type ThemeChoice } from './theme';
 import { CopyJsonButton, DetailDrawer, DrawerSection, Fact } from './DetailDrawer';
 import { CATEGORY_LABELS, describeEvent, explainOutcome, outcomeGroup, type EventCategory, type OutcomeGroup } from './labels';
 import { dayLabel, lifetimeElapsed } from './dashboard';
@@ -26,7 +27,7 @@ import { RequestsPanel } from './RequestsPanel';
 import { CrlPanel } from './CrlPanel';
 import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CA_READER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
 import { addWithin, headerState, toggleOne, toggleVisible } from './selection';
-import { Disclosure, EventLabel, FilterChips, HeaderCheckbox, Icon, Notice, OutcomeBadge, StatusBadge, Tag, TimeAgo, type IconName } from './ui';
+import { Disclosure, EventLabel, FilterChips, Toaster, HeaderCheckbox, Icon, Notice, OutcomeBadge, StatusBadge, Tag, TimeAgo, type IconName } from './ui';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform || navigator.userAgent);
 
@@ -126,6 +127,7 @@ export function App() {
   const [selectedAuditIds, setSelectedAuditIds] = useState<string[]>([]);
   const [validityClock, setValidityClock] = useState(() => Date.now());
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(() => storedTheme());
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(value => !value); }
@@ -812,6 +814,7 @@ export function App() {
     <div className="main-column">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {navItems.find(item => item.id === section)?.label}{needsAuthority && selectedCa && <><span>/</span> {selectedCa.display_name}</>}</div>
         <div className="top-actions"><button type="button" className="ui-search-trigger" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K"><Icon name="search" size={15} />Go to…<span className="ui-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span></button><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span>
+          <button type="button" className="ui-icon-button" aria-label={`Theme: ${theme}. Switch to ${nextTheme(theme)}`} title={`Theme: ${theme} (click for ${nextTheme(theme)})`} onClick={() => { const next = nextTheme(theme); setTheme(next); applyTheme(next); }}><Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'monitor'} /></button>
           <button className="ui-icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}><Icon name="refresh" /></button>
           <div className="ui-user"><div className="user-avatar" aria-hidden="true">{String(name).slice(0, 1).toUpperCase()}</div><span>{name}</span></div>
           <button className="ui-button ui-button-ghost ui-button-sm" onClick={() => void userManager?.signoutRedirect()}><Icon name="signOut" size={15} />Sign out</button></div></header>
@@ -922,6 +925,7 @@ export function App() {
       {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} {...neighbours(sortedCertificates, cert => cert.request_id === selectedCertificate.request_id, openCertificate)} />}
       {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} now={validityClock} onClose={closeDetail} {...neighbours(sortedAuditEvents, row => row.event_id === selectedAuditEvent.event_id, openAuditEvent)} />}
     </div>
+    <Toaster />
     <CommandPalette items={paletteItems} open={paletteOpen} onClose={() => setPaletteOpen(false)} />
   </div>;
 }

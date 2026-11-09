@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
-import { Icon, Notice, StatusBadge, type NoticeTone } from './ui';
+import { Icon, Notice, StatusBadge, toast, type NoticeTone } from './ui';
 import { PemBlock, writeError, type Application } from './RequestsPanel';
 
 interface PublishedCrl {
@@ -71,7 +71,8 @@ export function CrlPanel({ caId, token, canPublish, onUnauthorized, onOpenReques
     try {
       const result = await apiPost<CrlPublication>(`${base}/crls`, token, {}, key.current);
       if (result.value.crl_pem) setPublished({ number: result.value.crl_number, pem: result.value.crl_pem });
-      setNotice({ tone: 'success', text: `CRL ${result.value.crl_number} published.` });
+      setNotice(null);
+      toast(`CRL ${result.value.crl_number} published and verified.`);
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 401) onUnauthorized();
       else setNotice({ tone: 'error', text: writeError(failure, 'publish the CRL') });
