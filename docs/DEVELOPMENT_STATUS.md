@@ -38,3 +38,12 @@ Issuance reconciliation (2026-11-09, ADR-0020 Proposed): migration 0034 lets two
 - the four e2e suites; the certificate-application suite voids a simulated timeout and OpenSSL finds the serial in the verified CRL.
 
 Recovering a certificate that was signed but not stored remains open. CI has not yet run on this branch.
+
+Automatic CRL renewal (2026-11-09, ADR-0021 Proposed): migration 0035 adds a per-CA `crl-publisher` role. Held by the system principal `urn:trust-platform:system`/`crl-renewer`, it may run the CRL publication functions only for a due CRL. The API runs a renewal pass every `TRUST_CRL_RENEWAL_INTERVAL_SECONDS` (Compose: hourly). Each pass goes through the unchanged journaled path. `crl-status` reports `auto_renewal`, and the console shows it. Verified locally:
+- the new SQL suite and the existing CRL suites;
+- the database-backed HTTP test, where the renewer publishes CRL 1 with the real signer and then does nothing;
+- `lab_verify_issued_certificates`;
+- 78 frontend tests;
+- the four e2e suites on a lab with the renewer enabled.
+
+CI has not yet run on this branch.

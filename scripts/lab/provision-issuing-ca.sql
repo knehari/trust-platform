@@ -25,6 +25,11 @@ FROM (VALUES ('11', 'profile-editor'), ('03', 'policy-approver'), ('04', 'policy
              ('05', 'ca-operator'), ('15', 'certificate-requester'), ('16', 'registration-officer'),
              ('17', 'registration-officer')) AS g(n, r)
 ON CONFLICT DO NOTHING;
+-- Automatic CRL renewal (migration 0035, ADR-0021): the API's renewal task
+-- publishes this CA's CRL when it is due.
+INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
+VALUES ('urn:trust-platform:system', 'crl-renewer', :'ca'::uuid, 'crl-publisher')
+ON CONFLICT DO NOTHING;
 -- Public CRL publication (migration 0032, ADR-0019): certificates of this CA
 -- name the API's unauthenticated latest-CRL route, on the laboratory's
 -- loopback address.

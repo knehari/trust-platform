@@ -1222,7 +1222,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ca_id, distribution_point, latest_crl_number, next_update, renewal_due, expired]
+                required: [ca_id, distribution_point, latest_crl_number, next_update, renewal_due, expired, auto_renewal]
                 properties:
                   ca_id: { type: string, format: uuid }
                   distribution_point: { type: [string, 'null'], description: The public URL certificates carry, once the owner configured publication }
@@ -1230,6 +1230,7 @@ paths:
                   next_update: { type: [string, 'null'], format: date-time }
                   renewal_due: { type: boolean, description: No CRL yet, or nextUpdate within two days }
                   expired: { type: boolean, description: The latest CRL's nextUpdate has passed }
+                  auto_renewal: { type: boolean, description: 'The API''s renewal task publishes this CA''s CRL when it is due (migration 0035, ADR-0021); the database owner grants it per CA' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing reader role or CA outside the signed scope }

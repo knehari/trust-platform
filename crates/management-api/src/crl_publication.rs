@@ -247,6 +247,82 @@ fn publish(
     )))
 }
 
+/// The system principal of the automatic CRL renewer (migration 0035,
+/// ADR-0021). The database owner grants it `crl-publisher` per CA; it can
+/// only publish a CRL that is due.
+pub(crate) const RENEWER_ISSUER: &str = "urn:trust-platform:system";
+pub(crate) const RENEWER_SUBJECT: &str = "crl-renewer";
+
+/// One renewal pass: publishes the CRL of every CA granted to the renewer
+/// whose CRL is due, through the same journaled path as an officer.
+/// Returns each CA and what happened. Never retries an ambiguous outcome:
+/// the next pass takes a new CRL number.
+pub(crate) async fn renew_due_crls(
+    state: &AppState,
+) -> Result<Vec<(String, &'static str)>, StatusCode> {
+    let writer_url = state
+        .writer_database_url
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let socket = state
+        .signer_socket
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let outcomes = query_db(writer_url, state.database_slots.clone(), move |db| {
+        let candidates: Vec<String> = db
+            .query(
+                "SELECT ca_id::text FROM crl_renewal_candidates_lab($1, $2)",
+                &[&RENEWER_ISSUER, &RENEWER_SUBJECT],
+            )?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        let mut outcomes = Vec::new();
+        for ca_id in candidates {
+            let caller = Caller {
+                issuer: RENEWER_ISSUER.to_owned(),
+                subject: RENEWER_SUBJECT.to_owned(),
+                ca_id: ca_id.clone(),
+            };
+            let operation: String = db.query_one("SELECT gen_random_uuid()::text", &[])?.get(0);
+            let request_sha256 =
+                Sha256::digest(format!("crl-renewal:{ca_id}:{operation}")).to_vec();
+            let outcome = match publish(db, &caller, &operation, &request_sha256, socket.clone())? {
+                Ok((_, Outcome::Published { .. })) => "PUBLISHED",
+                Ok((_, Outcome::AlreadyPublished)) => "ALREADY_PUBLISHED",
+                Ok((_, Outcome::Uncertain)) => "RECONCILIATION_REQUIRED",
+                Err(_) => "REFUSED",
+            };
+            outcomes.push((ca_id, outcome));
+        }
+        Ok(outcomes)
+    })
+    .await?;
+    for (ca_id, outcome) in &outcomes {
+        write_log(serde_json::json!({
+            "event": "crl_auto_renewal", "ca_id": ca_id, "status": outcome,
+        }));
+    }
+    Ok(outcomes)
+}
+
+/// Runs a renewal pass shortly after startup, then every `interval`, on its
+/// own thread. A failed pass is logged and retried at the next tick.
+pub(crate) fn spawn_renewer(state: AppState, interval: std::time::Duration) {
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        loop {
+            if runtime.block_on(renew_due_crls(&state)).is_err() {
+                write_log(
+                    serde_json::json!({"event": "crl_auto_renewal", "status": "UNAVAILABLE"}),
+                );
+            }
+            std::thread::sleep(interval);
+        }
+    });
+}
+
 /// `POST /v1/cas/{ca_id}/crls`: 201 with the CRL; 200 when this key
 /// published it before (no PEM); 409 for an intent already journaled; 502
 /// RECONCILIATION_REQUIRED when the outcome is ambiguous; 503 without a
@@ -363,6 +439,8 @@ struct CrlStatus {
     next_update: Option<String>,
     renewal_due: bool,
     expired: bool,
+    /// Whether the automatic renewer holds this CA (migration 0035).
+    auto_renewal: bool,
 }
 
 /// `GET /v1/cas/{ca_id}/crl-status`: where the CA's CRLs are published, and
@@ -382,7 +460,7 @@ pub(crate) async fn crl_status(
         move |db| {
             db.query_opt(
                 "SELECT ca_id, distribution_point, latest_crl_number, next_update, renewal_due, \
-                 expired FROM management_crl_status WHERE ca_id = $1",
+                 expired, auto_renewal FROM management_crl_status WHERE ca_id = $1",
                 &[&ca_id],
             )
         },
@@ -397,6 +475,7 @@ pub(crate) async fn crl_status(
             next_update: row.get(3),
             renewal_due: row.get(4),
             expired: row.get(5),
+            auto_renewal: row.get(6),
         })
         .into_response(),
         false,
