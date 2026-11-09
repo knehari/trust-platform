@@ -8,6 +8,7 @@ test('expiry buckets count only future notAfter dates, week by week', () => {
   const buckets = expiryBuckets([
     { not_after: '2026-11-09T00:00:00Z' }, { not_after: '2026-11-20T00:00:00Z' },
     { not_after: '2026-11-01T00:00:00Z' }, { not_after: null }, { not_after: '2030-01-01T00:00:00Z' },
+    { not_after: '2026-11-10T00:00:00Z', revoked_at: '2026-11-08T00:00:00Z' },
   ], now, 4);
   assert.deepEqual(buckets.map(bucket => bucket.count), [1, 1, 0, 0]);
 });
@@ -29,7 +30,9 @@ test('certificate health separates valid, expiring, expired and unknown', () => 
     { not_before: '2025-01-01T00:00:00Z', not_after: '2026-01-01T00:00:00Z' },
     { not_before: null, not_after: null },
   ], now);
-  assert.deepEqual(health, { valid: 1, expiringSoon: 1, expired: 1, unknown: 1 });
+  assert.deepEqual(health, { valid: 1, expiringSoon: 1, expired: 1, unknown: 1, revoked: 0 });
+  const revoked = certificateHealth([{ not_before: '2026-01-01T00:00:00Z', not_after: '2027-06-01T00:00:00Z', revoked_at: '2026-11-01T00:00:00Z' }], now);
+  assert.deepEqual(revoked, { valid: 0, expiringSoon: 0, expired: 0, unknown: 0, revoked: 1 });
 });
 
 test('lifetime elapsed is bounded and null when unknown', () => {

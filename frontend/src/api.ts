@@ -20,6 +20,10 @@ export interface Certificate {
   not_before: string | null;
   not_after: string | null;
   san_dns: string[] | null;
+  /** When an approved revocation was recorded (migration 0033), or null. */
+  revoked_at?: string | null;
+  /** RFC 5280 CRLReason code of that revocation, or null. */
+  revocation_reason?: number | null;
 }
 
 export interface AuditEvent {

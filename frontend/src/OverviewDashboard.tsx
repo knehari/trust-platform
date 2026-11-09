@@ -87,7 +87,7 @@ export function OverviewDashboard({ ca, certificates, auditEvents, now, token, i
       {isReader && <div className="ui-kpis">
         <Kpi label="Valid certificates" value={health.valid} tone="good" hint="Within their recorded period" onClick={() => onNavigate('certificates')} />
         <Kpi label="Expiring ≤ 30 days" value={health.expiringSoon} tone={health.expiringSoon ? 'warn' : 'neutral'} hint="Recorded notAfter soon" onClick={() => onNavigate('certificates')} />
-        <Kpi label="Period ended" value={health.expired} tone={health.expired ? 'bad' : 'neutral'} hint="Recorded notAfter passed" onClick={() => onNavigate('certificates')} />
+        <Kpi label="Revoked" value={health.revoked} tone={health.revoked ? 'bad' : 'neutral'} hint={health.expired ? `${health.expired} more past their period` : 'Recorded revocations'} onClick={() => onNavigate('certificates')} />
         <Kpi label="Events, 14 days" value={events14} tone="info" hint={denied14 ? `${denied14} denied` : 'No denial'} onClick={() => onNavigate('audit')} />
       </div>}
     </div>

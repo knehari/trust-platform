@@ -176,3 +176,6 @@
 :root[data-theme="dark"] .ui-step-dot { border: 2px solid #2b3a44; background: #121a21; }
 :root[data-theme="dark"] .ui-step.done .ui-step-dot { color: #121a21; }
 :root[data-theme="dark"] .ui-step.end:not(.bad) .ui-step-dot { color: #121a21; }
+:root[data-theme="dark"] .ui-row-revoked td { background: #2f1912; }
+:root[data-theme="dark"] .ui-revoked-banner { background: #361b14; border: 1px solid #5d2d23; color: #dd8b7e; }
+:root[data-theme="dark"] .ui-revoked-banner span { color: #d8b5af; }

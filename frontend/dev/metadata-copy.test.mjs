@@ -9,7 +9,7 @@ test('certificate JSON copies only approved metadata and preserves null CN', () 
     fingerprint_sha256: 'a'.repeat(64), state: 'SIGNED', signed_at: '2026-10-01T00:00:00Z', published_at: null,
     certificate_der: 'must-not-copy', private_key: 'must-not-copy',
   }));
-  assert.deepEqual(Object.keys(copied), ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'not_before', 'not_after', 'san_dns', 'fingerprint_sha256', 'state', 'signed_at', 'published_at']);
+  assert.deepEqual(Object.keys(copied), ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'not_before', 'not_after', 'san_dns', 'fingerprint_sha256', 'state', 'signed_at', 'published_at', 'revoked_at', 'revocation_reason']);
   assert.equal(copied.subject_cn, null);
   assert.equal(JSON.stringify(copied).includes('must-not-copy'), false);
 });

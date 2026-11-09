@@ -46,7 +46,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 /// columns of migration 0017, the SAN view of 0018, the lowered CN of 0019
 /// and the bounds view of 0020; LIMIT 0 reads no row.
 const MANAGEMENT_VIEWS_CHECK: &str =
-    "SELECT c.signed_at_window, c.subject_cn_lower, a.recorded_at_window, s.signed_at_window, \
+    "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
      , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number, cs.renewal_due, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
@@ -99,6 +99,11 @@ struct Certificate {
     not_before: Option<String>,
     not_after: Option<String>,
     san_dns: Option<Vec<String>>,
+    /// When an approved revocation was recorded (migration 0033), UTC, or
+    /// null. It reaches relying parties through the next published CRL.
+    revoked_at: Option<String>,
+    /// RFC 5280 CRLReason code of that revocation, or null.
+    revocation_reason: Option<i16>,
 }
 #[derive(Serialize)]
 struct Audit {
@@ -575,7 +580,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0032")?;
+    .map_err(|_| "management views unavailable or older than migration 0033")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1011,6 +1016,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_application_issuance_version() = 1 \
              AND management_revocation_crl_version() = 1 \
              AND management_crl_publication_version() = 1 \
+             AND management_certificate_revocation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -1304,7 +1310,7 @@ async fn list_certificates(
             &[&issuer,&subject,&ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        let mut select = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
+        let mut select = format!("SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns,revoked_at,revocation_reason \
              FROM management_certificate WHERE ca_id=$1 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$2 AND subject=$3 AND ca_id=$1) \
              AND ($4::text IS NULL OR (signed_at, request_id) {comparison} ($4, $5))");
@@ -1460,6 +1466,8 @@ fn certificate_from_row(row: Row) -> Certificate {
         not_before: row.get(8),
         not_after: row.get(9),
         san_dns: row.get(10),
+        revoked_at: row.get(11),
+        revocation_reason: row.get(12),
     }
 }
 
@@ -1482,7 +1490,7 @@ async fn get_certificate(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query_opt(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns,revoked_at,revocation_reason \
              FROM management_certificate WHERE ca_id=$1 AND request_id=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &request_id, &issuer, &subject],
@@ -1509,7 +1517,7 @@ async fn get_certificate_by_serial(
         )?.get(0);
         if !granted { return Ok(None); }
         db.query_opt(
-            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns \
+            "SELECT ca_id,serial_hex,fingerprint_sha256,request_id,state,signed_at,published_at,subject_cn,not_before,not_after,san_dns,revoked_at,revocation_reason \
              FROM management_certificate WHERE ca_id=$1 AND serial_hex=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &serial_hex, &issuer, &subject],
