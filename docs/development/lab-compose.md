@@ -122,3 +122,17 @@ TRUST_AUDIT_EXPECTED_HEAD="<head_seq>:<head_hash>" TRUST_VERIFY_DATABASE_URL=…
 ```
 
 The head is not signed and its export is not automated: this is a laboratory procedure, not a retention or custody control.
+
+## Signed audit checkpoints (ADR-0023)
+
+`scripts/lab/init-env.sh` generates the signer's audit key into `.lab-keys/audit/` (`audit-checkpoint.pem`, and its public half `audit-checkpoint.pub.pem`). The signer mounts only that directory, read-only, for it, and keeps its last checkpoint in the `trust_signer_state` volume. Every 60 seconds the API asks the signer to verify the chain since that checkpoint and sign its head. The API logs `audit_checkpoint` with `SIGNED`, `UNCHANGED`, or `REFUSED` plus `"alert": true`.
+
+To verify every checkpoint with the public key, which never comes from the database:
+
+```sh
+TRUST_AUDIT_CHECKPOINT_PUBLIC_KEY=.lab-keys/audit/audit-checkpoint.pub.pem \
+TRUST_AUDIT_REQUIRE_CHECKPOINT=1 TRUST_VERIFY_DATABASE_URL=… \
+  cargo run -p trust-management-api --bin lab_verify_audit_chain
+```
+
+`docker compose … down -v` removes the database and the signer's state together, so a fresh stack starts afresh. Resetting only the database while keeping `trust_signer_state` makes the signer refuse every checkpoint with `AuditRollback`. That is the intended alarm: the database no longer holds what it signed. Remove the state volume only on purpose.

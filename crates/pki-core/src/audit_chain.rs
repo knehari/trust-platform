@@ -110,6 +110,25 @@ pub fn audit_event_digest(event: &AuditEventFields<'_>) -> Result<[u8; 32], Fiel
     Ok(Sha256::digest(audit_event_canonical(event)?).into())
 }
 
+/// The bytes an audit checkpoint signature covers (ADR-0023, version 1): the
+/// head of the chain at `seq`, when it was signed (Unix seconds) and the key
+/// identifier (SHA-256 of the signing key's SubjectPublicKeyInfo DER), so a
+/// signature cannot be moved to another head, instant or key.
+pub fn audit_checkpoint_message(
+    seq: u64,
+    chain_hash: &[u8; 32],
+    signed_at_unix: i64,
+    key_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(32 + 8 + 32 + 8 + 32);
+    message.extend_from_slice(b"trust-platform:audit-checkpoint:v1\0");
+    message.extend_from_slice(&seq.to_be_bytes());
+    message.extend_from_slice(chain_hash);
+    message.extend_from_slice(&signed_at_unix.to_be_bytes());
+    message.extend_from_slice(key_id);
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +183,21 @@ mod tests {
             hex(&audit_event_digest(&before_epoch).unwrap()),
             "1b660fd39da5e79549650877fb1517f8fa8671c746a345b294c8df5886888bcf"
         );
+    }
+
+    #[test]
+    fn checkpoint_message_binds_every_field() {
+        let message = audit_checkpoint_message(7, &[1; 32], 1_794_225_600, &[2; 32]);
+        assert_eq!(message.len(), 35 + 8 + 32 + 8 + 32);
+        assert!(message.starts_with(b"trust-platform:audit-checkpoint:v1\0"));
+        for other in [
+            audit_checkpoint_message(8, &[1; 32], 1_794_225_600, &[2; 32]),
+            audit_checkpoint_message(7, &[3; 32], 1_794_225_600, &[2; 32]),
+            audit_checkpoint_message(7, &[1; 32], 1_794_225_601, &[2; 32]),
+            audit_checkpoint_message(7, &[1; 32], 1_794_225_600, &[4; 32]),
+        ] {
+            assert_ne!(other, message);
+        }
     }
 
     #[test]

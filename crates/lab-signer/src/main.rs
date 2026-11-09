@@ -9,9 +9,16 @@
 //! - `TRUST_SIGNER_KEY_FILE`: that CA's P-256 key (PEM). Read for each
 //!   request and checked against the CA's attested key; never logged.
 //!
+//! - `TRUST_SIGNER_AUDIT_KEY_FILE` and `TRUST_SIGNER_AUDIT_STATE_FILE`
+//!   (optional, together): the P-256 audit key that signs checkpoints of the
+//!   audit chain, distinct from the CA key, and the file where the signer
+//!   remembers its last checkpoint, outside the database (ADR-0023).
+//!
 //! Protocol: one JSON line per connection,
 //! `{"intent_id": "...", "tbs_der_base64": "..."}`, answered by
 //! `{"signature_der_base64": "..."}` or `{"error": "<code>"}`.
+//! `{"kind": "audit_checkpoint"}` is answered by
+//! `{"checkpoint_seq": n, "chain_hash_hex": "...", "signed": bool}`.
 use std::{
     env,
     error::Error,
@@ -31,7 +38,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         database_url: env::var("TRUST_SIGNER_DATABASE_URL")?,
         ca_id: uuid_text(&env::var("TRUST_SIGNER_CA_ID")?)?,
         key_file: PathBuf::from(env::var("TRUST_SIGNER_KEY_FILE")?),
+        audit_key_file: optional_path("TRUST_SIGNER_AUDIT_KEY_FILE"),
+        audit_state_file: optional_path("TRUST_SIGNER_AUDIT_STATE_FILE"),
     };
+    if config.audit_key_file.is_some() != config.audit_state_file.is_some() {
+        return Err(
+            "set both TRUST_SIGNER_AUDIT_KEY_FILE and TRUST_SIGNER_AUDIT_STATE_FILE, or neither"
+                .into(),
+        );
+    }
     if !restricted_login(&config.database_url)? {
         return Err("the signer login is not limited to trust_lab_signer".into());
     }
@@ -51,6 +66,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // database claim serializes signing anyway.
     serve(&config, &listener);
     Ok(())
+}
+
+fn optional_path(name: &str) -> Option<PathBuf> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn uuid_text(raw: &str) -> Result<String, Box<dyn Error>> {

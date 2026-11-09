@@ -585,7 +585,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0036")?;
+    .map_err(|_| "management views unavailable or older than migration 0037")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -661,6 +661,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit_chain::spawn_sealer(state.clone(), Duration::from_secs(seconds));
         write_log(
             serde_json::json!({"event":"audit_chain_sealing_enabled","interval_seconds":seconds}),
+        );
+    }
+    // Signed audit checkpoints (ADR-0023): off unless an interval is set.
+    if let Some(seconds) = env::var("TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        let seconds: u64 = seconds
+            .parse()
+            .ok()
+            .filter(|value| (30..=86_400).contains(value))
+            .ok_or("TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS must be 30 to 86400")?;
+        let socket = state
+            .signer_socket
+            .clone()
+            .ok_or("audit checkpoints need TRUST_SIGNER_SOCKET")?;
+        audit_chain::spawn_checkpointer(socket, Duration::from_secs(seconds));
+        write_log(
+            serde_json::json!({"event":"audit_checkpoint_enabled","interval_seconds":seconds}),
         );
     }
     let app = router(state);
@@ -1073,6 +1092,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_application_void_version() = 1 \
              AND management_crl_renewal_version() = 1 \
              AND management_audit_chain_version() = 1 \
+             AND management_audit_checkpoint_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -4258,6 +4278,19 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap();
+        // The signer's audit key (ADR-0023), distinct from the CA key, and
+        // its state file outside the database.
+        let audit_key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let audit_key_file = key_dir.join("audit.pem");
+        std::fs::write(
+            &audit_key_file,
+            audit_key
+                .to_sec1_pem(p256::pkcs8::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        let audit_state_file = key_dir.join("audit-state.json");
         let fingerprint = hex_bytes(&<sha2::Sha256 as sha2::Digest>::digest(
             root.to_der().unwrap(),
         ));
@@ -4353,6 +4386,8 @@ mod tests {
         // a previous signer's socket file is replaced.
         let start_signer = |key_file: std::path::PathBuf| {
             let (socket, signer_url, ca) = (socket.clone(), signer_url.clone(), ca.clone());
+            let (audit_key_file, audit_state_file) =
+                (audit_key_file.clone(), audit_state_file.clone());
             std::thread::spawn(move || {
                 assert!(trust_lab_signer::service::restricted_login(&signer_url).unwrap());
                 let _ = std::fs::remove_file(&socket);
@@ -4361,6 +4396,8 @@ mod tests {
                     database_url: signer_url,
                     ca_id: ca,
                     key_file,
+                    audit_key_file: Some(audit_key_file),
+                    audit_state_file: Some(audit_state_file),
                 };
                 (listener, config)
             })
@@ -4697,6 +4734,61 @@ mod tests {
         let pass = audit_chain::seal_pending_events(&state).await.unwrap();
         assert!(pass.sealed >= 1 && pass.head_seq >= pass.sealed);
         assert_eq!(pass.head_hash.len(), 64);
+        // The signer recomputes the chain and signs its head with the audit
+        // key (migration 0037); a second request has nothing new to sign.
+        let checkpoint = |socket: std::path::PathBuf| {
+            tokio::task::spawn_blocking(move || audit_chain::checkpoint_pass(&socket))
+        };
+        let signed = checkpoint(socket.clone()).await.unwrap().unwrap();
+        let audit_chain::CheckpointReply::Current {
+            seq: checkpoint_seq,
+            signed: true,
+        } = signed
+        else {
+            panic!("checkpoint not signed: {signed:?}");
+        };
+        assert!(checkpoint_seq >= u64::try_from(pass.head_seq).unwrap());
+        assert_eq!(
+            checkpoint(socket.clone()).await.unwrap(),
+            Some(audit_chain::CheckpointReply::Current {
+                seq: checkpoint_seq,
+                signed: false
+            })
+        );
+        let stored = query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.query_one(
+                "SELECT c.chain_hash, c.key_id, extract(epoch FROM c.signed_at)::bigint, c.signature \
+                 FROM audit_chain_checkpoint c WHERE c.seq = $1",
+                &[&i64::try_from(checkpoint_seq).unwrap()],
+            )
+        })
+        .await
+        .unwrap();
+        let (chain_hash, key_id): (Vec<u8>, Vec<u8>) = (stored.get(0), stored.get(1));
+        let audit_spki = trust_lab_signer::spki_der(&audit_key).unwrap();
+        assert_eq!(
+            key_id,
+            <sha2::Sha256 as sha2::Digest>::digest(&audit_spki).to_vec()
+        );
+        let message = trust_pki_core::audit_chain::audit_checkpoint_message(
+            checkpoint_seq,
+            &<[u8; 32]>::try_from(chain_hash.as_slice()).unwrap(),
+            stored.get(2),
+            &<[u8; 32]>::try_from(key_id.as_slice()).unwrap(),
+        );
+        let point = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(
+            &audit_key.public_key(),
+            false,
+        );
+        trust_pki_crypto::verify_p256_ecdsa_sha256(
+            point.as_bytes(),
+            &message,
+            &stored.get::<_, Vec<u8>>(3),
+        )
+        .expect("the checkpoint verifies under the audit key");
+        // The state file outside the database now names that checkpoint.
+        let remembered = std::fs::read_to_string(&audit_state_file).unwrap();
+        assert!(remembered.contains(&format!("\"seq\":{checkpoint_seq}")));
         let (_, published_events) = send("GET", &officer, audit_path, None).await;
         assert_eq!(published_events[0]["chain_sealed"], json!(true));
         let event_path = format!(

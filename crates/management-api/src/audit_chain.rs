@@ -72,3 +72,69 @@ pub(crate) fn spawn_sealer(state: AppState, interval: std::time::Duration) {
         }
     });
 }
+
+/// Long enough for the signer to recompute the links since its last
+/// checkpoint; the API never holds a database connection meanwhile.
+const CHECKPOINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The signer's answer to a checkpoint request (ADR-0023).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckpointReply {
+    /// The checkpoint now current; `signed` is false when nothing was new.
+    Current { seq: u64, signed: bool },
+    /// The signer refused, with its code (for example `AuditRollback`).
+    Refused(String),
+}
+
+/// Asks the laboratory signer to verify the chain since its last checkpoint
+/// and sign the new head. `None` when the signer is unreachable.
+pub(crate) fn request_checkpoint(socket: &std::path::Path) -> Option<CheckpointReply> {
+    use std::io::{BufRead, BufReader, Write};
+    let stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(CHECKPOINT_TIMEOUT)).ok()?;
+    stream.set_write_timeout(Some(CHECKPOINT_TIMEOUT)).ok()?;
+    writeln!(
+        &stream,
+        "{}",
+        serde_json::json!({"kind": "audit_checkpoint"})
+    )
+    .ok()?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).ok()?;
+    let reply: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if let Some(code) = reply["error"].as_str() {
+        return Some(CheckpointReply::Refused(code.to_owned()));
+    }
+    Some(CheckpointReply::Current {
+        seq: reply["checkpoint_seq"].as_u64()?,
+        signed: reply["signed"].as_bool()?,
+    })
+}
+
+/// One checkpoint request, logged. A refusal is logged as an alert: the
+/// database no longer extends what the signer signed, or the chain is broken.
+pub(crate) fn checkpoint_pass(socket: &std::path::Path) -> Option<CheckpointReply> {
+    let reply = request_checkpoint(socket);
+    write_log(match &reply {
+        Some(CheckpointReply::Current { seq, signed }) => serde_json::json!({
+            "event": "audit_checkpoint", "status": if *signed { "SIGNED" } else { "UNCHANGED" },
+            "checkpoint_seq": seq,
+        }),
+        Some(CheckpointReply::Refused(code)) => serde_json::json!({
+            "event": "audit_checkpoint", "status": "REFUSED", "alert": true, "reason": code,
+        }),
+        None => serde_json::json!({"event": "audit_checkpoint", "status": "UNAVAILABLE"}),
+    });
+    reply
+}
+
+/// Requests a checkpoint shortly after startup, then every `interval`.
+pub(crate) fn spawn_checkpointer(socket: std::path::PathBuf, interval: std::time::Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        loop {
+            checkpoint_pass(&socket);
+            std::thread::sleep(interval);
+        }
+    });
+}

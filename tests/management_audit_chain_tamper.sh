@@ -115,4 +115,55 @@ grep -q 'differs from the exported head' "$scratch/rebuilt-against-export.err"
 verify unknown-head fail TRUST_AUDIT_EXPECTED_HEAD="99:$(printf '0%.0s' {1..64})"
 grep -q 'no longer in the chain' "$scratch/unknown-head.err"
 
-echo 'PASS: the audit chain tool detects altered, unlinked, removed and rebuilt history (0036)'
+# 6. Signed checkpoints (migration 0037, ADR-0023), with a key and a
+# signature made by OpenSSL, independently of the Rust signer.
+openssl ecparam -name prime256v1 -genkey -noout -out "$scratch/audit.pem" 2>/dev/null
+openssl ec -in "$scratch/audit.pem" -pubout -out "$scratch/audit.pub.pem" 2>/dev/null
+openssl ecparam -name prime256v1 -genkey -noout -out "$scratch/other.pem" 2>/dev/null
+openssl ec -in "$scratch/other.pem" -pubout -out "$scratch/other.pub.pem" 2>/dev/null
+key_id=$(openssl ec -pubin -in "$scratch/audit.pub.pem" -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1)
+# sign_checkpoint SEQ HASH SIGNED_AT: writes the DER signature to $scratch/sig.der.
+sign_checkpoint() {
+  python3 -I -c 'import sys
+seq, chain_hash, signed_at, key_id, out = sys.argv[1:]
+message = (b"trust-platform:audit-checkpoint:v1\0" + int(seq).to_bytes(8, "big")
+           + bytes.fromhex(chain_hash) + int(signed_at).to_bytes(8, "big", signed=True)
+           + bytes.fromhex(key_id))
+open(out, "wb").write(message)' "$1" "$2" "$3" "$key_id" "$scratch/message.bin"
+  openssl dgst -sha256 -sign "$scratch/audit.pem" -out "$scratch/sig.der" "$scratch/message.bin"
+}
+verify head pass
+head_seq=$(field head head_seq)
+head_hash=$(field head head_hash)
+sign_checkpoint "$head_seq" "$head_hash" 1794225600
+sql -c "SELECT lab_signer_record_audit_checkpoint($head_seq, '\\x$head_hash', '\\x$key_id', 1794225600,
+        '\\x$(od -An -v -tx1 "$scratch/sig.der" | tr -d ' \n')')" >/dev/null
+verify signed pass TRUST_AUDIT_REQUIRE_CHECKPOINT=1 TRUST_AUDIT_CHECKPOINT_PUBLIC_KEY="$scratch/audit.pub.pem"
+grep -q '1 signature(s) verified' "$scratch/signed.err"
+verify signed-without-key fail TRUST_AUDIT_REQUIRE_CHECKPOINT=1
+verify signed-other-key fail TRUST_AUDIT_CHECKPOINT_PUBLIC_KEY="$scratch/other.pub.pem"
+grep -q 'signed by another key' "$scratch/signed-other-key.err"
+
+# 7. The owner alters an event, rebuilds the chain and puts the checkpoint
+# row back: it no longer matches the chain, and it cannot be re-signed.
+sql -c "CREATE TABLE tamper_checkpoint AS SELECT * FROM audit_chain_checkpoint" >/dev/null
+sql <<'SQL'
+ALTER TABLE audit_chain_checkpoint DISABLE TRIGGER prevent_audit_checkpoint_update;
+ALTER TABLE audit_chain_link DISABLE TRIGGER prevent_audit_chain_update;
+ALTER TABLE audit_event DISABLE TRIGGER prevent_audit_update;
+DELETE FROM audit_chain_checkpoint;
+DELETE FROM audit_chain_link;
+UPDATE audit_event SET decision = 'deny' WHERE event_id = '7a7a7a7a-0000-4000-8000-000000000002';
+SELECT sealed FROM seal_audit_events_lab(1000) \g /dev/null
+INSERT INTO audit_chain_checkpoint SELECT * FROM tamper_checkpoint;
+SQL
+verify rebuilt-checkpointed fail TRUST_AUDIT_CHECKPOINT_PUBLIC_KEY="$scratch/audit.pub.pem"
+grep -q "checkpoint $head_seq: differs from the recomputed chain" "$scratch/rebuilt-checkpointed.err"
+# 8. Pointing the old signature at the new head does not verify either.
+sql -c "UPDATE audit_chain_checkpoint SET chain_hash = l.chain_hash FROM audit_chain_link l
+        WHERE l.seq = audit_chain_checkpoint.seq" >/dev/null
+verify moved-signature fail TRUST_AUDIT_CHECKPOINT_PUBLIC_KEY="$scratch/audit.pub.pem"
+grep -q "checkpoint $head_seq: the signature does not verify" "$scratch/moved-signature.err"
+
+echo 'PASS: the audit chain tool detects altered, unlinked, removed and rebuilt history, against exported heads and signed checkpoints (0036, 0037)'
+

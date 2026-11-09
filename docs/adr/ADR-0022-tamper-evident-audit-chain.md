@@ -124,8 +124,8 @@ SHA-256 chain construction, but nothing persisted or checked it.
 - **Upgrades.** Events written before 0036 are sealed at the first pass.
   The chain proves nothing about changes made before that.
 - **Head custody.** Detection depends on someone exporting the head and
-  keeping it where the database owner cannot change it. Nothing automates
-  that yet; it is an operating procedure.
+  keeping it where the database owner cannot change it. ADR-0023 automates
+  that with checkpoints signed by the laboratory signer.
 - **Content.** The chain covers the `audit_event` row only. Lifecycle,
   decision and CRL tables keep their own verifiers (ADR-0011, ADR-0014,
   ADR-0017).

@@ -314,6 +314,24 @@ try {
     // Readers learn only the flag, never the global sequence or hashes.
     assert.deepEqual(Object.keys(detail.body).sort(), ['ca_id', 'chain_sealed', 'decision', 'event_id', 'event_type', 'policy_version', 'recorded_at']);
   });
+
+  await check('the lab signer signs a checkpoint of the sealed chain with its audit key (ADR-0023)', async () => {
+    // Read as the database owner: checkpoints are not exposed to readers.
+    const query = "SELECT count(*) || ':' || coalesce(max(c.seq), 0) || ':' || \
+      coalesce(bool_and(c.chain_hash = l.chain_hash AND octet_length(c.key_id) = 32), false) \
+      FROM audit_chain_checkpoint c JOIN audit_chain_link l USING (seq)";
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const [count, seq, matches] = execSync(`${ownerPsql} -At -f -`, { input: query }).toString().trim().split(':');
+      if (Number(count) > 0) {
+        assert.equal(matches, 'true', 'every checkpoint names its link hash');
+        assert.ok(Number(seq) > 0);
+        break;
+      }
+      assert.ok(Date.now() < deadline, 'no checkpoint after 120 s: is TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS set and the signer given an audit key?');
+      await new Promise(resolve => setTimeout(resolve, 3_000));
+    }
+  });
 } finally {
   rmSync(keys, { recursive: true, force: true });
   rmSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem'), { force: true });

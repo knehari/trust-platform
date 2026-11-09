@@ -25,6 +25,8 @@
 
 use std::time::SystemTime;
 
+pub mod audit;
+
 use p256::{
     ecdsa::{signature::Signer, Signature, SigningKey},
     elliptic_curve::sec1::ToEncodedPoint,
@@ -91,6 +93,21 @@ pub enum Refusal {
     Crl(CrlError),
     ClaimRefused,
     Database,
+    /// Audit checkpoints (ADR-0023): no audit key or state file configured.
+    AuditNotConfigured,
+    AuditKeyFile,
+    /// The audit key is a CA key; the two roles never share a key.
+    AuditKeyIsCaKey,
+    /// The state file names another audit key.
+    AuditKeyChanged,
+    /// The state file is unreadable or damaged; never treated as absent.
+    AuditStateFile,
+    /// The database no longer holds the last checkpoint this signer signed.
+    AuditRollback,
+    /// A link or event does not recompute.
+    AuditChain,
+    /// A stored checkpoint is not this key's signature over the chain.
+    AuditCheckpointSignature,
 }
 
 impl Refusal {
@@ -316,8 +333,12 @@ pub mod service {
     use serde::Deserialize;
 
     use crate::{
-        parse_key_pem, sign_crl_intent, sign_intent, CrlIntentRecord, CrlStore, IntentRecord,
-        IntentStore, Refusal,
+        audit::{
+            decode_state, encode_state, hex, sign_audit_checkpoint, AuditLink, AuditStore,
+            CheckpointState, LinkEvent, StoredCheckpoint,
+        },
+        parse_key_pem, sign_crl_intent, sign_intent, spki_der, CrlIntentRecord, CrlStore,
+        IntentRecord, IntentStore, Refusal,
     };
 
     const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
@@ -415,20 +436,162 @@ pub mod service {
         }
     }
 
+    impl AuditStore for PgIntentStore<'_> {
+        fn latest_checkpoint(&mut self) -> Result<Option<StoredCheckpoint>, Refusal> {
+            Ok(self
+                .db
+                .query_opt(
+                    "SELECT seq, chain_hash, key_id, signed_at_unix, signature \
+                     FROM lab_signer_audit_checkpoint_latest()",
+                    &[],
+                )
+                .map_err(|_| Refusal::Database)?
+                .map(|row| StoredCheckpoint {
+                    seq: row.get(0),
+                    chain_hash: row.get(1),
+                    key_id: row.get(2),
+                    signed_at_unix: row.get(3),
+                    signature: row.get(4),
+                }))
+        }
+
+        fn links(&mut self, after: u64, max: i32) -> Result<Vec<AuditLink>, Refusal> {
+            let after = i64::try_from(after).map_err(|_| Refusal::AuditChain)?;
+            Ok(self
+                .db
+                .query(
+                    "SELECT seq, event_sha256, previous_hash, chain_hash, event_id, ca_id, request_id, \
+                     actor_id, event_type, decision, policy_version, recorded_at_micros \
+                     FROM lab_signer_audit_links($1, $2)",
+                    &[&after, &max],
+                )
+                .map_err(|_| Refusal::Database)?
+                .into_iter()
+                .map(|row| AuditLink {
+                    seq: row.get(0),
+                    event_sha256: row.get(1),
+                    previous_hash: row.get(2),
+                    chain_hash: row.get(3),
+                    event: row.get::<_, Option<Vec<u8>>>(4).map(|event_id| LinkEvent {
+                        event_id,
+                        ca_id: row.get(5),
+                        request_id: row.get(6),
+                        actor_id: row.get(7),
+                        event_type: row.get(8),
+                        decision: row.get(9),
+                        policy_version: row.get(10),
+                        recorded_at_micros: row.get(11),
+                    }),
+                })
+                .collect())
+        }
+
+        fn record_checkpoint(
+            &mut self,
+            seq: u64,
+            chain_hash: &[u8; 32],
+            key_id: &[u8; 32],
+            signed_at_unix: i64,
+            signature: &[u8],
+        ) -> Result<(), Refusal> {
+            let seq = i64::try_from(seq).map_err(|_| Refusal::AuditChain)?;
+            self.db
+                .execute(
+                    "SELECT lab_signer_record_audit_checkpoint($1, $2, $3, $4, $5)",
+                    &[
+                        &seq,
+                        &chain_hash.as_slice(),
+                        &key_id.as_slice(),
+                        &signed_at_unix,
+                        &signature,
+                    ],
+                )
+                .map(|_| ())
+                .map_err(|_| Refusal::Database)
+        }
+    }
+
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct SignRequest {
-        /// `certificate` (the default) or `crl`.
+        /// `certificate` (the default), `crl` or `audit_checkpoint`.
         #[serde(default)]
         kind: Option<String>,
-        intent_id: String,
-        tbs_der_base64: String,
+        /// Required for `certificate` and `crl`; absent for `audit_checkpoint`.
+        #[serde(default)]
+        intent_id: Option<String>,
+        #[serde(default)]
+        tbs_der_base64: Option<String>,
     }
 
     pub struct Config {
         pub database_url: String,
         pub ca_id: String,
         pub key_file: PathBuf,
+        /// The P-256 audit key (ADR-0023); without it, checkpoints are refused.
+        pub audit_key_file: Option<PathBuf>,
+        /// Where the signer remembers its last checkpoint, outside the database.
+        pub audit_state_file: Option<PathBuf>,
+    }
+
+    fn read_state(path: &std::path::Path) -> Result<Option<CheckpointState>, Refusal> {
+        match fs::read_to_string(path) {
+            Ok(text) => decode_state(&text).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(Refusal::AuditStateFile),
+        }
+    }
+
+    /// Written to a temporary file, flushed, then renamed over the state.
+    fn write_state(path: &std::path::Path, state: &CheckpointState) -> Result<(), Refusal> {
+        let temporary = path.with_extension("tmp");
+        let write = || -> io::Result<()> {
+            let mut file = fs::File::create(&temporary)?;
+            file.write_all(encode_state(state).as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, path)
+        };
+        write().map_err(|_| Refusal::AuditStateFile)
+    }
+
+    /// One checkpoint request: verify the chain after the remembered state,
+    /// sign its head with the audit key, record it, then remember it.
+    fn checkpoint(config: &Config) -> Result<serde_json::Value, Refusal> {
+        let (Some(key_file), Some(state_file)) = (&config.audit_key_file, &config.audit_state_file)
+        else {
+            return Err(Refusal::AuditNotConfigured);
+        };
+        let pem = fs::read_to_string(key_file).map_err(|_| Refusal::AuditKeyFile)?;
+        let key = parse_key_pem(&pem).map_err(|_| Refusal::AuditKeyFile)?;
+        // Never the CA key (when the CA key exists yet).
+        if let Ok(ca_pem) = fs::read_to_string(&config.key_file) {
+            if let Ok(ca_key) = parse_key_pem(&ca_pem) {
+                if spki_der(&ca_key)? == spki_der(&key).map_err(|_| Refusal::AuditKeyFile)? {
+                    return Err(Refusal::AuditKeyIsCaKey);
+                }
+            }
+        }
+        let state = read_state(state_file)?;
+        let mut db = Client::connect(&config.database_url, NoTls).map_err(|_| Refusal::Database)?;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| Refusal::Database)?
+            .as_secs();
+        let now = i64::try_from(now).map_err(|_| Refusal::Database)?;
+        let outcome = sign_audit_checkpoint(
+            &mut PgIntentStore { db: &mut db },
+            &key,
+            state.as_ref(),
+            now,
+        )?;
+        if outcome.state.seq > 0 && state.as_ref() != Some(&outcome.state) {
+            write_state(state_file, &outcome.state)?;
+        }
+        Ok(serde_json::json!({
+            "checkpoint_seq": outcome.state.seq,
+            "chain_hash_hex": hex(&outcome.state.chain_hash),
+            "signed": outcome.signed,
+        }))
     }
 
     pub fn log(value: serde_json::Value) {
@@ -444,10 +607,7 @@ pub mod service {
         BufReader::new(io::Read::take(&stream, MAX_REQUEST_BYTES)).read_line(&mut line)?;
         let outcome = answer(config, &line);
         let (reply, intent) = match &outcome {
-            Ok((intent, signature)) => (
-                serde_json::json!({"signature_der_base64": STANDARD.encode(signature)}),
-                intent.clone(),
-            ),
+            Ok((intent, reply)) => (reply.clone(), intent.clone()),
             Err((intent, refusal)) => {
                 (serde_json::json!({"error": refusal.code()}), intent.clone())
             }
@@ -455,18 +615,35 @@ pub mod service {
         log(serde_json::json!({
             "event": "lab_signer_request", "intent_id": intent,
             "outcome": outcome.as_ref().map(|_| "signed".to_owned()).unwrap_or_else(|(_, r)| r.code()),
+            // Only sequence numbers for checkpoints; never keys or signatures.
+            "checkpoint_seq": reply.get("checkpoint_seq"),
         }));
         let mut writer = &stream;
         writeln!(writer, "{reply}")
     }
 
-    fn answer(config: &Config, line: &str) -> Result<(String, Vec<u8>), (String, Refusal)> {
+    fn answer(
+        config: &Config,
+        line: &str,
+    ) -> Result<(String, serde_json::Value), (String, Refusal)> {
         let request: SignRequest =
             serde_json::from_str(line.trim()).map_err(|_| (String::new(), Refusal::BadRequest))?;
-        let intent = request.intent_id.clone();
+        if request.kind.as_deref() == Some("audit_checkpoint") {
+            if request.intent_id.is_some() || request.tbs_der_base64.is_some() {
+                return Err((String::new(), Refusal::BadRequest));
+            }
+            return checkpoint(config)
+                .map(|reply| (String::new(), reply))
+                .map_err(|refusal| (String::new(), refusal));
+        }
+        let (Some(intent_id), Some(tbs_der_base64)) = (request.intent_id, request.tbs_der_base64)
+        else {
+            return Err((String::new(), Refusal::BadRequest));
+        };
+        let intent = intent_id.clone();
         let fail = |refusal| (intent.clone(), refusal);
         let tbs = STANDARD
-            .decode(request.tbs_der_base64.trim())
+            .decode(tbs_der_base64.trim())
             .map_err(|_| fail(Refusal::BadRequest))?;
         let pem = fs::read_to_string(&config.key_file).map_err(|_| fail(Refusal::KeyFile))?;
         let key = parse_key_pem(&pem).map_err(fail)?;
@@ -478,17 +655,18 @@ pub mod service {
                 &mut store,
                 &config.ca_id,
                 &key,
-                &request.intent_id,
+                &intent_id,
                 &tbs,
                 SystemTime::now(),
             ),
-            Some("crl") => {
-                sign_crl_intent(&mut store, &config.ca_id, &key, &request.intent_id, &tbs)
-            }
+            Some("crl") => sign_crl_intent(&mut store, &config.ca_id, &key, &intent_id, &tbs),
             Some(_) => Err(Refusal::BadRequest),
         }
         .map_err(fail)?;
-        Ok((intent, signature))
+        Ok((
+            intent,
+            serde_json::json!({"signature_der_base64": STANDARD.encode(signature)}),
+        ))
     }
 
     /// The login must hold `trust_lab_signer` and read no table directly.
@@ -500,6 +678,7 @@ pub mod service {
                  AND management_application_issuance_version() = 1 \
                  AND management_revocation_crl_version() = 1 \
                  AND management_crl_publication_version() = 1 \
+                 AND management_audit_checkpoint_version() = 1 \
                  AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = current_user \
                      AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
                  AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
