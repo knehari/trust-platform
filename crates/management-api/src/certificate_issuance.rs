@@ -81,11 +81,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The parameters every issuance function takes.
-struct Caller {
-    issuer: String,
-    subject: String,
-    ca_id: String,
-    application_id: String,
+pub(crate) struct Caller {
+    pub(crate) issuer: String,
+    pub(crate) subject: String,
+    pub(crate) ca_id: String,
+    pub(crate) application_id: String,
 }
 
 /// The durable journal: the 0030 wrappers over the core functions. Each call
@@ -298,7 +298,7 @@ impl CertificateVerifier for Verifier<'_> {
     }
 }
 
-enum Outcome {
+pub(crate) enum Outcome {
     Issued {
         certificate_der: Vec<u8>,
         serial: Vec<u8>,
@@ -311,7 +311,7 @@ enum Outcome {
 
 /// Runs issuance on one writer connection. Database refusals before the
 /// intent map to the usual statuses.
-fn issue(
+pub(crate) fn issue(
     db: &mut Client,
     caller: &Caller,
     operation: &str,

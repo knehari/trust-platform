@@ -1,0 +1,350 @@
+//! The issuance channel for registration authorities (ADR-0025, Proposed;
+//! boundary of ADR-0024).
+//!
+//! `POST /v1/ra/cas/{ca_id}/certificates` takes no OIDC token. The request
+//! itself is signed by a registered RA system's P-256 key, over
+//! `trust_pki_core::ra_request::ra_issuance_message`. The API:
+//! 1. checks freshness and the signature with the key the database owner
+//!    registered;
+//! 2. verifies the CSR (proof of possession, subject CN = first name);
+//! 3. records the RA's request as a submitted and approved application under
+//!    the profile's rules (migration 0038);
+//! 4. issues once, through the journaled path and the separate signer
+//!    (ADR-0017).
+//!
+//! Replaying the same signed request returns the same certificate.
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::{
+    body::Bytes,
+    extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use trust_pki_core::{
+    csr::{verify_pkcs10_p256, CsrValidationError},
+    ra_request::{ra_issuance_message, RaIssuanceRequest},
+};
+use x509_cert::{
+    der::{pem::LineEnding, Decode, EncodePem},
+    Certificate,
+};
+
+use crate::{
+    certificate_application::{refused, valid_dns_name},
+    certificate_issuance::{issue, Caller, Outcome},
+    profile_lifecycle::write_status,
+    query_db, valid_profile_id, write_log, AppState,
+};
+
+/// The principal under which an RA system is the requester of record.
+pub(crate) const RA_ISSUER: &str = "urn:trust-platform:ra";
+/// How far `signed_at` may be from the API's clock, in seconds.
+const FRESHNESS_SECONDS: i64 = 300;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaIssuanceBody {
+    ra_id: String,
+    request_id: String,
+    profile_id: String,
+    csr_der_base64: String,
+    /// The names the RA validated; the first is the subject CN.
+    dns_names: Vec<String>,
+    validity_days: u32,
+    signed_at: i64,
+    signature_der_base64: String,
+}
+
+#[derive(Serialize)]
+struct RaIssuanceResponse {
+    ca_id: String,
+    ra_id: String,
+    request_id: String,
+    application_id: String,
+    status: &'static str,
+    certificate_pem: Option<String>,
+    serial_hex: Option<String>,
+    certificate_sha256: Option<String>,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn valid_ra_id(raw: &str) -> bool {
+    (1..=63).contains(&raw.len())
+        && raw
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !raw.starts_with('-')
+}
+
+/// A UUID derived from the RA request, so a replay reuses the same issuance
+/// operation (version 8, RFC 9562 custom layout).
+fn issuance_operation(ra_id: &str, request_id: &str) -> String {
+    let digest = Sha256::digest(format!("ra-issuance:{ra_id}:{request_id}"));
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+fn certificate_reply(
+    code: StatusCode,
+    base: RaIssuanceResponse,
+    der: &[u8],
+) -> Result<Response, StatusCode> {
+    let certificate = Certificate::from_der(der).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let serial = certificate
+        .tbs_certificate
+        .serial_number
+        .as_bytes()
+        .to_vec();
+    Ok((
+        code,
+        Json(RaIssuanceResponse {
+            status: "ISSUED",
+            certificate_pem: certificate.to_pem(LineEnding::LF).ok(),
+            serial_hex: Some(hex(&serial)),
+            certificate_sha256: Some(hex(&Sha256::digest(der))),
+            ..base
+        }),
+    )
+        .into_response())
+}
+
+/// What happened on the database connection.
+enum Done {
+    Issued(Vec<u8>),
+    Replayed(Vec<u8>),
+    Uncertain,
+    Conflict,
+}
+
+/// `POST /v1/ra/cas/{ca_id}/certificates`: 201 with the certificate; 200 with
+/// the same certificate for a replay; 401 for an unknown RA, a stale request
+/// or a signature that does not verify; 403 for a profile not granted; 422
+/// when the CSR or the names do not fit the profile; 502 when the signing
+/// outcome is ambiguous (reconciliation, ADR-0020).
+pub(crate) async fn issue_for_ra(
+    State(state): State<AppState>,
+    Path(raw_ca): Path<String>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let request: RaIssuanceBody =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let ca_uuid = uuid::Uuid::parse_str(&raw_ca).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request_uuid =
+        uuid::Uuid::parse_str(&request.request_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !valid_ra_id(&request.ra_id)
+        || !valid_profile_id(&request.profile_id)
+        || !(1..=100).contains(&request.dns_names.len())
+        || !request.dns_names.iter().all(|name| valid_dns_name(name))
+        || !(1..=825).contains(&request.validity_days)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let csr_der = STANDARD
+        .decode(request.csr_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let signature = STANDARD
+        .decode(request.signature_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .as_secs(),
+    )
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if (now - request.signed_at).abs() > FRESHNESS_SECONDS {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let writer_url = state
+        .writer_database_url
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let socket = state
+        .signer_socket
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // The RA's key, as the database owner registered it.
+    let ra_id = request.ra_id.clone();
+    let key: Option<Vec<u8>> = query_db(writer_url.clone(), state.database_slots.clone(), {
+        let ra_id = ra_id.clone();
+        move |db| {
+            Ok(db
+                .query_one("SELECT ra_system_key_lab($1)", &[&ra_id])?
+                .get(0))
+        }
+    })
+    .await?;
+    let Some(key) = key else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let csr_sha256: [u8; 32] = Sha256::digest(&csr_der).into();
+    let message = ra_issuance_message(&RaIssuanceRequest {
+        ra_id: &request.ra_id,
+        ca_id: *ca_uuid.as_bytes(),
+        profile_id: &request.profile_id,
+        request_id: *request_uuid.as_bytes(),
+        csr_sha256,
+        dns_names: &request.dns_names,
+        validity_days: request.validity_days,
+        signed_at_unix: request.signed_at,
+    })
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
+        write_log(serde_json::json!({
+            "event": "ra_issuance", "ra_id": ra_id, "status": "BAD_SIGNATURE",
+        }));
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // The RA authenticated. The CSR must prove possession of its key and name
+    // exactly the first DNS name; its extensions are never used.
+    let verified = match verify_pkcs10_p256(&csr_der, &request.dns_names[0]) {
+        Ok(verified) => verified,
+        Err(error) => {
+            let reason = match error {
+                CsrValidationError::SubjectMismatch => "SubjectMismatch",
+                CsrValidationError::InvalidSignature => "InvalidSignature",
+                CsrValidationError::UnsupportedSignatureAlgorithm
+                | CsrValidationError::UnsupportedSubjectKeyAlgorithm
+                | CsrValidationError::InvalidPublicKey => "UnsupportedKey",
+                _ => "Encoding",
+            };
+            return Ok(refused(reason));
+        }
+    };
+    let spki_sha256 = Sha256::digest(
+        x509_cert::der::Encode::to_der(verified.subject_public_key())
+            .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?,
+    )
+    .to_vec();
+
+    let ca_id = ca_uuid.to_string();
+    let request_id = request_uuid.to_string();
+    let request_sha256 = Sha256::digest(&message).to_vec();
+    let operation = issuance_operation(&ra_id, &request_id);
+    let args = (
+        ra_id.clone(),
+        ca_id.clone(),
+        request.profile_id,
+        request_id.clone(),
+        csr_der,
+        spki_sha256,
+        request.dns_names[0].clone(),
+        request.dns_names,
+        i32::try_from(request.validity_days).map_err(|_| StatusCode::BAD_REQUEST)?,
+        request.signed_at,
+        signature,
+    );
+    let (application_id, done) = query_db(writer_url, state.database_slots.clone(), move |db| {
+        let submitted = db.query_one(
+            "SELECT application_id::text, replayed FROM submit_ra_issuance_lab($1, $2::text::uuid, \
+             $3, $4::text::uuid, $5, $6, $7, $8, $9, $10, $11)",
+            &[
+                &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8,
+                &args.9, &args.10,
+            ],
+        );
+        let submitted = match submitted {
+            Ok(row) => row,
+            Err(error) => return Ok(Err(write_status(&error))),
+        };
+        let application_id: String = submitted.get(0);
+        let issued_before =
+            |db: &mut postgres::Client| -> Result<Option<Vec<u8>>, postgres::Error> {
+                Ok(db
+                    .query_one(
+                        "SELECT ra_issued_certificate_lab($1, $2::text::uuid)",
+                        &[&args.0, &args.3],
+                    )?
+                    .get(0))
+            };
+        if submitted.get::<_, bool>(1) {
+            if let Some(der) = issued_before(db)? {
+                return Ok(Ok((application_id, Done::Replayed(der))));
+            }
+        }
+        let caller = Caller {
+            issuer: RA_ISSUER.to_owned(),
+            subject: args.0.clone(),
+            ca_id: args.1.clone(),
+            application_id: application_id.clone(),
+        };
+        let done = match issue(db, &caller, &operation, &request_sha256, socket)? {
+            Err(status) => return Ok(Err(status)),
+            Ok(Outcome::Issued {
+                certificate_der, ..
+            }) => Done::Issued(certificate_der),
+            Ok(Outcome::AlreadyIssued) => match issued_before(db)? {
+                Some(der) => Done::Replayed(der),
+                None => Done::Conflict,
+            },
+            Ok(Outcome::Conflict) => Done::Conflict,
+            Ok(Outcome::Uncertain) => Done::Uncertain,
+        };
+        Ok(Ok((application_id, done)))
+    })
+    .await??;
+    let base = RaIssuanceResponse {
+        ca_id: ca_id.clone(),
+        ra_id: ra_id.clone(),
+        request_id: request_id.clone(),
+        application_id: application_id.clone(),
+        status: "RECONCILIATION_REQUIRED",
+        certificate_pem: None,
+        serial_hex: None,
+        certificate_sha256: None,
+    };
+    let (status, response) = match done {
+        Done::Issued(der) => (
+            "ISSUED",
+            certificate_reply(StatusCode::CREATED, base, &der)?,
+        ),
+        Done::Replayed(der) => ("REPLAYED", certificate_reply(StatusCode::OK, base, &der)?),
+        Done::Conflict => ("CONFLICT", StatusCode::CONFLICT.into_response()),
+        Done::Uncertain => (
+            "RECONCILIATION_REQUIRED",
+            (StatusCode::BAD_GATEWAY, Json(base)).into_response(),
+        ),
+    };
+    write_log(serde_json::json!({
+        "event": "ra_issuance", "ca_id": ca_id, "ra_id": ra_id, "request_id": request_id,
+        "application_id": application_id, "status": status,
+    }));
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ra_ids_and_operations_are_strict_and_stable() {
+        assert!(valid_ra_id("lab-ra"));
+        for bad in ["", "-ra", "Lab", "ra_1", "ra.1", &"a".repeat(64)] {
+            assert!(!valid_ra_id(bad), "{bad}");
+        }
+        let a = issuance_operation("lab-ra", "11111111-1111-4111-8111-111111111111");
+        assert_eq!(
+            a,
+            issuance_operation("lab-ra", "11111111-1111-4111-8111-111111111111")
+        );
+        assert_ne!(
+            a,
+            issuance_operation("lab-rb", "11111111-1111-4111-8111-111111111111")
+        );
+        let parsed = uuid::Uuid::parse_str(&a).unwrap();
+        assert_eq!(parsed.get_version_num(), 8);
+    }
+}

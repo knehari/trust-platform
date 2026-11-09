@@ -21,6 +21,13 @@
 //! issuer certificate's key; it checks the stored digests and exactly one
 //! signer claim.
 //!
+//! For each request a registered RA system signed (migration 0038, ADR-0025)
+//! it rebuilds the signed bytes from the application itself (CA, profile, CSR
+//! digest, names, validity) and the request's identifiers, checks that they
+//! are the stored bytes, and verifies the RA's signature with the RA's
+//! registered key. It also checks that the application was submitted and
+//! approved by that RA.
+//!
 //! PostgreSQL verifies neither X.509 nor ECDSA, so a compromised API or
 //! writer login could store what the API would refuse; this tool is how that
 //! is detected. Run it as the database owner:
@@ -233,6 +240,82 @@ fn crl_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>), postg
     Ok((crls.len(), found))
 }
 
+/// Every RA-signed request: the stored bytes are the application's, and the
+/// RA's registered key signed them.
+fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>), postgres::Error> {
+    if !db
+        .query_one(
+            "SELECT to_regclass('public.ra_issuance_request') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        return Ok((0, Vec::new()));
+    }
+    let rows = db.query(
+        "SELECT r.ra_id, uuid_send(r.request_id), uuid_send(a.ca_id), a.profile_id, a.csr_der, \
+                a.dns_names, a.validity_days, extract(epoch FROM r.signed_at)::bigint, r.message, \
+                r.signature, s.public_key_sec1, a.application_id::text, \
+                (SELECT array_agg(e.action || '|' || e.actor_issuer || '|' || e.actor_subject ORDER BY e.action) \
+                 FROM certificate_application_event e \
+                 WHERE e.application_id = a.application_id \
+                   AND e.action IN ('application.submitted', 'application.approved')) \
+         FROM ra_issuance_request r \
+         JOIN certificate_application a ON a.application_id = r.application_id AND a.ca_id = r.ca_id \
+         JOIN ra_system s ON s.ra_id = r.ra_id \
+         ORDER BY r.recorded_at",
+        &[],
+    )?;
+    let mut problems = Vec::new();
+    for row in &rows {
+        let ra_id: String = row.get(0);
+        let application: String = row.get(11);
+        let mut reasons = Vec::new();
+        let ids = (
+            <[u8; 16]>::try_from(row.get::<_, Vec<u8>>(1).as_slice()).ok(),
+            <[u8; 16]>::try_from(row.get::<_, Vec<u8>>(2).as_slice()).ok(),
+        );
+        let (Some(request_id), Some(ca_id)) = ids else {
+            problems.push((application, "malformed identifiers".to_owned()));
+            continue;
+        };
+        let dns_names: Vec<String> = row.get(5);
+        let validity: i32 = row.get(6);
+        let rebuilt = trust_pki_core::ra_request::ra_issuance_message(
+            &trust_pki_core::ra_request::RaIssuanceRequest {
+                ra_id: &ra_id,
+                ca_id,
+                profile_id: &row.get::<_, String>(3),
+                request_id,
+                csr_sha256: Sha256::digest(row.get::<_, Vec<u8>>(4)).into(),
+                dns_names: &dns_names,
+                validity_days: u32::try_from(validity).unwrap_or(0),
+                signed_at_unix: row.get(7),
+            },
+        );
+        let message: Vec<u8> = row.get(8);
+        if rebuilt.as_deref().ok() != Some(message.as_slice()) {
+            reasons.push("the stored bytes are not the application's");
+        }
+        let signature: Vec<u8> = row.get(9);
+        let key: Vec<u8> = row.get(10);
+        if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
+            reasons.push("the RA's key did not sign the stored bytes");
+        }
+        let expected = vec![
+            format!("application.approved|urn:trust-platform:ra|{ra_id}"),
+            format!("application.submitted|urn:trust-platform:ra|{ra_id}"),
+        ];
+        if row.get::<_, Option<Vec<String>>>(12) != Some(expected) {
+            reasons.push("not submitted and approved by that RA");
+        }
+        if !reasons.is_empty() {
+            problems.push((application, reasons.join("; ")));
+        }
+    }
+    Ok((rows.len(), problems))
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
@@ -302,12 +385,17 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         failed += 1;
         eprintln!("FAIL CRL {label}: {reasons}");
     }
+    let (ra_count, ra_requests) = ra_request_problems(&mut db)?;
+    for (application, reasons) in &ra_requests {
+        failed += 1;
+        eprintln!("FAIL RA request for application {application}: {reasons}");
+    }
     if failed > 0 {
         eprintln!("{failed} problem(s) in the issued certificates, revocations or CRLs");
         return Ok(ExitCode::FAILURE);
     }
     println!(
-        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s) and {crl_count} CRL(s) verified independently",
+        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s) and {ra_count} RA-signed request(s) verified independently",
         rows.len()
     );
     Ok(ExitCode::SUCCESS)

@@ -1251,6 +1251,46 @@ paths:
               schema: { type: string, format: binary }
         '404': { description: Not a UUID, not a publishing CA, or no CRL yet }
         '503': { description: The database is unavailable or too many requests }
+  /v1/ra/cas/{ca_id}/certificates:
+    post:
+      summary: Issue a certificate for a registered RA system's signed request (laboratory, migration 0038)
+      description: >-
+        No OIDC token. The request is authenticated by the RA's ECDSA P-256 signature (DER, SHA-256) over
+        trust_pki_core::ra_request::ra_issuance_message (ra_id, CA, profile, request_id, SHA-256 of the CSR DER,
+        DNS names in order, validity, signed_at), with the public key the database owner registered. The RA has
+        validated the subscriber and the names (ADR-0024); the CA still applies the profile (zones, count,
+        validity, key) and issues once through the journaled signer (ADR-0025, Proposed). signed_at must be
+        within 300 seconds of the server clock. The first DNS name is the subject CN, and the CSR must name it.
+      security: []
+      parameters:
+        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ra_id, request_id, profile_id, csr_der_base64, dns_names, validity_days, signed_at, signature_der_base64]
+              properties:
+                ra_id: { type: string, pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }
+                request_id: { type: string, format: uuid, description: The RA's idempotency key }
+                profile_id: { type: string }
+                csr_der_base64: { type: string, description: PKCS#10 DER, base64 }
+                dns_names: { type: array, minItems: 1, maxItems: 100, items: { type: string } }
+                validity_days: { type: integer, minimum: 1, maximum: 825 }
+                signed_at: { type: integer, format: int64, description: Unix seconds }
+                signature_der_base64: { type: string }
+      responses:
+        '201': { description: Issued; the body carries the certificate PEM, serial and SHA-256 }
+        '200': { description: The same signed request again; the same certificate }
+        '400': { description: Malformed body, identifiers or names }
+        '401': { description: Unknown or disabled RA, stale request, or a signature that does not verify }
+        '403': { description: The profile is not granted to this RA for this CA }
+        '409': { description: The request_id was used for other signed bytes, or an intent already exists }
+        '422': { description: The CSR or the names do not fit the profile (zones, count, validity, key) }
+        '502': { description: The signing outcome is ambiguous; the request needs reconciliation (ADR-0020) }
+        '503': { description: No writer login or signer configured, or the database is unavailable }
   /v1/cas/{ca_id}/crls/{crl_number}:
     get:
       summary: Read one published CRL as DER (laboratory, migration 0031)

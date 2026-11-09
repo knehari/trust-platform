@@ -136,3 +136,17 @@ TRUST_AUDIT_REQUIRE_CHECKPOINT=1 TRUST_VERIFY_DATABASE_URL=… \
 ```
 
 `docker compose … down -v` removes the database and the signer's state together, so a fresh stack starts afresh. Resetting only the database while keeping `trust_signer_state` makes the signer refuse every checkpoint with `AuditRollback`. That is the intended alarm: the database no longer holds what it signed. Remove the state volume only on purpose.
+
+## RA issuance channel (ADR-0025)
+
+A light RA or the CLM obtains certificates without a user token, with requests signed by its own P-256 key. To register one in the laboratory, as the database owner (`trust_lab`):
+
+```sql
+INSERT INTO ra_system (ra_id, display_name, public_key_sec1)
+VALUES ('my-ra', 'My RA', '\x04…');  -- uncompressed SEC1 point (openssl ec -pubout -conv_form uncompressed)
+INSERT INTO ra_profile_grant (ra_id, ca_id, profile_id) VALUES ('my-ra', '<ca_id>', 'server');
+INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
+VALUES ('urn:trust-platform:ra', 'my-ra', '<ca_id>', 'certificate-requester');
+```
+
+The RA then calls `POST /v1/ra/cas/<ca_id>/certificates` with the body described in the OpenAPI contract. The signature is ECDSA P-256 with SHA-256 (DER, base64) over `trust_pki_core::ra_request::ra_issuance_message`, and `signed_at` must be within five minutes. `frontend/dev/certificate-application-e2e.mjs` builds such a request with Node's crypto. To stop an RA, set `enabled = false`.

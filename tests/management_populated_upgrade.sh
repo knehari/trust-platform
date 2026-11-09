@@ -11,10 +11,10 @@ for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql; 
 done
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_populated_upgrade_seed.sql >/dev/null
 
-for migration in migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql migrations/0029*.sql migrations/0030*.sql migrations/0031*.sql migrations/0032*.sql migrations/0033*.sql migrations/0034*.sql migrations/0035*.sql migrations/0036*.sql migrations/0037*.sql; do
+for migration in migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql migrations/0029*.sql migrations/0030*.sql migrations/0031*.sql migrations/0032*.sql migrations/0033*.sql migrations/0034*.sql migrations/0035*.sql migrations/0036*.sql migrations/0037*.sql migrations/0038*.sql; do
   "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
 done
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$TRUST_UPGRADE_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_api_readonly.sql >/dev/null
 
-echo 'PASS: populated 0011 -> 0037 management upgrade preserved rows and read-only grants'
+echo 'PASS: populated 0011 -> 0038 management upgrade preserved rows and read-only grants'

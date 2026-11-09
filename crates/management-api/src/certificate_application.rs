@@ -108,7 +108,7 @@ struct Application {
 
 /// A lowercase LDH DNS name of at least two labels; no wildcard. The
 /// database applies the same rule and the profile's zones.
-fn valid_dns_name(name: &str) -> bool {
+pub(crate) fn valid_dns_name(name: &str) -> bool {
     let labels: Vec<&str> = name.split('.').collect();
     (3..=253).contains(&name.len())
         && labels.len() >= 2
@@ -138,7 +138,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn refused(reason: &str) -> Response {
+pub(crate) fn refused(reason: &str) -> Response {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         Json(serde_json::json!({"error": "csr_refused", "reason": reason})),
