@@ -199,7 +199,9 @@ The owner chose (decision of 2026-11-08):
 
 - **No reconciliation tool for applications yet.** A
   `RECONCILIATION_REQUIRED` request stays blocked. The core review
-  functions (migration 0005) are not wired to applications.
+  functions (migration 0005) are not wired to applications. *Superseded in
+  part by ADR-0020 (Proposed): two officers can now void such an issuance;
+  its serial goes on later CRLs.*
 - **No revocation, CRL or OCSP** for these certificates.
 - **No domain-control validation.** The registration officer's approval is
   the only check of the names. The decision is not signed.

@@ -18,6 +18,8 @@ const STATUS_OVERRIDES: Record<string, string> = {
   CSR_VALIDATED: 'CSR validated',
   SERIAL_RESERVED: 'Serial reserved',
   REVOCATION_REQUESTED: 'Revocation requested',
+  signer_claimed: 'Signer had claimed',
+  signer_unclaimed: 'Signer never claimed',
 };
 
 /** `KEY_ATTESTED` → `Key attested`; `allow` → `Allowed`. */
@@ -60,6 +62,8 @@ const EVENT_LABELS: Record<string, string> = {
   'certificate.application.approved': 'Application approved',
   'certificate.application.rejected': 'Application rejected',
   'certificate.application.issuance_started': 'Issuance started',
+  'certificate.application.void_proposed': 'Issuance void proposed',
+  'certificate.application.voided': 'Issuance voided',
   'crl.prepared': 'CRL prepared',
   'crl.published': 'CRL published',
   'crl.reconciliation_required': 'CRL needs reconciliation',

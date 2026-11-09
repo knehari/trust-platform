@@ -67,7 +67,7 @@ const STATUS_TONES: Record<string, string> = {
   KEY_ATTESTED: 'info', SUBMITTED: 'info', PROPOSED: 'info', ISSUING: 'info', SIGNING: 'info', RECEIVED: 'info',
   CSR_VALIDATED: 'info', AUTHORIZED: 'info', SERIAL_RESERVED: 'info',
   REVOCATION_REQUESTED: 'warn', SUSPENDED: 'warn', RECONCILIATION_REQUIRED: 'warn', RENEWAL_DUE: 'warn',
-  REJECTED: 'bad', REVOKED: 'bad', EXPIRED: 'bad', FAILED: 'bad', deny: 'bad', failed: 'bad', rejected: 'bad',
+  REJECTED: 'bad', REVOKED: 'bad', VOIDED: 'neutral', signer_claimed: 'warn', signer_unclaimed: 'info', EXPIRED: 'bad', FAILED: 'bad', deny: 'bad', failed: 'bad', rejected: 'bad',
   DRAFT: 'neutral', SUPERSEDED: 'neutral', RETIRED: 'neutral', NO_CRL: 'neutral',
 };
 

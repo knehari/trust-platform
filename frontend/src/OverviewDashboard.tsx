@@ -50,6 +50,7 @@ export function OverviewDashboard({ ca, certificates, auditEvents, now, token, i
   if (isOfficer && applications) {
     if (count('SUBMITTED')) queue.push({ id: 'decide', tone: 'warn', icon: 'request', count: count('SUBMITTED'), title: 'Requests awaiting your decision', detail: 'Approve or reject each certificate application.', action: 'Review requests', section: 'requests' });
     if (count('REVOCATION_REQUESTED')) queue.push({ id: 'revoke', tone: 'warn', icon: 'revocation', count: count('REVOCATION_REQUESTED'), title: 'Revocations awaiting a decision', detail: 'Approved revocations appear on the next CRL.', action: 'Review revocations', section: 'requests' });
+    if (count('RECONCILIATION_REQUIRED')) queue.push({ id: 'reconcile', tone: 'bad', icon: 'key', count: count('RECONCILIATION_REQUIRED'), title: 'Issuances to reconcile', detail: 'The signing outcome is unknown: two officers void them so the serial goes on the CRL.', action: 'Reconcile', section: 'requests' });
     if (count('APPROVED')) queue.push({ id: 'issue', tone: 'info', icon: 'certificate', count: count('APPROVED'), title: 'Approved requests ready to issue', detail: 'The laboratory signer signs each certificate once.', action: 'Issue certificates', section: 'requests' });
   } else if (isRequester && applications) {
     const open = count('SUBMITTED') + count('APPROVED') + count('REVOCATION_REQUESTED');
@@ -61,7 +62,7 @@ export function OverviewDashboard({ ca, certificates, auditEvents, now, token, i
     else if (crl.renewal_due) queue.push({ id: 'crl', tone: 'warn', icon: 'revocation', count: 1, title: `CRL ${crl.latest_crl_number} is due for renewal`, detail: crl.next_update ? `Next update before ${new Date(crl.next_update).toLocaleString()}.` : 'Publish the next CRL.', action: isOfficer ? 'Publish CRL' : 'Open CRLs', section: 'revocation' });
   }
   if (isReader && health.expiringSoon) queue.push({ id: 'expiring', tone: 'warn', icon: 'certificate', count: health.expiringSoon, title: 'Certificates expiring within 30 days', detail: 'Plan their renewal before the recorded notAfter date.', action: 'View certificates', section: 'certificates' });
-  if (isReader && attention.reconciliation) queue.push({ id: 'recon', tone: 'bad', icon: 'key', count: attention.reconciliation, title: 'Signing results to reconcile', detail: 'A signing outcome was ambiguous in the last 7 days; reconcile before signing again.', action: 'Open audit trail', section: 'audit' });
+  if (isReader && attention.reconciliation && !queue.some(item => item.id === 'reconcile')) queue.push({ id: 'recon', tone: 'bad', icon: 'key', count: attention.reconciliation, title: 'Signing results to reconcile', detail: 'A signing outcome was ambiguous in the last 7 days; reconcile before signing again.', action: 'Open audit trail', section: 'audit' });
   if (isReader && attention.denied) queue.push({ id: 'denied', tone: 'info', icon: 'alert', count: attention.denied, title: 'Denied operations in the last 7 days', detail: 'Check whether they were expected.', action: 'Open audit trail', section: 'audit' });
   const loadingQueue = pending > 0;
 

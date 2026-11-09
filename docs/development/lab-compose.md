@@ -28,6 +28,7 @@ Open `http://127.0.0.1:5173/`, choose **Sign in with your organization** and sig
 | `lab-ca-admin` | `TRUST_LAB_PW_CA_ADMIN` | `trust-ca-administrator` only, with a platform grant | no CA (the CA list answers 403); on the overview, can **propose a CA**, **register its issuer certificate** and **activate** it once approved |
 | `lab-requester` | `TRUST_LAB_PW_REQUESTER` | reader + `trust-certificate-requester`, scoped to the lab issuing CA | once the issuing CA is provisioned, can **submit certificate applications** in Certificates |
 | `lab-ra-officer` | `TRUST_LAB_PW_RA_OFFICER` | reader + `trust-registration-officer`, scoped to the lab issuing CA | can **approve or reject** others' applications |
+| `lab-ra-officer-2` | `TRUST_LAB_PW_RA_OFFICER_2` | reader + `trust-registration-officer`, scoped to the lab issuing CA | second officer for dual control: decides revocations the first asked for, **confirms a void** the first proposed (ADR-0020) |
 | `lab-ca-approver-1`, `lab-ca-approver-2` | `TRUST_LAB_PW_CA_APPROVER_1`, `_2` | `trust-ca-approver` only, with a platform grant and a registered key | no CA; on the overview, can **approve or reject** a KEY_ATTESTED CA proposal with their own key |
 | `lab-editor` | `TRUST_LAB_PW_EDITOR` | `trust-profile-editor` only, with an editor grant | refused (403) in the console: the editor role grants no read; it can still write through the API |
 | `lab-outsider` | `TRUST_LAB_PW_OUTSIDER` | none | refused (403) |

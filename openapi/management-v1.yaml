@@ -1076,6 +1076,88 @@ paths:
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/void-proposal:
+    post:
+      summary: Propose to void an ambiguous issuance (laboratory, migration 0034)
+      description: Requires the trust-registration-officer role and grant; the officer cannot be the application's requester. Only for an issuance left RECONCILIATION_REQUIRED, once per application. Records whether the signer had claimed the intent. Nothing is voided until another officer confirms (ADR-0020, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '201':
+          description: Proposal recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ca_id, application_id, status, void_status, signer_claimed]
+                properties:
+                  ca_id: { type: string, format: uuid }
+                  application_id: { type: string, format: uuid }
+                  status: { type: string, enum: [RECONCILIATION_REQUIRED] }
+                  void_status: { type: string, enum: [PROPOSED] }
+                  signer_claimed: { type: boolean, description: Whether the signer had claimed the intent, so a certificate with the serial may exist }
+        '200': { description: Replay with the same Idempotency-Key }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or the officer is the application's requester }
+        '404': { description: No issuance for this application }
+        '409': { description: Idempotency key reused, the issuance is not RECONCILIATION_REQUIRED, or a void was already proposed }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation:
+    post:
+      summary: Confirm a void proposal (laboratory, migration 0034)
+      description: Requires the trust-registration-officer role and grant; the officer can be neither the proposer nor the application's requester. Once. The application becomes VOIDED; its serial is never reused and is listed, without reason code, on every CRL whose intent is fixed afterwards (ADR-0020, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '201':
+          description: Issuance voided
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ca_id, application_id, status, serial_hex, voided_at]
+                properties:
+                  ca_id: { type: string, format: uuid }
+                  application_id: { type: string, format: uuid }
+                  status: { type: string, enum: [VOIDED] }
+                  serial_hex: { type: string, pattern: '^[0-9a-f]+$' }
+                  voided_at: { type: string, format: date-time }
+        '200': { description: Replay with the same Idempotency-Key }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or the officer proposed this void or requested the application }
+        '404': { description: No issuance, or no void proposed for it }
+        '409': { description: Idempotency key reused, or already voided }
+        '413': { description: Request body above 16 KiB }
+        '415': { description: Content type is not application/json }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/crls:
     get:
       summary: List the CA's published CRLs, newest first, at most 100 (laboratory, migration 0031)
@@ -1509,7 +1591,7 @@ components:
         change_reason: { type: [string, 'null'] }
     CertificateApplication:
       type: object
-      required: [application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, dns_names, validity_days, status, decision_reason, submitted_at, decided_at, certificate_serial_hex, certificate_sha256, certificate_request_id, open_revocation_id, open_revocation_reason_code, revocation_reason_code, revoked_at]
+      required: [application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, dns_names, validity_days, status, decision_reason, submitted_at, decided_at, certificate_serial_hex, certificate_sha256, certificate_request_id, open_revocation_id, open_revocation_reason_code, revocation_reason_code, revoked_at, void_status, void_signer_claimed, void_proposed_by_reader, void_serial_hex, voided_at]
       properties:
         application_id: { type: string, format: uuid }
         ca_id: { type: string, format: uuid }
@@ -1521,8 +1603,8 @@ components:
         validity_days: { type: integer }
         status:
           type: string
-          enum: [SUBMITTED, APPROVED, REJECTED, ISSUING, ISSUED, RECONCILIATION_REQUIRED, REVOCATION_REQUESTED, REVOKED]
-          description: ISSUING while an intent is open; RECONCILIATION_REQUIRED when the signing outcome was ambiguous (never signed again) (migration 0030); REVOCATION_REQUESTED while a revocation request is open, REVOKED once approved (migration 0031).
+          enum: [SUBMITTED, APPROVED, REJECTED, ISSUING, ISSUED, RECONCILIATION_REQUIRED, REVOCATION_REQUESTED, REVOKED, VOIDED]
+          description: ISSUING while an intent is open; RECONCILIATION_REQUIRED when the signing outcome was ambiguous (never signed again) (migration 0030); REVOCATION_REQUESTED while a revocation request is open, REVOKED once approved (migration 0031); VOIDED once two officers voided an ambiguous issuance (migration 0034).
         decision_reason: { type: [string, 'null'] }
         submitted_at: { type: string, format: date-time }
         decided_at: { type: [string, 'null'], format: date-time }
@@ -1533,6 +1615,11 @@ components:
         open_revocation_reason_code: { type: [integer, 'null'], enum: [0, 1, 3, 4, 5, 9, null] }
         revocation_reason_code: { type: [integer, 'null'], enum: [0, 1, 3, 4, 5, 9, null], description: RFC 5280 reason of the core revocation }
         revoked_at: { type: [string, 'null'], format: date-time }
+        void_status: { type: [string, 'null'], enum: [PROPOSED, VOIDED, null], description: Reconciliation of an ambiguous issuance (migration 0034) }
+        void_signer_claimed: { type: [boolean, 'null'], description: Whether the signer had claimed the intent when the void was proposed }
+        void_proposed_by_reader: { type: [boolean, 'null'], description: Whether the caller proposed the void; the other officer is never named }
+        void_serial_hex: { type: [string, 'null'], pattern: '^[0-9a-f]+$', description: The serial that is voided and listed on later CRLs }
+        voided_at: { type: [string, 'null'], format: date-time }
     PublishedCrl:
       type: object
       required: [ca_id, crl_number, this_update, next_update, crl_sha256, published_at, entry_count]
