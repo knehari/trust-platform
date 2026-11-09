@@ -24,8 +24,8 @@ export function certificateCsv(rows: Certificate[]): string {
 
 export function auditCsv(rows: AuditEvent[]): string {
   return csv(
-    ['ca_id', 'event_id', 'event_type', 'decision', 'policy_version', 'recorded_at'],
-    rows.map(row => [row.ca_id, row.event_id, row.event_type, row.decision, row.policy_version, row.recorded_at]),
+    ['ca_id', 'event_id', 'event_type', 'decision', 'policy_version', 'recorded_at', 'chain_sealed'],
+    rows.map(row => [row.ca_id, row.event_id, row.event_type, row.decision, row.policy_version, row.recorded_at, row.chain_sealed == null ? null : String(row.chain_sealed)]),
   );
 }
 

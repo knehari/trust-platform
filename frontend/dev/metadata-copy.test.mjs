@@ -20,7 +20,10 @@ test('audit JSON omits actor and raw evidence fields', () => {
     policy_version: null, recorded_at: '2026-10-01T00:00:00Z',
     actor_id: 'must-not-copy', raw_evidence: 'must-not-copy',
   }));
-  assert.deepEqual(Object.keys(copied), ['ca_id', 'event_id', 'event_type', 'decision', 'policy_version', 'recorded_at']);
+  assert.deepEqual(Object.keys(copied), ['ca_id', 'event_id', 'event_type', 'decision', 'policy_version', 'recorded_at', 'chain_sealed']);
   assert.equal(copied.policy_version, null);
+  assert.equal(copied.chain_sealed, null);
+  assert.equal(JSON.parse(auditMetadataJson({ ca_id: 'ca', event_id: 'e', event_type: 't', decision: 'allow',
+    policy_version: null, recorded_at: '2026-10-01T00:00:00Z', chain_sealed: true })).chain_sealed, true);
   assert.equal(JSON.stringify(copied).includes('must-not-copy'), false);
 });

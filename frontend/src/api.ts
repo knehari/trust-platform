@@ -33,6 +33,8 @@ export interface AuditEvent {
   decision: string;
   policy_version: string | null;
   recorded_at: string;
+  /** Sealed into the tamper-evident audit chain (migration 0036); absent from older APIs. */
+  chain_sealed?: boolean;
 }
 
 export type ProfileLifecycleStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'ACTIVE' | 'SUPERSEDED' | 'RETIRED';

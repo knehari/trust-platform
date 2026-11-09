@@ -27,7 +27,7 @@ Detail panels (2026-11-08, display only): certificate, audit event and profile r
 
 Dark mode and toasts (2026-11-09, display only): `src/theme-dark.css` is generated from the two stylesheets by `frontend/dev/dark-theme.mjs`, which mirrors lightness and keeps hue. Dark-by-design surfaces (sidebar, tooltips, code blocks, toasts, backdrops) are left as they are. `dev/dark-theme.test.mjs` fails when the generated file is stale. A topbar control cycles system/light/dark; the choice stays in this browser only. CRL publication and request decisions confirm with a short toast; errors stay as notices in the page. Verified on a fresh laboratory stack: 76 frontend tests and the four e2e suites.
 
-Revocation in the inventory (2026-11-09): migration 0033 appends `revoked_at` and `revocation_reason` to `management_certificate`, read from the core revocation table under the 0021 reader filter. The API returns both on certificate list and detail routes. OpenAPI documents them. The console shows "Revoked" with the reason and date in the inventory and the detail panel, counts revoked certificates apart on the dashboard, excludes them from upcoming expiries, and exports both fields in CSV and JSON. Verified locally: the new SQL suite and the existing management suites, the populated 0011→0033 upgrade, retry, ledger and restores, API unit tests and Clippy, 77 frontend tests, and the four e2e suites (the certificate-application suite checks the inventory after an approved revocation). CI has not yet run on this branch.
+Revocation in the inventory (2026-11-09): migration 0033 appends `revoked_at` and `revocation_reason` to `management_certificate`, read from the core revocation table under the 0021 reader filter. The API returns both on certificate list and detail routes. OpenAPI documents them. The console shows "Revoked" with the reason and date in the inventory and the detail panel, counts revoked certificates apart on the dashboard, excludes them from upcoming expiries, and exports both fields in CSV and JSON. Verified locally: the new SQL suite and the existing management suites, the populated 0011→0033 upgrade, retry, ledger and restores, API unit tests and Clippy, 77 frontend tests, and the four e2e suites (the certificate-application suite checks the inventory after an approved revocation). CI passed on Draft #194.
 
 Issuance reconciliation (2026-11-09, ADR-0020 Proposed): migration 0034 lets two registration officers void an issuance left `RECONCILIATION_REQUIRED`. Neither may be the requester, and the confirmer is not the proposer. The proposal records whether the signer had claimed the intent. Confirmation takes the CA's CRL lock. The application becomes `VOIDED`; the serial is never reused and is listed, without reason code, on every CRL fixed afterwards. The CRL entry function, the signer's entry view and the readers' entry count all include it, so the API, the signer and the audit tool agree. Two API routes, OpenAPI, the console's "Needs reconciliation" tab and a dashboard item are added, plus a second laboratory officer (`lab-ra-officer-2`, uid 17). Verified locally:
 - the new SQL suite and the existing management suites;
@@ -37,7 +37,7 @@ Issuance reconciliation (2026-11-09, ADR-0020 Proposed): migration 0034 lets two
 - 78 frontend tests;
 - the four e2e suites; the certificate-application suite voids a simulated timeout and OpenSSL finds the serial in the verified CRL.
 
-Recovering a certificate that was signed but not stored remains open. CI has not yet run on this branch.
+Recovering a certificate that was signed but not stored remains open. CI passed on Draft #196 (`dfd0ef6`).
 
 Automatic CRL renewal (2026-11-09, ADR-0021 Proposed): migration 0035 adds a per-CA `crl-publisher` role. Held by the system principal `urn:trust-platform:system`/`crl-renewer`, it may run the CRL publication functions only for a due CRL. The API runs a renewal pass every `TRUST_CRL_RENEWAL_INTERVAL_SECONDS` (Compose: hourly). Each pass goes through the unchanged journaled path. `crl-status` reports `auto_renewal`, and the console shows it. Verified locally:
 - the new SQL suite and the existing CRL suites;
@@ -46,4 +46,15 @@ Automatic CRL renewal (2026-11-09, ADR-0021 Proposed): migration 0035 adds a per
 - 78 frontend tests;
 - the four e2e suites on a lab with the renewer enabled.
 
-CI has not yet run on this branch.
+CI passed on Draft #197 (`eb8ab75`, all seven jobs).
+
+Tamper-evident audit chain (2026-11-09, ADR-0022 Proposed): migration 0036 seals committed audit events, after commit and oldest first, into an append-only SHA-256 chain (`audit_chain_link`) over a canonical encoding of every `audit_event` column. Triggers refuse UPDATE, DELETE and TRUNCATE on links, and TRUNCATE on events. The API runs a sealing pass every `TRUST_AUDIT_SEAL_INTERVAL_SECONDS` (Compose: 60 s) through the writer login. Readers see only `chain_sealed` per event (API, OpenAPI, console detail, CSV and JSON copy), looked up for the returned page through a separate filtered view, `management_audit_seal`, so history plans are unchanged. `lab_verify_audit_chain` recomputes every digest and link in Rust from the raw rows, prints a JSON manifest, and checks a head exported earlier (`TRUST_AUDIT_EXPECTED_HEAD`). Verified locally:
+- the new SQL suite (Rust/SQL digest vectors, privileges, batches, contiguity, reader flag, refused changes);
+- the tamper script: an altered event, a removed link and a renumbered chain are reported; a chain rebuilt by the owner passes on its own but fails against the exported head;
+- the 0011→0036 upgrade, retry, ledger (25 migrations) and restores, and the history pagination, window and load-plan steps;
+- 62 Rust tests, including the HTTP test that seals the renewal's event, plus Clippy and fmt;
+- the four audit tools; on the API test database the chain of 116 events, and on the fresh lab 187 events, verify with no unsealed event;
+- 78 frontend tests and the build;
+- the four e2e suites; the certificate-application suite waits for the API's own pass to seal the void.
+
+Open: a signed or externally anchored head, authenticated actor claims, automated export of the manifest, governed retention. CI has not yet run on this branch.

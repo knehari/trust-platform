@@ -23,6 +23,8 @@ test('audit CSV rejects empty or oversized selections and neutralizes formulas',
   assert.throws(() => auditCsv(Array(MAX_CSV_ROWS + 1).fill(event)), /Select 1–1000/);
   const result = auditCsv([event]);
   assert.match(result, /"'\+cmd"/);
+  assert.match(result.split('\r\n')[0], /,"chain_sealed"$/);
+  assert.match(auditCsv([{ ...event, chain_sealed: false }]).split('\r\n')[1], /,"false"$/);
   assert.equal(result.includes('never-export'), false);
 });
 
