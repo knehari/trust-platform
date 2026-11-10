@@ -293,7 +293,7 @@ try {
     assert.ok(published.body.entry_count >= 2, `entry count ${published.body.entry_count}`);
   });
 
-  await check('a registered RA system obtains a certificate with a request it signs, without a user token (ADR-0025)', async () => {
+  await check('a registered RA system obtains, then revokes, a certificate with requests it signs, without a user token (ADR-0025, ADR-0026)', async () => {
     // The RA's own key: ephemeral here, registered by the database owner.
     const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const jwk = publicKey.export({ format: 'jwk' });
@@ -338,6 +338,35 @@ try {
     const replay = await post(body(requestId, names, now));
     assert.deepEqual([replay.status, replay.body.certificate_sha256], [200, issued.body.certificate_sha256]);
     assert.equal((await post(body(requestId, ['ra.lab.invalid'], now))).status, 409, 'same id, other request');
+
+    // The RA revokes it with a signed request (ADR-0026); the next CRL lists it.
+    const serialBytes = Buffer.from(issued.body.serial_hex, 'hex');
+    const reason = 'subscriber reported a key compromise';
+    const revocation = (id, signedAt, key = privateKey) => {
+      const length = Buffer.alloc(4); length.writeUInt32BE(serialBytes.length);
+      const code = Buffer.alloc(2); code.writeUInt16BE(1);
+      const when = Buffer.alloc(8); when.writeBigInt64BE(BigInt(signedAt));
+      // trust_pki_core::ra_request::ra_revocation_message, built independently.
+      const message = Buffer.concat([Buffer.from('trust-platform:ra-revocation-request:v1\0'), text('lab-ra-e2e'),
+        uuidBytes(issuingCa), uuidBytes(id), length, serialBytes, code, text(reason), when]);
+      return { ra_id: 'lab-ra-e2e', request_id: id, serial_hex: issued.body.serial_hex, reason_code: 1, reason,
+        signed_at: signedAt, signature_der_base64: signBytes('sha256', message, key).toString('base64') };
+    };
+    const revoke = async payload => {
+      const response = await fetch(`${api}/v1/ra/cas/${issuingCa}/revocations`, { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      const raw = await response.text();
+      return { status: response.status, body: raw ? JSON.parse(raw) : null };
+    };
+    const revocationId = randomUUID();
+    assert.equal((await revoke(revocation(revocationId, now, stranger))).status, 401, 'revocation with another key');
+    const revoked = await revoke(revocation(revocationId, now));
+    assert.deepEqual([revoked.status, revoked.body.status], [201, 'REVOKED']);
+    const again = await revoke(revocation(revocationId, now));
+    assert.deepEqual([again.status, again.body.revoked_at], [200, revoked.body.revoked_at]);
+    const { file: crlFile } = await publish();
+    const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', crlFile, file]);
+    assert.ok(!checked.ok && /certificate revoked/.test(checked.output), checked.output);
   });
 
   await check('the API seals committed audit events into the tamper-evident chain (ADR-0022)', async () => {
