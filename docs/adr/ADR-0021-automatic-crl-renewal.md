@@ -9,7 +9,8 @@ owner's decision and an independent security review (AGENTS.md).
 - the CRL status route and the console;
 - the laboratory Compose stack.
 
-**Roadmap:** closes the "scheduled renewal" gap of MVP criterion 8
+**Roadmap:** ADR-0027 extends the due rule, per CA, to pending revocations.
+Closes the "scheduled renewal" gap of MVP criterion 8
 (ADR-0018, ADR-0019). The criterion stays unchecked: there is no OCSP, and
 there is no production custody or publication service.
 

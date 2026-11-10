@@ -358,13 +358,35 @@ try {
       const raw = await response.text();
       return { status: response.status, body: raw ? JSON.parse(raw) : null };
     };
+    // The owner turns on publication on revocation for this CA (ADR-0027):
+    // nobody publishes by hand below.
+    execSync(`${ownerPsql} -f -`, { input: `INSERT INTO ca_crl_policy (ca_id, publish_on_revocation) VALUES ('${issuingCa}', true)
+      ON CONFLICT (ca_id) DO UPDATE SET publish_on_revocation = true, updated_at = clock_timestamp();` });
+    const reader = await token('lab-ra-officer', 'TRUST_LAB_PW_RA_OFFICER');
+    const before = (await send('GET', `/v1/cas/${issuingCa}/crl-status`, reader)).body;
+    assert.deepEqual([before.publish_on_revocation, before.unpublished_entries], [true, 0]);
     const revocationId = randomUUID();
     assert.equal((await revoke(revocation(revocationId, now, stranger))).status, 401, 'revocation with another key');
     const revoked = await revoke(revocation(revocationId, now));
     assert.deepEqual([revoked.status, revoked.body.status], [201, 'REVOKED']);
     const again = await revoke(revocation(revocationId, now));
     assert.deepEqual([again.status, again.body.revoked_at], [200, revoked.body.revoked_at]);
-    const { file: crlFile } = await publish();
+    // The platform publishes the next CRL by itself, at once.
+    const deadline = Date.now() + 30_000;
+    let status;
+    for (;;) {
+      status = (await send('GET', `/v1/cas/${issuingCa}/crl-status`, reader)).body;
+      if (status.latest_crl_number > before.latest_crl_number && status.unpublished_entries === 0) break;
+      assert.ok(Date.now() < deadline, `no CRL published on revocation: ${JSON.stringify(status)}`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    // Relying parties fetch it from the public distribution point.
+    const latest = await fetch(`${api}/v1/public/crls/${issuingCa}/latest.crl`);
+    assert.equal(latest.status, 200);
+    const crlDer = join(keys, 'on-revocation.crl');
+    writeFileSync(crlDer, Buffer.from(await latest.arrayBuffer()));
+    const crlFile = join(keys, 'on-revocation.pem');
+    openssl(['crl', '-inform', 'DER', '-in', crlDer, '-out', crlFile]);
     const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', crlFile, file]);
     assert.ok(!checked.ok && /certificate revoked/.test(checked.output), checked.output);
   });

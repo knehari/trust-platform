@@ -94,4 +94,13 @@ RA revocation channel (2026-11-10, ADR-0026 Proposed): migration 0039 adds the a
 - the four audit tools (one RA-signed revocation);
 - the four e2e suites; the certificate-application suite revokes as the RA, and `openssl verify -crl_check` reports the certificate revoked after the next CRL.
 
-Open: on-revocation CRL publication or OCSP, RA key rotation, production transport. CI has not yet run on this branch.
+Open: on-revocation CRL publication or OCSP, RA key rotation, production transport. CI passed on Draft #202 (all seven jobs).
+
+CRL publication on revocation (2026-11-10, ADR-0027 Proposed): migration 0040 adds the owner-set `ca_crl_policy.publish_on_revocation`, off by default. When it is on, `crl_renewal_due` is also true while a revocation or confirmed void is not yet on the latest published CRL (`crl_unpublished_entries`). After each revocation, RA revocation or void confirmation, the API starts a background renewal pass; the renewer publishes through the unchanged path. `crl-status` and the console report the setting and the pending entries. Verified locally:
+- the new SQL suite, plus the CRL, renewal, revocation, void and isolation suites;
+- 63 API tests: after the owner turns the setting on, an RA revocation publishes a verified CRL listing the serial, with nobody asking;
+- the four audit tools (seven CRLs verified);
+- 78 frontend tests and the build;
+- the four e2e suites: on the lab, the RA's revocation is published by itself, fetched from the public distribution point, and `openssl verify -crl_check` reports the certificate revoked.
+
+Open: OCSP, delta CRLs. CI has not yet run on this branch.

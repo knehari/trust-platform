@@ -306,6 +306,25 @@ pub(crate) async fn renew_due_crls(
     Ok(outcomes)
 }
 
+/// Called right after a revocation or a void is recorded: a renewal pass in
+/// the background, so a CA with `publish_on_revocation` (migration 0040)
+/// publishes its next CRL at once. The pass publishes only what the
+/// database says is due, for CAs granted to the renewer; it does nothing
+/// without a writer login and a signer. The response does not wait for it.
+pub(crate) fn renew_after_revocation(state: &AppState) {
+    if state.writer_database_url.is_none() || state.signer_socket.is_none() {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        if renew_due_crls(&state).await.is_err() {
+            write_log(serde_json::json!({
+                "event": "crl_auto_renewal", "trigger": "revocation", "status": "UNAVAILABLE",
+            }));
+        }
+    });
+}
+
 /// Runs a renewal pass shortly after startup, then every `interval`, on its
 /// own thread. A failed pass is logged and retried at the next tick.
 pub(crate) fn spawn_renewer(state: AppState, interval: std::time::Duration) {
@@ -441,6 +460,11 @@ struct CrlStatus {
     expired: bool,
     /// Whether the automatic renewer holds this CA (migration 0035).
     auto_renewal: bool,
+    /// Whether a CRL is published as soon as a revocation is recorded
+    /// (migration 0040, owner-set per CA).
+    publish_on_revocation: bool,
+    /// Revocations and voided serials not yet on the latest published CRL.
+    unpublished_entries: i64,
 }
 
 /// `GET /v1/cas/{ca_id}/crl-status`: where the CA's CRLs are published, and
@@ -460,7 +484,8 @@ pub(crate) async fn crl_status(
         move |db| {
             db.query_opt(
                 "SELECT ca_id, distribution_point, latest_crl_number, next_update, renewal_due, \
-                 expired, auto_renewal FROM management_crl_status WHERE ca_id = $1",
+                 expired, auto_renewal, publish_on_revocation, unpublished_entries \
+                 FROM management_crl_status WHERE ca_id = $1",
                 &[&ca_id],
             )
         },
@@ -476,6 +501,8 @@ pub(crate) async fn crl_status(
             renewal_due: row.get(4),
             expired: row.get(5),
             auto_renewal: row.get(6),
+            publish_on_revocation: row.get(7),
+            unpublished_entries: row.get(8),
         })
         .into_response(),
         false,
