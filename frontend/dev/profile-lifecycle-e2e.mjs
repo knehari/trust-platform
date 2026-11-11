@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { clientCredentials, requiredEnv, signIn } from './keycloak-login.mjs';
 
 const realm = 'http://127.0.0.1:8080/realms/trust-lab';
-const api = 'http://127.0.0.1:8081';
+// HTTPS, verified against the lab CA through NODE_EXTRA_CA_CERTS (ADR-0032).
+const api = process.env.TRUST_E2E_API ?? 'https://127.0.0.1:8081';
 const allowedCa = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const hiddenCa = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const profileId = `e2e-${randomUUID().slice(0, 8)}`;

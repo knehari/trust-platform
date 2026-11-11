@@ -154,8 +154,13 @@ services:
     volumes:
       - trust_signer_socket:/run/trust-signer
       - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
+      - ./.lab-keys/tls/api.crt:/lab-tls/api.crt:ro
+      - ./.lab-keys/tls/api.key:/lab-tls/api.key:ro
     environment:
       TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
+      # HTTPS (ADR-0032): no plain HTTP listener.
+      TRUST_API_TLS_CERT_FILE: /lab-tls/api.crt
+      TRUST_API_TLS_KEY_FILE: /lab-tls/api.key
       TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       TRUST_OIDC_AUDIENCE: trust-api
       TRUST_OIDC_CLIENT_ID: trust-console
@@ -172,7 +177,7 @@ services:
       # Ask the signer to sign the chain's head (ADR-0023).
       TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/lab-tls/ca.crt", "https://127.0.0.1:8081/v1/ready"]
       interval: 3s
       timeout: 3s
       retries: 30
@@ -218,10 +223,14 @@ services:
     depends_on:
       api: {condition: service_healthy}
     environment:
-      TRUST_API_DEV_TARGET: http://issuer:8081
+      TRUST_API_DEV_TARGET: https://issuer:8081
+      # The console's dev proxy verifies the API against the lab CA (ADR-0032).
+      NODE_EXTRA_CA_CERTS: /lab-tls/ca.crt
       VITE_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       VITE_OIDC_CLIENT_ID: trust-console
       VITE_OIDC_SCOPE: openid profile
+    volumes:
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
     ports:
       - "127.0.0.1:5173:5173"
     healthcheck:
