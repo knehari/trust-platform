@@ -8,6 +8,10 @@
 //! - `POST …/revocation-requests/{revocation_id}/decision`: a registration
 //!   officer who did not ask approves or rejects it, once. Approval writes
 //!   the core revocation row; the certificate appears on the next CRL.
+//!   Since migration 0042 (ADR-0029) the decision is signed: the officer gets
+//!   the claim from `…/decision-claims`, signs it with their registered key,
+//!   and sends the signature; the signer verifies it again before it lists
+//!   the serial on a CRL.
 
 use axum::{
     body::Bytes,
@@ -16,11 +20,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     ca_proposal::printable,
     certificate_application::{OFFICER_ROLE, REQUESTER_ROLE},
+    profile_decision::signature_verifies,
     profile_lifecycle::{with_replay_header, write_context, write_status, WriteContext},
     query_db, write_log, AppState,
 };
@@ -42,6 +48,82 @@ struct RevocationRequest {
 struct RevocationDecision {
     decision: String,
     reason: String,
+    issued_at: String,
+    signature_der_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimRequest {
+    decision: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ClaimResponse {
+    pub(crate) decision: String,
+    pub(crate) claim: String,
+    pub(crate) key_id: String,
+    pub(crate) issued_at: String,
+    /// The claim is valid for this many seconds after `issued_at`.
+    pub(crate) valid_for_seconds: u32,
+}
+
+/// `POST …/revocation-requests/{revocation_id}/decision-claims`: the claim
+/// an officer signs to decide (migration 0042, ADR-0029). Records nothing.
+pub(crate) async fn prepare_revocation_decision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((raw_ca, raw_application, raw_revocation)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let context = write_context(&state, &headers, &raw_ca, &body, OFFICER_ROLE, false).await?;
+    let application_id = uuid_text(&raw_application)?;
+    let revocation_id = uuid_text(&raw_revocation)?;
+    let request: ClaimRequest =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !matches!(request.decision.as_str(), "approve" | "reject") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let WriteContext {
+        issuer,
+        subject,
+        ca_id,
+        writer_url,
+        ..
+    } = context;
+    let decision = request.decision.clone();
+    let (claim, key_id, issued_at) =
+        query_db(writer_url, state.database_slots.clone(), move |db| {
+            Ok(
+                match db.query_one(
+                    "SELECT claim, key_id, issued_at FROM prepare_revocation_decision_lab($1, $2, \
+                     $3::text::uuid, $4::text::uuid, $5::text::uuid, $6)",
+                    &[
+                        &issuer,
+                        &subject,
+                        &ca_id,
+                        &application_id,
+                        &revocation_id,
+                        &decision,
+                    ],
+                ) {
+                    Ok(row) => Ok((row.get(0), row.get(1), row.get(2))),
+                    Err(error) => Err(write_status(&error)),
+                },
+            )
+        })
+        .await??;
+    Ok(with_replay_header(
+        Json(ClaimResponse {
+            decision: request.decision,
+            claim,
+            key_id,
+            issued_at,
+            valid_for_seconds: 600,
+        })
+        .into_response(),
+        false,
+    ))
 }
 
 #[derive(Serialize)]
@@ -160,8 +242,13 @@ pub(crate) async fn decide_revocation(
     let revocation_id = uuid_text(&raw_revocation)?;
     let request: RevocationDecision =
         serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let issued_at = crate::valid_utc_timestamp(&request.issued_at)?;
+    let signature = STANDARD
+        .decode(request.signature_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     if !matches!(request.decision.as_str(), "approve" | "reject")
         || !printable(&request.reason, 500)
+        || !(8..=80).contains(&signature.len())
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -181,28 +268,40 @@ pub(crate) async fn decide_revocation(
         revocation_id.clone(),
         request.decision,
         request.reason,
+        issued_at,
+        signature,
         operation.clone(),
         request_sha256,
     );
     let (status, revoked_at, replayed) =
         query_db(writer_url, state.database_slots.clone(), move |db| {
-            Ok(
-                match db.query_one(
-                    "SELECT status, revoked_at, replayed FROM decide_certificate_revocation_lab($1, \
-                     $2, $3::text::uuid, $4::text::uuid, $5::text::uuid, $6, $7, $8::text::uuid, $9)",
-                    &[
-                        &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
-                        &args.8,
-                    ],
-                ) {
-                    Ok(row) => Ok((
-                        row.get::<_, String>(0),
-                        row.get::<_, Option<String>>(1),
-                        row.get::<_, bool>(2),
-                    )),
-                    Err(error) => Err(write_status(&error)),
-                },
-            )
+            let mut tx = db.transaction()?;
+            let row = match tx.query_one(
+                "SELECT claim, public_key_sec1, status, revoked_at, replayed FROM \
+                 record_signed_revocation_decision_lab($1, $2, $3::text::uuid, $4::text::uuid, \
+                 $5::text::uuid, $6, $7, $8::text::timestamptz, $9, $10::text::uuid, $11)",
+                &[
+                    &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
+                    &args.8, &args.9, &args.10,
+                ],
+            ) {
+                Ok(row) => row,
+                Err(error) => return Ok(Err(write_status(&error))),
+            };
+            let claim: String = row.get(0);
+            let public_key: Vec<u8> = row.get(1);
+            // Only this officer's registered key over the exact claim counts.
+            if !signature_verifies(&public_key, &claim, &args.8) {
+                tx.rollback()?;
+                return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
+            }
+            let outcome = (
+                row.get::<_, String>(2),
+                row.get::<_, Option<String>>(3),
+                row.get::<_, bool>(4),
+            );
+            tx.commit()?;
+            Ok(Ok(outcome))
         })
         .await??;
     write_log(serde_json::json!({
@@ -246,6 +345,11 @@ mod tests {
         .is_err());
         assert!(serde_json::from_str::<RevocationDecision>(
             r#"{"decision":"approve","reason":"x","revoked_at":"2020-01-01T00:00:00Z"}"#
+        )
+        .is_err());
+        // Unsigned decisions are refused (migration 0042).
+        assert!(serde_json::from_str::<RevocationDecision>(
+            r#"{"decision":"approve","reason":"x"}"#
         )
         .is_err());
     }

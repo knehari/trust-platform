@@ -8,6 +8,10 @@
 //! - `POST …/void-confirmation`: a different officer confirms, once. The
 //!   application becomes `VOIDED`, and the serial is listed on every CRL
 //!   whose intent is fixed afterwards. It is never re-signed or reused.
+//!   Since migration 0042 (ADR-0029) the confirmation is signed: the officer
+//!   gets the claim from `…/void-confirmation-claims`, signs it with their
+//!   registered key and sends the signature; the signer verifies it again
+//!   before it lists the serial on a CRL.
 
 use axum::{
     body::Bytes,
@@ -16,11 +20,14 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     ca_proposal::printable,
     certificate_application::OFFICER_ROLE,
+    certificate_revocation::ClaimResponse,
+    profile_decision::signature_verifies,
     profile_lifecycle::{with_replay_header, write_context, write_status, WriteContext},
     query_db, write_log, AppState,
 };
@@ -30,6 +37,18 @@ use crate::{
 struct VoidRequest {
     reason: String,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfirmationRequest {
+    reason: String,
+    issued_at: String,
+    signature_der_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyRequest {}
 
 #[derive(Serialize)]
 struct ProposalResponse {
@@ -136,6 +155,51 @@ pub(crate) async fn propose_void(
 /// 201 with VOIDED, the serial and the instant; 200 for a replay; 403 for a
 /// non-officer, the requester or the proposer; 404 when nothing was
 /// proposed; 409 once voided.
+/// `POST …/void-confirmation-claims`: the claim the confirming officer signs
+/// (migration 0042). Records nothing; 404 when no void was proposed.
+pub(crate) async fn prepare_void_confirmation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((raw_ca, raw_application)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let context = write_context(&state, &headers, &raw_ca, &body, OFFICER_ROLE, false).await?;
+    let application_id = uuid_text(&raw_application)?;
+    let _: EmptyRequest = serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let WriteContext {
+        issuer,
+        subject,
+        ca_id,
+        writer_url,
+        ..
+    } = context;
+    let (claim, key_id, issued_at) =
+        query_db(writer_url, state.database_slots.clone(), move |db| {
+            Ok(
+                match db.query_one(
+                    "SELECT claim, key_id, issued_at FROM prepare_void_confirmation_lab($1, $2, \
+                     $3::text::uuid, $4::text::uuid)",
+                    &[&issuer, &subject, &ca_id, &application_id],
+                ) {
+                    Ok(row) => Ok((row.get(0), row.get(1), row.get(2))),
+                    Err(error) => Err(write_status(&error)),
+                },
+            )
+        })
+        .await??;
+    Ok(with_replay_header(
+        Json(ClaimResponse {
+            decision: "confirm".to_owned(),
+            claim,
+            key_id,
+            issued_at,
+            valid_for_seconds: 600,
+        })
+        .into_response(),
+        false,
+    ))
+}
+
 pub(crate) async fn confirm_void(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -144,7 +208,15 @@ pub(crate) async fn confirm_void(
 ) -> Result<Response, StatusCode> {
     let context = write_context(&state, &headers, &raw_ca, &body, OFFICER_ROLE, true).await?;
     let application_id = uuid_text(&raw_application)?;
-    let reason = reason(&body)?;
+    let request: ConfirmationRequest =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let issued_at = crate::valid_utc_timestamp(&request.issued_at)?;
+    let signature = STANDARD
+        .decode(request.signature_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !printable(&request.reason, 500) || !(8..=80).contains(&signature.len()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let WriteContext {
         issuer,
         subject,
@@ -158,24 +230,37 @@ pub(crate) async fn confirm_void(
         subject,
         ca_id.clone(),
         application_id.clone(),
-        reason,
+        request.reason,
+        issued_at,
+        signature,
         operation.clone(),
         request_sha256,
     );
     let (status, serial, voided_at, replayed) = query_db(writer_url, state.database_slots.clone(), move |db| {
-        Ok(match db.query_one(
-            "SELECT status, encode(serial, 'hex'), voided_at, replayed FROM confirm_application_void_lab($1, $2, \
-             $3::text::uuid, $4::text::uuid, $5, $6::text::uuid, $7)",
-            &[&args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6],
+        let mut tx = db.transaction()?;
+        let row = match tx.query_one(
+            "SELECT claim, public_key_sec1, status, encode(serial, 'hex'), voided_at, replayed FROM \
+             record_signed_void_confirmation_lab($1, $2, $3::text::uuid, $4::text::uuid, $5, \
+             $6::text::timestamptz, $7, $8::text::uuid, $9)",
+            &[&args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8],
         ) {
-            Ok(row) => Ok((
-                row.get::<_, String>(0),
-                row.get::<_, String>(1),
-                row.get::<_, String>(2),
-                row.get::<_, bool>(3),
-            )),
-            Err(error) => Err(write_status(&error)),
-        })
+            Ok(row) => row,
+            Err(error) => return Ok(Err(write_status(&error))),
+        };
+        let claim: String = row.get(0);
+        let public_key: Vec<u8> = row.get(1);
+        if !signature_verifies(&public_key, &claim, &args.6) {
+            tx.rollback()?;
+            return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
+        }
+        let outcome = (
+            row.get::<_, String>(2),
+            row.get::<_, String>(3),
+            row.get::<_, String>(4),
+            row.get::<_, bool>(5),
+        );
+        tx.commit()?;
+        Ok(Ok(outcome))
     })
     .await??;
     let serial_hex = serial;

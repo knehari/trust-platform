@@ -37,6 +37,14 @@
 //! a proof is reported. The certificate's subject is the authorized one, so the
 //! stored CSR is checked for proof of possession only.
 //!
+//! Since migration 0042 (ADR-0029), every revocation or confirmed void
+//! recorded after the proof requirement carries a signed proof: an RA's signed
+//! revocation, or an officer's signed revocation approval or void
+//! confirmation. For each officer proof the tool rebuilds the claim from the
+//! request or void, and checks the registered key's signature, the decision,
+//! the grant and the actor; it reports an entry recorded since then without
+//! a proof.
+//!
 //! PostgreSQL verifies neither X.509 nor ECDSA, so a compromised API or
 //! writer login could store what the API would refuse; this tool is how that
 //! is detected. Run it as the database owner:
@@ -48,7 +56,10 @@ use sha2::{Digest, Sha256};
 use trust_pki_core::{
     application_crl::{build_crl_tbs, parse_utc_seconds, verify_crl, CrlEntry, CrlFacts},
     application_leaf::{optional_extensions_valid, verify_server_leaf, LeafFacts},
-    authorization::{officer_decision_claim, OfficerDecision},
+    authorization::{
+        officer_decision_claim, revocation_decision_claim, void_confirmation_claim,
+        OfficerDecision, RevocationDecision, VoidConfirmation,
+    },
     csr::verify_pkcs10_p256_possession,
 };
 use x509_cert::{
@@ -543,6 +554,168 @@ fn officer_decision_problems(
     Ok((rows.len(), problems))
 }
 
+/// Signed revocation decisions and void confirmations (migration 0042), and
+/// CRL entries recorded since the requirement without a proof.
+fn revocation_proof_problems(
+    db: &mut Client,
+) -> Result<(usize, Vec<(String, String)>), postgres::Error> {
+    if !db
+        .query_one(
+            "SELECT to_regclass('public.certificate_revocation_authorization') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        return Ok((0, Vec::new()));
+    }
+    let instant =
+        "to_char(z.claim_issued_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')";
+    let checks = "z.public_key_sec1 = k.public_key_sec1, \
+                  EXISTS (SELECT 1 FROM management_role_grant g WHERE g.issuer = k.issuer \
+                          AND g.subject = k.subject AND g.ca_id = e.ca_id \
+                          AND g.lifecycle_role = 'registration-officer'), \
+                  e.actor_issuer = k.issuer AND e.actor_subject = k.subject";
+    let mut problems = Vec::new();
+    let revocations = db.query(
+        &format!(
+            "SELECT q.revocation_id::text, z.decision, q.ca_id::text, q.application_id::text, \
+                    q.serial_der_content, q.reason_code, z.key_id, {instant}, z.claim, z.signature_der, \
+                    k.public_key_sec1, d.decision, {checks} \
+             FROM certificate_revocation_authorization z \
+             JOIN certificate_revocation_request q ON q.revocation_id = z.revocation_id \
+             JOIN registration_officer_key k ON k.key_id = z.key_id \
+             JOIN certificate_application_event e ON e.event_id = z.event_id \
+             LEFT JOIN certificate_revocation_decision d ON d.revocation_id = z.revocation_id"
+        ),
+        &[],
+    )?;
+    for row in &revocations {
+        let id: String = row.get(0);
+        let decision: String = row.get(1);
+        let (ca_id, application_id): (String, String) = (row.get(2), row.get(3));
+        let serial: Vec<u8> = row.get(4);
+        let (key_id, issued_at, claim): (String, String, String) =
+            (row.get(6), row.get(7), row.get(8));
+        let rebuilt = revocation_decision_claim(&RevocationDecision {
+            decision: &decision,
+            ca_id: &ca_id,
+            application_id: &application_id,
+            revocation_id: &id,
+            serial: &serial,
+            reason_code: row.get(5),
+            key_id: &key_id,
+            issued_at: &issued_at,
+        });
+        let mut reasons = officer_proof_reasons(
+            rebuilt.as_deref().ok() == Some(claim.as_str()),
+            &row.get::<_, Vec<u8>>(10),
+            &claim,
+            &row.get::<_, Vec<u8>>(9),
+            [row.get(12), row.get(13), row.get(14)],
+        );
+        if row.get::<_, Option<String>>(11).as_deref() != Some(decision.as_str()) {
+            reasons.push("the recorded decision is not the signed one");
+        }
+        if !reasons.is_empty() {
+            problems.push((format!("revocation {id}"), reasons.join("; ")));
+        }
+    }
+    let voids = db.query(
+        &format!(
+            "SELECT v.application_id::text, v.ca_id::text, v.serial_der_content, v.signer_claimed, \
+                    z.key_id, {instant}, z.claim, z.signature_der, k.public_key_sec1, \
+                    v.confirmed_event_id = z.event_id, {checks} \
+             FROM certificate_void_authorization z \
+             JOIN certificate_application_void v ON v.application_id = z.application_id \
+             JOIN registration_officer_key k ON k.key_id = z.key_id \
+             JOIN certificate_application_event e ON e.event_id = z.event_id"
+        ),
+        &[],
+    )?;
+    for row in &voids {
+        let (application_id, ca_id): (String, String) = (row.get(0), row.get(1));
+        let serial: Vec<u8> = row.get(2);
+        let (key_id, issued_at, claim): (String, String, String) =
+            (row.get(4), row.get(5), row.get(6));
+        let rebuilt = void_confirmation_claim(&VoidConfirmation {
+            ca_id: &ca_id,
+            application_id: &application_id,
+            serial: &serial,
+            signer_claimed: row.get(3),
+            key_id: &key_id,
+            issued_at: &issued_at,
+        });
+        let mut reasons = officer_proof_reasons(
+            rebuilt.as_deref().ok() == Some(claim.as_str()),
+            &row.get::<_, Vec<u8>>(8),
+            &claim,
+            &row.get::<_, Vec<u8>>(7),
+            [row.get(10), row.get(11), row.get(12)],
+        );
+        if !row.get::<_, bool>(9) {
+            reasons.push("the confirmation event is not the signed one");
+        }
+        if !reasons.is_empty() {
+            problems.push((
+                format!("void of application {application_id}"),
+                reasons.join("; "),
+            ));
+        }
+    }
+    // Entries recorded since the requirement need a proof.
+    for row in db.query(
+        "SELECT 'revocation of serial ' || encode(r.serial_der_content, 'hex') \
+         FROM revocation r CROSS JOIN crl_entry_proof_policy p \
+         JOIN certificate c ON c.ca_id = r.ca_id AND c.serial_der_content = r.serial_der_content \
+         JOIN certificate_application_issuance i ON i.ca_id = c.ca_id AND i.request_id = c.request_id \
+         WHERE r.revoked_at >= p.required_since AND NOT EXISTS ( \
+             SELECT 1 FROM certificate_revocation_request q \
+             JOIN certificate_revocation_decision d ON d.revocation_id = q.revocation_id AND d.decision = 'approve' \
+             WHERE q.ca_id = r.ca_id AND q.serial_der_content = r.serial_der_content \
+               AND (EXISTS (SELECT 1 FROM ra_revocation_request rr WHERE rr.revocation_id = q.revocation_id) \
+                    OR EXISTS (SELECT 1 FROM certificate_revocation_authorization z \
+                               WHERE z.revocation_id = q.revocation_id AND z.decision = 'approve'))) \
+         UNION ALL \
+         SELECT 'void of application ' || v.application_id::text \
+         FROM certificate_application_void v CROSS JOIN crl_entry_proof_policy p \
+         WHERE v.voided_at >= p.required_since \
+           AND NOT EXISTS (SELECT 1 FROM certificate_void_authorization z WHERE z.application_id = v.application_id)",
+        &[],
+    )? {
+        problems.push((row.get(0), "no signed proof (ADR-0029)".to_owned()));
+    }
+    Ok((revocations.len() + voids.len(), problems))
+}
+
+/// The common checks of an officer's signed claim.
+fn officer_proof_reasons(
+    claim_is_rebuilt: bool,
+    registered_key: &[u8],
+    claim: &str,
+    signature: &[u8],
+    [same_key, granted, actor]: [bool; 3],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if !claim_is_rebuilt {
+        reasons.push("the stored claim is not the record's");
+    }
+    if !same_key {
+        reasons.push("the recorded key is not the officer's registered key");
+    }
+    if trust_pki_crypto::verify_p256_ecdsa_sha256(registered_key, claim.as_bytes(), signature)
+        .is_err()
+    {
+        reasons.push("the officer's key did not sign the claim");
+    }
+    if !granted {
+        reasons.push("the key's officer holds no registration-officer grant");
+    }
+    if !actor {
+        reasons.push("the decision event is not the key's officer");
+    }
+    reasons
+}
+
 fn proofs_schema(db: &mut Client) -> Result<bool, postgres::Error> {
     Ok(db
         .query_one(
@@ -665,12 +838,17 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         failed += 1;
         eprintln!("FAIL officer decision on application {application}: {reasons}");
     }
+    let (revocation_proof_count, revocation_proofs) = revocation_proof_problems(&mut db)?;
+    for (label, reasons) in &revocation_proofs {
+        failed += 1;
+        eprintln!("FAIL {label}: {reasons}");
+    }
     if failed > 0 {
         eprintln!("{failed} problem(s) in the issued certificates, revocations or CRLs");
         return Ok(ExitCode::FAILURE);
     }
     println!(
-        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s), {ra_count} RA-signed request(s), {officer_count} signed officer decision(s) and {ra_revocations} RA-signed revocation(s) verified independently",
+        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s), {ra_count} RA-signed request(s), {officer_count} signed officer decision(s), {revocation_proof_count} signed revocation or void decision(s) and {ra_revocations} RA-signed revocation(s) verified independently",
         rows.len()
     );
     Ok(ExitCode::SUCCESS)
