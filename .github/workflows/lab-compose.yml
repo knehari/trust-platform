@@ -76,6 +76,23 @@ jobs:
           # The database owner's own action: grants on the new issuing CA.
           export TRUST_LAB_OWNER_PSQL="docker exec -i $DB_CONTAINER psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 -q"
           node frontend/dev/certificate-application-e2e.mjs
+      - name: The laboratory database refuses plaintext and serves TLS (ADR-0031)
+        run: |
+          set -euo pipefail
+          set -a; . ./.env.lab; set +a
+          DB_CONTAINER="$(docker compose --env-file .env.lab -f compose.lab.yaml ps -q db)"
+          test -n "$DB_CONTAINER"
+          if docker exec -e PGPASSWORD="$TRUST_LAB_DB_PASSWORD" "$DB_CONTAINER" \
+               psql "host=127.0.0.1 user=trust_lab dbname=trust_lab sslmode=disable" -XAtc 'SELECT 1'; then
+            echo 'FAIL: the database accepted a plaintext TCP connection' >&2
+            exit 1
+          fi
+          # The services passed the suites above over this listener, so they
+          # connected with TLS (verified against the lab CA, ADR-0031).
+          docker exec -e PGPASSWORD="$TRUST_LAB_DB_PASSWORD" "$DB_CONTAINER" \
+            psql "host=127.0.0.1 user=trust_lab dbname=trust_lab sslmode=require" \
+            -XAtc 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()' | grep -qx t
+          echo 'PASS: plaintext refused, TLS served'
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80

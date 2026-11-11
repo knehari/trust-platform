@@ -64,5 +64,27 @@ chmod 600 .lab-keys/audit/audit-checkpoint.pem
 openssl ec -in .lab-keys/audit/audit-checkpoint.pem -pubout \
   -out .lab-keys/audit/audit-checkpoint.pub.pem 2>/dev/null
 chmod 644 .lab-keys/audit/audit-checkpoint.pub.pem
+# Database TLS (ADR-0031): a laboratory CA for service certificates and the
+# PostgreSQL server certificate (db, localhost, 127.0.0.1). Clients trust only
+# tls/ca.crt; the CA key never leaves .lab-keys/ and is mounted nowhere.
+mkdir -p .lab-keys/tls
+chmod 700 .lab-keys/tls
+if [ ! -s .lab-keys/tls/ca.key ] || [ ! -s .lab-keys/tls/ca.crt ]; then
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
+    -subj '/CN=Trust Lab Service CA' -keyout .lab-keys/tls/ca.key -out .lab-keys/tls/ca.crt \
+    -addext basicConstraints=critical,CA:TRUE,pathlen:0 -addext keyUsage=critical,keyCertSign,cRLSign 2>/dev/null
+  rm -f .lab-keys/tls/db.crt
+fi
+if [ ! -s .lab-keys/tls/db.crt ] || [ ! -s .lab-keys/tls/db.key ]; then
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj '/CN=db' \
+    -keyout .lab-keys/tls/db.key -out .lab-keys/tls/db.csr 2>/dev/null
+  printf 'subjectAltName=DNS:db,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature\n' \
+    > .lab-keys/tls/db.ext
+  openssl x509 -req -in .lab-keys/tls/db.csr -CA .lab-keys/tls/ca.crt -CAkey .lab-keys/tls/ca.key \
+    -CAcreateserial -days 90 -extfile .lab-keys/tls/db.ext -out .lab-keys/tls/db.crt 2>/dev/null
+  rm -f .lab-keys/tls/db.csr .lab-keys/tls/db.ext
+fi
+chmod 600 .lab-keys/tls/ca.key .lab-keys/tls/db.key
+chmod 644 .lab-keys/tls/ca.crt .lab-keys/tls/db.crt
 chmod 600 .env.lab
 echo "Private .env.lab ready for the disposable laboratory stack ($added value(s) added)."

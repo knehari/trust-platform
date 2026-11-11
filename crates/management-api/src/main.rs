@@ -27,7 +27,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use postgres::{types::ToSql, Client, IsolationLevel, NoTls, Row, Transaction};
+use postgres::{types::ToSql, Client, IsolationLevel, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -686,7 +686,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = router(state);
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
-    write_log(serde_json::json!({"event":"management_api_started","bind":bind}));
+    write_log(
+        serde_json::json!({"event":"management_api_started","bind":bind,
+        "database_tls": trust_db_connect::tls_required()}),
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -1053,8 +1056,8 @@ async fn query_db<T: Send + 'static>(
         config.options(&format!(
             "-c statement_timeout={DATABASE_STATEMENT_TIMEOUT_MS}"
         ));
-        let mut db = config
-            .connect(NoTls)
+        // TLS verified against TRUST_DATABASE_CA_FILE when set (ADR-0031).
+        let mut db = trust_db_connect::connect_config(&mut config)
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
         query(&mut db).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
     })
@@ -7936,7 +7939,7 @@ mod tests {
         ];
         let queries: Vec<&'static str> = cases.iter().map(|case| case.3).collect();
         let expected: Vec<Vec<String>> = tokio::task::spawn_blocking(move || {
-            let mut db = Client::connect(&database_url, NoTls).unwrap();
+            let mut db = Client::connect(&database_url, postgres::NoTls).unwrap();
             // The views filter by the declared principal (0021), as for the API.
             db.execute(
                 "SELECT set_config('trust.reader_issuer', 'https://issuer.example.test', false), \
@@ -7991,7 +7994,7 @@ mod tests {
         let Ok(url) = env::var("TRUST_API_TEST_DATABASE_URL") else {
             return; // CI supplies a disposable PostgreSQL database with migration 0021.
         };
-        let mut db = Client::connect(&url, NoTls).expect("restricted reader connection");
+        let mut db = Client::connect(&url, postgres::NoTls).expect("restricted reader connection");
         assert!(reader_isolation_active(&mut db).expect("isolation gate"));
         for view in [
             "management_ca",

@@ -163,3 +163,7 @@ ON CONFLICT (ca_id) DO UPDATE SET publish_on_revocation = excluded.publish_on_re
 ```
 
 The setting takes effect through the CRL renewer: the CA must be granted to `urn:trust-platform:system`/`crl-renewer`, which the issuing CA's provisioning does, and the API needs its signer. The Revocation & CRLs view shows the setting and how many revocations still wait for a CRL.
+
+## Database TLS
+
+`scripts/lab/init-env.sh` also generates a laboratory service CA and a PostgreSQL server certificate in `.lab-keys/tls/` ([ADR-0031](../adr/ADR-0031-database-tls.md), Proposed). The `db` service accepts TCP connections only over TLS (`scripts/lab/pg_hba.conf`), and the API, signer and publisher verify its certificate against `ca.crt` (`TRUST_DATABASE_CA_FILE`). The CA key stays on the host and is mounted nowhere. `cargo run -p trust-db-connect --bin trust-db-check -- <url> --require-tls` reports whether a connection is encrypted. If `.lab-keys/tls/` is lost, rerun `init-env.sh` and restart the stack.

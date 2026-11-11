@@ -126,7 +126,7 @@ async fn get(app: &Router, token: &str, path: &str) -> (StatusCode, Option<Strin
 /// filtered history, read with one unsliced statement through the view.
 /// A connection to the views as the scale fixture's reader principal (0021).
 fn reader_db(database_url: &str) -> Client {
-    let mut db = Client::connect(database_url, NoTls).unwrap();
+    let mut db = Client::connect(database_url, postgres::NoTls).unwrap();
     db.execute(
         "SELECT set_config('trust.reader_issuer', 'https://issuer.scale.invalid', false), \
          set_config('trust.reader_subject', 'reader', false)",
@@ -215,7 +215,7 @@ async fn history_timing() {
                      'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')"
                 );
                 let cutoff: String = tokio::task::spawn_blocking(move || {
-                    Client::connect(&url, NoTls)
+                    Client::connect(&url, postgres::NoTls)
                         .unwrap()
                         .query_one(&sql, &[])
                         .unwrap()

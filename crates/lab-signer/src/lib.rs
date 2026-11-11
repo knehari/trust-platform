@@ -666,7 +666,7 @@ pub mod service {
     };
 
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use postgres::{Client, NoTls};
+    use postgres::Client;
     use serde::Deserialize;
 
     use crate::{
@@ -999,7 +999,8 @@ pub mod service {
             }
         }
         let state = read_state(state_file)?;
-        let mut db = Client::connect(&config.database_url, NoTls).map_err(|_| Refusal::Database)?;
+        let mut db =
+            trust_db_connect::connect(&config.database_url).map_err(|_| Refusal::Database)?;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|_| Refusal::Database)?
@@ -1075,7 +1076,7 @@ pub mod service {
         let pem = fs::read_to_string(&config.key_file).map_err(|_| fail(Refusal::KeyFile))?;
         let key = parse_key_pem(&pem).map_err(fail)?;
         let mut db =
-            Client::connect(&config.database_url, NoTls).map_err(|_| fail(Refusal::Database))?;
+            trust_db_connect::connect(&config.database_url).map_err(|_| fail(Refusal::Database))?;
         let mut store = PgIntentStore { db: &mut db };
         let signature = match request.kind.as_deref() {
             None | Some("certificate") => sign_intent(
@@ -1098,7 +1099,7 @@ pub mod service {
 
     /// The login must hold `trust_lab_signer` and read no table directly.
     pub fn restricted_login(url: &str) -> Result<bool, Box<dyn Error>> {
-        let mut db = Client::connect(url, NoTls)?;
+        let mut db = trust_db_connect::connect(url)?;
         Ok(db
             .query_one(
                 "SELECT pg_has_role(current_user, 'trust_lab_signer', 'member') \

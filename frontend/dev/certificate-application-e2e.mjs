@@ -353,7 +353,16 @@ try {
       await page.locator('#username').fill('lab-ra-officer');
       await page.locator('#password').fill(requiredEnv('TRUST_LAB_PW_RA_OFFICER'));
       await page.locator('#kc-login').click();
-      await page.getByRole('tab', { name: /Revocation requested/ }).click();
+      // Wait for the request tabs themselves, then open the one that holds
+      // requests awaiting a revocation decision.
+      try {
+        await page.getByRole('tablist', { name: 'Request status' }).waitFor({ timeout: 30_000 });
+        await page.getByRole('tab', { name: /Revocation requested/ }).click();
+      } catch (error) {
+        console.error('Console revocation step at', page.url());
+        console.error((await page.locator('body').innerText()).slice(0, 1200));
+        throw error;
+      }
       const row = page.getByRole('row').filter({ hasText: 'console.lab.invalid' });
       await row.getByRole('button', { name: 'Review revocation' }).click();
       await page.getByLabel('Revocation decision reason for console.lab.invalid').fill('superseded, checked');
