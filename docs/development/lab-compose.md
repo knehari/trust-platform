@@ -172,6 +172,10 @@ The setting takes effect through the CRL renewer: the CA must be granted to `urn
 
 The API serves HTTPS on `https://127.0.0.1:8081` with a certificate `init-env.sh` issues from the same service CA ([ADR-0032](../adr/ADR-0032-api-https.md), Proposed). Run the Node suites with `NODE_EXTRA_CA_CERTS=.lab-keys/tls/ca.crt` (CI sets it), and check the API with `curl --cacert .lab-keys/tls/ca.crt https://127.0.0.1:8081/v1/health`. Plain HTTP on that port is refused. Keycloak stays on plain HTTP for now; the CRL server stays on HTTP by design.
 
+## Mutual TLS to the database
+
+Every network login to the lab database needs its password and its own client certificate ([ADR-0036](../adr/ADR-0036-database-mtls.md), Proposed). `scripts/lab/init-env.sh` issues them from the lab service CA into `.lab-keys/tls/clients/<service>/<login>.crt` (CN = the login), and each service mounts only its own directory as `TRUST_DATABASE_CLIENT_CERT_DIR`. A connection without the certificate fails with `connection requires a valid client certificate`. Check one with `TRUST_DATABASE_CA_FILE=.lab-keys/tls/ca.crt TRUST_DATABASE_CLIENT_CERT_DIR=.lab-keys/tls/clients/api cargo run -p trust-db-connect --bin trust-db-check <url>`, which prints the `client_dn` the server saw. An older stack needs `init-env.sh` again and a database restart.
+
 ## CA key in a PKCS#11 token
 
 The lab issuing CA's key lives in the signer's SoftHSM2 token ([ADR-0034](../adr/ADR-0034-pkcs11-ca-key.md), Proposed), in the `trust_signer_hsm` volume. The signer's entrypoint initialises the `trust-lab-ca` token once with `TRUST_LAB_HSM_SO_PIN` and `TRUST_LAB_HSM_PIN` from `.env.lab`. With the stack running, `scripts/lab/create-audit-key-hsm.sh` generates the audit key (below), and `scripts/lab/create-lab-root-hsm.sh "Lab Issuing CA"` runs the key ceremony in the signer container: the key is generated in the token, sensitive and never extractable, and only the root certificate is written to `.lab-keys/ca/ca-root-lab-issuing-ca.crt` and printed. `down -v` destroys the token and the key with it. SoftHSM2 is a software token: it exercises the PKCS#11 boundary, not hardware custody.

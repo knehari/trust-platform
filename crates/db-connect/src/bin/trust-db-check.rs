@@ -1,6 +1,7 @@
 //! `trust-db-check <url>`: connects under the platform's TLS policy
-//! (`TRUST_DATABASE_CA_FILE`, ADR-0031) and prints whether the session is
-//! encrypted, with which protocol. Exits 1 when the connection fails, and 2
+//! (`TRUST_DATABASE_CA_FILE`, ADR-0031; `TRUST_DATABASE_CLIENT_CERT_DIR`,
+//! ADR-0036) and prints whether the session is encrypted, with which
+//! protocol, and the client certificate's subject the server saw. Exits 1 when the connection fails, and 2
 //! when TLS is required by `--require-tls` but the session is plaintext.
 use std::{env, process::ExitCode};
 
@@ -22,7 +23,7 @@ fn main() -> ExitCode {
         }
     };
     let row = match db.query_one(
-        "SELECT ssl, coalesce(version, '') FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+        "SELECT ssl, coalesce(version, ''), client_dn FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
         &[],
     ) {
         Ok(row) => row,
@@ -34,10 +35,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (ssl, version): (bool, String) = (row.get(0), row.get(1));
+    let (ssl, version, client_dn): (bool, String, Option<String>) =
+        (row.get(0), row.get(1), row.get(2));
     println!(
         "{}",
-        serde_json::json!({"connected": true, "tls": ssl, "protocol": version})
+        serde_json::json!({"connected": true, "tls": ssl, "protocol": version, "client_dn": client_dn})
     );
     if require && !ssl {
         return ExitCode::from(2);
