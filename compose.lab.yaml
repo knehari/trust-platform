@@ -58,15 +58,20 @@ services:
   issuer:
     # Laboratory identity provider: Keycloak in development mode with an
     # in-container H2 store, imported from scripts/lab/keycloak at each fresh
-    # start. Development mode is not a production configuration (plain HTTP on
-    # loopback, no external database, no clustering). Image pinned by digest.
+    # start. Development mode is not a production configuration (no external
+    # database, no clustering). HTTPS only on 8443 with the lab service CA's
+    # certificate (ADR-0033); the management (health) interface stays plain
+    # HTTP inside the container and is not published. Image pinned by digest.
     image: keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     command:
       - start-dev
       - --import-realm
-      - --http-host=0.0.0.0
-      - --http-port=8080
-      - --hostname=http://127.0.0.1:8080
+      - --http-enabled=false
+      - --https-port=8443
+      - --https-certificate-file=/lab-tls/idp.crt
+      - --https-certificate-key-file=/lab-tls/idp.key
+      - --http-management-scheme=http
+      - --hostname=https://127.0.0.1:8443
       - --health-enabled=true
     environment:
       # No outbound analytics from the schema tool Keycloak embeds.
@@ -93,8 +98,10 @@ services:
       TRUST_LAB_PW_AUTHOR: ${TRUST_LAB_PW_AUTHOR:?Run scripts/lab/init-env.sh first}
     volumes:
       - ./scripts/lab/keycloak:/opt/keycloak/data/import:ro
+      - ./.lab-keys/tls/idp.crt:/lab-tls/idp.crt:ro
+      - ./.lab-keys/tls/idp.key:/lab-tls/idp.key:ro
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8443:8443"
       - "127.0.0.1:8081:8081" # API shares this network namespace for exact loopback OIDC issuer URL.
     healthcheck:
       # The image has no curl; bash's /dev/tcp reads the management health endpoint.
@@ -161,7 +168,8 @@ services:
       # HTTPS (ADR-0032): no plain HTTP listener.
       TRUST_API_TLS_CERT_FILE: /lab-tls/api.crt
       TRUST_API_TLS_KEY_FILE: /lab-tls/api.key
-      TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
+      TRUST_OIDC_ISSUER: https://127.0.0.1:8443/realms/trust-lab
+      TRUST_OIDC_CA_FILE: /lab-tls/ca.crt
       TRUST_OIDC_AUDIENCE: trust-api
       TRUST_OIDC_CLIENT_ID: trust-console
       TRUST_API_BIND: 0.0.0.0:8081
@@ -226,7 +234,7 @@ services:
       TRUST_API_DEV_TARGET: https://issuer:8081
       # The console's dev proxy verifies the API against the lab CA (ADR-0032).
       NODE_EXTRA_CA_CERTS: /lab-tls/ca.crt
-      VITE_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
+      VITE_OIDC_ISSUER: https://127.0.0.1:8443/realms/trust-lab
       VITE_OIDC_CLIENT_ID: trust-console
       VITE_OIDC_SCOPE: openid profile
     volumes:

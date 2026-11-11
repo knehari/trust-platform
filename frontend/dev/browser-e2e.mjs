@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { labBrowserOptions } from './lab-browser.mjs';
 
 const origin = 'http://127.0.0.1:5173';
 const allowedCa = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -12,10 +13,8 @@ const hiddenRequest = '11111111-1111-4111-8111-000000000002';
 const allowedEvent = '33333333-3333-4333-8333-000000000001';
 const expectedCn = process.env.TRUST_E2E_EXPECTED_CN ?? 'compose-allowed.lab.invalid';
 const sanExpectedCn = process.env.TRUST_E2E_SAN_CN ?? 'paged-0102.lab.invalid';
-const browser = await chromium.launch({
-  headless: true,
-  ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}),
-});
+// Keycloak serves HTTPS: only the lab identity provider's key is accepted.
+const browser = await chromium.launch(labBrowserOptions());
 const readerPassword = process.env.TRUST_LAB_PW_READER;
 if (!readerPassword) throw new Error('TRUST_LAB_PW_READER is not set; load .env.lab (set -a; . ./.env.lab; set +a)');
 

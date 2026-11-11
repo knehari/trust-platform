@@ -43,37 +43,37 @@ INSERT INTO ca(ca_id,display_name,policy_version) VALUES
 --   * the workload's service account is granted CA E, but its tokens are not
 --     issued to the console client.
 INSERT INTO management_reader_grant(issuer,subject,ca_id) VALUES
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000006','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000007','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000001','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000006','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000007','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000009','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab-foreign','7c1a0000-0000-4000-8000-000000000010','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
 -- Lifecycle role grants (migrations 0022–0024). lab-author (reader and
 -- editor) and lab-editor (editor only) may record and submit drafts for CA E;
 -- lab-approver-1 and lab-approver-2 may decide on them, and lab-operator may
 -- activate and retire them. Nobody holds a grant for CA F.
 INSERT INTO management_role_grant(issuer,subject,ca_id,lifecycle_role) VALUES
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ca-operator');
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000011','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000002','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','profile-editor'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','policy-approver'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000005','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','ca-operator');
 -- CA proposals (migration 0026): lab-ca-admin may propose CAs and register
 -- their issuer certificates. A proposal is not a CA and issues nothing.
 INSERT INTO management_platform_grant(issuer,subject,platform_role) VALUES
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000012','ca-administrator'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013','ca-approver'),
-  ('http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014','ca-approver');
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000012','ca-administrator'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013','ca-approver'),
+  ('https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014','ca-approver');
 -- CA approver keys (migration 0027): the public halves of the keys
 -- init-env.sh generated; distinct from the profile approver keys.
 INSERT INTO ca_approver_key(key_id,issuer,subject,public_key_sec1) VALUES
-  ('lab-ca-approver-1-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013',decode(:'ca_approver1_sec1','hex')),
-  ('lab-ca-approver-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014',decode(:'ca_approver2_sec1','hex'));
+  ('lab-ca-approver-1-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000013',decode(:'ca_approver1_sec1','hex')),
+  ('lab-ca-approver-2-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000014',decode(:'ca_approver2_sec1','hex'));
 -- Signing capabilities the owner declares for the allowed CA (migration
 -- 0024). A declaration is not evidence that a provider or key can issue.
 INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
@@ -81,14 +81,14 @@ INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
 -- Approver keys (migration 0023): the public halves of the keys init-env.sh
 -- generated into .lab-keys/. The private keys never reach the database.
 INSERT INTO profile_approver_key(key_id,issuer,subject,public_key_sec1) VALUES
-  ('lab-approver-1-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003',decode(:'approver1_sec1','hex')),
-  ('lab-approver-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004',decode(:'approver2_sec1','hex'));
+  ('lab-approver-1-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003',decode(:'approver1_sec1','hex')),
+  ('lab-approver-2-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004',decode(:'approver2_sec1','hex'));
 -- Registration officer keys (migration 0041, ADR-0028): lab-ra-officer and
 -- lab-ra-officer-2 sign their decisions on certificate applications; the
 -- signer verifies the signatures with these keys before it signs.
 INSERT INTO registration_officer_key(key_id,issuer,subject,public_key_sec1) VALUES
-  ('lab-ra-officer-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000016',decode(:'ra_officer_sec1','hex')),
-  ('lab-ra-officer-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000017',decode(:'ra_officer2_sec1','hex'));
+  ('lab-ra-officer-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000016',decode(:'ra_officer_sec1','hex')),
+  ('lab-ra-officer-2-p256','https://127.0.0.1:8443/realms/trust-lab','7c1a0000-0000-4000-8000-000000000017',decode(:'ra_officer2_sec1','hex'));
 -- Inert profile proposals; no revision can authorize issuance.
 INSERT INTO certificate_profile_draft
   (ca_id,profile_id,revision,display_name,policy_version,max_validity_days,

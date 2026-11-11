@@ -95,9 +95,21 @@ if [ ! -s .lab-keys/tls/api.crt ] || [ ! -s .lab-keys/tls/api.key ]; then
     -CAcreateserial -days 90 -extfile .lab-keys/tls/api.ext -out .lab-keys/tls/api.crt 2>/dev/null
   rm -f .lab-keys/tls/api.csr .lab-keys/tls/api.ext
 fi
+# Keycloak's HTTPS certificate (ADR-0033): localhost, 127.0.0.1 and issuer.
+if [ ! -s .lab-keys/tls/idp.crt ] || [ ! -s .lab-keys/tls/idp.key ]; then
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj '/CN=trust-lab-idp' \
+    -keyout .lab-keys/tls/idp.key -out .lab-keys/tls/idp.csr 2>/dev/null
+  printf 'subjectAltName=DNS:localhost,DNS:issuer,IP:127.0.0.1\nextendedKeyUsage=serverAuth\nkeyUsage=critical,digitalSignature\n' \
+    > .lab-keys/tls/idp.ext
+  openssl x509 -req -in .lab-keys/tls/idp.csr -CA .lab-keys/tls/ca.crt -CAkey .lab-keys/tls/ca.key \
+    -CAcreateserial -days 90 -extfile .lab-keys/tls/idp.ext -out .lab-keys/tls/idp.crt 2>/dev/null
+  rm -f .lab-keys/tls/idp.csr .lab-keys/tls/idp.ext
+fi
 chmod 600 .lab-keys/tls/ca.key .lab-keys/tls/db.key
-# The API runs as nobody and reads its key from a bind mount: the key file is
-# world-readable, protected by the 0700 .lab-keys/tls directory on the host.
-chmod 644 .lab-keys/tls/ca.crt .lab-keys/tls/db.crt .lab-keys/tls/api.crt .lab-keys/tls/api.key
+# The API (nobody) and Keycloak (uid 1000) read their keys from bind mounts:
+# those key files are world-readable, protected by the 0700 .lab-keys/tls
+# directory on the host.
+chmod 644 .lab-keys/tls/ca.crt .lab-keys/tls/db.crt .lab-keys/tls/api.crt .lab-keys/tls/api.key \
+  .lab-keys/tls/idp.crt .lab-keys/tls/idp.key
 chmod 600 .env.lab
 echo "Private .env.lab ready for the disposable laboratory stack ($added value(s) added)."

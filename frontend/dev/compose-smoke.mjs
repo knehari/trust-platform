@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { claims, requiredEnv, signIn } from './keycloak-login.mjs';
 
-const realm = 'http://127.0.0.1:8080/realms/trust-lab';
+const realm = 'https://127.0.0.1:8443/realms/trust-lab';
 // HTTPS, verified against the lab CA through NODE_EXTRA_CA_CERTS (ADR-0032).
 const api = process.env.TRUST_E2E_API ?? 'https://127.0.0.1:8081';
 const consoleOrigin = 'http://127.0.0.1:5173';

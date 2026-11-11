@@ -58,14 +58,32 @@ pub struct Claims {
     pub ca_ids: Vec<String>,
 }
 
+/// The CA file the OIDC client trusts instead of the built-in roots.
+pub const OIDC_CA_FILE_ENV: &str = "TRUST_OIDC_CA_FILE";
+
 impl OidcVerifier {
     pub async fn discover(issuer: &str, audience: &str, client_id: &str) -> Result<Self, String> {
         if audience.is_empty() || client_id.is_empty() || !safe_issuer_url(issuer) {
             return Err("invalid OIDC issuer, audience or client".into());
         }
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        // With TRUST_OIDC_CA_FILE, discovery and JWKS fetches trust only that
+        // CA (the laboratory service CA, ADR-0033), never the built-in roots.
+        if let Some(path) = std::env::var_os(OIDC_CA_FILE_ENV) {
+            let pem = std::fs::read(path).map_err(|_| "TRUST_OIDC_CA_FILE unreadable")?;
+            let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+                .map_err(|_| "TRUST_OIDC_CA_FILE is not PEM")?;
+            if certificates.is_empty() {
+                return Err("TRUST_OIDC_CA_FILE holds no certificate".into());
+            }
+            builder = builder.tls_built_in_root_certs(false);
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+        let client = builder
             .build()
             .map_err(|_| "cannot configure OIDC client")?;
         let document: Discovery = client

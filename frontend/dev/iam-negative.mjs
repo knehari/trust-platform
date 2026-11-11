@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { authorizationCode, claims, clientCredentials, requiredEnv, signIn } from './keycloak-login.mjs';
 
-const issuerOrigin = 'http://127.0.0.1:8080';
+const issuerOrigin = 'https://127.0.0.1:8443';
 const realm = `${issuerOrigin}/realms/trust-lab`;
 const foreignRealm = `${issuerOrigin}/realms/trust-lab-foreign`;
 // HTTPS, verified against the lab CA through NODE_EXTRA_CA_CERTS (ADR-0032).
