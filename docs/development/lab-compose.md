@@ -125,7 +125,7 @@ The head is not signed and its export is not automated: this is a laboratory pro
 
 ## Signed audit checkpoints (ADR-0023)
 
-`scripts/lab/init-env.sh` generates the signer's audit key into `.lab-keys/audit/` (`audit-checkpoint.pem`, and its public half `audit-checkpoint.pub.pem`). The signer mounts only that directory, read-only, for it, and keeps its last checkpoint in the `trust_signer_state` volume. Every 60 seconds the API asks the signer to verify the chain since that checkpoint and sign its head. The API logs `audit_checkpoint` with `SIGNED`, `UNCHANGED`, or `REFUSED` plus `"alert": true`.
+The signer's audit key lives in its own SoftHSM2 token, `trust-lab-audit`, with its own PIN `TRUST_LAB_HSM_AUDIT_PIN` ([ADR-0035](../adr/ADR-0035-pkcs11-audit-key.md), Proposed). With the stack up, run `scripts/lab/create-audit-key-hsm.sh` once: it generates the key in the token and writes only its public key to `.lab-keys/audit/audit-checkpoint.pub.pem`. Until then the signer refuses checkpoints (`AuditKeyFile`). The signer keeps its last checkpoint in the `trust_signer_state` volume. Every 60 seconds the API asks the signer to verify the chain since that checkpoint and sign its head. The API logs `audit_checkpoint` with `SIGNED`, `UNCHANGED`, or `REFUSED` plus `"alert": true`.
 
 To verify every checkpoint with the public key, which never comes from the database:
 
@@ -174,7 +174,7 @@ The API serves HTTPS on `https://127.0.0.1:8081` with a certificate `init-env.sh
 
 ## CA key in a PKCS#11 token
 
-The lab issuing CA's key lives in the signer's SoftHSM2 token ([ADR-0034](../adr/ADR-0034-pkcs11-ca-key.md), Proposed), in the `trust_signer_hsm` volume. The signer's entrypoint initialises the `trust-lab-ca` token once with `TRUST_LAB_HSM_SO_PIN` and `TRUST_LAB_HSM_PIN` from `.env.lab`. With the stack running, `scripts/lab/create-lab-root-hsm.sh "Lab Issuing CA"` runs the key ceremony in the signer container: the key is generated in the token, sensitive and never extractable, and only the root certificate is written to `.lab-keys/ca/ca-root-lab-issuing-ca.crt` and printed. `down -v` destroys the token and the key with it. SoftHSM2 is a software token: it exercises the PKCS#11 boundary, not hardware custody.
+The lab issuing CA's key lives in the signer's SoftHSM2 token ([ADR-0034](../adr/ADR-0034-pkcs11-ca-key.md), Proposed), in the `trust_signer_hsm` volume. The signer's entrypoint initialises the `trust-lab-ca` token once with `TRUST_LAB_HSM_SO_PIN` and `TRUST_LAB_HSM_PIN` from `.env.lab`. With the stack running, `scripts/lab/create-audit-key-hsm.sh` generates the audit key (below), and `scripts/lab/create-lab-root-hsm.sh "Lab Issuing CA"` runs the key ceremony in the signer container: the key is generated in the token, sensitive and never extractable, and only the root certificate is written to `.lab-keys/ca/ca-root-lab-issuing-ca.crt` and printed. `down -v` destroys the token and the key with it. SoftHSM2 is a software token: it exercises the PKCS#11 boundary, not hardware custody.
 
 ## Keycloak HTTPS
 

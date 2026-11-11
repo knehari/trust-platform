@@ -16,10 +16,15 @@
 //!   Either way the key is checked against the CA's attested key for each
 //!   request, and never logged.
 //!
-//! - `TRUST_SIGNER_AUDIT_KEY_FILE` and `TRUST_SIGNER_AUDIT_STATE_FILE`
-//!   (optional, together): the P-256 audit key that signs checkpoints of the
-//!   audit chain, distinct from the CA key, and the file where the signer
-//!   remembers its last checkpoint, outside the database (ADR-0023).
+//! - Optionally, the P-256 audit key that signs checkpoints of the audit
+//!   chain, distinct from the CA key (ADR-0023), at most one of:
+//!   - `TRUST_SIGNER_AUDIT_KEY_FILE`: a laboratory software key (PEM);
+//!   - `TRUST_SIGNER_AUDIT_PKCS11_MODULE`, `_TOKEN_LABEL`, `_KEY_LABEL` and
+//!     `_PIN`: a key generated in a PKCS#11 token (ADR-0035), which must not
+//!     be the CA's token;
+//!
+//!   and with it `TRUST_SIGNER_AUDIT_STATE_FILE`, where the signer remembers
+//!   its last checkpoint, outside the database.
 //!
 //! Protocol: one JSON line per connection,
 //! `{"intent_id": "...", "tbs_der_base64": "..."}`, answered by
@@ -38,39 +43,73 @@ use std::{
 };
 
 use trust_lab_signer::{
-    ca_key::{Pkcs11Config, Pkcs11Key},
-    service::{log, restricted_login, serve, CaKeySource, Config},
+    ca_key::{load_module, Pkcs11Config, Pkcs11Key},
+    service::{log, restricted_login, serve, Config, KeySource},
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
     let socket = PathBuf::from(env::var("TRUST_SIGNER_SOCKET")?);
-    let ca_key = match (
-        optional_path("TRUST_SIGNER_KEY_FILE"),
-        Pkcs11Config::from_env()?,
-    ) {
-        (Some(file), None) => CaKeySource::File(file),
-        (None, Some(pkcs11)) => CaKeySource::Pkcs11(
-            Pkcs11Key::open(&pkcs11)
-                .map_err(|refusal| format!("PKCS#11 token: {}", refusal.code()))?,
-        ),
+    let ca_pkcs11 = Pkcs11Config::from_env()?;
+    let audit_pkcs11 = Pkcs11Config::from_env_prefix("TRUST_SIGNER_AUDIT_PKCS11")?;
+    // One load per module: dropping a module's last handle finalizes it.
+    let mut modules = Vec::new();
+    let mut open = |config: &Pkcs11Config| -> Result<Pkcs11Key, Box<dyn Error>> {
+        let token =
+            |refusal: trust_lab_signer::Refusal| format!("PKCS#11 token: {}", refusal.code());
+        if !modules.iter().any(|(path, _)| path == &config.module) {
+            modules.push((
+                config.module.clone(),
+                load_module(&config.module).map_err(token)?,
+            ));
+        }
+        let (_, context) = modules
+            .iter()
+            .find(|(path, _)| path == &config.module)
+            .ok_or("module")?;
+        Ok(Pkcs11Key::open_in(context, config).map_err(token)?)
+    };
+    let ca_key = match (optional_path("TRUST_SIGNER_KEY_FILE"), &ca_pkcs11) {
+        (Some(file), None) => KeySource::File(file),
+        (None, Some(pkcs11)) => KeySource::Pkcs11(open(pkcs11)?),
         _ => {
             return Err(
                 "set exactly one of TRUST_SIGNER_KEY_FILE and TRUST_SIGNER_PKCS11_MODULE".into(),
             )
         }
     };
-    let pkcs11 = matches!(ca_key, CaKeySource::Pkcs11(_));
+    let audit_key = match (optional_path("TRUST_SIGNER_AUDIT_KEY_FILE"), &audit_pkcs11) {
+        (None, None) => None,
+        (Some(file), None) => Some(KeySource::File(file)),
+        (None, Some(pkcs11)) => {
+            // Separate tokens: the CA's PIN never unlocks the audit key, nor
+            // the reverse.
+            if ca_pkcs11.as_ref().is_some_and(|ca| {
+                ca.module == pkcs11.module && ca.token_label == pkcs11.token_label
+            }) {
+                return Err("the audit key must be in another token than the CA key".into());
+            }
+            Some(KeySource::Pkcs11(open(pkcs11)?))
+        }
+        _ => return Err(
+            "set at most one of TRUST_SIGNER_AUDIT_KEY_FILE and TRUST_SIGNER_AUDIT_PKCS11_MODULE"
+                .into(),
+        ),
+    };
+    let describe = |source: &KeySource| match source {
+        KeySource::File(_) => "software_file",
+        KeySource::Pkcs11(_) => "pkcs11",
+    };
+    let (ca_kind, audit_kind) = (describe(&ca_key), audit_key.as_ref().map(describe));
     let config = Config {
         database_url: env::var("TRUST_SIGNER_DATABASE_URL")?,
         ca_id: uuid_text(&env::var("TRUST_SIGNER_CA_ID")?)?,
         ca_key,
-        audit_key_file: optional_path("TRUST_SIGNER_AUDIT_KEY_FILE"),
+        audit_key,
         audit_state_file: optional_path("TRUST_SIGNER_AUDIT_STATE_FILE"),
     };
-    if config.audit_key_file.is_some() != config.audit_state_file.is_some() {
+    if config.audit_key.is_some() != config.audit_state_file.is_some() {
         return Err(
-            "set both TRUST_SIGNER_AUDIT_KEY_FILE and TRUST_SIGNER_AUDIT_STATE_FILE, or neither"
-                .into(),
+            "set TRUST_SIGNER_AUDIT_STATE_FILE with an audit key, and only with one".into(),
         );
     }
     if !restricted_login(&config.database_url)? {
@@ -89,7 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     log(serde_json::json!({
         "event": "lab_signer_started", "ca_id": config.ca_id,
-        "ca_key": if pkcs11 { "pkcs11" } else { "software_file" },
+        "ca_key": ca_kind, "audit_key": audit_kind,
     }));
     // One request at a time: the laboratory needs no concurrency, and the
     // database claim serializes signing anyway.

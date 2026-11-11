@@ -40,6 +40,18 @@ jobs:
           docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
       - name: Build and start laboratory services
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 300
+      - name: Generate the audit key in its own token (ADR-0035)
+        run: |
+          set -euo pipefail
+          scripts/lab/create-audit-key-hsm.sh > /dev/null
+          openssl pkey -pubin -in .lab-keys/audit/audit-checkpoint.pub.pem -noout -text | grep -q 'ASN1 OID: prime256v1'
+          # Never twice: the token refuses a second key under the label.
+          if scripts/lab/create-audit-key-hsm.sh > /dev/null 2>&1; then
+            echo 'FAIL: a second audit key was generated' >&2
+            exit 1
+          fi
+          test -s .lab-keys/audit/audit-checkpoint.pub.pem
+          echo 'PASS: audit key generated in its token; only the public key on the host'
       - name: The API serves verified HTTPS only (ADR-0032)
         run: |
           set -euo pipefail

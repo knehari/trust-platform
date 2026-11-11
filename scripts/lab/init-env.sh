@@ -10,7 +10,7 @@ umask 077
 [ -e .env.lab ] || : > .env.lab
 added=0
 for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_WRITER_PASSWORD TRUST_LAB_SIGNER_PASSWORD TRUST_LAB_PUBLISHER_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
-    TRUST_LAB_HSM_PIN TRUST_LAB_HSM_SO_PIN \
+    TRUST_LAB_HSM_PIN TRUST_LAB_HSM_AUDIT_PIN TRUST_LAB_HSM_SO_PIN \
     TRUST_LAB_WORKLOAD_SECRET \
     TRUST_LAB_PW_READER TRUST_LAB_PW_EDITOR TRUST_LAB_PW_APPROVER_1 TRUST_LAB_PW_APPROVER_2 \
     TRUST_LAB_PW_OPERATOR TRUST_LAB_PW_OUTSIDER TRUST_LAB_PW_DISABLED TRUST_LAB_PW_OTHER_CA \
@@ -55,18 +55,12 @@ for approver in approver-1:APPROVER_1 approver-2:APPROVER_2 ca-approver-1:CA_APP
     added=$((added + 1))
   fi
 done
-# The lab signer's audit key (ADR-0023): signs checkpoints of the audit
-# chain, never certificates or CRLs. Only .lab-keys/audit/ is mounted for it;
-# the public key is what lab_verify_audit_chain checks checkpoints against.
+# The lab signer's audit key (ADR-0023) is generated in its own SoftHSM2
+# token, separate from the CA's (ADR-0035), by
+# scripts/lab/create-audit-key-hsm.sh, which writes only its public key to
+# .lab-keys/audit/audit-checkpoint.pub.pem for lab_verify_audit_chain.
 mkdir -p .lab-keys/audit
 chmod 700 .lab-keys/audit
-if [ ! -s .lab-keys/audit/audit-checkpoint.pem ]; then
-  openssl ecparam -name prime256v1 -genkey -noout -out .lab-keys/audit/audit-checkpoint.pem
-fi
-chmod 600 .lab-keys/audit/audit-checkpoint.pem
-openssl ec -in .lab-keys/audit/audit-checkpoint.pem -pubout \
-  -out .lab-keys/audit/audit-checkpoint.pub.pem 2>/dev/null
-chmod 644 .lab-keys/audit/audit-checkpoint.pub.pem
 # Database TLS (ADR-0031): a laboratory CA for service certificates and the
 # PostgreSQL server certificate (db, localhost, 127.0.0.1). Clients trust only
 # tls/ca.crt; the CA key never leaves .lab-keys/ and is mounted nowhere.

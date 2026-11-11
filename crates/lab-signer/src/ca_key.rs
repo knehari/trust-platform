@@ -1,7 +1,8 @@
-//! The CA signing key (ADR-0034, Proposed): a laboratory software key file,
-//! or a key held in a PKCS#11 token that never leaves it.
+//! The signer's keys (ADR-0034, ADR-0035, Proposed): the CA key and the
+//! audit checkpoint key, each a laboratory software key file or a key held in
+//! a PKCS#11 token that never leaves it.
 //!
-//! Signature contract, for both sources: ECDSA over P-256 with SHA-256.
+//! Signature contract, for every source: ECDSA over P-256 with SHA-256.
 //! - The signed message is the exact DER of the TBSCertificate or
 //!   TBSCertList.
 //! - The signer computes SHA-256 of those bytes itself and hands the 32-byte
@@ -43,13 +44,13 @@ use crate::Refusal;
 pub const P256_EC_PARAMS: [u8; 10] = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
 /// A P-256 key that signs with ECDSA / SHA-256.
-pub trait CaKey {
+pub trait P256Key {
     fn public_key(&self) -> Result<PublicKey, Refusal>;
     /// The DER `ECDSA-Sig-Value` over SHA-256(`message`).
     fn sign_sha256(&self, message: &[u8]) -> Result<Vec<u8>, Refusal>;
 }
 
-impl CaKey for SecretKey {
+impl P256Key for SecretKey {
     fn public_key(&self) -> Result<PublicKey, Refusal> {
         Ok(SecretKey::public_key(self))
     }
@@ -74,23 +75,39 @@ pub struct Pkcs11Config {
 }
 
 impl Pkcs11Config {
-    /// From `TRUST_SIGNER_PKCS11_MODULE`, `_TOKEN_LABEL`, `_KEY_LABEL` and
-    /// `_PIN`: `None` when no module is named, an error when the module is
-    /// named but anything else is missing or empty.
+    /// The CA key: `TRUST_SIGNER_PKCS11_MODULE`, `_TOKEN_LABEL`,
+    /// `_KEY_LABEL` and `_PIN`.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let get = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let Some(module) = get("TRUST_SIGNER_PKCS11_MODULE") else {
+        Self::from_env_prefix("TRUST_SIGNER_PKCS11")
+    }
+
+    /// `<prefix>_MODULE`, `_TOKEN_LABEL`, `_KEY_LABEL` and `_PIN`: `None`
+    /// when no module is named, an error when the module is named but
+    /// anything else is missing or empty.
+    pub fn from_env_prefix(prefix: &str) -> Result<Option<Self>, String> {
+        let get = |name: String| std::env::var(name).ok().filter(|value| !value.is_empty());
+        let Some(module) = get(format!("{prefix}_MODULE")) else {
             return Ok(None);
         };
-        let need = |name: &str| {
-            get(name).ok_or_else(|| format!("{name} is required with TRUST_SIGNER_PKCS11_MODULE"))
+        let need = |suffix: &str| {
+            get(format!("{prefix}_{suffix}"))
+                .ok_or_else(|| format!("{prefix}_{suffix} is required with {prefix}_MODULE"))
         };
         Ok(Some(Self {
             module: PathBuf::from(module),
-            token_label: need("TRUST_SIGNER_PKCS11_TOKEN_LABEL")?,
-            key_label: need("TRUST_SIGNER_PKCS11_KEY_LABEL")?,
-            pin: need("TRUST_SIGNER_PKCS11_PIN")?,
+            token_label: need("TOKEN_LABEL")?,
+            key_label: need("KEY_LABEL")?,
+            pin: need("PIN")?,
         }))
+    }
+}
+
+/// Loads and initialises a PKCS#11 module.
+pub fn load_module(path: &std::path::Path) -> Result<Pkcs11, Refusal> {
+    let context = Pkcs11::new(path).map_err(token)?;
+    match context.initialize(CInitializeArgs::OsThreads) {
+        Ok(()) | Err(Pkcs11Error::AlreadyInitialized) => Ok(context),
+        Err(error) => Err(token(error)),
     }
 }
 
@@ -131,11 +148,13 @@ pub fn raw_signature_der(raw: &[u8]) -> Result<Vec<u8>, Refusal> {
 impl Pkcs11Key {
     /// Loads the module and finds the token by label: exactly one slot.
     pub fn open(config: &Pkcs11Config) -> Result<Self, Refusal> {
-        let context = Pkcs11::new(&config.module).map_err(token)?;
-        match context.initialize(CInitializeArgs::OsThreads) {
-            Ok(()) | Err(Pkcs11Error::AlreadyInitialized) => {}
-            Err(error) => return Err(token(error)),
-        }
+        Self::open_in(&load_module(&config.module)?, config)
+    }
+
+    /// The same, in a module already loaded: one process loads a module
+    /// once, since dropping its last handle finalizes it (C_Finalize).
+    pub fn open_in(context: &Pkcs11, config: &Pkcs11Config) -> Result<Self, Refusal> {
+        let context = context.clone();
         let mut slots = Vec::new();
         for slot in context.get_slots_with_initialized_token().map_err(token)? {
             if context.get_token_info(slot).map_err(token)?.label() == config.token_label {
@@ -287,7 +306,7 @@ impl Pkcs11Key {
     }
 }
 
-impl CaKey for Pkcs11Key {
+impl P256Key for Pkcs11Key {
     fn public_key(&self) -> Result<PublicKey, Refusal> {
         let session = self.session(false)?;
         self.private_key(&session)?;
@@ -400,7 +419,7 @@ mod tests {
     }
 
     struct PublicOnly(PublicKey);
-    impl CaKey for PublicOnly {
+    impl P256Key for PublicOnly {
         fn public_key(&self) -> Result<PublicKey, Refusal> {
             Ok(self.0)
         }
