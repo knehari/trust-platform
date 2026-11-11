@@ -31,9 +31,9 @@ INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
 VALUES ('urn:trust-platform:system', 'crl-renewer', :'ca'::uuid, 'crl-publisher')
 ON CONFLICT DO NOTHING;
 -- Public CRL publication (migration 0032, ADR-0019): certificates of this CA
--- name the API's unauthenticated latest-CRL route, on the laboratory's
--- loopback address.
+-- name the latest-CRL path on the separate static CRL server (crl-web, port
+-- 8082, ADR-0030), which the publisher fills; the API serves nothing anonymous.
 INSERT INTO ca_crl_distribution_point (ca_id, base_url)
-VALUES (:'ca'::uuid, 'http://127.0.0.1:8081')
+VALUES (:'ca'::uuid, 'http://127.0.0.1:8082')
 ON CONFLICT DO NOTHING;
 COMMIT;

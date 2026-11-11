@@ -1,0 +1,10 @@
+# Laboratory CRL publisher (ADR-0030, Proposed): reads published CRLs through
+# its own read-only login, verifies them and writes a static tree. Holds no key.
+FROM rust:1.99.0-bookworm AS build
+WORKDIR /app
+COPY . .
+RUN cargo build -p trust-crl-publisher --release --locked
+
+FROM debian:bookworm-slim
+COPY --from=build /app/target/release/trust-crl-publisher /usr/local/bin/trust-crl-publisher
+ENTRYPOINT ["trust-crl-publisher"]

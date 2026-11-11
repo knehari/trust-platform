@@ -10,6 +10,7 @@ services:
       TRUST_LAB_API_PASSWORD: ${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_WRITER_PASSWORD: ${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_SIGNER_PASSWORD: ${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_PUBLISHER_PASSWORD: ${TRUST_LAB_PUBLISHER_PASSWORD:?Run scripts/lab/init-env.sh first}
       # Public keys only; the private keys stay in .lab-keys/ on the host.
       TRUST_LAB_APPROVER_1_SEC1: ${TRUST_LAB_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
@@ -146,6 +147,38 @@ services:
       timeout: 3s
       retries: 30
 
+  # Separate CRL publication (ADR-0030): the publisher verifies each CRL and
+  # writes the static tree; crl-web serves it read-only, with no database
+  # access. The management API serves nothing anonymous.
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile.publisher
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      TRUST_PUBLISHER_DATABASE_URL: postgresql://trust_publisher_lab:${TRUST_LAB_PUBLISHER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_PUBLISHER_DIR: /srv/crl
+      TRUST_PUBLISHER_INTERVAL_SECONDS: "2"
+    volumes:
+      - trust_crl_public:/srv/crl
+    networks: [lab]
+
+  crl-web:
+    image: nginx:1.27.4-alpine
+    depends_on: [publisher]
+    volumes:
+      - trust_crl_public:/usr/share/nginx/html:ro
+      - ./scripts/lab/crl-web.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8082:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [lab]
+
   frontend:
     build:
       context: .
@@ -170,6 +203,7 @@ volumes:
   trust_lab_pg:
   trust_signer_socket:
   trust_signer_state:
+  trust_crl_public:
 
 networks:
   lab:
