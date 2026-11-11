@@ -34,6 +34,12 @@ jobs:
           fi
           cargo build --locked -p trust-db-connect --bin trust-db-check
           bash tests/database_tls.sh
+      - name: The CA key stays in a PKCS#11 token (ADR-0034, SoftHSM2)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq softhsm2 opensc
+          cargo build --locked -p trust-lab-signer --bins
+          bash tests/lab_signer_pkcs11.sh
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: CP/CPS generation stays draft only

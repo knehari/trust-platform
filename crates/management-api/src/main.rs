@@ -4548,7 +4548,7 @@ mod tests {
                 let config = trust_lab_signer::service::Config {
                     database_url: signer_url,
                     ca_id: ca,
-                    key_file,
+                    ca_key: trust_lab_signer::service::CaKeySource::File(key_file),
                     audit_key_file: Some(audit_key_file),
                     audit_state_file: Some(audit_state_file),
                 };

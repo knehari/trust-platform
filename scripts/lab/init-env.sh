@@ -10,6 +10,7 @@ umask 077
 [ -e .env.lab ] || : > .env.lab
 added=0
 for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_WRITER_PASSWORD TRUST_LAB_SIGNER_PASSWORD TRUST_LAB_PUBLISHER_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
+    TRUST_LAB_HSM_PIN TRUST_LAB_HSM_SO_PIN \
     TRUST_LAB_WORKLOAD_SECRET \
     TRUST_LAB_PW_READER TRUST_LAB_PW_EDITOR TRUST_LAB_PW_APPROVER_1 TRUST_LAB_PW_APPROVER_2 \
     TRUST_LAB_PW_OPERATOR TRUST_LAB_PW_OUTSIDER TRUST_LAB_PW_DISABLED TRUST_LAB_PW_OTHER_CA \
@@ -26,8 +27,10 @@ done
 # .lab-keys/ directory. Only the public point (uncompressed SEC1, hex) goes
 # into .env.lab, for the database to register. These software keys are for
 # the disposable laboratory only.
-# CA root keys (scripts/lab/create-lab-root.sh) go into .lab-keys/ca/, the
-# only directory the lab signer container mounts (ADR-0017).
+# Proposed CA roots (scripts/lab/create-lab-root.sh) keep their software
+# keys in .lab-keys/ca/. The lab issuing CA's key is generated instead in the
+# signer's SoftHSM2 token (scripts/lab/create-lab-root-hsm.sh, ADR-0034) and
+# never reaches the host.
 mkdir -p .lab-keys/ca
 chmod 700 .lab-keys .lab-keys/ca
 # Registration officers sign their decisions on certificate applications

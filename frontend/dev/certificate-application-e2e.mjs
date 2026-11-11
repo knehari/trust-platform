@@ -6,7 +6,9 @@
 // a profile through the profile lifecycle (ADR-0010 to ADR-0012), then
 // submits OpenSSL CSRs. Approved applications are issued by the lab signer
 // (ADR-0017) and the certificates are checked with `openssl verify` against
-// the root that create-lab-root.sh made. The certificate is then revoked
+// the root signed in the PKCS#11 key ceremony (create-lab-root-hsm.sh,
+// ADR-0034): the CA key lives in the signer's SoftHSM2 token, sensitive and
+// never extractable, and never reaches the host. The certificate is then revoked
 // (a requester asks, a registration officer approves; ADR-0018) and the
 // signed CRLs are checked with `openssl crl -verify` and
 // `openssl verify -crl_check`.
@@ -14,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, randomUUID, sign as signBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,7 +87,10 @@ try {
   await check('the lab issuing CA is proposed with its identifier, attested, approved and activated', async () => {
     const proposed = await send('POST', '/v1/ca-proposals', admin, { display_name: caName, policy_version: 'v1', suite_id: 'ecdsa-p256-sha256', ca_id: issuingCa });
     assert.deepEqual([proposed.status, proposed.body.ca_id], [201, issuingCa], 'run on a fresh stack: the issuing CA already exists');
-    const root = execFileSync('sh', ['scripts/lab/create-lab-root.sh', caName], { cwd: repository }).toString();
+    const root = execFileSync('sh', ['scripts/lab/create-lab-root-hsm.sh', caName], { cwd: repository }).toString();
+    // The ceremony left only the certificate on the host: no key file.
+    assert.equal(existsSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem')), false);
+    assert.deepEqual(readdirSync(join(repository, '.lab-keys', 'ca')).filter(name => name.startsWith('ca-root-lab-issuing-ca')), ['ca-root-lab-issuing-ca.crt']);
     const base = `/v1/ca-proposals/${issuingCa}`;
     assert.equal((await send('POST', `${base}/issuer-certificate`, admin, { certificate_pem: root })).status, 201);
     let digest;
@@ -609,7 +614,6 @@ try {
   });
 } finally {
   rmSync(keys, { recursive: true, force: true });
-  rmSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem'), { force: true });
   rmSync(issuingRoot, { force: true });
 }
 

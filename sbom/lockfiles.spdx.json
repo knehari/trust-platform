@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-e098d70514debe1327b5775ba3819b4c659ade5fbd9543d8a9127bf9acdc4f00",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-500ad238461b146a37887a43c184ea982feb3f7664be0b72e14266be31be7a7c",
   "creationInfo": {
-    "created": "2026-11-11T16:29:13Z",
+    "created": "2026-11-11T17:15:17Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -781,6 +781,22 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-cargo-2eae76743cbb38f77f2a",
+      "name": "bitflags",
+      "versionInfo": "1.3.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+        }
+      ]
+    },
+    {
       "SPDXID": "SPDXRef-cargo-a2ead2fb9b55aa215f1b",
       "name": "bitflags",
       "versionInfo": "2.13.2",
@@ -1065,6 +1081,38 @@
         {
           "algorithm": "SHA256",
           "checksumValue": "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-cargo-b27ebe3c80b7cff2ae25",
+      "name": "cryptoki",
+      "versionInfo": "0.10.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "781357a7779a8e92ea985121bbf379a9adf0777f44ab6392efc6abd5aa9b67db"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-cargo-ecde7e09973b995641d7",
+      "name": "cryptoki-sys",
+      "versionInfo": "0.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "753e27d860277930ae9f394c119c8c70303236aab0ffab1d51f3d207dbb2bc4b"
         }
       ]
     },
@@ -2045,6 +2093,22 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-cargo-c7a78499a05393e88a69",
+      "name": "libloading",
+      "versionInfo": "0.8.9",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+        }
+      ]
+    },
+    {
       "SPDXID": "SPDXRef-cargo-846af544d0026a5acb2d",
       "name": "libm",
       "versionInfo": "0.2.16",
@@ -2649,6 +2713,22 @@
         {
           "algorithm": "SHA256",
           "checksumValue": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-cargo-fe0a0510e90fd68bed2d",
+      "name": "paste",
+      "versionInfo": "1.0.15",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
         }
       ]
     },
@@ -3449,6 +3529,22 @@
         {
           "algorithm": "SHA256",
           "checksumValue": "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-cargo-6d03a104291433d93e3f",
+      "name": "secrecy",
+      "versionInfo": "0.8.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
         }
       ]
     },
@@ -5409,6 +5505,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-2eae76743cbb38f77f2a"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-a2ead2fb9b55aa215f1b"
     },
     {
@@ -5495,6 +5596,16 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-cf7e98cd8efdcdd05ca1"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-b27ebe3c80b7cff2ae25"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-ecde7e09973b995641d7"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -5804,6 +5915,11 @@
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-c7a78499a05393e88a69"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-846af544d0026a5acb2d"
     },
     {
@@ -5990,6 +6106,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-224524d4d9f773bc67a5"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-fe0a0510e90fd68bed2d"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",
@@ -6240,6 +6361,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-d4185410c180f7be2ecb"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-6d03a104291433d93e3f"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

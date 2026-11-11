@@ -1,10 +1,17 @@
-# Laboratory signer (ADR-0017, Proposed). Lab only: a software key read from
-# a read-only bind mount, no custody, ceremony or hardware protection.
+# Laboratory signer (ADR-0017, Proposed). The lab issuing CA's key lives in a
+# SoftHSM2 token (ADR-0034, Proposed): a software PKCS#11 token, with no
+# hardware protection, for the disposable laboratory only.
 FROM rust:1.99.0-bookworm AS build
 WORKDIR /app
 COPY . .
-RUN cargo build -p trust-lab-signer --release --locked
+RUN cargo build -p trust-lab-signer --release --locked --bins
 
 FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends softhsm2 \
+ && rm -rf /var/lib/apt/lists/* \
+ && printf 'directories.tokendir = /var/lib/softhsm/tokens\nobjectstore.backend = file\nlog.level = ERROR\n' > /etc/softhsm/softhsm2.conf
 COPY --from=build /app/target/release/trust-lab-signer /usr/local/bin/trust-lab-signer
-ENTRYPOINT ["trust-lab-signer"]
+COPY --from=build /app/target/release/trust-lab-ca-ceremony /usr/local/bin/trust-lab-ca-ceremony
+COPY scripts/lab/signer-entrypoint.sh /usr/local/bin/signer-entrypoint.sh
+ENTRYPOINT ["sh", "/usr/local/bin/signer-entrypoint.sh"]
