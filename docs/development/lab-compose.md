@@ -5,7 +5,7 @@ This Compose stack runs the laboratory platform on 127.0.0.1 only. It is not a p
 | Service | What it does | Address |
 | --- | --- | --- |
 | `frontend` | React/Vite console | `http://127.0.0.1:5173/` |
-| `issuer` | Keycloak (development mode, HTTPS, [ADR-0033](../adr/ADR-0033-keycloak-https.md)) | `https://127.0.0.1:8443/` |
+| `issuer` | Keycloak (development mode, HTTPS, [ADR-0033](../adr/ADR-0033-keycloak-https.md)) | `https://127.0.0.1:8443/realms/trust-lab` |
 | `api` | management API (HTTPS, [ADR-0032](../adr/ADR-0032-api-https.md)) | `https://127.0.0.1:8081/` |
 | `crl-web` | static CRL server ([ADR-0030](../adr/ADR-0030-separate-crl-publication.md)) | `http://127.0.0.1:8082/` |
 | `db` | PostgreSQL 16, mutual TLS only ([ADR-0031](../adr/ADR-0031-database-tls.md), [ADR-0036](../adr/ADR-0036-database-mtls.md)) | not published |
@@ -52,7 +52,9 @@ Its root stays in `.lab-keys/ca/ca-root-lab-issuing-ca.crt` for OpenSSL checks. 
 
 Keycloak and the API present certificates from the lab service CA, which `init-env.sh` generated into `.lab-keys/tls/ca.crt`. Your browser does not know it. Choose one of these, preferably in a separate test browser profile:
 - import `.lab-keys/tls/ca.crt` as a trusted authority;
-- open `https://127.0.0.1:8443/` once and accept its certificate.
+- open `https://127.0.0.1:8443/realms/trust-lab/.well-known/openid-configuration` once and accept its certificate. The page shows JSON, with no login form.
+
+Do not sign in at `https://127.0.0.1:8443/` itself. That address leads to the Keycloak administration console, in the `master` realm, where only `lab-admin` exists. The laboratory accounts there always get "Invalid username or password". Sign in from the console (`http://127.0.0.1:5173/`, **Sign in with your organization**). It opens the `trust-lab` realm's page, at an address starting with `https://127.0.0.1:8443/realms/trust-lab/`.
 
 The console itself is plain HTTP on loopback. It reaches the API through its development proxy, which verifies the API's certificate. Command-line clients verify too, with `curl --cacert .lab-keys/tls/ca.crt https://127.0.0.1:8081/v1/health` or `NODE_EXTRA_CA_CERTS=.lab-keys/tls/ca.crt`.
 

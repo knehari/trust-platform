@@ -88,13 +88,16 @@ cat <<'EOF'
 
 The laboratory stack is up, on loopback only:
   Console            http://127.0.0.1:5173/
-  Identity provider  https://127.0.0.1:8443/   (Keycloak, lab certificate)
+  Identity provider  https://127.0.0.1:8443/realms/trust-lab   (Keycloak, lab certificate)
   Management API     https://127.0.0.1:8081/   (lab certificate)
   CRLs               http://127.0.0.1:8082/v1/public/crls/<ca_id>/latest.crl
 
 Your browser does not know the lab service CA. Either import
 .lab-keys/tls/ca.crt as a trusted authority in a test browser profile, or open
-https://127.0.0.1:8443/ once and accept its certificate before signing in.
+https://127.0.0.1:8443/realms/trust-lab/.well-known/openid-configuration once
+and accept its certificate. Then sign in from the console (Sign in with your
+organization). https://127.0.0.1:8443/ itself is the Keycloak administration
+console (master realm, lab-admin only): lab accounts cannot sign in there.
 
 Accounts: see "Signing in" in docs/development/lab-compose.md; each password
 is in .env.lab, for example: grep TRUST_LAB_PW_RA_OFFICER= .env.lab
