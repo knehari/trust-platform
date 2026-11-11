@@ -1086,10 +1086,57 @@ paths:
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision-claims:
+    post:
+      summary: Prepare the claim a registration officer signs to decide on a revocation request (laboratory, migration 0042)
+      description: >-
+        Records nothing. Requires the trust-registration-officer role, a registration-officer grant and an active
+        registered officer key. Returns trust-platform/revocation-authorization/v1 with the decision, CA, application,
+        revocation request, serial (hex), reason code, key and issued_at (trust_pki_core::authorization::revocation_decision_claim);
+        valid 600 seconds. The laboratory signer rebuilds and verifies it before any CRL lists the serial (ADR-0029, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: revocation_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string }
+                  claim: { type: string }
+                  key_id: { type: string }
+                  issued_at: { type: string, description: 'UTC, YYYY-MM-DDTHH:MM:SS.mmmZ' }
+                  valid_for_seconds: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or no registered officer key }
+        '404': { description: No such revocation request for this application }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision:
     post:
-      summary: Approve or reject a revocation request (laboratory, migration 0031)
-      description: Requires the trust-registration-officer role and grant; the officer cannot be the one who asked. Once per request. Approval writes the core revocation, which the next CRL lists (ADR-0018, Proposed).
+      summary: Record a registration officer's signed decision on a revocation request (laboratory, migrations 0031 and 0042)
+      description: >-
+        Requires the trust-registration-officer role and grant; the officer cannot be the one who asked. Once per request.
+        Approval writes the core revocation, which the next CRL lists (ADR-0018, Proposed). Since migration 0042 the body
+        carries the officer's DER ECDSA P-256 / SHA-256 signature over the claim from decision-claims, issued less than
+        ten minutes ago; the API verifies it with the registered key in the recording transaction (422, nothing kept).
+        The signer verifies it again before listing the serial (ADR-0029, Proposed). Incompatible change: unsigned
+        decisions are refused (400).
       parameters:
         - $ref: '#/components/parameters/CaId'
         - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
@@ -1102,10 +1149,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [decision, reason]
+              required: [decision, reason, issued_at, signature_der_base64]
               properties:
                 decision: { type: string, enum: [approve, reject] }
                 reason: { type: string, minLength: 1, maxLength: 500 }
+                issued_at: { type: string, description: The issued_at of the signed claim }
+                signature_der_base64: { type: string, description: 'DER ECDSA signature, base64, 8 to 80 bytes' }
       responses:
         '201':
           description: Decision recorded
@@ -1125,7 +1174,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing role, scope or grant, or the officer asked for this revocation }
         '404': { description: No such revocation request for this application }
-        '409': { description: Idempotency key reused, already decided, or (approval) the CA retired }
+        '409': { description: 'Idempotency key reused, already decided, the claim expired, or (approval) the CA retired' }
+        '422': { description: The signature does not verify with the officer's registered key over the claim; nothing recorded }
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
@@ -1170,10 +1220,49 @@ paths:
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation-claims:
+    post:
+      summary: Prepare the claim the confirming officer signs (laboratory, migration 0042)
+      description: >-
+        Records nothing. Requires the trust-registration-officer role, a registration-officer grant and an active
+        registered officer key. Returns trust-platform/void-authorization/v1 with the CA, application, serial (hex),
+        whether the signer had claimed the intent, key and issued_at; valid 600 seconds (ADR-0029, Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string }
+                  claim: { type: string }
+                  key_id: { type: string }
+                  issued_at: { type: string, description: 'UTC, YYYY-MM-DDTHH:MM:SS.mmmZ' }
+                  valid_for_seconds: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or no registered officer key }
+        '404': { description: No void proposed for this application }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation:
     post:
-      summary: Confirm a void proposal (laboratory, migration 0034)
-      description: Requires the trust-registration-officer role and grant; the officer can be neither the proposer nor the application's requester. Once. The application becomes VOIDED; its serial is never reused and is listed, without reason code, on every CRL whose intent is fixed afterwards (ADR-0020, Proposed).
+      summary: Confirm a void proposal with a signed claim (laboratory, migrations 0034 and 0042)
+      description: >-
+        Requires the trust-registration-officer role and grant; the officer can be neither the proposer nor the
+        application's requester. Once. The application becomes VOIDED; its serial is never reused and is listed, without
+        reason code, on every CRL whose intent is fixed afterwards (ADR-0020, Proposed). Since migration 0042 the body
+        carries the officer's signature over the claim from void-confirmation-claims; 422 and nothing kept when it does
+        not verify. Incompatible change: unsigned confirmations are refused (400).
       parameters:
         - $ref: '#/components/parameters/CaId'
         - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
@@ -1185,9 +1274,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [reason]
+              required: [reason, issued_at, signature_der_base64]
               properties:
                 reason: { type: string, minLength: 1, maxLength: 500 }
+                issued_at: { type: string, description: The issued_at of the signed claim }
+                signature_der_base64: { type: string, description: 'DER ECDSA signature, base64, 8 to 80 bytes' }
       responses:
         '201':
           description: Issuance voided
@@ -1207,7 +1298,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing role, scope or grant, or the officer proposed this void or requested the application }
         '404': { description: No issuance, or no void proposed for it }
-        '409': { description: Idempotency key reused, or already voided }
+        '409': { description: 'Idempotency key reused, already voided, or the claim expired' }
+        '422': { description: The signature does not verify with the officer's registered key over the claim; nothing recorded }
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }

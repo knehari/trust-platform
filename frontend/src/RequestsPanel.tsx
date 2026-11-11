@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
 import { ApplicationDecision } from './ApplicationDecision';
+import { SignedClaimAction } from './SignedClaimAction';
 import { Icon, Notice, StatusBadge, Tabs, toast, type NoticeTone } from './ui';
 
 export interface Application {
@@ -163,6 +164,14 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
     }
   }
 
+  function finishSigned(message: string) {
+    toast(message);
+    setNotice(null);
+    setOpen(null);
+    setReason('');
+    setReload(value => value + 1);
+  }
+
   const counts = useMemo(() => Object.fromEntries(FILTERS.map(f => [f.id, (items ?? []).filter(item => f.matches(item.status)).length])), [items]);
   const visible = (items ?? []).filter(item => FILTERS.find(f => f.id === filter)!.matches(item.status));
   const dnsNames = names.split(/[\s,]+/u).filter(Boolean);
@@ -255,14 +264,30 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                   onUnauthorized={onUnauthorized} onCancel={() => setOpen(null)}
                   onError={text => setNotice({ tone: 'error', text })}
                   onDecided={message => { toast(message); setNotice(null); setOpen(null); setReason(''); setReload(value => value + 1); }} />}
-                {decideRevocation && <>
-                  <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`, { decision: 'approve', reason: reason.trim() }, 'approve the revocation', () => `${item.subject_cn} revoked. It appears on the next CRL.`)}>Approve revocation</button>
-                  <button type="button" className="ui-button ui-button-secondary ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`, { decision: 'reject', reason: reason.trim() }, 'reject the revocation', () => `Revocation of ${item.subject_cn} rejected.`)}>Reject revocation</button>
-                </>}
+                {decideRevocation && item.open_revocation_id && <SignedClaimAction token={token} kind="revocation" reason={reason}
+                  label={`Revocation of ${item.subject_cn}`}
+                  subject={{ caId, applicationId: item.application_id, revocationId: item.open_revocation_id, serialHex: item.certificate_serial_hex ?? undefined }}
+                  claimsPath={`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision-claims`}
+                  recordPath={`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`}
+                  choices={[
+                    { decision: 'approve', claimBody: { decision: 'approve' }, prepareLabel: 'Prepare revocation approval', recordLabel: 'Record revocation', tone: 'danger' },
+                    { decision: 'reject', claimBody: { decision: 'reject' }, prepareLabel: 'Prepare rejection', recordLabel: 'Record rejection', tone: 'secondary' },
+                  ]}
+                  recordBody={(claim, signature) => ({ decision: claim.decision, reason: reason.trim(), issued_at: claim.issued_at, signature_der_base64: signature })}
+                  onDone={claim => finishSigned(claim.decision === 'approve' ? `${item.subject_cn} revoked with your signed decision. It appears on the next CRL.` : `Revocation of ${item.subject_cn} rejected.`)}
+                  onError={text => setNotice({ tone: 'error', text })} onUnauthorized={onUnauthorized} onCancel={() => setOpen(null)} />}
                 {canAskRevocation && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests`, { reason_code: reasonCode, reason: reason.trim() }, 'request the revocation', () => `Revocation of ${item.subject_cn} requested. A registration officer who did not ask must approve it.`)}>Request revocation</button>}
                 {proposeVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write<{ signer_claimed: boolean }>(`${base}/${item.application_id}/void-proposal`, { reason: reason.trim() }, 'propose the void', value => `Void of ${item.subject_cn} proposed${value.signer_claimed ? ' (the signer had claimed it)' : ''}. Another officer must confirm.`)}>Propose void</button>}
-                {confirmVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/void-confirmation`, { reason: reason.trim() }, 'confirm the void', () => `${item.subject_cn} voided. Its serial appears on the next CRL.`)}>Confirm void</button>}
-                {!decideApplication && <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setOpen(null)}>Cancel</button>}
+                {confirmVoid && <SignedClaimAction token={token} kind="void" reason={reason}
+                  label={`Void of ${item.subject_cn}`}
+                  subject={{ caId, applicationId: item.application_id, serialHex: item.void_serial_hex ?? undefined }}
+                  claimsPath={`${base}/${item.application_id}/void-confirmation-claims`}
+                  recordPath={`${base}/${item.application_id}/void-confirmation`}
+                  choices={[{ decision: 'confirm', claimBody: {}, prepareLabel: 'Prepare void confirmation', recordLabel: 'Record void', tone: 'danger' }]}
+                  recordBody={(claim, signature) => ({ reason: reason.trim(), issued_at: claim.issued_at, signature_der_base64: signature })}
+                  onDone={() => finishSigned(`${item.subject_cn} voided with your signed confirmation. Its serial appears on the next CRL.`)}
+                  onError={text => setNotice({ tone: 'error', text })} onUnauthorized={onUnauthorized} onCancel={() => setOpen(null)} />}
+                {!decideApplication && !decideRevocation && !confirmVoid && <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setOpen(null)}>Cancel</button>}
               </div>
             </form>
           </td></tr>];

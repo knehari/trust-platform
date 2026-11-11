@@ -114,3 +114,12 @@ Signer-verified authorization (2026-11-11, ADR-0028 Proposed), branch `claude/si
 - the four e2e suites; the certificate-application suite signs decisions with the lab officer keys, approves in the console with a pasted OpenSSL signature, shows an unsigned approval is never issued, and verifies the RA v2 certificate with `openssl verify -purpose sslserver` and `sslclient`.
 
 Not done: the owner login can still register keys; officer and RA keys are lab software files; legacy approvals without a proof cannot be issued. CI has not yet run on this branch.
+
+Signed CRL entry proofs (2026-11-11, ADR-0029 Proposed), branch `claude/signed-revocation-proofs` on #204: migration 0042 adds signed officer revocation decisions and void confirmations (claims built by the database, rebuilt in `trust_pki_core::authorization`), the owner-held `crl_entry_proof_policy` instant and the signer view `lab_signer_crl_entry_proof`. Before it claims a CRL intent, the lab signer checks one proof per listed entry (RA signature, or officer claim with a key active when it signed); older entries stay listed as legacy. New routes: `…/revocation-requests/{id}/decision-claims`, `…/void-confirmation-claims`; the decision and confirmation bodies now require the signature (incompatible). Verified locally:
+- `management_revocation_proofs.sql` and the earlier suites on the 0042 schema;
+- 81 pki-core tests (claim vectors), 19 signer tests (missing, extra, wrong-key, altered, rejected, expired-key proofs, legacy entries, RA revocations);
+- 63 API tests with the real signer: signed revocation and void, refused wrong keys and unsigned bodies, then a forged unsigned revocation makes the next CRL `RECONCILIATION_REQUIRED`; the audit tool reports exactly that entry (CI now expects it);
+- 83 frontend tests and the build;
+- the e2e suites: signed revocation and void through the API, an officer signing a revocation in the console, CRLs verified with OpenSSL.
+
+Not done: void proposals are not signed; an unsigned revocation blocks the CA's CRLs until the owner intervenes (by design). CI has not yet run on this branch.

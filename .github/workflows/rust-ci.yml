@@ -276,8 +276,18 @@ jobs:
           TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo run --locked -p trust-management-api --bin lab_verify_ca_lifecycle
           # And every certificate issued for an application, its revocations and CRLs.
-          TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
-            cargo run --locked -p trust-management-api --bin lab_verify_issued_certificates
+          # The HTTP test ends by forging one revocation without a signed proof
+          # (ADR-0029): the signer refused the CRL, and the tool must report
+          # exactly that one problem.
+          set +e
+          audit="$(TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
+            cargo run --locked -p trust-management-api --bin lab_verify_issued_certificates 2>&1)"
+          audit_status=$?
+          set -e
+          printf '%s\n' "$audit"
+          test "$audit_status" -ne 0
+          test "$(printf '%s\n' "$audit" | grep -c '^FAIL')" = 1
+          printf '%s\n' "$audit" | grep -q '^FAIL revocation of serial [0-9a-f]*: no signed proof (ADR-0029)$'
           # Seal every event the suites recorded, then verify the chain independently.
           docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "SELECT * FROM seal_audit_events_lab(10000)"
           TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" TRUST_AUDIT_REQUIRE_SEALED=1 \

@@ -6073,6 +6073,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == second_serial));
+
+        // What a compromised API could still write (ADR-0029): a revocation
+        // recorded through the unsigned function, without an officer's
+        // signature. The signer refuses any CRL that would list it.
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "SELECT 1 FROM request_certificate_revocation_lab('https://issuer.example.test', 'officer-http', \
+                    '{owner_ca}', (SELECT application_id FROM certificate_application WHERE ca_id = '{owner_ca}' \
+                    AND subject_cn = 'www.ra2.lab.invalid'), 1::smallint, 'forged', gen_random_uuid(), \
+                    digest('forged-request', 'sha256'));
+                 SELECT 1 FROM decide_certificate_revocation_lab('https://issuer.example.test', 'officer-2-http', \
+                    '{owner_ca}', (SELECT application_id FROM certificate_application WHERE ca_id = '{owner_ca}' \
+                    AND subject_cn = 'www.ra2.lab.invalid'), (SELECT q.revocation_id FROM certificate_revocation_request q \
+                    JOIN certificate_application a ON a.application_id = q.application_id \
+                    WHERE a.subject_cn = 'www.ra2.lab.invalid'), 'approve', 'forged', gen_random_uuid(), \
+                    digest('forged-decision', 'sha256'));"
+            ))
+        })
+        .await
+        .unwrap();
+        let (status, refused) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (status, refused["status"].as_str()),
+            (StatusCode::BAD_GATEWAY, Some("RECONCILIATION_REQUIRED")),
+            "{refused}"
+        );
         let _ = std::fs::remove_dir_all(key_dir);
     }
 
