@@ -323,6 +323,22 @@ pub(crate) fn issue(
     request_sha256: &[u8],
     socket: PathBuf,
 ) -> Result<Result<Outcome, StatusCode>, postgres::Error> {
+    // The signer signs only with a signed authorization: an RA request or an
+    // officer's signed approval (ADR-0028). Without one, nothing is written:
+    // no serial is reserved and no intent is journaled, so the refusal is
+    // never an ambiguous outcome.
+    let (authorized, extensions): (bool, Option<Vec<String>>) = match db.query_one(
+        "SELECT application_authorization_present_lab($1::text::uuid, $2::text::uuid), \
+         application_extensions_lab($1::text::uuid, $2::text::uuid)",
+        &[&caller.ca_id, &caller.application_id],
+    ) {
+        Ok(row) => (row.get(0), row.get(1)),
+        Err(error) => return Ok(Err(write_status(&error))),
+    };
+    if !authorized {
+        return Ok(Err(StatusCode::CONFLICT));
+    }
+    let extensions = extensions.unwrap_or_default();
     let row = match db.query_one(
         "SELECT request_id::text, request_state, serial, operation_ref, csr_der, subject_cn, \
          dns_names, validity_days, issuer_certificate_der, policy_version FROM \
@@ -361,21 +377,6 @@ pub(crate) fn issue(
     let Ok(csr) = verify_pkcs10_p256_possession(&csr_der) else {
         return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
     };
-    // The signer signs only with a signed authorization: an RA request or an
-    // officer's signed approval. Without one, no intent is recorded, so the
-    // refusal is never an ambiguous outcome.
-    let (authorized, extensions): (bool, Option<Vec<String>>) = match db.query_one(
-        "SELECT application_authorization_present_lab($1::text::uuid, $2::text::uuid), \
-         application_extensions_lab($1::text::uuid, $2::text::uuid)",
-        &[&caller.ca_id, &caller.application_id],
-    ) {
-        Ok(row) => (row.get(0), row.get(1)),
-        Err(error) => return Ok(Err(write_status(&error))),
-    };
-    if !authorized {
-        return Ok(Err(StatusCode::CONFLICT));
-    }
-    let extensions = extensions.unwrap_or_default();
     if !optional_extensions_valid(&extensions) {
         return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
     }

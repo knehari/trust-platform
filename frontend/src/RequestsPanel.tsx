@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
+import { ApplicationDecision } from './ApplicationDecision';
 import { Icon, Notice, StatusBadge, Tabs, toast, type NoticeTone } from './ui';
 
 export interface Application {
@@ -250,10 +251,10 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                 <input autoFocus aria-label={canAskRevocation ? `Revocation explanation for ${item.subject_cn}` : proposeVoid || confirmVoid ? `Void explanation for ${item.subject_cn}` : decideRevocation ? `Revocation decision reason for ${item.subject_cn}` : `Decision reason for ${item.subject_cn}`}
                   value={reason} onChange={event => setReason(event.target.value)} /></label>
               <div className="ui-actions">
-                {decideApplication && <>
-                  <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/decision`, { decision: 'approve', reason: reason.trim() }, 'approve the request', () => `Request for ${item.subject_cn} approved.`)}>Approve application</button>
-                  <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/decision`, { decision: 'reject', reason: reason.trim() }, 'reject the request', () => `Request for ${item.subject_cn} rejected.`)}>Reject application</button>
-                </>}
+                {decideApplication && <ApplicationDecision caId={caId} token={token} item={item} reason={reason}
+                  onUnauthorized={onUnauthorized} onCancel={() => setOpen(null)}
+                  onError={text => setNotice({ tone: 'error', text })}
+                  onDecided={message => { toast(message); setNotice(null); setOpen(null); setReason(''); setReload(value => value + 1); }} />}
                 {decideRevocation && <>
                   <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`, { decision: 'approve', reason: reason.trim() }, 'approve the revocation', () => `${item.subject_cn} revoked. It appears on the next CRL.`)}>Approve revocation</button>
                   <button type="button" className="ui-button ui-button-secondary ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`, { decision: 'reject', reason: reason.trim() }, 'reject the revocation', () => `Revocation of ${item.subject_cn} rejected.`)}>Reject revocation</button>
@@ -261,7 +262,7 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                 {canAskRevocation && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests`, { reason_code: reasonCode, reason: reason.trim() }, 'request the revocation', () => `Revocation of ${item.subject_cn} requested. A registration officer who did not ask must approve it.`)}>Request revocation</button>}
                 {proposeVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write<{ signer_claimed: boolean }>(`${base}/${item.application_id}/void-proposal`, { reason: reason.trim() }, 'propose the void', value => `Void of ${item.subject_cn} proposed${value.signer_claimed ? ' (the signer had claimed it)' : ''}. Another officer must confirm.`)}>Propose void</button>}
                 {confirmVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/void-confirmation`, { reason: reason.trim() }, 'confirm the void', () => `${item.subject_cn} voided. Its serial appears on the next CRL.`)}>Confirm void</button>}
-                <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setOpen(null)}>Cancel</button>
+                {!decideApplication && <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setOpen(null)}>Cancel</button>}
               </div>
             </form>
           </td></tr>];

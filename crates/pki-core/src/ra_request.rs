@@ -193,7 +193,10 @@ mod tests {
         };
         let message = ra_issuance_message_v2(&request).unwrap();
         assert!(message.starts_with(b"trust-platform:ra-issuance-request:v2\0"));
-        assert_eq!(hex(&Sha256::digest(&message)), "e4d2d2c2083d1db9337224804003a0b5626b31fa3531c953ef10cc7ce88602dc");
+        assert_eq!(
+            hex(&Sha256::digest(&message)),
+            "e4d2d2c2083d1db9337224804003a0b5626b31fa3531c953ef10cc7ce88602dc"
+        );
         // Never the v1 bytes, and every new field counts.
         assert_ne!(
             &message[38..],
