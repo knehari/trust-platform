@@ -1,15 +1,72 @@
 # Disposable laboratory stack
 
-This Compose stack runs only the read-only management slice: PostgreSQL 16, ordered migrations and two example CAs, the restricted Rust API, a React/Vite console and a laboratory Keycloak identity provider ([ADR-0009](../adr/ADR-0009-laboratory-identity-provider.md), Proposed) with a real login form. It does **not** run CA issuance, software signing or a production IAM service: Keycloak runs in development mode on loopback HTTP with an in-container store, and has no multi-factor authentication. The generated database passwords, Keycloak administrator password, workload secret and per-user passwords stay in ignored `.env.lab`. The script never replaces an existing value, so credentials are not rotated underneath a running volume; it appends values missing from an older file.
+This Compose stack runs the laboratory platform on 127.0.0.1 only. It is not a production deployment: generated lab credentials, development-mode Keycloak, SoftHSM2 software tokens.
 
-From the repository root, with Docker Compose, OpenSSL and a free local 8443/8081/8082/5173:
+| Service | What it does | Address |
+| --- | --- | --- |
+| `frontend` | React/Vite console | `http://127.0.0.1:5173/` |
+| `issuer` | Keycloak (development mode, HTTPS, [ADR-0033](../adr/ADR-0033-keycloak-https.md)) | `https://127.0.0.1:8443/` |
+| `api` | management API (HTTPS, [ADR-0032](../adr/ADR-0032-api-https.md)) | `https://127.0.0.1:8081/` |
+| `crl-web` | static CRL server ([ADR-0030](../adr/ADR-0030-separate-crl-publication.md)) | `http://127.0.0.1:8082/` |
+| `db` | PostgreSQL 16, mutual TLS only ([ADR-0031](../adr/ADR-0031-database-tls.md), [ADR-0036](../adr/ADR-0036-database-mtls.md)) | not published |
+| `signer` | lab signer; CA and audit keys in SoftHSM2 tokens ([ADR-0034](../adr/ADR-0034-pkcs11-ca-key.md), [ADR-0035](../adr/ADR-0035-pkcs11-audit-key.md)) | Unix socket only |
+| `worker` | sealing, CRL renewal, checkpoints ([ADR-0037](../adr/ADR-0037-dedicated-worker.md)) | none |
+| `publisher` | verifies and writes the public CRLs ([ADR-0030](../adr/ADR-0030-separate-crl-publication.md)) | none |
+
+Generated passwords, PINs and public points stay in the ignored `.env.lab`. Keys and certificates stay in the ignored `.lab-keys/`. `init-env.sh` never replaces an existing value; it only adds missing ones.
+
+## Quick start
+
+From the repository root you need:
+- Docker with Compose v2;
+- OpenSSL;
+- free local ports 5173, 8081, 8082 and 8443;
+- Node.js 24, but only for `--demo` and the test suites.
+
+```sh
+scripts/lab/up.sh --reset          # fresh stack (also after pulling a new version)
+scripts/lab/up.sh --reset --demo   # the same, plus a ready lab issuing CA (see below)
+```
+
+`up.sh` does the following:
+1. With `--reset`, it removes the previous stack with its volumes and tokens (`down -v`).
+2. It runs `init-env.sh`.
+3. It builds and starts every service and waits for their health checks. The first build takes several minutes.
+4. It generates the audit checkpoint key in its token (`create-audit-key-hsm.sh`).
+
+Use `--reset` after any update that adds logins, keys, certificates or migrations: the existing database and tokens would not have them. Without `--reset` the script only updates and restarts the services, keeping their data.
+
+With `--demo`, the script runs `frontend/dev/certificate-application-e2e.mjs` against the fresh stack. It installs the console's Node.js dependencies and a Playwright Chromium if they are missing. The suite performs these steps:
+1. It creates the lab issuing CA (`dddddddd-dddd-4ddd-8ddd-dddddddddddd`). Its key is generated in the signer's token (`create-lab-root-hsm.sh`).
+2. The two CA approvers approve it with signed decisions, and it is activated and provisioned.
+3. A server profile is approved and activated.
+4. Then a certificate goes through the full cycle: requested, approved with a signed decision, issued, revoked, and listed in a published CRL.
+
+Its root stays in `.lab-keys/ca/ca-root-lab-issuing-ca.crt` for OpenSSL checks. Without `--demo`, follow the manual steps below.
+
+`up.sh` also reads two optional environment variables:
+- `TRUST_LAB_COMPOSE_OVERRIDE=<file>`: an extra Compose file for local overrides, for example images built elsewhere;
+- `TRUST_LAB_SKIP_BROWSER_INSTALL=1`: `--demo` uses an already installed Playwright Chromium.
+
+### Trusting the laboratory TLS certificates
+
+Keycloak and the API present certificates from the lab service CA, which `init-env.sh` generated into `.lab-keys/tls/ca.crt`. Your browser does not know it. Choose one of these, preferably in a separate test browser profile:
+- import `.lab-keys/tls/ca.crt` as a trusted authority;
+- open `https://127.0.0.1:8443/` once and accept its certificate.
+
+The console itself is plain HTTP on loopback. It reaches the API through its development proxy, which verifies the API's certificate. Command-line clients verify too, with `curl --cacert .lab-keys/tls/ca.crt https://127.0.0.1:8081/v1/health` or `NODE_EXTRA_CA_CERTS=.lab-keys/tls/ca.crt`.
+
+### Step by step
+
+`up.sh` runs the same commands as CI's `laboratory-compose` job:
 
 ```sh
 scripts/lab/init-env.sh
-docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
 docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait
-node frontend/dev/check-api-compat.mjs
+scripts/lab/create-audit-key-hsm.sh   # once per stack: audit key in its token
+export NODE_EXTRA_CA_CERTS=$PWD/.lab-keys/tls/ca.crt
 set -a; . ./.env.lab; set +a
+node frontend/dev/check-api-compat.mjs
 node frontend/dev/compose-smoke.mjs
 node frontend/dev/iam-negative.mjs
 node frontend/dev/profile-lifecycle-e2e.mjs   # signs decisions with .lab-keys/
