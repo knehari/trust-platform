@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 umask 077
 [ -e .env.lab ] || : > .env.lab
 added=0
-for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_WRITER_PASSWORD TRUST_LAB_SIGNER_PASSWORD TRUST_LAB_PUBLISHER_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
+for name in TRUST_LAB_DB_PASSWORD TRUST_LAB_API_PASSWORD TRUST_LAB_WRITER_PASSWORD TRUST_LAB_SIGNER_PASSWORD TRUST_LAB_PUBLISHER_PASSWORD TRUST_LAB_WORKER_PASSWORD TRUST_LAB_KC_ADMIN_PASSWORD \
     TRUST_LAB_HSM_PIN TRUST_LAB_HSM_AUDIT_PIN TRUST_LAB_HSM_SO_PIN \
     TRUST_LAB_WORKLOAD_SECRET \
     TRUST_LAB_PW_READER TRUST_LAB_PW_EDITOR TRUST_LAB_PW_APPROVER_1 TRUST_LAB_PW_APPROVER_2 \
@@ -105,7 +105,7 @@ fi
 # Database client certificates (ADR-0036): one per network login, common
 # name = the login, from the same service CA; the server requires it together
 # with the password. Each service mounts only its own directory.
-for entry in api:trust_api_lab api:trust_api_writer_lab signer:trust_signer_lab publisher:trust_publisher_lab; do
+for entry in api:trust_api_lab api:trust_api_writer_lab signer:trust_signer_lab publisher:trust_publisher_lab worker:trust_worker_lab; do
   service=${entry%%:*}
   login=${entry#*:}
   dir=.lab-keys/tls/clients/$service
@@ -120,12 +120,13 @@ for entry in api:trust_api_lab api:trust_api_writer_lab signer:trust_signer_lab 
   fi
 done
 chmod 700 .lab-keys/tls/clients
-chmod 755 .lab-keys/tls/clients/api .lab-keys/tls/clients/signer .lab-keys/tls/clients/publisher
+chmod 755 .lab-keys/tls/clients/api .lab-keys/tls/clients/signer .lab-keys/tls/clients/publisher \
+  .lab-keys/tls/clients/worker
 chmod 644 .lab-keys/tls/clients/*/*.crt
-# The API runs as nobody and reads its keys from a bind mount: world-readable,
-# protected by the 0700 directories above them on the host. The signer and
-# the publisher run as root in their containers: 0600.
-chmod 644 .lab-keys/tls/clients/api/*.key
+# The API and the worker run as nobody and read their keys from bind mounts:
+# world-readable, protected by the 0700 directories above them on the host.
+# The signer and the publisher run as root in their containers: 0600.
+chmod 644 .lab-keys/tls/clients/api/*.key .lab-keys/tls/clients/worker/*.key
 chmod 600 .lab-keys/tls/clients/signer/*.key .lab-keys/tls/clients/publisher/*.key
 chmod 600 .lab-keys/tls/ca.key .lab-keys/tls/db.key
 # The API (nobody) and Keycloak (uid 1000) read their keys from bind mounts:

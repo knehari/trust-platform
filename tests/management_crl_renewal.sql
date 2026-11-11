@@ -1,10 +1,14 @@
 -- Migration 0035: the crl-publisher role of the automatic CRL renewer. Run
--- as the migration owner after 0035 on a disposable database; every change
--- is rolled back. Placeholder bytes stand for the TBS and CRLs the API builds
+-- as the migration owner after 0044 on a disposable database; every change
+-- is rolled back. Since 0044 (ADR-0037) the renewer acts only from a worker
+-- login (a direct member of trust_worker): the test uses one through
+-- SET SESSION AUTHORIZATION. Placeholder bytes stand for the TBS and CRLs the API builds
 -- and verifies. Before 0035 the first statement fails.
 BEGIN;
 
 SELECT crl_renewal_due('00000000-0000-4000-8000-000000000000');
+CREATE ROLE trust_test_renewal_worker LOGIN;
+GRANT trust_worker TO trust_test_renewal_worker;
 
 CREATE FUNCTION pg_temp.expect_state(p_sql text, p_state text) RETURNS void
 LANGUAGE plpgsql AS $fn$
@@ -73,11 +77,21 @@ INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUE
 INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
     ('urn:trust-platform:system', 'crl-renewer', 'c5c5c5c5-0000-4000-8000-00000000000c', 'crl-publisher');
 
-SET LOCAL ROLE trust_profile_writer;
 CREATE FUNCTION pg_temp.begin_as(p_issuer text, p_subject text) RETURNS text LANGUAGE sql AS $fn$
     SELECT format('SELECT * FROM begin_crl_publication_lab(%L, %L, %L, %L, %L)', p_issuer, p_subject,
         'c5c5c5c5-0000-4000-8000-00000000000c', gen_random_uuid(), decode(repeat('44', 32), 'hex'))
 $fn$;
+
+-- The API's writer role can neither list candidates nor act as the renewer
+-- (0044): the system principal needs a worker login.
+SET LOCAL ROLE trust_profile_writer;
+DO $test$ BEGIN
+    PERFORM pg_temp.expect_state($$SELECT * FROM crl_renewal_candidates_lab('urn:trust-platform:system', 'crl-renewer')$$, '42501');
+    PERFORM pg_temp.expect_state(pg_temp.begin_as('urn:trust-platform:system', 'crl-renewer'), '42501');
+END $test$;
+RESET ROLE;
+
+SET LOCAL SESSION AUTHORIZATION trust_test_renewal_worker;
 
 DO $test$
 DECLARE
@@ -97,6 +111,8 @@ BEGIN
     PERFORM pg_temp.expect_state(format('SELECT * FROM begin_application_issuance_lab(%L, %L, %L, %L, %L, %L)',
         'urn:trust-platform:system', 'crl-renewer', 'c5c5c5c5-0000-4000-8000-00000000000c', gen_random_uuid(),
         gen_random_uuid(), decode(repeat('55', 32), 'hex')), '42501');
+    -- A worker login cannot publish as an officer (0044).
+    PERFORM pg_temp.expect_state(pg_temp.begin_as('https://issuer.iss.invalid', 'ra-1'), '42501');
 
     -- It publishes the due CRL through the unchanged path.
     EXECUTE pg_temp.begin_as('urn:trust-platform:system', 'crl-renewer') INTO r;
@@ -108,11 +124,11 @@ BEGIN
         RAISE EXCEPTION 'first journal replayed';
     END IF;
 END $test$;
-RESET ROLE;
+RESET SESSION AUTHORIZATION;
 SET LOCAL ROLE trust_lab_signer;
 SELECT claim_lab_crl_intent(current_setting('test.intent')::uuid, digest('renewed-tbs', 'sha256'));
 RESET ROLE;
-SET LOCAL ROLE trust_profile_writer;
+SET LOCAL SESSION AUTHORIZATION trust_test_renewal_worker;
 SELECT store_crl_lab('urn:trust-platform:system', 'crl-renewer', 'c5c5c5c5-0000-4000-8000-00000000000c',
     current_setting('test.intent')::uuid, decode(repeat('e2', 200), 'hex'));
 
@@ -123,6 +139,10 @@ DO $test$ BEGIN
         RAISE EXCEPTION 'a fresh CRL is still a renewal candidate';
     END IF;
     PERFORM pg_temp.expect_state(pg_temp.begin_as('urn:trust-platform:system', 'crl-renewer'), 'TP409');
+END $test$;
+RESET SESSION AUTHORIZATION;
+SET LOCAL ROLE trust_profile_writer;
+DO $test$ BEGIN
     PERFORM 1 FROM begin_crl_publication_lab('https://issuer.iss.invalid', 'ra-1',
         'c5c5c5c5-0000-4000-8000-00000000000c', gen_random_uuid(), decode(repeat('66', 32), 'hex'));
 END $test$;

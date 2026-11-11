@@ -11,6 +11,7 @@ services:
       TRUST_LAB_WRITER_PASSWORD: ${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_SIGNER_PASSWORD: ${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_PUBLISHER_PASSWORD: ${TRUST_LAB_PUBLISHER_PASSWORD:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_WORKER_PASSWORD: ${TRUST_LAB_WORKER_PASSWORD:?Run scripts/lab/init-env.sh first}
       # Public keys only; the private keys stay in .lab-keys/ on the host.
       TRUST_LAB_APPROVER_1_SEC1: ${TRUST_LAB_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
@@ -201,19 +202,44 @@ services:
       TRUST_DATABASE_URL: postgresql://trust_api_lab:${TRUST_LAB_API_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_WRITER_DATABASE_URL: postgresql://trust_api_writer_lab:${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       # Issuance (ADR-0017): the lab signer's socket; without it issuance is 503.
+      # The background tasks run in the worker below (ADR-0037).
       TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
-      # Automatic CRL renewal (ADR-0021): a pass every hour publishes the CRL
-      # of each CA granted to the renewer whose CRL is due.
-      TRUST_CRL_RENEWAL_INTERVAL_SECONDS: "3600"
-      # Seal committed audit events into the tamper-evident chain (ADR-0022).
-      TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "60"
-      # Ask the signer to sign the chain's head (ADR-0023).
-      TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/lab-tls/ca.crt", "https://127.0.0.1:8081/v1/ready"]
       interval: 3s
       timeout: 3s
       retries: 30
+
+  worker:
+    # The dedicated background worker (ADR-0037, Proposed): the API binary in
+    # --worker mode, with no listener and no OIDC. Its own login, a direct
+    # member of trust_worker (migration 0044), is the only one that can seal
+    # the audit chain and renew CRLs as the system principal.
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: ["--worker"]
+    depends_on:
+      db: {condition: service_healthy}
+      signer: {condition: service_healthy}
+    volumes:
+      - trust_signer_socket:/run/trust-signer
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
+      - ./.lab-keys/tls/clients/worker:/lab-tls/clients:ro
+    environment:
+      TRUST_WORKER_DATABASE_URL: postgresql://trust_worker_lab:${TRUST_LAB_WORKER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
+      # Mutual TLS to the database (ADR-0036): this service's login certificate.
+      TRUST_DATABASE_CLIENT_CERT_DIR: /lab-tls/clients
+      TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
+      # CRL renewal (ADR-0021): a pass every 5 seconds publishes each due CRL;
+      # a CA that publishes on revocation (ADR-0027) is due at once.
+      TRUST_CRL_RENEWAL_INTERVAL_SECONDS: "5"
+      # Seal committed audit events into the tamper-evident chain (ADR-0022).
+      TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "60"
+      # Ask the signer to sign the chain's head (ADR-0023).
+      TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
+    networks: [lab]
 
   # Separate CRL publication (ADR-0030): the publisher verifies each CRL and
   # writes the static tree; crl-web serves it read-only, with no database

@@ -8,7 +8,7 @@ for migration in "$migrations_dir"/*.sql; do
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$migration"
 done
 
-psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" -v signer_password="$TRUST_LAB_SIGNER_PASSWORD" -v publisher_password="$TRUST_LAB_PUBLISHER_PASSWORD" \
+psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" -v signer_password="$TRUST_LAB_SIGNER_PASSWORD" -v publisher_password="$TRUST_LAB_PUBLISHER_PASSWORD" -v worker_password="$TRUST_LAB_WORKER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
   -v ca_approver1_sec1="$TRUST_LAB_CA_APPROVER_1_SEC1" -v ca_approver2_sec1="$TRUST_LAB_CA_APPROVER_2_SEC1" \
   -v ra_officer_sec1="$TRUST_LAB_RA_OFFICER_SEC1" -v ra_officer2_sec1="$TRUST_LAB_RA_OFFICER_2_SEC1" \
@@ -27,6 +27,11 @@ GRANT trust_lab_signer TO trust_signer_lab;
 -- publisher feed of published CRLs.
 SELECT format('CREATE ROLE trust_publisher_lab LOGIN INHERIT PASSWORD %L', :'publisher_password') \gexec
 GRANT trust_crl_publisher TO trust_publisher_lab;
+-- The background worker's login (migration 0044, ADR-0037): it seals the
+-- audit chain and renews due CRLs as the system principal, which the
+-- database accepts only from a direct member of trust_worker.
+SELECT format('CREATE ROLE trust_worker_lab LOGIN INHERIT PASSWORD %L', :'worker_password') \gexec
+GRANT trust_worker TO trust_worker_lab;
 INSERT INTO ca(ca_id,display_name,policy_version) VALUES
   ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','Allowed laboratory CA','v1'),
   ('ffffffff-ffff-4fff-8fff-ffffffffffff','Hidden laboratory CA','v1');

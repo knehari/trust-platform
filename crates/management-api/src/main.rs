@@ -15,6 +15,7 @@ mod profile_lifecycle;
 mod profile_proposal;
 mod ra_channel;
 mod tls_listener;
+mod worker;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -559,6 +560,23 @@ fn history_anchor(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The dedicated background worker (ADR-0037): same binary, no listener.
+    match env::args().nth(1).as_deref() {
+        Some("--worker") => return worker::run().await,
+        Some(other) => return Err(format!("unknown argument {other}; only --worker").into()),
+        None => {}
+    }
+    // The background tasks belong to the worker; refuse them here rather
+    // than silently not running them.
+    if let Some(name) = worker::TASK_INTERVALS
+        .iter()
+        .find(|name| env::var(name).is_ok_and(|value| !value.is_empty()))
+    {
+        return Err(format!(
+            "{name} configures the background worker (trust-management-api --worker, ADR-0037), not the API"
+        )
+        .into());
+    }
     let issuer = env::var("TRUST_OIDC_ISSUER")?;
     let audience = env::var("TRUST_OIDC_AUDIENCE")?;
     // The OAuth client of the human console. Tokens issued to any other
@@ -587,7 +605,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0043")?;
+    .map_err(|_| "management views unavailable or older than migration 0044")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -627,63 +645,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|path| !path.is_empty())
             .map(std::path::PathBuf::from),
     };
-    // Automatic CRL renewal (migration 0035, ADR-0021): off unless an
-    // interval is set, and only with the writer login and the signer.
-    if let Some(seconds) = env::var("TRUST_CRL_RENEWAL_INTERVAL_SECONDS")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        let seconds: u64 = seconds
-            .parse()
-            .ok()
-            .filter(|value| (30..=86_400).contains(value))
-            .ok_or("TRUST_CRL_RENEWAL_INTERVAL_SECONDS must be 30 to 86400")?;
-        if state.writer_database_url.is_none() || state.signer_socket.is_none() {
-            return Err(
-                "CRL renewal needs TRUST_WRITER_DATABASE_URL and TRUST_SIGNER_SOCKET".into(),
-            );
-        }
-        crl_publication::spawn_renewer(state.clone(), Duration::from_secs(seconds));
-        write_log(
-            serde_json::json!({"event":"crl_auto_renewal_enabled","interval_seconds":seconds}),
-        );
-    }
-    if let Some(seconds) = env::var("TRUST_AUDIT_SEAL_INTERVAL_SECONDS")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        let seconds: u64 = seconds
-            .parse()
-            .ok()
-            .filter(|value| (5..=86_400).contains(value))
-            .ok_or("TRUST_AUDIT_SEAL_INTERVAL_SECONDS must be 5 to 86400")?;
-        if state.writer_database_url.is_none() {
-            return Err("audit sealing needs TRUST_WRITER_DATABASE_URL".into());
-        }
-        audit_chain::spawn_sealer(state.clone(), Duration::from_secs(seconds));
-        write_log(
-            serde_json::json!({"event":"audit_chain_sealing_enabled","interval_seconds":seconds}),
-        );
-    }
-    // Signed audit checkpoints (ADR-0023): off unless an interval is set.
-    if let Some(seconds) = env::var("TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        let seconds: u64 = seconds
-            .parse()
-            .ok()
-            .filter(|value| (30..=86_400).contains(value))
-            .ok_or("TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS must be 30 to 86400")?;
-        let socket = state
-            .signer_socket
-            .clone()
-            .ok_or("audit checkpoints need TRUST_SIGNER_SOCKET")?;
-        audit_chain::spawn_checkpointer(socket, Duration::from_secs(seconds));
-        write_log(
-            serde_json::json!({"event":"audit_checkpoint_enabled","interval_seconds":seconds}),
-        );
-    }
     let app = router(state);
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     // HTTPS when both TLS files are configured (ADR-0032); an incomplete
@@ -1128,6 +1089,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_authorization_proofs_version() = 1 \
              AND management_revocation_proofs_version() = 1 \
              AND management_crl_separate_publication_version() = 1 \
+             AND management_dedicated_worker_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -4382,7 +4344,7 @@ mod tests {
         let state = AppState {
             verifier,
             database_url: reader_url,
-            writer_database_url: Some(writer_url),
+            writer_database_url: Some(writer_url.clone()),
             database_slots: Arc::new(Semaphore::new(MAX_DATABASE_REQUESTS)),
             http_data_slots: Arc::new(Semaphore::new(MAX_HTTP_DATA_REQUESTS)),
             readiness_slots: Arc::new(Semaphore::new(1)),
@@ -4870,9 +4832,52 @@ mod tests {
                 .0,
             StatusCode::FORBIDDEN
         );
+        // The background tasks run in the worker (migration 0044, ADR-0037),
+        // through a login that is a direct member of trust_worker. The API's
+        // writer login can neither seal nor act as the renewer.
+        let worker_login = format!("trust_worker_ci_{}", random_uuid().simple());
+        let worker_role = worker_login.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "CREATE ROLE {worker_role} LOGIN PASSWORD 'test-only-not-secret';
+                 GRANT trust_worker TO {worker_role};"
+            ))
+        })
+        .await
+        .unwrap();
+        let (_, owner_rest) = owner_url.split_once('@').unwrap();
+        let worker = worker::WorkerContext {
+            database_url: format!("postgresql://{worker_login}:test-only-not-secret@{owner_rest}"),
+            database_slots: Arc::new(Semaphore::new(1)),
+            signer_socket: Some(socket.clone()),
+        };
+        assert_eq!(
+            query_db(
+                worker.database_url.clone(),
+                worker.database_slots.clone(),
+                worker::restricted_worker_login
+            )
+            .await,
+            Ok(true)
+        );
+        let as_writer = worker::WorkerContext {
+            database_url: writer_url.clone(),
+            ..worker.clone()
+        };
+        assert_eq!(
+            query_db(
+                writer_url.clone(),
+                Arc::new(Semaphore::new(1)),
+                worker::restricted_worker_login
+            )
+            .await,
+            Ok(false)
+        );
+        assert!(crl_publication::renew_due_crls(&as_writer).await.is_err());
+        assert!(audit_chain::seal_pending_events(&as_writer).await.is_err());
         // The automatic renewer (migration 0035) publishes the first, empty
         // CRL: none exists, so it is due. Without its grant it does nothing.
-        assert_eq!(crl_publication::renew_due_crls(&state).await, Ok(vec![]));
+        assert_eq!(crl_publication::renew_due_crls(&worker).await, Ok(vec![]));
         let owner_ca = ca.clone();
         query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
             db.batch_execute(&format!(
@@ -4882,12 +4887,14 @@ mod tests {
         })
         .await
         .unwrap();
+        // Granted, the API's writer still cannot act as the renewer.
+        assert!(crl_publication::renew_due_crls(&as_writer).await.is_err());
         assert_eq!(
-            crl_publication::renew_due_crls(&state).await,
+            crl_publication::renew_due_crls(&worker).await,
             Ok(vec![(ca.clone(), "PUBLISHED")])
         );
         // Now fresh: a second pass publishes nothing.
-        assert_eq!(crl_publication::renew_due_crls(&state).await, Ok(vec![]));
+        assert_eq!(crl_publication::renew_due_crls(&worker).await, Ok(vec![]));
         // The renewal's audit event is not yet sealed into the chain
         // (migration 0036); a sealing pass seals it, and readers see it.
         let audit_path = format!("/v1/cas/{ca}/audit?event_type=crl.published");
@@ -4895,7 +4902,7 @@ mod tests {
         let published_events = published_events.as_array().unwrap().clone();
         assert_eq!(published_events.len(), 1);
         assert_eq!(published_events[0]["chain_sealed"], json!(false));
-        let pass = audit_chain::seal_pending_events(&state).await.unwrap();
+        let pass = audit_chain::seal_pending_events(&worker).await.unwrap();
         assert!(pass.sealed >= 1 && pass.head_seq >= pass.sealed);
         assert_eq!(pass.head_hash.len(), 64);
         // The signer recomputes the chain and signs its head with the audit
@@ -5962,8 +5969,9 @@ mod tests {
             .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == ra_serial));
 
         // Publish on revocation (migration 0040): off by default, the status
-        // says so; once the owner turns it on, the next revocation publishes a
-        // CRL by itself, through the renewer, with nobody asking.
+        // says so; once the owner turns it on, the next revocation makes the
+        // CRL due, and the worker's next renewal pass publishes it, with
+        // nobody asking (ADR-0037).
         let crl_status = |token: String| {
             let path = format!("/v1/cas/{ca}/crl-status");
             async move { send("GET", &token, path, None).await.1 }
@@ -6031,17 +6039,22 @@ mod tests {
         ))
         .await;
         assert_eq!(status, StatusCode::CREATED);
-        // The background pass publishes; wait for it, bounded.
-        let mut published = serde_json::Value::Null;
-        for _ in 0..50 {
-            published = crl_status(officer.clone()).await;
-            if published["latest_crl_number"].as_i64() > Some(latest_before)
-                && published["unpublished_entries"].as_i64() == Some(0)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
+        // The API itself publishes nothing: the revocation is pending and the
+        // CRL due, until the worker's pass.
+        let pending = crl_status(officer.clone()).await;
+        assert_eq!(
+            (
+                pending["unpublished_entries"].as_i64(),
+                pending["latest_crl_number"].as_i64()
+            ),
+            (Some(1), Some(latest_before)),
+            "{pending}"
+        );
+        assert_eq!(
+            crl_publication::renew_due_crls(&worker).await,
+            Ok(vec![(ca.clone(), "PUBLISHED")])
+        );
+        let published = crl_status(officer.clone()).await;
         assert_eq!(
             (
                 published["publish_on_revocation"].as_bool(),

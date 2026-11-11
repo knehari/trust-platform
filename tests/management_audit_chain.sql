@@ -1,6 +1,6 @@
 -- Migration 0036: the tamper-evident audit chain (ADR-0022). Run as the
--- migration owner after 0036 on a disposable database; every change is
--- rolled back. Before 0036 the first statement fails.
+-- migration owner after 0044 on a disposable database (sealing is the
+-- worker's since 0044, ADR-0037); every change is rolled back. Before 0036 the first statement fails.
 BEGIN;
 
 SELECT management_audit_chain_version();
@@ -48,10 +48,12 @@ SET LOCAL ROLE trust_profile_writer;
 SELECT pg_temp.expect_state($$SELECT * FROM audit_chain_link$$, '42501');
 SELECT pg_temp.expect_state($$INSERT INTO audit_chain_link (seq, event_id, event_sha256, previous_hash, chain_hash)
     VALUES (1, gen_random_uuid(), '\x00', '\x00', '\x00')$$, '42501');
+-- Since 0044 (ADR-0037) only the worker seals; the API's writer cannot.
+SELECT pg_temp.expect_state($$SELECT * FROM seal_audit_events_lab(10)$$, '42501');
 RESET ROLE;
 
 -- Seal whatever earlier suites left, so the counts below are exact.
-SET LOCAL ROLE trust_profile_writer;
+SET LOCAL ROLE trust_worker;
 DO $test$ DECLARE r record; BEGIN
     LOOP
         SELECT * INTO r FROM seal_audit_events_lab(10000);
@@ -93,7 +95,7 @@ END $test$;
 RESET ROLE;
 
 -- A bounded pass seals the oldest first, then the rest; a third seals none.
-SET LOCAL ROLE trust_profile_writer;
+SET LOCAL ROLE trust_worker;
 DO $test$
 DECLARE
     b record;
@@ -163,7 +165,7 @@ END $test$;
 INSERT INTO audit_event (event_id, ca_id, actor_id, event_type, decision, policy_version)
 VALUES ('a0a0a0a0-0000-4000-8000-0000000000e4', 'a0a0a0a0-0000-4000-8000-0000000000a1',
         'lab-ra-officer', 'certificate.revocation.requested', 'allow', 'v1');
-SET LOCAL ROLE trust_profile_writer;
+SET LOCAL ROLE trust_worker;
 DO $test$
 DECLARE
     b record;

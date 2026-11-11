@@ -99,13 +99,17 @@ The schema job also injects a mid-restore DDL error in a third disposable databa
 
 The `laboratory-compose` GitHub Actions job builds the images and runs the same scoped smoke on a disposable runner. [Run 39059362985](https://github.com/knehari/trust-platform/actions/runs/39059362985) passed on Draft #53's exact head. Local Docker execution must be recorded separately from CI; a successful `docker compose config` or local PostgreSQL script alone does not establish that the containers start.
 
+## Background worker (ADR-0037)
+
+The periodic tasks run in the `worker` service, the API image started with `--worker` ([ADR-0037](../adr/ADR-0037-dedicated-worker.md), Proposed). It has no listener and no OIDC configuration, and connects with its own login, `trust_worker_lab`, a direct member of `trust_worker` (migration 0044), with its own client certificate. Only that login can seal the audit chain and act as the system renewer; the API's logins cannot. The API refuses the `*_INTERVAL_SECONDS` variables, so a stale configuration cannot silently stop the tasks. Its logs (`docker compose … logs worker`) start with `worker_started`.
+
 ## Automatic CRL renewal (ADR-0021)
 
-The API service sets `TRUST_CRL_RENEWAL_INTERVAL_SECONDS=3600`. The issuing CA's provisioning (`scripts/lab/provision-issuing-ca.sql`) grants the system principal `urn:trust-platform:system`/`crl-renewer` the `crl-publisher` role. Every hour, the API publishes the CRL of each granted CA that is due (none yet, or nextUpdate within two days). Each pass is logged as `crl_auto_renewal` in the API logs (`docker compose … logs api`). The Revocation & CRLs view shows "Automatic renewal is on".
+The worker sets `TRUST_CRL_RENEWAL_INTERVAL_SECONDS=5`. The issuing CA's provisioning (`scripts/lab/provision-issuing-ca.sql`) grants the system principal `urn:trust-platform:system`/`crl-renewer` the `crl-publisher` role. Every 5 seconds, the worker publishes the CRL of each granted CA that is due: none yet, nextUpdate within two days, or, with publish on revocation, a revocation not yet listed. Each pass that publishes is logged as `crl_auto_renewal` in the worker logs. The Revocation & CRLs view shows "Automatic renewal is on".
 
 ## Tamper-evident audit chain (ADR-0022)
 
-The API service sets `TRUST_AUDIT_SEAL_INTERVAL_SECONDS=60`. Every minute, it seals the committed audit events not yet sealed into the hash chain and logs `audit_chain_sealed` with the new head. In the console, the detail of an audit event shows "Sealed" or "Not yet sealed".
+The worker sets `TRUST_AUDIT_SEAL_INTERVAL_SECONDS=60`. Every minute, it seals the committed audit events not yet sealed into the hash chain and logs `audit_chain_sealed` with the new head. In the console, the detail of an audit event shows "Sealed" or "Not yet sealed".
 
 The chain is evidence only against a head kept outside the database. To export one, run the independent tool as the database owner. The Compose file does not publish the database port; for this check, publish it on the loopback interface with a local override file (for example `ports: ["127.0.0.1:55432:5432"]` on the `db` service), then from the repository:
 
@@ -125,7 +129,7 @@ The head is not signed and its export is not automated: this is a laboratory pro
 
 ## Signed audit checkpoints (ADR-0023)
 
-The signer's audit key lives in its own SoftHSM2 token, `trust-lab-audit`, with its own PIN `TRUST_LAB_HSM_AUDIT_PIN` ([ADR-0035](../adr/ADR-0035-pkcs11-audit-key.md), Proposed). With the stack up, run `scripts/lab/create-audit-key-hsm.sh` once: it generates the key in the token and writes only its public key to `.lab-keys/audit/audit-checkpoint.pub.pem`. Until then the signer refuses checkpoints (`AuditKeyFile`). The signer keeps its last checkpoint in the `trust_signer_state` volume. Every 60 seconds the API asks the signer to verify the chain since that checkpoint and sign its head. The API logs `audit_checkpoint` with `SIGNED`, `UNCHANGED`, or `REFUSED` plus `"alert": true`.
+The signer's audit key lives in its own SoftHSM2 token, `trust-lab-audit`, with its own PIN `TRUST_LAB_HSM_AUDIT_PIN` ([ADR-0035](../adr/ADR-0035-pkcs11-audit-key.md), Proposed). With the stack up, run `scripts/lab/create-audit-key-hsm.sh` once: it generates the key in the token and writes only its public key to `.lab-keys/audit/audit-checkpoint.pub.pem`. Until then the signer refuses checkpoints (`AuditKeyFile`). The signer keeps its last checkpoint in the `trust_signer_state` volume. Every 60 seconds the worker asks the signer to verify the chain since that checkpoint and sign its head. The worker logs `audit_checkpoint` with `SIGNED`, `UNCHANGED`, or `REFUSED` plus `"alert": true`.
 
 To verify every checkpoint with the public key, which never comes from the database:
 
