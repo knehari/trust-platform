@@ -60,6 +60,21 @@ pub fn verify_pkcs10_p256(
     csr_der: &[u8],
     expected_common_name: &str,
 ) -> Result<VerifiedCsr, CsrValidationError> {
+    verify_p256(csr_der, Some(expected_common_name))
+}
+
+/// Verifies a DER CSR's encoding, key and proof of possession only. The
+/// subject the CSR carries is ignored: the certificate's subject comes from a
+/// signed authorization that may correct it (ADR-0028). A successful return is
+/// NOT authorization to issue.
+pub fn verify_pkcs10_p256_possession(csr_der: &[u8]) -> Result<VerifiedCsr, CsrValidationError> {
+    verify_p256(csr_der, None)
+}
+
+fn verify_p256(
+    csr_der: &[u8],
+    expected_common_name: Option<&str>,
+) -> Result<VerifiedCsr, CsrValidationError> {
     if csr_der.is_empty() || csr_der.len() > MAX_CSR_DER_BYTES {
         return Err(CsrValidationError::EmptyOrOversize);
     }
@@ -101,10 +116,12 @@ pub fn verify_pkcs10_p256(
     }
 
     // The policy-selected identity, not any CSR extension request, is authoritative.
-    let expected_subject = Name::from_str(&format!("CN={expected_common_name}"))
-        .map_err(|_| CsrValidationError::SubjectMismatch)?;
-    if csr.info.subject != expected_subject {
-        return Err(CsrValidationError::SubjectMismatch);
+    if let Some(expected_common_name) = expected_common_name {
+        let expected_subject = Name::from_str(&format!("CN={expected_common_name}"))
+            .map_err(|_| CsrValidationError::SubjectMismatch)?;
+        if csr.info.subject != expected_subject {
+            return Err(CsrValidationError::SubjectMismatch);
+        }
     }
 
     let tbs = csr

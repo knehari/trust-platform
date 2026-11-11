@@ -28,6 +28,15 @@
 //! registered key. It also checks that the application was submitted and
 //! approved by that RA.
 //!
+//! Since migration 0041 (ADR-0028) every issuance needs a signed
+//! authorization: an RA request (version 1, or version 2 with the subject and
+//! optional extensions), or a registration officer's signed approval. For each
+//! officer decision it rebuilds the claim from the application, checks it is
+//! the stored claim, and verifies the signature with the officer's registered
+//! key. A certificate whose signing intent was recorded after 0041 without such
+//! a proof is reported. The certificate's subject is the authorized one, so the
+//! stored CSR is checked for proof of possession only.
+//!
 //! PostgreSQL verifies neither X.509 nor ECDSA, so a compromised API or
 //! writer login could store what the API would refuse; this tool is how that
 //! is detected. Run it as the database owner:
@@ -38,8 +47,9 @@ use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
     application_crl::{build_crl_tbs, parse_utc_seconds, verify_crl, CrlEntry, CrlFacts},
-    application_leaf::{verify_server_leaf, LeafFacts},
-    csr::verify_pkcs10_p256,
+    application_leaf::{optional_extensions_valid, verify_server_leaf, LeafFacts},
+    authorization::{officer_decision_claim, OfficerDecision},
+    csr::verify_pkcs10_p256_possession,
 };
 use x509_cert::{
     der::{Decode, Encode},
@@ -62,6 +72,9 @@ struct Issued {
     claims: i64,
     decision: Option<String>,
     crl_distribution_point: Option<String>,
+    extensions: Vec<String>,
+    /// False for an issuance after migration 0041 with no signed proof.
+    proven: bool,
 }
 
 fn problems(record: &Issued) -> Vec<String> {
@@ -81,6 +94,12 @@ fn problems(record: &Issued) -> Vec<String> {
     if record.decision.as_deref() != Some("approve") {
         found.push("the application was not approved".into());
     }
+    if !record.proven {
+        found.push("no signed authorization (RA request or officer approval)".into());
+    }
+    if !optional_extensions_valid(&record.extensions) {
+        found.push("optional extensions outside the catalogue".into());
+    }
     let issuer = match Certificate::from_der(&record.issuer_der) {
         Ok(issuer) => issuer,
         Err(_) => {
@@ -88,7 +107,7 @@ fn problems(record: &Issued) -> Vec<String> {
             return found;
         }
     };
-    let csr = match verify_pkcs10_p256(&record.csr_der, &record.subject_cn) {
+    let csr = match verify_pkcs10_p256_possession(&record.csr_der) {
         Ok(csr) => csr,
         Err(reason) => {
             found.push(format!("stored CSR does not verify ({reason:?})"));
@@ -115,6 +134,7 @@ fn problems(record: &Issued) -> Vec<String> {
         validity_days: u32::try_from(record.validity_days).unwrap_or(0),
         serial: &record.serial,
         crl_distribution_point: record.crl_distribution_point.as_deref(),
+        client_auth: record.extensions.iter().any(|e| e == "client-auth"),
     };
     if let Err(reason) = verify_server_leaf(
         &issuer,
@@ -267,18 +287,35 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
     {
         return Ok((0, Vec::new()));
     }
+    // Version 2 requests (migration 0041) also sign the subject and options.
+    let v2 = db
+        .query_one(
+            "SELECT to_regclass('public.certificate_application_option') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0);
+    let (version, subject, extensions) = if v2 {
+        (
+            "r.message_version",
+            "a.subject_cn",
+            "certificate_application_extensions(a.application_id)",
+        )
+    } else {
+        ("1::smallint", "a.subject_cn", "'{}'::text[]")
+    };
     let rows = db.query(
-        "SELECT r.ra_id, uuid_send(r.request_id), uuid_send(a.ca_id), a.profile_id, a.csr_der, \
+        &format!("SELECT r.ra_id, uuid_send(r.request_id), uuid_send(a.ca_id), a.profile_id, a.csr_der, \
                 a.dns_names, a.validity_days, extract(epoch FROM r.signed_at)::bigint, r.message, \
                 r.signature, s.public_key_sec1, a.application_id::text, \
                 (SELECT array_agg(e.action || '|' || e.actor_issuer || '|' || e.actor_subject ORDER BY e.action) \
                  FROM certificate_application_event e \
                  WHERE e.application_id = a.application_id \
-                   AND e.action IN ('application.submitted', 'application.approved')) \
+                   AND e.action IN ('application.submitted', 'application.approved')), \
+                {version}, {subject}, {extensions} \
          FROM ra_issuance_request r \
          JOIN certificate_application a ON a.application_id = r.application_id AND a.ca_id = r.ca_id \
          JOIN ra_system s ON s.ra_id = r.ra_id \
-         ORDER BY r.recorded_at",
+         ORDER BY r.recorded_at"),
         &[],
     )?;
     let mut problems = Vec::new();
@@ -296,18 +333,36 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
         };
         let dns_names: Vec<String> = row.get(5);
         let validity: i32 = row.get(6);
-        let rebuilt = trust_pki_core::ra_request::ra_issuance_message(
-            &trust_pki_core::ra_request::RaIssuanceRequest {
-                ra_id: &ra_id,
-                ca_id,
-                profile_id: &row.get::<_, String>(3),
-                request_id,
-                csr_sha256: Sha256::digest(row.get::<_, Vec<u8>>(4)).into(),
-                dns_names: &dns_names,
-                validity_days: u32::try_from(validity).unwrap_or(0),
-                signed_at_unix: row.get(7),
-            },
-        );
+        let profile_id: String = row.get(3);
+        let base = trust_pki_core::ra_request::RaIssuanceRequest {
+            ra_id: &ra_id,
+            ca_id,
+            profile_id: &profile_id,
+            request_id,
+            csr_sha256: Sha256::digest(row.get::<_, Vec<u8>>(4)).into(),
+            dns_names: &dns_names,
+            validity_days: u32::try_from(validity).unwrap_or(0),
+            signed_at_unix: row.get(7),
+        };
+        let subject_cn: String = row.get(14);
+        let extensions: Vec<String> = row.get(15);
+        let rebuilt = match row.get::<_, i16>(13) {
+            // Version 1 binds neither the subject nor an extension.
+            1 => {
+                if dns_names.first() != Some(&subject_cn) || !extensions.is_empty() {
+                    reasons
+                        .push("a version 1 request with a subject or extension it does not sign");
+                }
+                trust_pki_core::ra_request::ra_issuance_message(&base)
+            }
+            _ => trust_pki_core::ra_request::ra_issuance_message_v2(
+                &trust_pki_core::ra_request::RaIssuanceRequestV2 {
+                    base,
+                    subject_cn: &subject_cn,
+                    extensions: &extensions,
+                },
+            ),
+        };
         let message: Vec<u8> = row.get(8);
         if rebuilt.as_deref().ok() != Some(message.as_slice()) {
             reasons.push("the stored bytes are not the application's");
@@ -404,17 +459,137 @@ fn ra_revocation_problems(
     Ok((rows.len(), problems))
 }
 
+/// Every officer's signed decision (migration 0041): the stored claim is the
+/// application's, and the officer's registered key signed it.
+fn officer_decision_problems(
+    db: &mut Client,
+) -> Result<(usize, Vec<(String, String)>), postgres::Error> {
+    if !proofs_schema(db)? {
+        return Ok((0, Vec::new()));
+    }
+    let rows = db.query(
+        "SELECT z.application_id::text, z.decision, a.ca_id::text, a.profile_id, a.revision, a.csr_der, \
+                a.subject_cn, a.dns_names, a.validity_days, certificate_application_extensions(a.application_id), \
+                z.key_id, to_char(z.claim_issued_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+                z.claim, z.signature_der, z.public_key_sec1, k.public_key_sec1, \
+                d.decision, \
+                EXISTS (SELECT 1 FROM management_role_grant g WHERE g.issuer = k.issuer \
+                        AND g.subject = k.subject AND g.ca_id = a.ca_id \
+                        AND g.lifecycle_role = 'registration-officer'), \
+                e.actor_issuer = k.issuer AND e.actor_subject = k.subject \
+         FROM certificate_application_authorization z \
+         JOIN certificate_application a ON a.application_id = z.application_id \
+         JOIN registration_officer_key k ON k.key_id = z.key_id \
+         JOIN certificate_application_event e ON e.event_id = z.event_id \
+         LEFT JOIN certificate_application_decision d ON d.application_id = z.application_id \
+         ORDER BY z.claim_issued_at",
+        &[],
+    )?;
+    let mut problems = Vec::new();
+    for row in &rows {
+        let application: String = row.get(0);
+        let decision: String = row.get(1);
+        let ca_id: String = row.get(2);
+        let profile_id: String = row.get(3);
+        let dns_names: Vec<String> = row.get(7);
+        let extensions: Vec<String> = row.get(9);
+        let key_id: String = row.get(10);
+        let issued_at: String = row.get(11);
+        let subject_cn: String = row.get(6);
+        let csr_sha256: [u8; 32] = Sha256::digest(row.get::<_, Vec<u8>>(5)).into();
+        let claim: String = row.get(12);
+        let mut reasons = Vec::new();
+        let rebuilt = officer_decision_claim(&OfficerDecision {
+            decision: &decision,
+            ca_id: &ca_id,
+            application_id: &application,
+            profile_id: &profile_id,
+            revision: row.get(4),
+            csr_sha256: &csr_sha256,
+            subject_cn: &subject_cn,
+            dns_names: &dns_names,
+            validity_days: row.get(8),
+            extensions: &extensions,
+            key_id: &key_id,
+            issued_at: &issued_at,
+        });
+        if rebuilt.as_deref().ok() != Some(claim.as_str()) {
+            reasons.push("the stored claim is not the application's");
+        }
+        let stored_key: Vec<u8> = row.get(14);
+        let registered_key: Vec<u8> = row.get(15);
+        if stored_key != registered_key {
+            reasons.push("the recorded key is not the officer's registered key");
+        }
+        let signature: Vec<u8> = row.get(13);
+        if trust_pki_crypto::verify_p256_ecdsa_sha256(&registered_key, claim.as_bytes(), &signature)
+            .is_err()
+        {
+            reasons.push("the officer's key did not sign the claim");
+        }
+        if row.get::<_, Option<String>>(16).as_deref() != Some(decision.as_str()) {
+            reasons.push("the recorded decision is not the signed one");
+        }
+        if !row.get::<_, bool>(17) {
+            reasons.push("the key's officer holds no registration-officer grant");
+        }
+        if !row.get::<_, bool>(18) {
+            reasons.push("the decision event is not the key's officer");
+        }
+        if !reasons.is_empty() {
+            problems.push((application, reasons.join("; ")));
+        }
+    }
+    Ok((rows.len(), problems))
+}
+
+fn proofs_schema(db: &mut Client) -> Result<bool, postgres::Error> {
+    Ok(db
+        .query_one(
+            "SELECT to_regclass('public.certificate_application_authorization') IS NOT NULL",
+            &[],
+        )?
+        .get(0))
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
     let mut db = Client::connect(&url, NoTls)
         .map_err(|_| io::Error::other("issuance database unavailable"))?;
+    // Since 0041 an issuance needs a signed proof. Intents recorded before it
+    // was applied (per the runner's ledger) had none to give.
+    let ledger: bool = db
+        .query_one(
+            "SELECT to_regclass('public.management_migration_ledger') IS NOT NULL",
+            &[],
+        )?
+        .get(0);
+    let before_proofs = if ledger {
+        "s.created_at < coalesce((SELECT applied_at FROM management_migration_ledger \
+         WHERE version = '0041_signer_authorization_proofs'), '-infinity')"
+    } else {
+        "false"
+    };
+    let (extensions, proven) = if proofs_schema(&mut db)? {
+        (
+            "certificate_application_extensions(a.application_id)".to_owned(),
+            format!(
+                "EXISTS (SELECT 1 FROM ra_issuance_request q WHERE q.application_id = a.application_id) \
+                 OR EXISTS (SELECT 1 FROM certificate_application_authorization z \
+                            WHERE z.application_id = a.application_id AND z.decision = 'approve') \
+                 OR {before_proofs}"
+            ),
+        )
+    } else {
+        ("'{}'::text[]".to_owned(), "true".to_owned())
+    };
     let rows = db.query(
-        "SELECT i.application_id::text, a.csr_der, a.subject_cn, a.dns_names, a.validity_days, \
+        &format!("SELECT i.application_id::text, a.csr_der, a.subject_cn, a.dns_names, a.validity_days, \
                 c.serial_der_content, c.certificate_der, c.fingerprint_sha256, c.signed_at, \
                 k.certificate_der, s.tbs_sha256, s.outcome, \
                 (SELECT count(*) FROM lab_signer_claim l WHERE l.intent_id = s.intent_id), \
-                d.decision, dp.url \
+                d.decision, dp.url, {extensions}, {proven} \
            FROM certificate_application_issuance i \
            JOIN certificate_application a ON a.application_id = i.application_id \
            JOIN certificate c ON c.ca_id = i.ca_id AND c.request_id = i.request_id \
@@ -422,7 +597,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
            LEFT JOIN signing_intent s ON s.ca_id = i.ca_id AND s.request_id = i.request_id \
            LEFT JOIN certificate_application_decision d ON d.application_id = i.application_id \
            LEFT JOIN signing_intent_crl_distribution_point dp ON dp.intent_id = s.intent_id \
-          ORDER BY i.started_at",
+          ORDER BY i.started_at"),
         &[],
     )?;
     let mut failed = 0usize;
@@ -445,6 +620,8 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             claims: row.get(12),
             decision: row.get(13),
             crl_distribution_point: row.get(14),
+            extensions: row.get(15),
+            proven: row.get::<_, Option<bool>>(16).unwrap_or(false),
         };
         let found = problems(&record);
         if !found.is_empty() {
@@ -483,12 +660,17 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         failed += 1;
         eprintln!("FAIL RA request for application {application}: {reasons}");
     }
+    let (officer_count, officer_decisions) = officer_decision_problems(&mut db)?;
+    for (application, reasons) in &officer_decisions {
+        failed += 1;
+        eprintln!("FAIL officer decision on application {application}: {reasons}");
+    }
     if failed > 0 {
         eprintln!("{failed} problem(s) in the issued certificates, revocations or CRLs");
         return Ok(ExitCode::FAILURE);
     }
     println!(
-        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s), {ra_count} RA-signed request(s) and {ra_revocations} RA-signed revocation(s) verified independently",
+        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s), {ra_count} RA-signed request(s), {officer_count} signed officer decision(s) and {ra_revocations} RA-signed revocation(s) verified independently",
         rows.len()
     );
     Ok(ExitCode::SUCCESS)

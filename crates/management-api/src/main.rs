@@ -586,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0040")?;
+    .map_err(|_| "management views unavailable or older than migration 0041")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -771,6 +771,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/decision",
             axum::routing::post(certificate_application::decide_application),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/decision-claims",
+            axum::routing::post(certificate_application::prepare_application_decision),
         )
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/issuance",
@@ -1106,6 +1110,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_ra_channel_version() = 1 \
              AND management_ra_revocation_version() = 1 \
              AND management_crl_on_revocation_version() = 1 \
+             AND management_authorization_proofs_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -2116,6 +2121,39 @@ mod tests {
                 .collect();
             assert_eq!(hex, expected);
         }
+    }
+
+    /// Registration officer keys for the application tests (migration 0041):
+    /// [0x66; 32] for officer-http and [0x77; 32] for requester-http. The
+    /// tests register them as the owner; registering twice is a no-op.
+    fn officer_key_sql() -> String {
+        use p256::ecdsa::SigningKey;
+        [(0x66u8, "officer-http"), (0x77, "requester-http")]
+            .iter()
+            .map(|(scalar, subject)| {
+                let point = SigningKey::from_slice(&[*scalar; 32])
+                    .unwrap()
+                    .verifying_key()
+                    .to_encoded_point(false);
+                let hex: String = point.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                format!(
+                    "INSERT INTO registration_officer_key (key_id, issuer, subject, public_key_sec1) \
+                     VALUES ('{subject}-p256', 'https://issuer.example.test', '{subject}', \
+                     decode('{hex}', 'hex')) ON CONFLICT DO NOTHING;"
+                )
+            })
+            .collect()
+    }
+
+    /// The base64 DER signature of an officer test key over a claim.
+    fn officer_signature(scalar: u8, claim: &serde_json::Value) -> String {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+        let key = SigningKey::from_slice(&[scalar; 32]).unwrap();
+        let signature: Signature = key.sign(claim["claim"].as_str().unwrap().as_bytes());
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            signature.to_der().as_bytes(),
+        )
     }
 
     /// Signed decisions against PostgreSQL (migration 0023). CI seeds the
@@ -3792,6 +3830,7 @@ mod tests {
         // The owner provisions what only the owner can: grants on the new CA
         // and an active profile revision (zones lab.invalid, 3 names, 90 days).
         let owner_ca = ca.clone();
+        let officer_keys = officer_key_sql();
         query_db(owner_url, Arc::new(Semaphore::new(1)), move |db| {
             db.batch_execute(&format!(
                 "INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
@@ -3801,6 +3840,7 @@ mod tests {
                     ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'certificate-requester'),
                     ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'registration-officer'),
                     ('https://issuer.example.test', 'officer-http', '{owner_ca}', 'registration-officer');
+                 {officer_keys}
                  INSERT INTO certificate_profile_draft (ca_id, profile_id, revision, display_name, policy_version,
                     max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by)
                  VALUES ('{owner_ca}', 'server', 1, 'Server', 'v1', 90, 3, ARRAY['lab.invalid'],
@@ -4083,37 +4123,110 @@ mod tests {
             (status, replay["application_id"].as_str()),
             (StatusCode::OK, Some(id.as_str()))
         );
+        // Decisions are signed (migration 0041): the officer asks for the
+        // claim, signs it with their registered key, and sends the signature.
         let decision = format!("{apps}/{id}/decision");
-        let decide =
-            |decision: &str| Some(json!({"decision": decision, "reason": "names checked"}));
+        let claims = format!("{apps}/{id}/decision-claims");
+        let claim_for = |token: String, decision: &'static str| {
+            let (send, claims) = (send, claims.clone());
+            async move {
+                send(
+                    "POST",
+                    &token,
+                    claims,
+                    Some(json!({"decision": decision})),
+                    None,
+                )
+                .await
+            }
+        };
+        let signed = |decision: &str, claim: &serde_json::Value, scalar: u8| {
+            Some(json!({"decision": decision, "reason": "names checked",
+                        "issued_at": claim["issued_at"],
+                        "signature_der_base64": officer_signature(scalar, claim)}))
+        };
+        let (status, claim) = claim_for(officer.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
+        let text = claim["claim"].as_str().unwrap();
+        assert!(text.starts_with("trust-platform/issuance-authorization/v1;decision=approve;"));
+        assert!(text.contains(&format!(";application={id};")));
+        assert!(
+            text.contains(";subject_cn=www.lab.invalid;dns_names=www.lab.invalid,api.lab.invalid;")
+        );
+        assert!(text.contains(";extensions=;key=officer-http-p256;"));
+        assert_eq!(
+            claim_for(officer.clone(), "sign").await.0,
+            StatusCode::BAD_REQUEST
+        );
+        // The requester holds an officer grant and a key, and still never
+        // decides on their own application.
+        let (status, requester_claim) = claim_for(requester.clone(), "approve").await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(
             send(
                 "POST",
                 &requester,
                 decision.clone(),
-                decide("approve"),
+                signed("approve", &requester_claim, 0x77),
                 key()
             )
             .await
             .0,
             StatusCode::FORBIDDEN
         );
-        assert_eq!(
-            send("POST", &officer, decision.clone(), decide("sign"), key())
+        // A signature by another key, over another claim, or for another
+        // decision is refused and records nothing.
+        for (body_decision, scalar) in [("approve", 0x77u8), ("reject", 0x66)] {
+            assert_eq!(
+                send(
+                    "POST",
+                    &officer,
+                    decision.clone(),
+                    signed(body_decision, &claim, scalar),
+                    key()
+                )
                 .await
                 .0,
-            StatusCode::BAD_REQUEST
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+        let mut stale = claim.clone();
+        stale["issued_at"] = json!("2020-01-01T00:00:00.000Z");
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                decision.clone(),
+                signed("approve", &stale, 0x66),
+                key()
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
         );
-        let (status, approved) =
-            send("POST", &officer, decision.clone(), decide("approve"), key()).await;
+        let (status, approved) = send(
+            "POST",
+            &officer,
+            decision.clone(),
+            signed("approve", &claim, 0x66),
+            key(),
+        )
+        .await;
         assert_eq!(
             (status, approved["status"].as_str()),
             (StatusCode::CREATED, Some("APPROVED"))
         );
+        let (_, reject_claim) = claim_for(officer.clone(), "reject").await;
         assert_eq!(
-            send("POST", &officer, decision, decide("reject"), key())
-                .await
-                .0,
+            send(
+                "POST",
+                &officer,
+                decision,
+                signed("reject", &reject_claim, 0x66),
+                key()
+            )
+            .await
+            .0,
             StatusCode::CONFLICT
         );
 
@@ -4353,6 +4466,7 @@ mod tests {
 
         // The owner provisions the grants and the active revision.
         let owner_ca = ca.clone();
+        let officer_keys = officer_key_sql();
         query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
             db.batch_execute(&format!(
                 "INSERT INTO management_reader_grant (issuer, subject, ca_id) VALUES
@@ -4361,6 +4475,7 @@ mod tests {
                  INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
                     ('https://issuer.example.test', 'requester-http', '{owner_ca}', 'certificate-requester'),
                     ('https://issuer.example.test', 'officer-http', '{owner_ca}', 'registration-officer');
+                 {officer_keys}
                  INSERT INTO certificate_profile_draft (ca_id, profile_id, revision, display_name, policy_version,
                     max_validity_days, max_dns_sans, proposed_dns_zones, proposed_signature_suites, created_by)
                  VALUES ('{owner_ca}', 'server', 1, 'Server', 'v1', 90, 3, ARRAY['lab.invalid'],
@@ -4449,11 +4564,21 @@ mod tests {
         let approve = |id: String| {
             let (send, apps, officer) = (send, apps.clone(), officer.clone());
             async move {
+                let (status, claim) = send(
+                    "POST",
+                    &officer,
+                    format!("{apps}/{id}/decision-claims"),
+                    Some(json!({"decision":"approve"})),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
                 let (status, _) = send(
                     "POST",
                     &officer,
                     format!("{apps}/{id}/decision"),
-                    Some(json!({"decision":"approve", "reason":"checked"})),
+                    Some(json!({"decision":"approve", "reason":"checked",
+                                "issued_at": claim["issued_at"],
+                                "signature_der_base64": officer_signature(0x66, &claim)})),
                 )
                 .await;
                 assert_eq!(status, StatusCode::CREATED);
@@ -5438,6 +5563,123 @@ mod tests {
         // The application is the RA's, approved by the RA, visible to readers.
         let item = listed(ra_issued["application_id"].as_str().unwrap().to_owned()).await;
         assert_eq!(item["status"].as_str(), Some("ISSUED"));
+
+        // Version 2 (ADR-0028): the RA corrects the subject the CSR names and
+        // adds client authentication, which the owner allowed for the profile.
+        let typo_subject = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let typo_csr = <x509_cert::request::CertReq as x509_cert::der::DecodePem>::from_pem(
+            lab_csr("typo.lab.invalid", &typo_subject),
+        )
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let ra_body_v2 = |request_id: &str, subject_cn: &str, extensions: Vec<String>| {
+            use p256::ecdsa::{signature::Signer, SigningKey};
+            let names = vec![
+                "ra2.lab.invalid".to_owned(),
+                "www.ra2.lab.invalid".to_owned(),
+            ];
+            let message = trust_pki_core::ra_request::ra_issuance_message_v2(
+                &trust_pki_core::ra_request::RaIssuanceRequestV2 {
+                    base: trust_pki_core::ra_request::RaIssuanceRequest {
+                        ra_id: "test-ra",
+                        ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                        profile_id: "server",
+                        request_id: *uuid::Uuid::parse_str(request_id).unwrap().as_bytes(),
+                        csr_sha256: <sha2::Sha256 as sha2::Digest>::digest(&typo_csr).into(),
+                        dns_names: &names,
+                        validity_days: 30,
+                        signed_at_unix: now,
+                    },
+                    subject_cn,
+                    extensions: &extensions,
+                },
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::from(&ra_key).sign(&message);
+            json!({
+                "ra_id": "test-ra", "request_id": request_id, "profile_id": "server",
+                "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&typo_csr),
+                "dns_names": names, "validity_days": 30, "signed_at": now,
+                "subject_cn": subject_cn, "extensions": extensions,
+                "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes()),
+            })
+        };
+        let client_auth = || vec!["client-auth".to_owned()];
+        // A subject outside the names, or an unknown extension: 400.
+        assert_eq!(
+            ra_post(ra_body_v2(
+                &random_uuid().to_string(),
+                "typo.lab.invalid",
+                vec![]
+            ))
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            ra_post(ra_body_v2(
+                &random_uuid().to_string(),
+                "www.ra2.lab.invalid",
+                vec!["code-signing".to_owned()]
+            ))
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        // Client authentication is refused until the owner allows it.
+        assert_eq!(
+            ra_post(ra_body_v2(
+                &random_uuid().to_string(),
+                "www.ra2.lab.invalid",
+                client_auth()
+            ))
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO profile_optional_extension (ca_id, profile_id, extension) \
+                 VALUES ('{owner_ca}', 'server', 'client-auth')"
+            ))
+        })
+        .await
+        .unwrap();
+        let (status, corrected) = ra_post(ra_body_v2(
+            &random_uuid().to_string(),
+            "www.ra2.lab.invalid",
+            client_auth(),
+        ))
+        .await;
+        assert_eq!(
+            (status, corrected["status"].as_str()),
+            (StatusCode::CREATED, Some("ISSUED"))
+        );
+        let corrected =
+            x509_cert::Certificate::from_pem(corrected["certificate_pem"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(
+            corrected.tbs_certificate.subject.to_string(),
+            "CN=www.ra2.lab.invalid"
+        );
+        let eku = corrected
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|extension| extension.extn_id.to_string() == "2.5.29.37")
+            .unwrap();
+        let eku = <x509_cert::ext::pkix::ExtendedKeyUsage as x509_cert::der::Decode>::from_der(
+            eku.extn_value.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            eku.0.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"]
+        );
 
         // The RA revokes the certificate it obtained (ADR-0026), with a
         // signed request; nothing else.

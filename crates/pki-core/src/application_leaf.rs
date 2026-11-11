@@ -52,6 +52,30 @@ const SUBJECT_ALT_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.
 const SUBJECT_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.14");
 const CRL_DISTRIBUTION_POINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.31");
 const SERVER_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.1");
+const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
+
+/// The optional extensions a profile may allow and an authorization may add
+/// (ADR-0028). A closed catalogue: the CA encodes each one itself and never
+/// copies an extension from the CSR.
+pub const OPTIONAL_EXTENSIONS: [&str; 1] = ["client-auth"];
+
+/// Whether `names` are distinct, known optional extensions, in catalogue
+/// order (the canonical order every signed claim uses).
+pub fn optional_extensions_valid(names: &[String]) -> bool {
+    let mut position = 0;
+    names.iter().all(|name| {
+        match OPTIONAL_EXTENSIONS[position..]
+            .iter()
+            .position(|known| known == name)
+        {
+            Some(offset) => {
+                position += offset + 1;
+                true
+            }
+            None => false,
+        }
+    })
+}
 /// How far the start of validity may be from the checking clock.
 pub const START_SKEW: Duration = Duration::from_secs(5 * 60);
 const DAY: u64 = 24 * 60 * 60;
@@ -82,6 +106,9 @@ pub struct LeafFacts<'a> {
     /// The CRL URL the signing intent was journaled under, when the CA
     /// publishes its CRLs.
     pub crl_distribution_point: Option<&'a str>,
+    /// `client-auth`: id-kp-clientAuth is added to the extended key usage
+    /// beside serverAuth, when the authorization asked for it (ADR-0028).
+    pub client_auth: bool,
 }
 
 /// An http(s) URL of printable ASCII without spaces, as the database builds.
@@ -163,7 +190,11 @@ fn expected_extensions(
         extension(
             EXTENDED_KEY_USAGE,
             false,
-            &ExtendedKeyUsage(vec![SERVER_AUTH]),
+            &ExtendedKeyUsage(if facts.client_auth {
+                vec![SERVER_AUTH, CLIENT_AUTH]
+            } else {
+                vec![SERVER_AUTH]
+            }),
         )?,
         extension(SUBJECT_ALT_NAME, false, &SubjectAltName(names))?,
         x509_extensions::subject_key_identifier(&subject_key_id)
@@ -364,6 +395,67 @@ mod tests {
     }
 
     #[test]
+    fn optional_extensions_come_from_the_closed_catalogue_in_order() {
+        assert!(optional_extensions_valid(&[]));
+        assert!(optional_extensions_valid(&["client-auth".to_owned()]));
+        for invalid in [
+            vec!["client-auth".to_owned(), "client-auth".to_owned()],
+            vec!["Client-Auth".to_owned()],
+            vec!["1.3.6.1.5.5.7.3.2".to_owned()],
+            vec!["ocsp-must-staple".to_owned()],
+        ] {
+            assert!(!optional_extensions_valid(&invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn client_auth_adds_the_usage_and_the_gate_requires_exactly_it() {
+        let ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let issuer = ca.root_certificate().clone();
+        let key = subject_key();
+        let names = names();
+        let facts = LeafFacts {
+            subject_cn: "www.lab.invalid",
+            dns_names: &names,
+            subject_public_key: &key,
+            validity_days: 1,
+            serial: &[0x41, 0x03],
+            crl_distribution_point: None,
+            client_auth: true,
+        };
+        let now = SystemTime::now();
+        let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
+        assert_eq!(check_server_leaf_tbs(&issuer, &facts, &tbs, now), Ok(()));
+        let usage = tbs
+            .extensions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|extension| extension.extn_id == EXTENDED_KEY_USAGE)
+            .unwrap();
+        assert_eq!(
+            ExtendedKeyUsage::from_der(usage.extn_value.as_bytes())
+                .unwrap()
+                .0,
+            vec![SERVER_AUTH, CLIENT_AUTH]
+        );
+        // A TBS with clientAuth is refused for facts without it, and back.
+        let without = LeafFacts {
+            client_auth: false,
+            ..facts_clone(&facts)
+        };
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &without, &tbs, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        let plain = build_server_leaf_tbs(&issuer, &without, now).unwrap();
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &facts, &plain, now).unwrap_err(),
+            LeafError::Extensions
+        );
+    }
+
+    #[test]
     fn a_built_leaf_passes_the_signer_gate_and_verifies_once_signed() {
         let mut ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
         let issuer = ca.root_certificate().clone();
@@ -376,6 +468,7 @@ mod tests {
             validity_days: 1,
             serial: &[0x41, 0x02],
             crl_distribution_point: None,
+            client_auth: false,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -431,6 +524,7 @@ mod tests {
             validity_days: 1,
             serial: &[0x41, 0x02],
             crl_distribution_point: None,
+            client_auth: false,
         };
         let now = SystemTime::now();
         let good = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -533,6 +627,7 @@ mod tests {
             validity_days: facts.validity_days,
             serial: facts.serial,
             crl_distribution_point: facts.crl_distribution_point,
+            client_auth: facts.client_auth,
         }
     }
 
@@ -550,6 +645,7 @@ mod tests {
             validity_days: 1,
             serial: &[0x41, 0x02],
             crl_distribution_point: Some(url),
+            client_auth: false,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();

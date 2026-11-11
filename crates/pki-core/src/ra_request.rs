@@ -44,19 +44,55 @@ fn put_text(out: &mut Vec<u8>, text: &str) -> Result<(), FieldTooLong> {
 pub fn ra_issuance_message(request: &RaIssuanceRequest<'_>) -> Result<Vec<u8>, FieldTooLong> {
     let mut out = Vec::with_capacity(256);
     out.extend_from_slice(b"trust-platform:ra-issuance-request:v1\0");
-    put_text(&mut out, request.ra_id)?;
+    put_issuance_fields(&mut out, request)?;
+    Ok(out)
+}
+
+/// Version 2 (ADR-0028): what the RA signs when it sets the subject itself,
+/// correcting the CSR's, or asks for optional extensions from the profile's
+/// allowance. The CA ignores the CSR's subject and extensions and issues
+/// exactly these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaIssuanceRequestV2<'a> {
+    pub base: RaIssuanceRequest<'a>,
+    /// The certificate's subject CN; one of the DNS names.
+    pub subject_cn: &'a str,
+    /// Optional extensions from the closed catalogue, in catalogue order.
+    pub extensions: &'a [String],
+}
+
+/// The signed bytes of a version 2 request: the version 1 fields under a
+/// version 2 prefix, then the subject CN and the extension names.
+pub fn ra_issuance_message_v2(request: &RaIssuanceRequestV2<'_>) -> Result<Vec<u8>, FieldTooLong> {
+    let mut out = Vec::with_capacity(320);
+    out.extend_from_slice(b"trust-platform:ra-issuance-request:v2\0");
+    put_issuance_fields(&mut out, &request.base)?;
+    put_text(&mut out, request.subject_cn)?;
+    let count = u32::try_from(request.extensions.len()).map_err(|_| FieldTooLong)?;
+    out.extend_from_slice(&count.to_be_bytes());
+    for extension in request.extensions {
+        put_text(&mut out, extension)?;
+    }
+    Ok(out)
+}
+
+fn put_issuance_fields(
+    out: &mut Vec<u8>,
+    request: &RaIssuanceRequest<'_>,
+) -> Result<(), FieldTooLong> {
+    put_text(out, request.ra_id)?;
     out.extend_from_slice(&request.ca_id);
-    put_text(&mut out, request.profile_id)?;
+    put_text(out, request.profile_id)?;
     out.extend_from_slice(&request.request_id);
     out.extend_from_slice(&request.csr_sha256);
     let count = u32::try_from(request.dns_names.len()).map_err(|_| FieldTooLong)?;
     out.extend_from_slice(&count.to_be_bytes());
     for name in request.dns_names {
-        put_text(&mut out, name)?;
+        put_text(out, name)?;
     }
     out.extend_from_slice(&request.validity_days.to_be_bytes());
     out.extend_from_slice(&request.signed_at_unix.to_be_bytes());
-    Ok(out)
+    Ok(())
 }
 
 /// What an RA signs to revoke a certificate it obtained through the channel
@@ -141,6 +177,40 @@ mod tests {
             reason_code: 1,
             reason: "key compromise reported by the subscriber",
             signed_at_unix: 1_794_225_600,
+        }
+    }
+
+    // tests/management_authorization_proofs.sql asserts the same digest.
+    #[test]
+    fn v2_message_binds_subject_and_extensions() {
+        use sha2::{Digest, Sha256};
+        let names = names();
+        let extensions = vec!["client-auth".to_owned()];
+        let request = RaIssuanceRequestV2 {
+            base: request(&names),
+            subject_cn: "www.lab.invalid",
+            extensions: &extensions,
+        };
+        let message = ra_issuance_message_v2(&request).unwrap();
+        assert!(message.starts_with(b"trust-platform:ra-issuance-request:v2\0"));
+        assert_eq!(hex(&Sha256::digest(&message)), "e4d2d2c2083d1db9337224804003a0b5626b31fa3531c953ef10cc7ce88602dc");
+        // Never the v1 bytes, and every new field counts.
+        assert_ne!(
+            &message[38..],
+            &ra_issuance_message(&request.base).unwrap()[38..]
+        );
+        let none: Vec<String> = Vec::new();
+        for variant in [
+            RaIssuanceRequestV2 {
+                subject_cn: "api.lab.invalid",
+                ..request.clone()
+            },
+            RaIssuanceRequestV2 {
+                extensions: &none,
+                ..request.clone()
+            },
+        ] {
+            assert_ne!(ra_issuance_message_v2(&variant).unwrap(), message);
         }
     }
 

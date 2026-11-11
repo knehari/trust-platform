@@ -6,6 +6,7 @@ pub mod application_crl;
 pub mod application_leaf;
 pub mod audit_chain;
 pub mod audit_manifest;
+pub mod authorization;
 pub mod capacity_policy;
 pub mod ra_request;
 pub mod signer_capabilities;

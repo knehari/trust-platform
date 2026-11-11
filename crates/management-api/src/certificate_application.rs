@@ -12,7 +12,12 @@
 //! the names and validity against it. CSR extensions are never used.
 //!
 //! A registration officer (`trust-registration-officer` role and grant), who
-//! is not the requester, approves or rejects the exact application.
+//! is not the requester, approves or rejects the exact application. Since
+//! migration 0041 (ADR-0028) the decision is signed: the officer asks for the
+//! claim the database builds (application facts, CSR digest, subject, names,
+//! validity, optional extensions, key, time), signs it with their registered
+//! P-256 key, and sends the signature. The signer verifies that signature
+//! again before it signs a certificate; the API's own record is not enough.
 
 use axum::{
     body::Bytes,
@@ -21,6 +26,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use trust_pki_core::csr::{verify_pkcs10_p256, CsrValidationError};
@@ -32,6 +38,7 @@ use x509_cert::{
 use crate::{
     authorize,
     ca_proposal::printable,
+    profile_decision::signature_verifies,
     profile_lifecycle::{with_replay_header, write_context, write_status, WriteContext},
     query_db, query_db_as, scoped_ca_id, valid_profile_id, write_log, AppState,
 };
@@ -51,9 +58,27 @@ struct ApplicationRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DecisionClaimRequest {
+    decision: String,
+}
+
+#[derive(Serialize)]
+struct DecisionClaimResponse {
+    decision: String,
+    claim: String,
+    key_id: String,
+    issued_at: String,
+    /// The claim is valid for this many seconds after `issued_at`.
+    valid_for_seconds: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DecisionRequest {
     decision: String,
     reason: String,
+    issued_at: String,
+    signature_der_base64: String,
 }
 
 #[derive(Serialize)]
@@ -263,7 +288,67 @@ pub(crate) async fn submit_application(
     ))
 }
 
-/// `POST /v1/cas/{ca_id}/certificate-applications/{application_id}/decision`.
+/// `POST …/certificate-applications/{application_id}/decision-claims`: the
+/// claim to sign. Records nothing; the claim expires ten minutes after
+/// `issued_at`. 403 without an officer grant or registered key.
+pub(crate) async fn prepare_application_decision(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((raw_ca, raw_application)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let context = write_context(&state, &headers, &raw_ca, &body, OFFICER_ROLE, false).await?;
+    let application_id = uuid::Uuid::parse_str(&raw_application)
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .to_string();
+    let request: DecisionClaimRequest =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if !matches!(request.decision.as_str(), "approve" | "reject") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let WriteContext {
+        issuer,
+        subject,
+        ca_id,
+        writer_url,
+        ..
+    } = context;
+    let decision = request.decision.clone();
+    let (claim, key_id, issued_at) =
+        query_db(writer_url, state.database_slots.clone(), move |db| {
+            Ok(
+                match db.query_one(
+                    "SELECT claim, key_id, issued_at FROM prepare_certificate_decision_lab(\
+                     $1, $2, $3::text::uuid, $4::text::uuid, $5)",
+                    &[&issuer, &subject, &ca_id, &application_id, &decision],
+                ) {
+                    Ok(row) => Ok((
+                        row.get::<_, String>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, String>(2),
+                    )),
+                    Err(error) => Err(write_status(&error)),
+                },
+            )
+        })
+        .await??;
+    Ok(with_replay_header(
+        Json(DecisionClaimResponse {
+            decision: request.decision,
+            claim,
+            key_id,
+            issued_at,
+            valid_for_seconds: 600,
+        })
+        .into_response(),
+        false,
+    ))
+}
+
+/// `POST /v1/cas/{ca_id}/certificate-applications/{application_id}/decision`:
+/// a signed decision on a claim from `decision-claims`. The signature is
+/// verified with the officer's registered key in the transaction that
+/// records it; 422 and nothing kept when it does not verify.
 pub(crate) async fn decide_application(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -276,8 +361,13 @@ pub(crate) async fn decide_application(
         .to_string();
     let request: DecisionRequest =
         serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let issued_at = crate::valid_utc_timestamp(&request.issued_at)?;
+    let signature = STANDARD
+        .decode(request.signature_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     if !matches!(request.decision.as_str(), "approve" | "reject")
         || !printable(&request.reason, 500)
+        || !(8..=80).contains(&signature.len())
     {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -296,22 +386,38 @@ pub(crate) async fn decide_application(
         application_id.clone(),
         request.decision,
         request.reason,
+        issued_at,
+        signature,
         operation.clone(),
         request_sha256,
     );
     let (status, replayed) = query_db(writer_url, state.database_slots.clone(), move |db| {
-        Ok(
-            match db.query_one(
-                "SELECT status, replayed FROM decide_certificate_application_lab($1, $2, \
-                 $3::text::uuid, $4::text::uuid, $5, $6, $7::text::uuid, $8)",
-                &[
-                    &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
-                ],
-            ) {
-                Ok(row) => Ok((row.get::<_, String>(0), row.get::<_, bool>(1))),
-                Err(error) => Err(write_status(&error)),
-            },
-        )
+        let mut tx = db.transaction()?;
+        let row = match tx.query_one(
+            "SELECT claim, public_key_sec1, status, replayed FROM \
+             record_signed_certificate_decision_lab($1, $2, $3::text::uuid, $4::text::uuid, $5, $6, \
+             $7::text::timestamptz, $8, $9::text::uuid, $10)",
+            &[
+                &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8,
+                &args.9,
+            ],
+        ) {
+            Ok(row) => row,
+            Err(error) => return Ok(Err(write_status(&error))),
+        };
+        let claim: String = row.get(0);
+        let public_key: Vec<u8> = row.get(1);
+        // Only this officer's registered key over the exact claim counts. A
+        // replay returns the stored claim, verified against the new body's
+        // signature, so a replay with another signature is refused too.
+        if !signature_verifies(&public_key, &claim, &args.7) {
+            tx.rollback()?;
+            return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
+        }
+        let status: String = row.get(2);
+        let replayed: bool = row.get(3);
+        tx.commit()?;
+        Ok(Ok((status, replayed)))
     })
     .await??;
     write_log(serde_json::json!({
