@@ -266,6 +266,8 @@ struct OwnedFacts {
     subject_public_key: x509_cert::spki::SubjectPublicKeyInfoOwned,
     issuer: Certificate,
     crl_distribution_point: Option<String>,
+    /// A short-lived application (migration 0048): noRevAvail, no CRL point.
+    no_rev_avail: bool,
     /// The optional extensions the application's authorization names
     /// (migration 0041).
     client_auth: bool,
@@ -281,6 +283,7 @@ impl OwnedFacts {
             serial: &self.serial,
             crl_distribution_point: self.crl_distribution_point.as_deref(),
             client_auth: self.client_auth,
+            no_rev_avail: self.no_rev_avail,
         }
     }
 }
@@ -394,8 +397,22 @@ pub(crate) fn issue(
         Ok(row) => row.get(0),
         Err(error) => return Ok(Err(write_status(&error))),
     };
+    // Short-lived (migration 0048): noRevAvail instead of any CRL point.
+    let no_rev_avail: bool = match db.query_one(
+        "SELECT application_short_lived_lab($1, $2, $3::text::uuid, $4::text::uuid)",
+        &[
+            &caller.issuer,
+            &caller.subject,
+            &caller.ca_id,
+            &caller.application_id,
+        ],
+    ) {
+        Ok(row) => row.get(0),
+        Err(error) => return Ok(Err(write_status(&error))),
+    };
     let facts = OwnedFacts {
         crl_distribution_point,
+        no_rev_avail,
         client_auth: extensions
             .iter()
             .any(|extension| extension == "client-auth"),

@@ -86,6 +86,8 @@ struct Issued {
     extensions: Vec<String>,
     /// False for an issuance after migration 0041 with no signed proof.
     proven: bool,
+    /// Submitted as short-lived (migration 0048): noRevAvail, no CRL point.
+    short_lived: bool,
 }
 
 fn problems(record: &Issued) -> Vec<String> {
@@ -146,6 +148,7 @@ fn problems(record: &Issued) -> Vec<String> {
         serial: &record.serial,
         crl_distribution_point: record.crl_distribution_point.as_deref(),
         client_auth: record.extensions.iter().any(|e| e == "client-auth"),
+        no_rev_avail: record.short_lived,
     };
     if let Err(reason) = verify_server_leaf(
         &issuer,
@@ -177,9 +180,21 @@ fn revocation_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgre
     } else {
         "false"
     };
+    let short_lived = if db
+        .query_one(
+            "SELECT to_regclass('public.certificate_application_short_lived') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        "EXISTS (SELECT 1 FROM certificate_application_short_lived sl WHERE sl.application_id = i.application_id)"
+    } else {
+        "false"
+    };
     Ok(db
         .query(
             &format!("SELECT encode(r.serial_der_content, 'hex'), concat_ws('; ', \
+                 CASE WHEN {short_lived} THEN 'a short-lived certificate was revoked' END, \
                  CASE WHEN q.revocation_id IS NULL THEN 'no approved revocation request' END, \
                  CASE WHEN q.reason_code <> r.reason_code THEN 'reason differs from the request' END, \
                  CASE WHEN qe.actor_issuer = de.actor_issuer AND qe.actor_subject = de.actor_subject \
@@ -793,12 +808,24 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
     } else {
         ("'{}'::text[]".to_owned(), "true".to_owned())
     };
+    // Short-lived applications (migration 0048).
+    let short_lived = if db
+        .query_one(
+            "SELECT to_regclass('public.certificate_application_short_lived') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        "EXISTS (SELECT 1 FROM certificate_application_short_lived sl WHERE sl.application_id = a.application_id)"
+    } else {
+        "false"
+    };
     let rows = db.query(
         &format!("SELECT i.application_id::text, a.csr_der, a.subject_cn, a.dns_names, a.validity_days, \
                 c.serial_der_content, c.certificate_der, c.fingerprint_sha256, c.signed_at, \
                 k.certificate_der, s.tbs_sha256, s.outcome, \
                 (SELECT count(*) FROM lab_signer_claim l WHERE l.intent_id = s.intent_id), \
-                d.decision, dp.url, {extensions}, {proven} \
+                d.decision, dp.url, {extensions}, {proven}, {short_lived} \
            FROM certificate_application_issuance i \
            JOIN certificate_application a ON a.application_id = i.application_id \
            JOIN certificate c ON c.ca_id = i.ca_id AND c.request_id = i.request_id \
@@ -831,6 +858,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
             crl_distribution_point: row.get(14),
             extensions: row.get(15),
             proven: row.get::<_, Option<bool>>(16).unwrap_or(false),
+            short_lived: row.get(17),
         };
         let found = problems(&record);
         if !found.is_empty() {

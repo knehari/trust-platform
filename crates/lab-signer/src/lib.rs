@@ -79,6 +79,8 @@ pub struct IntentRecord {
     pub claimed: bool,
     /// The CRL distribution point snapshotted with the intent (migration 0032).
     pub crl_distribution_point: Option<String>,
+    /// A short-lived application (migration 0048): noRevAvail, no CRL point.
+    pub no_rev_avail: bool,
 }
 
 /// An RA's signed request (migrations 0038 and 0041).
@@ -660,6 +662,7 @@ pub fn sign_intent<S: IntentStore, K: P256Key + ?Sized>(
             .optional_extensions
             .iter()
             .any(|extension| extension == "client-auth"),
+        no_rev_avail: record.no_rev_avail,
     };
     check_server_leaf_tbs(&issuer, &facts, &tbs, now).map_err(Refusal::Tbs)?;
     // A key the API cannot register signed these exact facts.
@@ -708,7 +711,7 @@ pub mod service {
                 .query_opt(
                     "SELECT ca_id, tbs_sha256, serial, csr_der, spki_sha256, subject_cn, dns_names, \
                      validity_days, issuer_certificate_der, issuer_spki_sha256, signable, claimed, \
-                     crl_distribution_point FROM lab_signer_intent WHERE intent_id = $1",
+                     crl_distribution_point, no_rev_avail FROM lab_signer_intent WHERE intent_id = $1",
                     &[&intent_id],
                 )
                 .map_err(|_| Refusal::Database)?;
@@ -726,6 +729,7 @@ pub mod service {
                 signable: row.get(10),
                 claimed: row.get(11),
                 crl_distribution_point: row.get(12),
+                no_rev_avail: row.get(13),
             }))
         }
 
@@ -1415,6 +1419,7 @@ mod tests {
             serial: &[0x55, 0x01],
             crl_distribution_point: None,
             client_auth: extensions.iter().any(|e| e == "client-auth"),
+            no_rev_avail: false,
         };
         let tbs_der = build_server_leaf_tbs(&issuer, &facts, SystemTime::now())
             .unwrap()
@@ -1434,6 +1439,7 @@ mod tests {
             signable: true,
             claimed: false,
             crl_distribution_point: None,
+            no_rev_avail: false,
         };
         let mut fixture = Fixture {
             ca_key,
@@ -1557,6 +1563,12 @@ mod tests {
                     Some("http://crl.lab.invalid/latest.crl".into())
             ),
             Refusal::Tbs(LeafError::Extensions)
+        );
+        // The application is short-lived (migration 0048): a 30-day TBS
+        // without noRevAvail is refused.
+        assert_eq!(
+            edit(&|f| f.store.record.as_mut().unwrap().no_rev_avail = true),
+            Refusal::Tbs(LeafError::Validity)
         );
     }
 

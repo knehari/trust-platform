@@ -14,7 +14,11 @@
 //!   subjectAltName with exactly the approved DNS names in order,
 //!   subjectKeyIdentifier and authorityKeyIdentifier, then, when the CA
 //!   publishes its CRLs (ADR-0019), cRLDistributionPoints with exactly the
-//!   one URL its signing intent was journaled under.
+//!   one URL its signing intent was journaled under;
+//! - for a short-lived application (ADR-0042), instead of any distribution
+//!   point, noRevAvail (id-ce-noRevAvail, 2.5.29.56, non-critical, NULL:
+//!   no revocation information is available), and a validity of at most
+//!   seven days.
 //!
 //! Nothing here holds or uses a private key. It builds and checks
 //! structures; signature verification uses the reviewed verifier of
@@ -51,6 +55,10 @@ const EXTENDED_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.2
 const SUBJECT_ALT_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.17");
 const SUBJECT_KEY_ID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.14");
 const CRL_DISTRIBUTION_POINTS: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.31");
+/// id-ce-noRevAvail: the certificate carries no revocation information.
+const NO_REV_AVAIL: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.56");
+/// The longest validity of a short-lived certificate (ADR-0042).
+pub const SHORT_LIVED_MAX_DAYS: u32 = 7;
 const SERVER_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.1");
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
 
@@ -109,6 +117,9 @@ pub struct LeafFacts<'a> {
     /// `client-auth`: id-kp-clientAuth is added to the extended key usage
     /// beside serverAuth, when the authorization asked for it (ADR-0028).
     pub client_auth: bool,
+    /// A short-lived application (ADR-0042): noRevAvail, no distribution
+    /// point, at most `SHORT_LIVED_MAX_DAYS`.
+    pub no_rev_avail: bool,
 }
 
 /// An http(s) URL of printable ASCII without spaces, as the database builds.
@@ -219,6 +230,11 @@ fn expected_extensions(
             }]),
         )?),
     })
+    .chain(if facts.no_rev_avail {
+        Some(extension(NO_REV_AVAIL, false, &x509_cert::der::asn1::Null)?)
+    } else {
+        None
+    })
     .collect())
 }
 
@@ -245,6 +261,15 @@ fn checked_facts(facts: &LeafFacts<'_>) -> Result<(), LeafError> {
         .is_some_and(|url| !valid_distribution_point(url))
     {
         return Err(LeafError::Extensions);
+    }
+    // No revocation information: no place to look for it, and a short life.
+    if facts.no_rev_avail {
+        if facts.crl_distribution_point.is_some() {
+            return Err(LeafError::Extensions);
+        }
+        if facts.validity_days > SHORT_LIVED_MAX_DAYS {
+            return Err(LeafError::Validity);
+        }
     }
     Ok(())
 }
@@ -422,6 +447,7 @@ mod tests {
             serial: &[0x41, 0x03],
             crl_distribution_point: None,
             client_auth: true,
+            no_rev_avail: false,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -469,6 +495,7 @@ mod tests {
             serial: &[0x41, 0x02],
             crl_distribution_point: None,
             client_auth: false,
+            no_rev_avail: false,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -525,6 +552,7 @@ mod tests {
             serial: &[0x41, 0x02],
             crl_distribution_point: None,
             client_auth: false,
+            no_rev_avail: false,
         };
         let now = SystemTime::now();
         let good = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -628,6 +656,7 @@ mod tests {
             serial: facts.serial,
             crl_distribution_point: facts.crl_distribution_point,
             client_auth: facts.client_auth,
+            no_rev_avail: facts.no_rev_avail,
         }
     }
 
@@ -646,6 +675,7 @@ mod tests {
             serial: &[0x41, 0x02],
             crl_distribution_point: Some(url),
             client_auth: false,
+            no_rev_avail: false,
         };
         let now = SystemTime::now();
         let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
@@ -699,5 +729,76 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_short_lived_leaf_says_no_revocation_is_available() {
+        let ca = EphemeralLabCa::new("Sovereign Trust Lab Root").unwrap();
+        let issuer = ca.root_certificate().clone();
+        let key = subject_key();
+        let names = names();
+        let facts = LeafFacts {
+            subject_cn: "www.lab.invalid",
+            dns_names: &names,
+            subject_public_key: &key,
+            validity_days: 3,
+            serial: &[0x41, 0x03],
+            crl_distribution_point: None,
+            client_auth: false,
+            no_rev_avail: true,
+        };
+        let now = SystemTime::now();
+        let tbs = build_server_leaf_tbs(&issuer, &facts, now).unwrap();
+        assert_eq!(check_server_leaf_tbs(&issuer, &facts, &tbs, now), Ok(()));
+        let extensions = tbs.extensions.as_ref().unwrap();
+        let last = extensions.last().unwrap();
+        // Non-critical, and its value is exactly the DER NULL.
+        assert_eq!(
+            (last.extn_id, last.critical, last.extn_value.as_bytes()),
+            (NO_REV_AVAIL, false, &[0x05, 0x00][..])
+        );
+        assert!(!extensions
+            .iter()
+            .any(|extension| extension.extn_id == CRL_DISTRIBUTION_POINTS));
+        // A TBS without it does not pass for a short-lived application, nor
+        // one with it for an ordinary application.
+        let ordinary = LeafFacts {
+            no_rev_avail: false,
+            ..facts_clone(&facts)
+        };
+        let plain = build_server_leaf_tbs(&issuer, &ordinary, now).unwrap();
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &facts, &plain, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        assert_eq!(
+            check_server_leaf_tbs(&issuer, &ordinary, &tbs, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        // Never with a distribution point, never longer than seven days.
+        let with_point = LeafFacts {
+            crl_distribution_point: Some("http://crl.lab.invalid/latest.crl"),
+            ..facts_clone(&facts)
+        };
+        assert_eq!(
+            build_server_leaf_tbs(&issuer, &with_point, now).unwrap_err(),
+            LeafError::Extensions
+        );
+        // (Checked on the facts alone: the lab root lives seven days.)
+        let too_long = LeafFacts {
+            validity_days: SHORT_LIVED_MAX_DAYS + 1,
+            ..facts_clone(&facts)
+        };
+        assert_eq!(checked_facts(&too_long), Err(LeafError::Validity));
+        let longest = LeafFacts {
+            validity_days: SHORT_LIVED_MAX_DAYS,
+            ..facts_clone(&facts)
+        };
+        assert_eq!(checked_facts(&longest), Ok(()));
+        let ordinary_long = LeafFacts {
+            no_rev_avail: false,
+            ..facts_clone(&too_long)
+        };
+        assert_eq!(checked_facts(&ordinary_long), Ok(()));
     }
 }
