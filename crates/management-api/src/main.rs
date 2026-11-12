@@ -4916,8 +4916,10 @@ mod tests {
             metrics.contains(&format!("trust_crl_next_update_seconds{{ca_id=\"{ca}\"}} ")),
             "{metrics}"
         );
+        // Other tests write audit events concurrently: only the gauge's
+        // presence is stable here (its value is checked in the SQL suite).
         assert!(
-            metrics.contains("trust_audit_unsealed_events 0\n"),
+            metrics.contains("\ntrust_audit_unsealed_events "),
             "{metrics}"
         );
         assert!(metrics.contains("trust_audit_chain_head_seq "), "{metrics}");
