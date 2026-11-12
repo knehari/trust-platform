@@ -223,9 +223,16 @@ INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
 VALUES ('urn:trust-platform:ra', 'my-ra', '<ca_id>', 'certificate-requester');
 ```
 
-The RA then calls `POST /v1/ra/cas/<ca_id>/certificates` with the body described in the OpenAPI contract. The signature is ECDSA P-256 with SHA-256 (DER, base64) over `trust_pki_core::ra_request::ra_issuance_message`, and `signed_at` must be within five minutes. `frontend/dev/certificate-application-e2e.mjs` builds such a request with Node's crypto. To stop an RA, set `enabled = false`.
+The RA then calls `POST /v1/ra/cas/<ca_id>/certificates` with the body described in the OpenAPI contract. The signature is ECDSA P-256 with SHA-256 (DER, base64) over `trust_pki_core::ra_request::ra_issuance_message`, and `signed_at` must be at most five minutes old and at most 30 seconds ahead ([ADR-0039](../adr/ADR-0039-ra-hardening.md)). `frontend/dev/certificate-application-e2e.mjs` builds such a request with Node's crypto. To stop an RA, set `enabled = false`.
 
 The same RA revokes a certificate it obtained with `POST /v1/ra/cas/<ca_id>/revocations` (ADR-0026). The request is signed over `trust_pki_core::ra_request::ra_revocation_message`, and the revocation appears on the next CRL.
+
+Each RA is limited, per rolling hour, to 100 issuance and 20 revocation requests unless the owner sets otherwise (ADR-0039); beyond, the API answers 429. The owner can also restrict an RA to some of the profile's DNS zones:
+
+```sql
+INSERT INTO ra_system_policy (ra_id, max_issuance_per_hour, max_revocation_per_hour, allowed_dns_zones)
+VALUES ('my-ra', 500, 50, ARRAY['team.lab.invalid']);
+```
 
 ## Publishing a CRL on revocation (ADR-0027)
 

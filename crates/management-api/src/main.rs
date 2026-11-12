@@ -606,7 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0045")?;
+    .map_err(|_| "management views unavailable or older than migration 0046")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1092,6 +1092,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_crl_separate_publication_version() = 1 \
              AND management_dedicated_worker_version() = 1 \
              AND management_operational_metrics_version() = 1 \
+             AND management_ra_hardening_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -5693,6 +5694,57 @@ mod tests {
             &ra_key,
         );
         assert_eq!(ra_post(outside).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+        // RA hardening (migration 0046, ADR-0039). Dated more than 30 seconds
+        // ahead: 401, though within the five-minute window.
+        assert_eq!(
+            ra_post(ra_body(
+                &random_uuid().to_string(),
+                names(),
+                now + 120,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // The owner narrows the RA to ra.lab.invalid: a name the profile
+        // allows but the RA does not is refused (403), and a zero quota stops
+        // it (429). Nothing is recorded; the policy is then lifted.
+        let ra_policy = |sql: &'static str| {
+            let owner_url = owner_url.clone();
+            async move {
+                query_db(owner_url, Arc::new(Semaphore::new(1)), move |db| {
+                    db.batch_execute(sql)
+                })
+                .await
+                .unwrap()
+            }
+        };
+        ra_policy(
+            "INSERT INTO ra_system_policy (ra_id, max_issuance_per_hour, max_revocation_per_hour, allowed_dns_zones)
+             VALUES ('test-ra', 100, 20, ARRAY['ra.lab.invalid'])",
+        )
+        .await;
+        assert_eq!(
+            ra_post(ra_body(
+                &random_uuid().to_string(),
+                vec!["ra.lab.invalid".to_owned(), "other.lab.invalid".to_owned()],
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        ra_policy("UPDATE ra_system_policy SET max_issuance_per_hour = 0 WHERE ra_id = 'test-ra'")
+            .await;
+        assert_eq!(
+            ra_post(ra_body(&random_uuid().to_string(), names(), now, &ra_key))
+                .await
+                .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        ra_policy("DELETE FROM ra_system_policy WHERE ra_id = 'test-ra'").await;
         // Accepted: issued once, under the CA key, to the CSR's key.
         let (status, ra_issued) = ra_post(ra_body(&ra_request, names(), now, &ra_key)).await;
         assert_eq!(
@@ -5942,6 +5994,33 @@ mod tests {
             .0,
             StatusCode::NOT_FOUND
         );
+        // A zero revocation quota stops the RA (429, migration 0046); the
+        // revocation goes through once the owner lifts it.
+        let owner = owner_url.clone();
+        query_db(owner.clone(), Arc::new(Semaphore::new(1)), |db| {
+            db.batch_execute(
+                "INSERT INTO ra_system_policy (ra_id, max_issuance_per_hour, max_revocation_per_hour)
+                 VALUES ('test-ra', 100, 0)",
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            revoke_post(revocation_body(
+                &revocation_request,
+                &ra_serial,
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        query_db(owner, Arc::new(Semaphore::new(1)), |db| {
+            db.batch_execute("DELETE FROM ra_system_policy WHERE ra_id = 'test-ra'")
+        })
+        .await
+        .unwrap();
         let (status, revoked) = revoke_post(revocation_body(
             &revocation_request,
             &ra_serial,

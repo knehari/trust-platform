@@ -52,8 +52,11 @@ use crate::{
 
 /// The principal under which an RA system is the requester of record.
 pub(crate) const RA_ISSUER: &str = "urn:trust-platform:ra";
-/// How far `signed_at` may be from the API's clock, in seconds.
+/// How far in the past `signed_at` may be from the API's clock, in seconds.
 const FRESHNESS_SECONDS: i64 = 300;
+/// How far in the future `signed_at` may be, in seconds (clock skew only;
+/// migration 0046 applies the same bound in the database, ADR-0039).
+const FUTURE_SKEW_SECONDS: i64 = 30;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -437,7 +440,7 @@ async fn authenticate(
             .as_secs(),
     )
     .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    if (now - signed_at).abs() > FRESHNESS_SECONDS {
+    if now - signed_at > FRESHNESS_SECONDS || signed_at - now > FUTURE_SKEW_SECONDS {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let lookup = ra_id.to_owned();

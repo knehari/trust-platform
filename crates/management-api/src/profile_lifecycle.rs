@@ -171,6 +171,9 @@ pub(crate) fn write_status(error: &postgres::Error) -> StatusCode {
         StatusCode::NOT_FOUND
     } else if code.code() == "TP409" || *code == SqlState::UNIQUE_VIOLATION {
         StatusCode::CONFLICT
+    } else if code.code() == "TP429" {
+        // A quota is exhausted (migration 0046: an RA's hourly quota).
+        StatusCode::TOO_MANY_REQUESTS
     } else if code.code() == "TP422" {
         // Incompatible with the CA (migration 0024): policy version or suites.
         StatusCode::UNPROCESSABLE_ENTITY
