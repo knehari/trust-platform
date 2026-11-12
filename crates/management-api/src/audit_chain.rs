@@ -56,23 +56,6 @@ pub(crate) async fn seal_pending_events(context: &WorkerContext) -> Result<SealP
     Ok(pass)
 }
 
-/// Runs a sealing pass shortly after startup, then every `interval`, on its
-/// own thread. A failed pass is logged and retried at the next tick.
-pub(crate) fn spawn_sealer(context: WorkerContext, interval: std::time::Duration) {
-    let runtime = tokio::runtime::Handle::current();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        loop {
-            if runtime.block_on(seal_pending_events(&context)).is_err() {
-                write_log(
-                    serde_json::json!({"event": "audit_chain_sealed", "status": "UNAVAILABLE"}),
-                );
-            }
-            std::thread::sleep(interval);
-        }
-    });
-}
-
 /// Long enough for the signer to recompute the links since its last
 /// checkpoint; the API never holds a database connection meanwhile.
 const CHECKPOINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -126,15 +109,4 @@ pub(crate) fn checkpoint_pass(socket: &std::path::Path) -> Option<CheckpointRepl
         None => serde_json::json!({"event": "audit_checkpoint", "status": "UNAVAILABLE"}),
     });
     reply
-}
-
-/// Requests a checkpoint shortly after startup, then every `interval`.
-pub(crate) fn spawn_checkpointer(socket: std::path::PathBuf, interval: std::time::Duration) {
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(10));
-        loop {
-            checkpoint_pass(&socket);
-            std::thread::sleep(interval);
-        }
-    });
 }

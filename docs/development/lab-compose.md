@@ -10,7 +10,7 @@ This Compose stack runs the laboratory platform on 127.0.0.1 only. It is not a p
 | `crl-web` | static CRL server ([ADR-0030](../adr/ADR-0030-separate-crl-publication.md)) | `http://127.0.0.1:8082/` |
 | `db` | PostgreSQL 16, mutual TLS only ([ADR-0031](../adr/ADR-0031-database-tls.md), [ADR-0036](../adr/ADR-0036-database-mtls.md)) | not published |
 | `signer` | lab signer; CA and audit keys in SoftHSM2 tokens ([ADR-0034](../adr/ADR-0034-pkcs11-ca-key.md), [ADR-0035](../adr/ADR-0035-pkcs11-audit-key.md)) | Unix socket only |
-| `worker` | sealing, CRL renewal, checkpoints ([ADR-0037](../adr/ADR-0037-dedicated-worker.md)) | none |
+| `worker` | sealing, CRL renewal, checkpoints ([ADR-0037](../adr/ADR-0037-dedicated-worker.md)); metrics ([ADR-0038](../adr/ADR-0038-operational-metrics.md)) | `http://127.0.0.1:9464/metrics` |
 | `publisher` | verifies and writes the public CRLs ([ADR-0030](../adr/ADR-0030-separate-crl-publication.md)) | none |
 
 Generated passwords, PINs and public points stay in the ignored `.env.lab`. Keys and certificates stay in the ignored `.lab-keys/`. `init-env.sh` never replaces an existing value; it only adds missing ones.
@@ -161,6 +161,17 @@ The `laboratory-compose` GitHub Actions job builds the images and runs the same 
 ## Background worker (ADR-0037)
 
 The periodic tasks run in the `worker` service, the API image started with `--worker` ([ADR-0037](../adr/ADR-0037-dedicated-worker.md), Proposed). It has no listener and no OIDC configuration, and connects with its own login, `trust_worker_lab`, a direct member of `trust_worker` (migration 0044), with its own client certificate. Only that login can seal the audit chain and act as the system renewer; the API's logins cannot. The API refuses the `*_INTERVAL_SECONDS` variables, so a stale configuration cannot silently stop the tasks. Its logs (`docker compose … logs worker`) start with `worker_started`.
+
+## Operational metrics (ADR-0038)
+
+The worker serves its metrics in the Prometheus text format at `http://127.0.0.1:9464/metrics` ([ADR-0038](../adr/ADR-0038-operational-metrics.md), Proposed). Try `curl -s http://127.0.0.1:9464/metrics | grep -v '^#'`. The metrics are:
+- certificates in force, and those expiring within 30 days, per CA;
+- issuance and CRL signing outcomes awaiting reconciliation, and signing intents unconfirmed for over 5 minutes;
+- seconds until each CA's CRL nextUpdate, and revocations not yet published;
+- unsealed audit events, the chain's head and the age of the latest checkpoint;
+- the worker's passes per task, the time of each task's last success, and renewal and checkpoint outcomes.
+
+`trust_metrics_database_up 0` means the worker could not read the database; the database metrics are then left out. The port has no authentication; it is published on host loopback only.
 
 ## Automatic CRL renewal (ADR-0021)
 

@@ -132,6 +132,8 @@ fi
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f migrations/0044_dedicated_worker.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0045_operational_metrics.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_api_readonly.sql >/dev/null

@@ -108,6 +108,25 @@ jobs:
           # The database owner's own action: grants on the new issuing CA.
           export TRUST_LAB_OWNER_PSQL="docker exec -i $DB_CONTAINER psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 -q"
           node frontend/dev/certificate-application-e2e.mjs
+      - name: The worker exposes operational metrics (ADR-0038)
+        run: |
+          set -euo pipefail
+          metrics=$(curl --fail --silent http://127.0.0.1:9464/metrics)
+          for expected in \
+            'trust_metrics_database_up 1' \
+            'trust_crl_next_update_seconds{ca_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd"}' \
+            'trust_certificates_valid{ca_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd"}' \
+            'trust_crl_renewals_total{status="PUBLISHED"}' \
+            'trust_worker_task_passes_total{task="audit_seal",result="ok"}'; do
+            printf '%s\n' "$metrics" | grep -qF "$expected" || { echo "FAIL: missing $expected" >&2; printf '%s\n' "$metrics" >&2; exit 1; }
+          done
+          # The worker has sealed at least once by now.
+          printf '%s\n' "$metrics" | awk '$1 == "trust_worker_task_passes_total{task=\"audit_seal\",result=\"ok\"}" && $2 > 0 { found = 1 } END { exit !found }'
+          if curl --fail --silent --max-time 5 http://127.0.0.1:9464/; then
+            echo 'FAIL: the metrics listener serves more than /metrics' >&2
+            exit 1
+          fi
+          echo 'PASS: worker metrics from the database and the worker'
       - name: The laboratory database requires mutual TLS (ADR-0031, ADR-0036)
         run: |
           set -euo pipefail

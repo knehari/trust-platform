@@ -16,6 +16,7 @@ mod profile_proposal;
 mod ra_channel;
 mod tls_listener;
 mod worker;
+mod worker_metrics;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -605,7 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0044")?;
+    .map_err(|_| "management views unavailable or older than migration 0045")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1090,6 +1091,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_revocation_proofs_version() = 1 \
              AND management_crl_separate_publication_version() = 1 \
              AND management_dedicated_worker_version() = 1 \
+             AND management_operational_metrics_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -4903,6 +4905,31 @@ mod tests {
         assert_eq!(published_events.len(), 1);
         assert_eq!(published_events[0]["chain_sealed"], json!(false));
         let pass = audit_chain::seal_pending_events(&worker).await.unwrap();
+        // The worker's metrics (migration 0045, ADR-0038): read through its
+        // login, aggregated per CA; the writer's login cannot read them.
+        let metrics = worker::metrics_text(&worker).await;
+        assert!(
+            metrics.contains("trust_metrics_database_up 1\n"),
+            "{metrics}"
+        );
+        assert!(
+            metrics.contains(&format!("trust_crl_next_update_seconds{{ca_id=\"{ca}\"}} ")),
+            "{metrics}"
+        );
+        assert!(
+            metrics.contains("trust_audit_unsealed_events 0\n"),
+            "{metrics}"
+        );
+        assert!(metrics.contains("trust_audit_chain_head_seq "), "{metrics}");
+        let refused = worker::metrics_text(&as_writer).await;
+        assert!(
+            refused.contains("trust_metrics_database_up 0\n"),
+            "{refused}"
+        );
+        assert!(
+            !refused.contains("trust_crl_next_update_seconds"),
+            "{refused}"
+        );
         assert!(pass.sealed >= 1 && pass.head_seq >= pass.sealed);
         assert_eq!(pass.head_hash.len(), 64);
         // The signer recomputes the chain and signs its head with the audit

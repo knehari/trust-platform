@@ -19,12 +19,20 @@
 //! - `TRUST_CRL_RENEWAL_INTERVAL_SECONDS` (5–86400),
 //!   `TRUST_AUDIT_SEAL_INTERVAL_SECONDS` (5–86400) and
 //!   `TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS` (30–86400): each task runs
-//!   only when its interval is set; at least one must be.
+//!   only when its interval is set; at least one must be;
+//! - `TRUST_WORKER_METRICS_BIND` (optional, for example `127.0.0.1:9464`):
+//!   serves `GET /metrics`, the operational metrics of ADR-0038, in the
+//!   Prometheus text format. Nothing else is served there.
 use std::{env, error::Error, path::PathBuf, sync::Arc, time::Duration};
 
 use tokio::sync::Semaphore;
 
-use crate::{audit_chain, crl_publication, query_db, write_log};
+use crate::{
+    audit_chain::{self, CheckpointReply},
+    crl_publication, query_db,
+    worker_metrics::{self, Task, METRICS},
+    write_log,
+};
 
 /// Connections the worker uses at once: its tasks run one pass at a time.
 const WORKER_DATABASE_SLOTS: usize = 2;
@@ -62,7 +70,8 @@ pub(crate) fn restricted_worker_login(db: &mut postgres::Client) -> Result<bool,
              AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'm', 'f', 'v') \
                  AND has_table_privilege(current_user, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) \
-             AND management_dedicated_worker_version() = 1",
+             AND management_dedicated_worker_version() = 1 \
+             AND management_operational_metrics_version() = 1",
             &[],
         )?
         .get(0))
@@ -107,21 +116,80 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         restricted_worker_login,
     )
     .await
-    .map_err(|_| "worker database unavailable or older than migration 0044")?;
+    .map_err(|_| "worker database unavailable or older than migration 0045")?;
     if !restricted {
         return Err("the worker login is not limited to a direct trust_worker membership".into());
     }
+    let metrics_bind = env::var("TRUST_WORKER_METRICS_BIND")
+        .ok()
+        .filter(|bind| !bind.is_empty())
+        .map(|bind| {
+            bind.parse::<std::net::SocketAddr>().map_err(|_| {
+                "TRUST_WORKER_METRICS_BIND is an address and port, e.g. 127.0.0.1:9464"
+            })
+        })
+        .transpose()?;
+    let runtime = tokio::runtime::Handle::current();
     if let Some(every) = renewal {
-        crl_publication::spawn_renewer(context.clone(), every);
+        let (context, runtime) = (context.clone(), runtime.clone());
+        // A CA with publish_on_revocation (migration 0040) becomes due as soon
+        // as a revocation is recorded; the next pass publishes it.
+        every_interval(Duration::from_secs(5), every, move || {
+            let outcome = runtime.block_on(crl_publication::renew_due_crls(&context));
+            match &outcome {
+                Ok(outcomes) => outcomes
+                    .iter()
+                    .for_each(|(_, status)| METRICS.renewal(status)),
+                Err(_) => write_log(
+                    serde_json::json!({"event": "crl_auto_renewal", "status": "UNAVAILABLE"}),
+                ),
+            }
+            METRICS.pass(Task::CrlRenewal, outcome.is_ok());
+        });
     }
     if let Some(every) = sealing {
-        audit_chain::spawn_sealer(context.clone(), every);
+        let (context, runtime) = (context.clone(), runtime.clone());
+        every_interval(Duration::from_secs(2), every, move || {
+            let outcome = runtime.block_on(audit_chain::seal_pending_events(&context));
+            match &outcome {
+                Ok(pass) => METRICS.sealed(u64::try_from(pass.sealed).unwrap_or(0)),
+                Err(_) => write_log(
+                    serde_json::json!({"event": "audit_chain_sealed", "status": "UNAVAILABLE"}),
+                ),
+            }
+            METRICS.pass(Task::Seal, outcome.is_ok());
+        });
     }
     if let (Some(every), Some(socket)) = (checkpoints, context.signer_socket.clone()) {
-        audit_chain::spawn_checkpointer(socket, every);
+        every_interval(Duration::from_secs(10), every, move || {
+            let status = match audit_chain::checkpoint_pass(&socket) {
+                Some(CheckpointReply::Current { signed: true, .. }) => "SIGNED",
+                Some(CheckpointReply::Current { signed: false, .. }) => "UNCHANGED",
+                Some(CheckpointReply::Refused(_)) => "REFUSED",
+                None => "UNAVAILABLE",
+            };
+            METRICS.checkpoint(status);
+            METRICS.pass(Task::Checkpoint, matches!(status, "SIGNED" | "UNCHANGED"));
+        });
+    }
+    if let Some(bind) = metrics_bind {
+        let listener = tokio::net::TcpListener::bind(bind).await?;
+        let context = context.clone();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/metrics",
+                axum::routing::get(move || metrics_response(context.clone())),
+            );
+            if let Err(error) = axum::serve(listener, app).await {
+                write_log(
+                    serde_json::json!({"event": "worker_metrics_stopped", "error": error.to_string()}),
+                );
+            }
+        });
     }
     write_log(serde_json::json!({
         "event": "worker_started",
+        "metrics_bind": metrics_bind.map(|bind| bind.to_string()),
         "crl_renewal_interval_seconds": renewal.map(|d| d.as_secs()),
         "audit_seal_interval_seconds": sealing.map(|d| d.as_secs()),
         "audit_checkpoint_interval_seconds": checkpoints.map(|d| d.as_secs()),
@@ -131,4 +199,46 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // The tasks run on their own threads; this task only keeps the runtime.
     std::future::pending::<()>().await;
     Ok(())
+}
+
+/// Runs `pass` after `delay`, then every `interval`, on its own thread. A
+/// failed pass is logged by `pass` and retried at the next tick.
+fn every_interval(delay: Duration, interval: Duration, mut pass: impl FnMut() + Send + 'static) {
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        loop {
+            pass();
+            std::thread::sleep(interval);
+        }
+    });
+}
+
+/// Upper bound on one scrape's database read.
+const METRICS_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `GET /metrics`: the worker's counters, and the database metrics when the
+/// database answers in time (`trust_metrics_database_up` says which).
+pub(crate) async fn metrics_text(context: &WorkerContext) -> String {
+    let database = tokio::time::timeout(
+        METRICS_QUERY_TIMEOUT,
+        query_db(
+            context.database_url.clone(),
+            context.database_slots.clone(),
+            worker_metrics::read_database_metrics,
+        ),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
+    worker_metrics::render(&METRICS, database.as_deref())
+}
+
+async fn metrics_response(context: WorkerContext) -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        metrics_text(&context).await,
+    )
 }
