@@ -155,6 +155,8 @@ jobs:
           echo "hostssl rules|without verify-full|host rules|errors: $rules"
           [ "$rules" = '2|0|0|0' ] || { echo 'FAIL: a network rule does not require the client certificate' >&2; exit 1; }
           echo 'PASS: plaintext and certificate-less TLS refused; every network rule requires the login certificate'
+      - name: Back up, destroy and restore the stack; detect a database rollback (ADR-0041)
+        run: bash tests/lab_backup_restore_drill.sh
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80

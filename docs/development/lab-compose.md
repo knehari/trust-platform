@@ -173,6 +173,28 @@ The worker serves its metrics in the Prometheus text format at `http://127.0.0.1
 
 `trust_metrics_database_up 0` means the worker could not read the database; the database metrics are then left out. The port has no authentication; it is published on host loopback only.
 
+## Backup and restore (ADR-0041)
+
+`scripts/lab/backup.sh` makes a cold backup ([ADR-0041](../adr/ADR-0041-lab-backup-restore.md), Proposed). It stops the api, worker, publisher and signer, then saves into `.lab-backups/<UTC time>/` (owner-only, ignored by git):
+- the database dump;
+- the SoftHSM2 tokens and the signer's checkpoint state;
+- a manifest of record counts, digests and file hashes.
+
+It then restarts the services and prints the time it took.
+
+`scripts/lab/restore.sh --replace-stack <dir>` destroys the stack and all its volumes and restores the backup into fresh ones. `--database-only <dir>` replaces only the database. Both refuse a backup whose files or schema version do not match, and check the restored records against the manifest.
+
+Keep `.env.lab` and `.lab-keys/` unchanged and apart from the backups: a restore needs them, and the tokens in the archive are protected only by the PINs in `.env.lab`.
+
+If you restore a database older than the signer's last checkpoint without its matching signer state, the signer refuses every checkpoint (`AuditRollback` in the worker log, `trust_audit_checkpoints_total{status="REFUSED"}`). That is the rollback alert; restore the matching backup with `--replace-stack` to resume.
+
+`tests/lab_backup_restore_drill.sh` runs the whole exercise (CI runs it after the end-to-end suites):
+1. a full restore, a republished CRL and new checkpoints;
+2. a rolled-back database that is refused;
+3. the recovery.
+
+`TRUST_LAB_AUDIT_INTERVAL_SECONDS` (default 60, at least 30) sets the worker's sealing and checkpoint interval; the drill uses 30.
+
 ## Automatic CRL renewal (ADR-0021)
 
 The worker sets `TRUST_CRL_RENEWAL_INTERVAL_SECONDS=5`. The issuing CA's provisioning (`scripts/lab/provision-issuing-ca.sql`) grants the system principal `urn:trust-platform:system`/`crl-renewer` the `crl-publisher` role. Every 5 seconds, the worker publishes the CRL of each granted CA that is due: none yet, nextUpdate within two days, or, with publish on revocation, a revocation not yet listed. Each pass that publishes is logged as `crl_auto_renewal` in the worker logs. The Revocation & CRLs view shows "Automatic renewal is on".

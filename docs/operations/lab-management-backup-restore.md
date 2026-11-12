@@ -56,6 +56,13 @@ or update a CA. Revoking membership removes view access again. The test login
 and its password exist only in the disposable CI cluster; the dump does not
 restore application credentials.
 
+The whole laboratory stack has its own cold backup, restore and recovery
+drill: `scripts/lab/backup.sh`, `scripts/lab/restore.sh` and
+`tests/lab_backup_restore_drill.sh` ([ADR-0041](../adr/ADR-0041-lab-backup-restore.md), Proposed). They also cover
+the signer's tokens and its checkpoint state, and show that a database rolled
+back behind the signer's last checkpoint is detected. See
+`docs/development/lab-compose.md`, "Backup and restore".
+
 ## Scope and next gates
 
 The digest is a regression comparison for this exact fixture, not an audit

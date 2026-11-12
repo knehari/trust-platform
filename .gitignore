@@ -12,3 +12,4 @@ target/
 .DS_Store
 .env.lab
 .lab-keys/
+.lab-backups/
