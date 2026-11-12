@@ -1428,7 +1428,7 @@ paths:
         '201': { description: Issued; the body carries the certificate PEM, serial and SHA-256 }
         '200': { description: The same signed request again; the same certificate }
         '400': { description: Malformed body, identifiers or names }
-        '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that does not verify' }
+        '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that no unretired key of the RA verifies (ADR-0040)' }
         '403': { description: 'The profile is not granted to this RA for this CA, or a name outside the zones the owner allows this RA (ADR-0039)' }
         '409': { description: The request_id was used for other signed bytes, or an intent already exists }
         '422': { description: 'The CSR or the names do not fit the profile (zones, count, validity, key), or an extension the profile does not allow' }
@@ -1467,7 +1467,7 @@ paths:
         '201': { description: Revoked; the body carries the revocation instant }
         '200': { description: The same signed request again; the same revocation }
         '400': { description: Malformed body or a reason code outside the closed list }
-        '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that does not verify' }
+        '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that no unretired key of the RA verifies (ADR-0040)' }
         '404': { description: This RA obtained no certificate with that serial from this CA }
         '409': { description: Already revoked, a revocation request open, the request_id used for other bytes, or the CA retired }
         '429': { description: 'The RA''s revocation quota for the last hour is exhausted (ADR-0039)' }

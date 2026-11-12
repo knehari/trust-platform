@@ -305,6 +305,15 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
             &[],
         )?
         .get::<_, bool>(0);
+    // From migration 0047 an RA has several keys: the request must verify
+    // under one active when it was recorded, retired since or not.
+    let rotation = db
+        .query_one(
+            "SELECT to_regclass('public.ra_system_key') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0);
+    let issuance_keys = ra_keys_sql(rotation, "r");
     let (version, subject, extensions) = if v2 {
         (
             "r.message_version",
@@ -317,7 +326,7 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
     let rows = db.query(
         &format!("SELECT r.ra_id, uuid_send(r.request_id), uuid_send(a.ca_id), a.profile_id, a.csr_der, \
                 a.dns_names, a.validity_days, extract(epoch FROM r.signed_at)::bigint, r.message, \
-                r.signature, s.public_key_sec1, a.application_id::text, \
+                r.signature, {issuance_keys}, a.application_id::text, \
                 (SELECT array_agg(e.action || '|' || e.actor_issuer || '|' || e.actor_subject ORDER BY e.action) \
                  FROM certificate_application_event e \
                  WHERE e.application_id = a.application_id \
@@ -379,8 +388,8 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
             reasons.push("the stored bytes are not the application's");
         }
         let signature: Vec<u8> = row.get(9);
-        let key: Vec<u8> = row.get(10);
-        if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
+        let keys: Vec<Vec<u8>> = row.get(10);
+        if !signed_by_any(&keys, &message, &signature) {
             reasons.push("the RA's key did not sign the stored bytes");
         }
         let expected = vec![
@@ -395,6 +404,26 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
         }
     }
     Ok((rows.len(), problems))
+}
+
+/// The SQL for the keys a stored RA request (alias `alias`) may have been
+/// signed with: from migration 0047 those active when it was recorded,
+/// retired since or not; before, the RA's only key.
+fn ra_keys_sql(rotation: bool, alias: &str) -> String {
+    if rotation {
+        format!(
+            "ARRAY(SELECT k.public_key_sec1 FROM ra_system_key k WHERE k.ra_id = {alias}.ra_id \
+             AND k.activated_at <= {alias}.recorded_at \
+             AND (k.retired_at IS NULL OR k.retired_at > {alias}.recorded_at) ORDER BY k.key_id)"
+        )
+    } else {
+        "ARRAY[s.public_key_sec1]".to_owned()
+    }
+}
+
+fn signed_by_any(keys: &[Vec<u8>], message: &[u8], signature: &[u8]) -> bool {
+    keys.iter()
+        .any(|key| trust_pki_crypto::verify_p256_ecdsa_sha256(key, message, signature).is_ok())
 }
 
 /// Every RA-signed revocation (migration 0039): the stored bytes are the
@@ -412,16 +441,23 @@ fn ra_revocation_problems(
     {
         return Ok((0, Vec::new()));
     }
+    let rotation = db
+        .query_one(
+            "SELECT to_regclass('public.ra_system_key') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0);
+    let keys = ra_keys_sql(rotation, "rr");
     let rows = db.query(
-        "SELECT rr.ra_id, uuid_send(rr.request_id), uuid_send(rr.ca_id), q.serial_der_content, q.reason_code, \
-                q.reason, extract(epoch FROM rr.signed_at)::bigint, rr.message, rr.signature, s.public_key_sec1, \
+        &format!("SELECT rr.ra_id, uuid_send(rr.request_id), uuid_send(rr.ca_id), q.serial_der_content, q.reason_code, \
+                q.reason, extract(epoch FROM rr.signed_at)::bigint, rr.message, rr.signature, {keys}, \
                 encode(q.serial_der_content, 'hex'), \
                 EXISTS (SELECT 1 FROM ra_issuance_request ri WHERE ri.ra_id = rr.ra_id \
                         AND ri.application_id = q.application_id) \
          FROM ra_revocation_request rr \
          JOIN certificate_revocation_request q ON q.revocation_id = rr.revocation_id \
          JOIN ra_system s ON s.ra_id = rr.ra_id \
-         ORDER BY rr.recorded_at",
+         ORDER BY rr.recorded_at"),
         &[],
     )?;
     let mut problems = Vec::new();
@@ -456,8 +492,8 @@ fn ra_revocation_problems(
             reasons.push("the stored bytes are not the revocation's");
         }
         let signature: Vec<u8> = row.get(8);
-        let key: Vec<u8> = row.get(9);
-        if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
+        let keys: Vec<Vec<u8>> = row.get(9);
+        if !signed_by_any(&keys, &message, &signature) {
             reasons.push("the RA's key did not sign the stored bytes");
         }
         if !row.get::<_, bool>(11) {

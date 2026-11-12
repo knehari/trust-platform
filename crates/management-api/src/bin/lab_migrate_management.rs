@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012–0046.
+//! Transactional laboratory runner for management migrations 0012–0047.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 35] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 36] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -372,6 +372,14 @@ const MIGRATIONS: [(&str, &str, &[&str]); 35] = [
         )),
         &["public.ra_system_policy"],
     ),
+    (
+        "0047_ra_key_rotation",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0047_ra_key_rotation.sql"
+        )),
+        &["public.ra_system_key"],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -386,7 +394,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0046 recorded and current");
+    println!("PASS: management migrations 0012–0047 recorded and current");
     Ok(())
 }
 
@@ -516,6 +524,15 @@ fn schema_present(
             &[],
         )?;
         return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all));
+    }
+    if version == "0047_ra_key_rotation" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_ra_key_rotation_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
     }
     if version == "0046_ra_hardening" {
         let present: bool = tx

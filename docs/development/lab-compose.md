@@ -234,6 +234,15 @@ INSERT INTO ra_system_policy (ra_id, max_issuance_per_hour, max_revocation_per_h
 VALUES ('my-ra', 500, 50, ARRAY['team.lab.invalid']);
 ```
 
+To rotate an RA's key (ADR-0040), as the database owner, add the new key, let the RA switch to it (both keys work meanwhile), then retire the old one:
+
+```sql
+INSERT INTO ra_system_key (ra_id, key_id, public_key_sec1) VALUES ('my-ra', 0, '\x04…');  -- numbered by the database
+UPDATE ra_system_key SET retired_at = now() WHERE ra_id = 'my-ra' AND key_id = 1;          -- dated by the database
+```
+
+A retired key signs no new request and no pending issuance; revocations it signed before stay on the CRLs. `ra_system.public_key_sec1` can no longer be changed.
+
 ## Publishing a CRL on revocation (ADR-0027)
 
 By default, a revocation waits for the next scheduled or manual CRL. To publish a CRL as soon as a revocation (or a void) is recorded for a CA, as the database owner:
