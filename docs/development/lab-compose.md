@@ -265,6 +265,14 @@ UPDATE ra_system_key SET retired_at = now() WHERE ra_id = 'my-ra' AND key_id = 1
 
 A retired key signs no new request and no pending issuance; revocations it signed before stay on the CRLs. `ra_system.public_key_sec1` can no longer be changed.
 
+## Seeing the RA channel in the console (ADR-0044)
+
+Readers of a CA open **RA channel** in the console. It shows, read-only:
+- each RA system granted a profile of the CA: whether it is enabled, its quotas and their use over the last hour, its zones, and its keys (fingerprints, with rotation and retirement);
+- the CA's short-lived profiles.
+
+The owner still changes all of it in SQL, as below.
+
 ## Short-lived certificates (ADR-0042)
 
 To make a profile of a CA short-lived, as the database owner:

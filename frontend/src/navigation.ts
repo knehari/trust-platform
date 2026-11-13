@@ -1,9 +1,9 @@
 import { canonicalUuid } from './uuid.ts';
 import { canonicalProfileRevision } from './profile-revision.ts';
 
-export type Section = 'overview' | 'authorities' | 'profiles' | 'requests' | 'certificates' | 'revocation' | 'audit';
+export type Section = 'overview' | 'authorities' | 'profiles' | 'requests' | 'certificates' | 'revocation' | 'channels' | 'audit';
 
-const SECTIONS: readonly Section[] = ['overview', 'authorities', 'profiles', 'requests', 'certificates', 'revocation', 'audit'];
+const SECTIONS: readonly Section[] = ['overview', 'authorities', 'profiles', 'requests', 'certificates', 'revocation', 'channels', 'audit'];
 export type DetailLink = { kind: 'certificate' | 'audit'; id: string } | { kind: 'profile'; id: string; revision: number; compareRevision?: number };
 
 export function readNavigation(search: string): { section: Section; caId: string | null; detail: DetailLink | null } {

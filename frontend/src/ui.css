@@ -456,3 +456,13 @@ table[aria-label='Audit events'] td:last-child, table[aria-label='Audit events']
 .ui-revoked-banner { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; padding: 12px 14px; border-radius: 10px; background: #fdf0ed; border: 1px solid #f2d0c9; color: #b3412f; }
 .ui-revoked-banner strong { display: block; font-size: 13.5px; }
 .ui-revoked-banner span { font-size: 12.5px; color: #8c3a2c; }
+
+/* RA channel & policies (ADR-0044). */
+.ra-quotas { min-width: 150px; }
+.ra-quota + .ra-quota { margin-top: 8px; }
+.ra-quota-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.ra-quota .ui-life { width: 100%; }
+.ra-keys { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.ra-keys li { display: grid; }
+.ra-keys li.retired { opacity: .6; }
+.ui-spaced-sm { margin-top: 6px; }
