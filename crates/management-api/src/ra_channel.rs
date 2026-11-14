@@ -444,20 +444,25 @@ async fn authenticate(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let lookup = ra_id.to_owned();
-    let key: Option<Vec<u8>> = query_db(
+    // The RA's unretired keys (migration 0047): during a rotation, the old
+    // and the new key both sign.
+    let keys: Option<Vec<Vec<u8>>> = query_db(
         writer_url.to_owned(),
         state.database_slots.clone(),
         move |db| {
             Ok(db
-                .query_one("SELECT ra_system_key_lab($1)", &[&lookup])?
+                .query_one("SELECT ra_system_keys_lab($1)", &[&lookup])?
                 .get(0))
         },
     )
     .await?;
-    let Some(key) = key else {
+    let Some(keys) = keys else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, message, signature).is_err() {
+    if !keys
+        .iter()
+        .any(|key| trust_pki_crypto::verify_p256_ecdsa_sha256(key, message, signature).is_ok())
+    {
         write_log(serde_json::json!({
             "event": "ra_request", "ra_id": ra_id, "status": "BAD_SIGNATURE",
         }));

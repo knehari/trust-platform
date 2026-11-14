@@ -90,7 +90,9 @@ pub struct RaProof {
     pub version: i16,
     pub signed_at_unix: i64,
     pub signature: Vec<u8>,
-    pub public_key_sec1: Vec<u8>,
+    /// The RA's keys active when the request was recorded and not retired
+    /// since (migration 0047); any one of them may have signed it.
+    pub public_keys_sec1: Vec<Vec<u8>>,
     pub enabled: bool,
 }
 
@@ -128,6 +130,12 @@ fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
         *slot = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
     }
     Some(out)
+}
+
+/// Whether any of an RA's candidate keys signed `message`.
+fn signed_by_any(keys: &[Vec<u8>], message: &[u8], signature_der: &[u8]) -> bool {
+    keys.iter()
+        .any(|key| signed_by(key, message, signature_der))
 }
 
 fn signed_by(public_key_sec1: &[u8], message: &[u8], signature_der: &[u8]) -> bool {
@@ -190,7 +198,7 @@ pub fn verify_authorization(
                 _ => return Err(Refusal::Unauthorized),
             }
             .map_err(|_| Refusal::Unauthorized)?;
-            if !signed_by(&ra.public_key_sec1, &message, &ra.signature) {
+            if !signed_by_any(&ra.public_keys_sec1, &message, &ra.signature) {
                 return Err(Refusal::AuthorizationSignature);
             }
             Ok(())
@@ -337,7 +345,9 @@ pub struct RaRevocationProof {
     pub reason: String,
     pub signed_at_unix: i64,
     pub signature: Vec<u8>,
-    pub public_key_sec1: Vec<u8>,
+    /// The RA's keys active when the request was recorded, retired since or
+    /// not (migration 0047): a listed revocation is never dropped.
+    pub public_keys_sec1: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -407,7 +417,7 @@ fn verify_entry_proof(proof: &EntryProof) -> Result<(), Refusal> {
                 signed_at_unix: ra.signed_at_unix,
             })
             .map_err(|_| Refusal::Unauthorized)?;
-            if !signed_by(&ra.public_key_sec1, &message, &ra.signature) {
+            if !signed_by_any(&ra.public_keys_sec1, &message, &ra.signature) {
                 return Err(Refusal::AuthorizationSignature);
             }
             Ok(())
@@ -727,7 +737,7 @@ pub mod service {
                 .db
                 .query_opt(
                     "SELECT application_id, profile_id, revision, optional_extensions, ra_id, \
-                     ra_request_id, ra_message_version, ra_signed_at, ra_signature, ra_public_key, \
+                     ra_request_id, ra_message_version, ra_signed_at, ra_signature, ra_public_keys, \
                      ra_enabled, officer_decision, officer_key_id, officer_issued_at, \
                      officer_signature, officer_public_key, officer_key_active \
                      FROM lab_signer_authorization WHERE intent_id = $1",
@@ -745,7 +755,7 @@ pub mod service {
                     version: row.get(6),
                     signed_at_unix: row.get(7),
                     signature: row.get(8),
-                    public_key_sec1: row.get(9),
+                    public_keys_sec1: row.get(9),
                     enabled: row.get(10),
                 }),
                 officer: row
@@ -817,7 +827,7 @@ pub mod service {
                 .query(
                     "SELECT kind, serial, revoked_at, reason_code, legacy, ca_id, application_id, \
                      revocation_id, ra_id, ra_request_id, ra_reason, ra_signed_at, ra_signature, \
-                     ra_public_key, officer_decision, officer_key_id, officer_issued_at, \
+                     ra_public_keys, officer_decision, officer_key_id, officer_issued_at, \
                      officer_signature, officer_public_key, officer_key_valid, void_signer_claimed \
                      FROM lab_signer_crl_entry_proof WHERE intent_id = $1",
                     &[&intent_id],
@@ -841,7 +851,7 @@ pub mod service {
                             reason: row.get(10),
                             signed_at_unix: row.get(11),
                             signature: row.get(12),
-                            public_key_sec1: row.get(13),
+                            public_keys_sec1: row.get(13),
                         }),
                     officer: row
                         .get::<_, Option<String>>(14)
@@ -1376,7 +1386,7 @@ mod tests {
                 version,
                 signed_at_unix: 1_790_000_000,
                 signature: sign_der(key, &message),
-                public_key_sec1: public_sec1(key),
+                public_keys_sec1: vec![public_sec1(key)],
                 enabled: true,
             });
         }
@@ -1647,8 +1657,21 @@ mod tests {
         // Another RA key, or a request altered after signing.
         let mut f = fixture();
         f.ra_signs(2, &ra_key);
-        f.authorization().ra.as_mut().unwrap().public_key_sec1 =
-            public_sec1(&SecretKey::random(&mut rand::rngs::OsRng));
+        f.authorization().ra.as_mut().unwrap().public_keys_sec1 =
+            vec![public_sec1(&SecretKey::random(&mut rand::rngs::OsRng))];
+        assert_eq!(sign(&mut f).unwrap_err(), Refusal::AuthorizationSignature);
+        // During a rotation (migration 0047) either candidate key may have
+        // signed; with no candidate left (the key retired), nothing verifies.
+        let mut f = fixture();
+        f.ra_signs(2, &ra_key);
+        f.authorization().ra.as_mut().unwrap().public_keys_sec1 = vec![
+            public_sec1(&SecretKey::random(&mut rand::rngs::OsRng)),
+            public_sec1(&ra_key),
+        ];
+        assert!(sign(&mut f).is_ok());
+        let mut f = fixture();
+        f.ra_signs(2, &ra_key);
+        f.authorization().ra.as_mut().unwrap().public_keys_sec1 = Vec::new();
         assert_eq!(sign(&mut f).unwrap_err(), Refusal::AuthorizationSignature);
         let mut f = fixture();
         f.ra_signs(2, &ra_key);
@@ -1982,7 +2005,7 @@ mod tests {
                 reason: "key compromise".into(),
                 signed_at_unix: 1_794_000_000,
                 signature: sign_der(&ra_key, &message),
-                public_key_sec1: public_sec1(&ra_key),
+                public_keys_sec1: vec![public_sec1(&ra_key)],
             }
         };
         let mut f = crl_fixture();

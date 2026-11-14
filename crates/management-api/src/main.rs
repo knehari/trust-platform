@@ -606,7 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0046")?;
+    .map_err(|_| "management views unavailable or older than migration 0047")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1093,6 +1093,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_dedicated_worker_version() = 1 \
              AND management_operational_metrics_version() = 1 \
              AND management_ra_hardening_version() = 1 \
+             AND management_ra_key_rotation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -6076,6 +6077,88 @@ mod tests {
             .iter()
             .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == ra_serial));
 
+        // RA key rotation (migration 0047, ADR-0040): the owner adds a second
+        // key; both sign during the overlap. Once the first is retired, a
+        // request it signs is refused, while the revocation it signed earlier
+        // stays on every later CRL (the worker's pass below re-verifies it).
+        let ra_key2 = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let ra_point2 = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(
+            &ra_key2.public_key(),
+            false,
+        )
+        .as_bytes()
+        .to_vec();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.execute(
+                "INSERT INTO ra_system_key (ra_id, key_id, public_key_sec1) VALUES ('test-ra', 0, $1)",
+                &[&ra_point2],
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap();
+        let overlap_request = random_uuid().to_string();
+        let overlap_names = vec!["overlap.ra.lab.invalid".to_owned()];
+        let overlap_csr =
+            <x509_cert::request::CertReq as x509_cert::der::DecodePem>::from_pem(lab_csr(
+                "overlap.ra.lab.invalid",
+                &p256::SecretKey::random(&mut rand::rngs::OsRng),
+            ))
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let overlap_body = || {
+            use p256::ecdsa::{signature::Signer, SigningKey};
+            let message = trust_pki_core::ra_request::ra_issuance_message(
+                &trust_pki_core::ra_request::RaIssuanceRequest {
+                    ra_id: "test-ra",
+                    ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                    profile_id: "server",
+                    request_id: *uuid::Uuid::parse_str(&overlap_request).unwrap().as_bytes(),
+                    csr_sha256: <sha2::Sha256 as sha2::Digest>::digest(&overlap_csr).into(),
+                    dns_names: &overlap_names,
+                    validity_days: 30,
+                    signed_at_unix: now,
+                },
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::from(&ra_key2).sign(&message);
+            json!({
+                "ra_id": "test-ra", "request_id": overlap_request, "profile_id": "server",
+                "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&overlap_csr),
+                "dns_names": overlap_names, "validity_days": 30, "signed_at": now,
+                "signature_der_base64": base64::engine::general_purpose::STANDARD
+                    .encode(signature.to_der().as_bytes()),
+            })
+        };
+        let (status, overlap) = ra_post(overlap_body()).await;
+        assert_eq!(status, StatusCode::CREATED, "{overlap}");
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), |db| {
+            db.batch_execute(
+                "UPDATE ra_system_key SET retired_at = clock_timestamp() WHERE ra_id = 'test-ra' AND key_id = 1",
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            ra_post(ra_body(
+                &random_uuid().to_string(),
+                vec!["retired.ra.lab.invalid".to_owned()],
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // A replay of the overlap request (signed by the unretired key)
+        // answers from the record.
+        let (status, replayed) = ra_post(overlap_body()).await;
+        assert_eq!(
+            (status, replayed["certificate_sha256"].as_str()),
+            (StatusCode::OK, overlap["certificate_sha256"].as_str())
+        );
+
         // Publish on revocation (migration 0040): off by default, the status
         // says so; once the owner turns it on, the next revocation makes the
         // CRL due, and the worker's next renewal pass publishes it, with
@@ -6124,7 +6207,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let signature: Signature = SigningKey::from(&ra_key).sign(&message);
+            let signature: Signature = SigningKey::from(&ra_key2).sign(&message);
             json!({
                 "ra_id": "test-ra", "request_id": second_request, "profile_id": "server",
                 "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&second_csr),
@@ -6143,7 +6226,7 @@ mod tests {
             &random_uuid().to_string(),
             &second_serial,
             now,
-            &ra_key,
+            &ra_key2,
         ))
         .await;
         assert_eq!(status, StatusCode::CREATED);

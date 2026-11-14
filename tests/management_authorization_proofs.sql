@@ -245,7 +245,7 @@ DECLARE
 BEGIN
     SELECT * INTO v FROM lab_signer_authorization WHERE application_id = current_setting('test.ra_app');
     IF v.ra_id <> 'ra-v2' OR v.ra_message_version <> 2 OR NOT v.ra_enabled
-       OR v.ra_public_key <> decode('04' || repeat('d1', 64), 'hex') OR v.optional_extensions <> ARRAY['client-auth']
+       OR v.ra_public_keys <> ARRAY[decode('04' || repeat('d1', 64), 'hex')] OR v.optional_extensions <> ARRAY['client-auth']
        OR v.officer_key_id IS NOT NULL THEN
         RAISE EXCEPTION 'unexpected RA proof row %', v;
     END IF;
