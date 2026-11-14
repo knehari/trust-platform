@@ -912,7 +912,7 @@ paths:
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '422':
-          description: "The CSR is refused (body reason: Encoding, SubjectMismatch, InvalidSignature or UnsupportedKey), or the CA is not an ACTIVE lifecycle-managed CA, or the names, validity or key do not fit the profile (no body). Nothing was recorded."
+          description: "The CSR is refused (body reason: Encoding, SubjectMismatch, InvalidSignature or UnsupportedKey), or the CA is not an ACTIVE lifecycle-managed CA, or the names, validity or key do not fit the profile, including a short-lived profile's bound of at most 7 days (ADR-0042) (no body). Nothing was recorded."
         '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificate-applications/{application_id}/decision-claims:
     post:
@@ -1082,7 +1082,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing role, scope or grant, or another requester's application }
         '404': { description: No certificate was issued for this application }
-        '409': { description: Idempotency key reused, already revoked, a request already open, or the CA retired }
+        '409': { description: 'Idempotency key reused, already revoked, a request already open, the CA retired, or a short-lived certificate, which is never revoked (ADR-0042)' }
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
         '503': { description: The write database login is not configured or the database is unavailable }
@@ -1431,7 +1431,7 @@ paths:
         '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that no unretired key of the RA verifies (ADR-0040)' }
         '403': { description: 'The profile is not granted to this RA for this CA, or a name outside the zones the owner allows this RA (ADR-0039)' }
         '409': { description: The request_id was used for other signed bytes, or an intent already exists }
-        '422': { description: 'The CSR or the names do not fit the profile (zones, count, validity, key), or an extension the profile does not allow' }
+        '422': { description: 'The CSR or the names do not fit the profile (zones, count, validity, key, a short-lived bound of ADR-0042), or an extension the profile does not allow' }
         '429': { description: 'The RA''s issuance quota for the last hour is exhausted (ADR-0039); a replay of an accepted request is still answered' }
         '502': { description: The signing outcome is ambiguous; the request needs reconciliation (ADR-0020) }
         '503': { description: No writer login or signer configured, or the database is unavailable }
@@ -1469,7 +1469,7 @@ paths:
         '400': { description: Malformed body or a reason code outside the closed list }
         '401': { description: 'Unknown or disabled RA, a request signed more than 5 minutes ago or more than 30 seconds ahead (ADR-0039), or a signature that no unretired key of the RA verifies (ADR-0040)' }
         '404': { description: This RA obtained no certificate with that serial from this CA }
-        '409': { description: Already revoked, a revocation request open, the request_id used for other bytes, or the CA retired }
+        '409': { description: 'Already revoked, a revocation request open, the request_id used for other bytes, the CA retired, or a short-lived certificate, which is never revoked (ADR-0042)' }
         '429': { description: 'The RA''s revocation quota for the last hour is exhausted (ADR-0039)' }
         '503': { description: No writer login configured, or the database is unavailable }
   /v1/cas/{ca_id}/crls/{crl_number}:

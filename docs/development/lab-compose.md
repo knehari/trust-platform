@@ -265,6 +265,16 @@ UPDATE ra_system_key SET retired_at = now() WHERE ra_id = 'my-ra' AND key_id = 1
 
 A retired key signs no new request and no pending issuance; revocations it signed before stay on the CRLs. `ra_system.public_key_sec1` can no longer be changed.
 
+## Short-lived certificates (ADR-0042)
+
+To make a profile of a CA short-lived, as the database owner:
+
+```sql
+INSERT INTO profile_short_lived_policy (ca_id, profile_id, max_validity_days) VALUES ('<ca_id>', 'server', 3);
+```
+
+From then on, applications under that profile ask for at most 3 days (422 beyond), and their certificates carry `X509v3 No Revocation Available` and no CRL distribution point. They cannot be revoked (409). Applications submitted before keep their own rules. `DELETE` the row to return to ordinary certificates for new applications.
+
 ## Publishing a CRL on revocation (ADR-0027)
 
 By default, a revocation waits for the next scheduled or manual CRL. To publish a CRL as soon as a revocation (or a void) is recorded for a CA, as the database owner:

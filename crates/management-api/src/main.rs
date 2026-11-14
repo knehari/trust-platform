@@ -606,7 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0047")?;
+    .map_err(|_| "management views unavailable or older than migration 0048")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1094,6 +1094,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_operational_metrics_version() = 1 \
              AND management_ra_hardening_version() = 1 \
              AND management_ra_key_rotation_version() = 1 \
+             AND management_short_lived_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -6158,6 +6159,104 @@ mod tests {
             (status, replayed["certificate_sha256"].as_str()),
             (StatusCode::OK, overlap["certificate_sha256"].as_str())
         );
+
+        // Short-lived certificates (migration 0048, ADR-0042): once the owner
+        // marks the profile short-lived (at most 3 days), a longer request is
+        // refused, and a certificate carries noRevAvail instead of the CA's
+        // distribution point and cannot be revoked.
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), {
+            let ca = ca.clone();
+            move |db| {
+                db.batch_execute(&format!(
+                    "INSERT INTO profile_short_lived_policy (ca_id, profile_id, max_validity_days)
+                     VALUES ('{ca}', 'server', 3)"
+                ))
+            }
+        })
+        .await
+        .unwrap();
+        let short_csr =
+            <x509_cert::request::CertReq as x509_cert::der::DecodePem>::from_pem(lab_csr(
+                "short.ra.lab.invalid",
+                &p256::SecretKey::random(&mut rand::rngs::OsRng),
+            ))
+            .unwrap()
+            .to_der()
+            .unwrap();
+        let short_body = |request_id: &str, validity_days: u32| {
+            use p256::ecdsa::{signature::Signer, SigningKey};
+            let names = vec!["short.ra.lab.invalid".to_owned()];
+            let message = trust_pki_core::ra_request::ra_issuance_message(
+                &trust_pki_core::ra_request::RaIssuanceRequest {
+                    ra_id: "test-ra",
+                    ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                    profile_id: "server",
+                    request_id: *uuid::Uuid::parse_str(request_id).unwrap().as_bytes(),
+                    csr_sha256: <sha2::Sha256 as sha2::Digest>::digest(&short_csr).into(),
+                    dns_names: &names,
+                    validity_days,
+                    signed_at_unix: now,
+                },
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::from(&ra_key2).sign(&message);
+            json!({
+                "ra_id": "test-ra", "request_id": request_id, "profile_id": "server",
+                "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&short_csr),
+                "dns_names": names, "validity_days": validity_days, "signed_at": now,
+                "signature_der_base64": base64::engine::general_purpose::STANDARD
+                    .encode(signature.to_der().as_bytes()),
+            })
+        };
+        assert_eq!(
+            ra_post(short_body(&random_uuid().to_string(), 30)).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let (status, short) = ra_post(short_body(&random_uuid().to_string(), 3)).await;
+        assert_eq!(status, StatusCode::CREATED, "{short}");
+        let short_certificate =
+            x509_cert::Certificate::from_pem(short["certificate_pem"].as_str().unwrap()).unwrap();
+        let short_extensions = short_certificate
+            .tbs_certificate
+            .extensions
+            .clone()
+            .unwrap_or_default();
+        assert!(
+            short_extensions.iter().any(|extension| {
+                extension.extn_id.to_string() == "2.5.29.56"
+                    && !extension.critical
+                    && extension.extn_value.as_bytes() == [0x05, 0x00]
+            }),
+            "noRevAvail is missing"
+        );
+        assert!(!short_extensions
+            .iter()
+            .any(|extension| extension.extn_id.to_string() == "2.5.29.31"));
+        let validity = &short_certificate.tbs_certificate.validity;
+        assert_eq!(
+            validity
+                .not_after
+                .to_system_time()
+                .duration_since(validity.not_before.to_system_time())
+                .unwrap(),
+            std::time::Duration::from_secs(3 * 86_400)
+        );
+        assert_eq!(
+            revoke_post(revocation_body(
+                &random_uuid().to_string(),
+                short["serial_hex"].as_str().unwrap(),
+                now,
+                &ra_key2
+            ))
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), |db| {
+            db.batch_execute("DELETE FROM profile_short_lived_policy")
+        })
+        .await
+        .unwrap();
 
         // Publish on revocation (migration 0040): off by default, the status
         // says so; once the owner turns it on, the next revocation makes the
