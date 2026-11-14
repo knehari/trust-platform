@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { ApiError, apiPost } from './api';
+import { Notice } from './ui';
 import type { CaProposal } from './CaProposalPanel';
 
 interface Claim {
@@ -130,31 +131,31 @@ export function CaDecision({ token, proposal, canDecide, canActivate, onChanged,
   const status = proposal.lifecycle_status;
   if (!(canDecide && status === 'KEY_ATTESTED') && !(canActivate && status === 'APPROVED')) return null;
   const command = claim ? `printf '%s' '${claim.claim}' | openssl dgst -sha256 -sign .lab-keys/<your-ca-approver-key>.pem | openssl base64 -A` : '';
-  return <div className="subtle-panel ca-decision">
+  return <div className="ca-action-block">
     {canDecide && status === 'KEY_ATTESTED' && <>
-      <b>Decision ({proposal.approval_count}/2 approvals)</b>
-      {!claim && <div className="form-actions">
-        <button type="button" disabled={busy} onClick={() => void prepare('approve')}>Prepare CA approval</button>
-        <button type="button" className="link-button" disabled={busy} onClick={() => void prepare('reject')}>Prepare CA rejection</button>
+      <strong className="ca-action-title">Decision ({proposal.approval_count}/2 approvals)</strong>
+      {!claim && <div className="ui-actions">
+        <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void prepare('approve')}>Prepare CA approval</button>
+        <button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={busy} onClick={() => void prepare('reject')}>Prepare CA rejection</button>
       </div>}
       {claim && <>
-        <label className="form-field"><span>CA claim to sign ({claim.decision}, key {claim.key_id}, valid 10 minutes)</span>
+        <label className="ui-field"><span>CA claim to sign ({claim.decision}, key {claim.key_id}, valid 10 minutes)</span>
           <textarea readOnly rows={4} value={claim.claim} className="mono" /></label>
         <p>Sign the exact claim with your registered CA approver key, outside the browser:</p>
         <pre className="decision-command">{command}</pre>
-        <label className="form-field"><span>CA decision signature (base64, DER)</span>
+        <label className="ui-field"><span>CA decision signature (base64, DER)</span>
           <textarea rows={3} value={signature} onChange={event => { setSignature(event.target.value); setError(null); }} spellCheck={false} /></label>
-        <div className="form-actions">
-          <button type="button" disabled={busy} onClick={() => void record()}>{busy ? 'Verifying…' : claim.decision === 'approve' ? 'Record CA approval' : 'Record CA rejection'}</button>
-          <button type="button" className="link-button" disabled={busy} onClick={() => { setClaim(null); setError(null); }}>Cancel</button>
+        <div className="ui-actions">
+          <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void record()}>{busy ? 'Verifying…' : claim.decision === 'approve' ? 'Record CA approval' : 'Record CA rejection'}</button>
+          <button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={busy} onClick={() => { setClaim(null); setError(null); }}>Cancel</button>
         </div>
       </>}
-      <p><small>Two different CA approvers with different registered keys must approve; one rejection is final. The proposer and the registrant cannot decide.</small></p>
+      <p className="ui-hint">Two different CA approvers with different registered keys must approve; one rejection is final. The proposer and the registrant cannot decide.</p>
     </>}
     {canActivate && status === 'APPROVED' && <>
-      <button type="button" disabled={busy} onClick={() => void activate()}>{busy ? 'Activating…' : 'Activate this CA'}</button>
-      <p><small>Activation creates the CA with its attested suite as its only signing capability. You cannot activate a CA you decided on. No issuance path uses the new CA yet.</small></p>
+      <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void activate()}>{busy ? 'Activating…' : 'Activate this CA'}</button>
+      <p className="ui-hint">Activation creates the CA with its attested suite as its only signing capability. You cannot activate a CA you decided on. No issuance path uses the new CA yet.</p>
     </>}
-    {error && <p className="lookup-error" role="alert">{error}</p>}
+    {error && <Notice tone="error" onDismiss={() => setError(null)}>{error}</Notice>}
   </div>;
 }

@@ -1,15 +1,16 @@
 import { canonicalUuid } from './uuid.ts';
 import { canonicalProfileRevision } from './profile-revision.ts';
 
-export type Section = 'overview' | 'authorities' | 'profiles' | 'certificates' | 'audit';
+export type Section = 'overview' | 'authorities' | 'profiles' | 'requests' | 'certificates' | 'revocation' | 'audit';
+
+const SECTIONS: readonly Section[] = ['overview', 'authorities', 'profiles', 'requests', 'certificates', 'revocation', 'audit'];
 export type DetailLink = { kind: 'certificate' | 'audit'; id: string } | { kind: 'profile'; id: string; revision: number; compareRevision?: number };
 
 export function readNavigation(search: string): { section: Section; caId: string | null; detail: DetailLink | null } {
   const params = new URLSearchParams(search);
   const view = params.get('view');
   const caId = canonicalUuid(params.get('ca') ?? '');
-  const section: Section = view === 'authorities' || view === 'profiles' || view === 'certificates' || view === 'audit' || view === 'overview'
-    ? view : caId ? 'authorities' : 'overview';
+  const section: Section = SECTIONS.find(known => known === view) ?? (caId ? 'authorities' : 'overview');
   const certificateId = canonicalUuid(params.get('certificate') ?? '');
   const auditId = canonicalUuid(params.get('event') ?? '');
   const profile = canonicalProfileRevision(params.get('profile') ?? '', params.get('revision') ?? '');

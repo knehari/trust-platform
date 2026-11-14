@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'oidc-client-ts';
 import { ApiError, apiGet, apiGetPage, type AuditEvent, type Certificate, type CertificateAuthority } from './api';
 import { sortLoadedAuditEvents, type AuditSort } from './audit-sort';
@@ -17,8 +17,19 @@ import { canonicalSerialHex } from './serial';
 import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
-import { CertificateApplicationPanel } from './CertificateApplicationPanel';
-import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
+import { OverviewDashboard } from './OverviewDashboard';
+import { applyTheme, nextTheme, storedTheme, type ThemeChoice } from './theme';
+import { CopyJsonButton, DetailDrawer, DrawerSection, Fact } from './DetailDrawer';
+import { CATEGORY_LABELS, describeEvent, explainOutcome, outcomeGroup, type EventCategory, type OutcomeGroup } from './labels';
+import { dayLabel, lifetimeElapsed } from './dashboard';
+import { CommandPalette, type PaletteItem } from './CommandPalette';
+import { RequestsPanel } from './RequestsPanel';
+import { CrlPanel } from './CrlPanel';
+import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CA_READER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
+import { addWithin, headerState, toggleOne, toggleVisible } from './selection';
+import { Disclosure, EventLabel, FilterChips, Toaster, HeaderCheckbox, Icon, Notice, OutcomeBadge, StatusBadge, Tag, TimeAgo, type IconName } from './ui';
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/u.test(navigator.platform || navigator.userAgent);
 
 function displayDate(value: string | null): string {
   if (!value) return '—';
@@ -84,6 +95,8 @@ export function App() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [selectedAuditEvent, setSelectedAuditEvent] = useState<AuditEvent | null>(null);
   const [auditFilter, setAuditFilter] = useState('');
+  const [auditCategory, setAuditCategory] = useState<'all' | EventCategory>('all');
+  const [auditOutcome, setAuditOutcome] = useState<'all' | OutcomeGroup>('all');
   const [auditFrom, setAuditFrom] = useState('');
   const [auditUntil, setAuditUntil] = useState('');
   const [auditEventType, setAuditEventType] = useState('');
@@ -113,6 +126,15 @@ export function App() {
   const [selectedCertificateIds, setSelectedCertificateIds] = useState<string[]>([]);
   const [selectedAuditIds, setSelectedAuditIds] = useState<string[]>([]);
   const [validityClock, setValidityClock] = useState(() => Date.now());
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(() => storedTheme());
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(value => !value); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setValidityClock(Date.now()), 60_000);
@@ -207,6 +229,12 @@ export function App() {
     setSelectedAuditEvent(null);
     setCaFilter('');
     const controller = new AbortController();
+    // Only readers list authorities; other roles never see a refused read.
+    if (!tokenRoles(user.access_token).includes(CA_READER_ROLE)) {
+      setCasLoading(false);
+      setNavigationReady(true);
+      return () => controller.abort();
+    }
     const linkedCaId = caQuery ? null : readNavigation(window.location.search).caId;
     setCasLoading(true);
     setDataError(null);
@@ -540,8 +568,20 @@ export function App() {
   const sortedCertificates = useMemo(() => sortLoadedCertificates(filteredCertificates, certificateSort), [filteredCertificates, certificateSort]);
   const filteredAuditEvents = useMemo(() => {
     const query = auditFilter.trim().toLowerCase();
-    return query ? scopedAuditEvents.filter(event => [event.event_id, event.event_type, event.decision, event.policy_version ?? ''].some(value => value.toLowerCase().includes(query))) : scopedAuditEvents;
-  }, [scopedAuditEvents, auditFilter]);
+    return scopedAuditEvents.filter(event => (!query || [event.event_id, event.event_type, describeEvent(event.event_type).label, event.decision, event.policy_version ?? ''].some(value => value.toLowerCase().includes(query)))
+      && (auditCategory === 'all' || describeEvent(event.event_type).category === auditCategory)
+      && (auditOutcome === 'all' || outcomeGroup(event.decision) === auditOutcome));
+  }, [scopedAuditEvents, auditFilter, auditCategory, auditOutcome]);
+  const auditCategoryCounts = useMemo(() => {
+    const counts = new Map<EventCategory, number>();
+    for (const event of scopedAuditEvents) { const category = describeEvent(event.event_type).category; counts.set(category, (counts.get(category) ?? 0) + 1); }
+    return counts;
+  }, [scopedAuditEvents]);
+  const auditOutcomeCounts = useMemo(() => {
+    const counts = new Map<OutcomeGroup, number>();
+    for (const event of scopedAuditEvents) { const group = outcomeGroup(event.decision); counts.set(group, (counts.get(group) ?? 0) + 1); }
+    return counts;
+  }, [scopedAuditEvents]);
   const sortedAuditEvents = useMemo(() => sortLoadedAuditEvents(filteredAuditEvents, auditSort), [filteredAuditEvents, auditSort]);
   const selectedCertificateRows = sortedCertificates.filter(cert => selectedCertificateIds.includes(cert.request_id));
   const selectedAuditRows = sortedAuditEvents.filter(event => selectedAuditIds.includes(event.event_id));
@@ -556,9 +596,14 @@ export function App() {
   const readOnly = !user || readOnlyRoles(tokenRoles(user.access_token));
 
   function toggleExportRow(kind: 'certificate' | 'audit', id: string) {
-    const update = (current: string[]) => current.includes(id)
-      ? current.filter(value => value !== id)
-      : current.length < MAX_CSV_ROWS ? [...current, id] : current;
+    const update = (current: string[]) => toggleOne(id, current, MAX_CSV_ROWS);
+    if (kind === 'certificate') setSelectedCertificateIds(update);
+    else setSelectedAuditIds(update);
+  }
+
+  function selectRows(kind: 'certificate' | 'audit', mode: 'toggle-visible' | 'all-filtered') {
+    const ids = kind === 'certificate' ? sortedCertificates.map(cert => cert.request_id) : sortedAuditEvents.map(event => event.event_id);
+    const update = (current: string[]) => mode === 'toggle-visible' ? toggleVisible(ids, current, MAX_CSV_ROWS) : addWithin(current, ids, MAX_CSV_ROWS);
     if (kind === 'certificate') setSelectedCertificateIds(update);
     else setSelectedAuditIds(update);
   }
@@ -697,7 +742,7 @@ export function App() {
       <div className="login-card">
         <div className="eyebrow">MANAGEMENT CONSOLE · LABORATORY</div>
         <h1>Clear oversight for every certificate authority.</h1>
-        <p>Review CA inventory, certificate metadata and audit activity through a scoped, read-only session.</p>
+        <p>Sign in with your organization account. What you can see and do follows your roles and the grants of each authority.</p>
         {(oidcConfigurationError || sessionError) && <div className="notice error" role="alert">{oidcConfigurationError || sessionError}</div>}
         <button className="primary-button" disabled={!userManager} onClick={() => {
           const destination = readNavigation(window.location.search);
@@ -706,9 +751,52 @@ export function App() {
         }}>
           Sign in with your organization <span aria-hidden="true">↗</span>
         </button>
-        <div className="login-footnote">Access is limited to the authorities assigned to your account. No signing keys are available in this console.</div>
+        <div className="login-footnote">You sign in on your identity provider’s page; this console never sees your password.</div>
       </div>
       <div className="login-footer">PRIVATE LABORATORY SYSTEM · NOT A PRODUCTION TRUST SERVICE</div>
+    </div>;
+  }
+
+  const roles = tokenRoles(user.access_token);
+  const isReader = roles.includes(CA_READER_ROLE);
+  const isRequester = roles.includes(CERTIFICATE_REQUESTER_ROLE);
+  const isOfficer = roles.includes(REGISTRATION_OFFICER_ROLE);
+  const isCaAdmin = roles.includes(CA_ADMINISTRATOR_ROLE);
+  const isCaApprover = roles.includes(CA_APPROVER_ROLE);
+  const navItems: { id: Section; label: string; icon: IconName; show: boolean; count?: string }[] = [
+    { id: 'overview', label: 'Overview', icon: 'overview', show: true },
+    { id: 'authorities', label: 'Authorities', icon: 'authority', show: isReader || isCaAdmin || isCaApprover, count: isReader ? `${cas.length}${caCursor ? '+' : ''}` : undefined },
+    { id: 'profiles', label: 'Profiles', icon: 'profile', show: isReader },
+    { id: 'requests', label: 'Requests', icon: 'request', show: isRequester || isOfficer },
+    { id: 'certificates', label: 'Certificates', icon: 'certificate', show: isReader },
+    { id: 'revocation', label: 'Revocation & CRLs', icon: 'revocation', show: isReader },
+    { id: 'audit', label: 'Audit trail', icon: 'audit', show: isReader },
+  ];
+  const paletteItems: PaletteItem[] = [
+    ...navItems.filter(item => item.show).map(item => ({ id: `section-${item.id}`, group: 'Sections', label: item.label, icon: item.icon, hint: section === item.id ? 'Current' : undefined, run: () => setSection(item.id) })),
+    ...cas.map(ca => ({ id: `ca-${ca.ca_id}`, group: 'Authorities', label: ca.display_name, icon: 'authority' as IconName, hint: `${shortId(ca.ca_id)} · ${ca.policy_version}`, run: () => { setSelectedCaId(ca.ca_id); if (section === 'overview') setSection('authorities'); } })),
+  ];
+  const headings: Record<Section, [string, string]> = {
+    overview: [`Welcome, ${name}.`, 'What needs your attention and how the selected authority is doing.'],
+    authorities: ['Certificate authorities', 'Authorities in your scope and, for CA administrators and approvers, the CA lifecycle.'],
+    profiles: ['Profile proposals', 'Certificate-profile revisions of the selected authority and their approval workflow.'],
+    requests: ['Certificate requests', 'Submit, decide, issue and revoke certificates of the selected authority.'],
+    certificates: ['Certificate inventory', 'Issued certificate metadata of the selected authority.'],
+    revocation: ['Revocation & CRLs', 'CRL status, publication and history of the selected authority.'],
+    audit: ['Audit trail', 'Recorded events of the selected authority.'],
+  };
+  const needsAuthority = section !== 'overview' && !(section === 'authorities' && !isReader);
+  const certificateServerFilters = [cnSearchTerm, sanSearchTerm, expiryBeforeTerm].filter(Boolean).length;
+  const certificateHeader = headerState(sortedCertificates.map(cert => cert.request_id), selectedCertificateIds);
+  const auditHeader = headerState(sortedAuditEvents.map(event => event.event_id), selectedAuditIds);
+
+  function selectionBar(kind: 'certificate' | 'audit', selected: number, filtered: number) {
+    const noun = kind === 'certificate' ? 'certificates' : 'events';
+    return <div className="ui-selection-bar">
+      <span>{selected > 0 ? <><strong>{selected}</strong> selected</> : `Select ${noun} to export them (up to ${MAX_CSV_ROWS}).`}</span>
+      {filtered > selected && <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => selectRows(kind, 'all-filtered')}>Select all {Math.min(filtered, MAX_CSV_ROWS)} {auditFilter.trim() || certificateFilter.trim() ? 'filtered' : 'loaded'}</button>}
+      {selected > 0 && <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => kind === 'certificate' ? setSelectedCertificateIds([]) : setSelectedAuditIds([])}>Clear selection</button>}
+      <button type="button" className="ui-button ui-button-secondary ui-button-sm ui-push-right" disabled={selected === 0} onClick={() => downloadSelectedCsv(kind)}><Icon name="download" size={15} />Export selected CSV</button>
     </div>;
   }
 
@@ -717,104 +805,228 @@ export function App() {
       <div className="brand"><div className="brand-mark">S</div><span>SOVEREIGN<br /><b>TRUST</b></span></div>
       <div className="workspace-tag"><span className="status-dot" /> LAB WORKSPACE</div>
       <nav aria-label="Main navigation" className="nav">
-        <div className="nav-label">WORKSPACE</div>
-        <button className={section === 'overview' ? 'active' : ''} aria-current={section === 'overview' ? 'page' : undefined} onClick={() => setSection('overview')}><span>▦</span> Overview</button>
-        <button className={section === 'authorities' ? 'active' : ''} aria-current={section === 'authorities' ? 'page' : undefined} onClick={() => setSection('authorities')}><span>◇</span> Authorities <small>{cas.length}{caCursor ? '+' : ''}</small></button>
-        <button className={section === 'profiles' ? 'active' : ''} aria-current={section === 'profiles' ? 'page' : undefined} onClick={() => setSection('profiles')}><span>▧</span> Profile proposals</button>
-        <button className={section === 'certificates' ? 'active' : ''} aria-current={section === 'certificates' ? 'page' : undefined} onClick={() => setSection('certificates')}><span>▤</span> Certificates</button>
-        <button className={section === 'audit' ? 'active' : ''} aria-current={section === 'audit' ? 'page' : undefined} onClick={() => setSection('audit')}><span>◷</span> Audit trail</button>
+        {navItems.filter(item => item.show).map(item => <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => setSection(item.id)}>
+          <Icon name={item.icon} /> <span className="nav-text">{item.label}</span>{item.count !== undefined && <small>{item.count}</small>}
+        </button>)}
       </nav>
       <div className="sidebar-bottom"><div className="sidebar-note">{readOnly ? <>Read-only access<br /><span>Your roles allow consultation only.</span></> : <>Laboratory access<br /><span>Actions follow your roles and the server-side grants of each authority; the API checks every request.</span></>}</div><div className="version">TRUST PLATFORM · V0.1 LAB</div></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'profiles' ? 'Profile proposals' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span><button className="icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {navItems.find(item => item.id === section)?.label}{needsAuthority && selectedCa && <><span>/</span> {selectedCa.display_name}</>}</div>
+        <div className="top-actions"><button type="button" className="ui-search-trigger" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K"><Icon name="search" size={15} />Go to…<span className="ui-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span></button><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span>
+          <button type="button" className="ui-icon-button" aria-label={`Theme: ${theme}. Switch to ${nextTheme(theme)}`} title={`Theme: ${theme} (click for ${nextTheme(theme)})`} onClick={() => { const next = nextTheme(theme); setTheme(next); applyTheme(next); }}><Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'monitor'} /></button>
+          <button className="ui-icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}><Icon name="refresh" /></button>
+          <div className="ui-user"><div className="user-avatar" aria-hidden="true">{String(name).slice(0, 1).toUpperCase()}</div><span>{name}</span></div>
+          <button className="ui-button ui-button-ghost ui-button-sm" onClick={() => void userManager?.signoutRedirect()}><Icon name="signOut" size={15} />Sign out</button></div></header>
       <main className="content">
-        <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'profiles' ? 'Profile proposals' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'profiles' ? 'Review inert certificate-profile drafts for the selected authority.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="view-link-tools"><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div><button type="button" className="copy-view-link" disabled={!navigationReady} onClick={() => void copyViewLink()}>Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
-        {dataError && <div className="notice error" role="alert">{dataError} <button onClick={() => setReload(value => value + 1)}>Retry</button></div>}
-        {linkedCaError && <div className="notice error" role="alert">{linkedCaError} <button onClick={() => setLinkedCaError(null)}>Dismiss</button></div>}
-        {linkedDetailError && <div className="notice error" role="alert">{linkedDetailError} <button onClick={() => setLinkedDetailError(null)}>Dismiss</button></div>}
+        <div className="page-heading"><div><h1>{headings[section][0]}</h1><p>{headings[section][1]}</p></div><div className="view-link-tools"><button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={!navigationReady} onClick={() => void copyViewLink()}><Icon name="link" size={15} />Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
+        {dataError && <Notice tone="error" action={<button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setReload(value => value + 1)}>Retry</button>}>{dataError}</Notice>}
+        {linkedCaError && <Notice tone="error" onDismiss={() => setLinkedCaError(null)}>{linkedCaError}</Notice>}
+        {linkedDetailError && <Notice tone="error" onDismiss={() => setLinkedDetailError(null)}>{linkedDetailError}</Notice>}
         {casLoading && <div className="notice loading"><span className="spinner" /> Loading scoped authorities…</div>}
-        {section === 'overview' && user && (tokenRoles(user.access_token).includes(CA_ADMINISTRATOR_ROLE) || tokenRoles(user.access_token).includes(CA_APPROVER_ROLE)) && <CaProposalPanel key={reload} token={user.access_token} canAdminister={tokenRoles(user.access_token).includes(CA_ADMINISTRATOR_ROLE)} canApprove={tokenRoles(user.access_token).includes(CA_APPROVER_ROLE)} onUnauthorized={rejectSession} />}
-        {section === 'overview' && !casLoading && cas.length === 0 && !dataError && !caQuery && <div className="empty-state"><div className="empty-icon">◇</div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you the reader role and a CA scope, then refresh this page.</p></div>}
-        {(cas.length > 0 || caQuery || (section !== 'overview' && !casLoading)) && <>
-          {section === 'overview' && <>
-            <div className="metric-grid"><Metric label="AUTHORITIES IN SCOPE" value={`${cas.length}${caCursor ? '+' : ''}`} detail="Authorities loaded" icon="◇" /><Metric label="SELECTED CA CERTIFICATES" value={certificateLoading ? '…' : certificateError ? '—' : String(scopedCertificates.length)} detail="Records loaded" icon="▤" /><Metric label="RECENT AUDIT EVENTS" value={auditLoading ? '…' : auditError ? '—' : String(scopedAuditEvents.length)} detail="Records loaded" icon="◷" /></div>
-            <div className="section-head"><div><h2>Your authorities</h2><p>Choose an authority to inspect its records.</p></div><button className="link-button" onClick={() => setSection('authorities')}>View all authorities →</button></div>
-            {authoritySearchForm("overview-ca-search")}<label className="filter-field"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, authority ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">{caQuery && cas.length === 0 ? 'No authorized authority matches that name or policy prefix.' : 'No matching authority among loaded records.'}</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />}
-            {caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}
+
+        {section === 'overview' && <>
+          {selectedCa && user && <OverviewDashboard key={selectedCa.ca_id} ca={selectedCa} certificates={scopedCertificates} auditEvents={scopedAuditEvents} now={validityClock} token={user.access_token}
+            isOfficer={isOfficer} isRequester={isRequester} isReader={isReader} onNavigate={setSection} onUnauthorized={rejectSession}
+            certificatesComplete={!certificateCursor} auditComplete={!auditCursor} />}
+          {selectedCa && <h2 className="ui-section-title">Shortcuts</h2>}
+          <div className="ui-role-grid">
+            {(isCaAdmin || isCaApprover) && <RoleCard icon="authority" title="CA lifecycle" text={isCaAdmin ? 'Propose authorities, register their roots, activate, suspend or retire them.' : 'Approve CA proposals and changes with your registered key.'} action="Open CA lifecycle" onOpen={() => setSection('authorities')} />}
+            {isRequester && <RoleCard icon="request" title="Request certificates" text="Submit a CSR for an active profile, collect issued certificates and ask for revocation." action="Open requests" onOpen={() => setSection('requests')} />}
+            {isOfficer && <RoleCard icon="check" title="Registration decisions" text="Approve or reject requests and revocations, issue certificates and publish CRLs." action="Open requests" onOpen={() => setSection('requests')} />}
+            {isOfficer && <RoleCard icon="revocation" title="Publish CRLs" text="Check whether the CRL must be renewed and publish the next one." action="Open CRLs" onOpen={() => setSection('revocation')} />}
+            {isReader && <RoleCard icon="audit" title="Audit trail" text="Review and export recorded events of an authority." action="Open audit trail" onOpen={() => setSection('audit')} />}
+          </div>
+          {isReader && !casLoading && cas.length === 0 && !dataError && !caQuery && <div className="empty-state"><div className="empty-icon"><Icon name="authority" size={30} /></div><h2>No authorities in your scope</h2><p>Ask an administrator to grant you a CA scope, then refresh this page.</p></div>}
+          {isReader && (cas.length > 0 || caQuery) && <>
+            <div className="section-head"><div><h2>Your authorities</h2><p>Choose an authority to inspect its records.</p></div><button className="ui-button ui-button-ghost ui-button-sm" onClick={() => setSection('authorities')}>View all authorities<Icon name="chevron" size={15} /></button></div>
+            <label className="filter-field"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, authority ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">{caQuery && cas.length === 0 ? 'No authorized authority matches that name or policy prefix.' : 'No matching authority among loaded records.'}</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={id => { setSelectedCaId(id); setSection('authorities'); }} />}
+            {caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="ui-button ui-button-secondary pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}
           </>}
-          {section !== 'overview' && <div className="workspace-grid"><div className="authority-panel"><div className="panel-heading"><span>AUTHORITIES LOADED</span><span>{cas.length}{caCursor ? '+' : ''}</span></div><form className="exact-lookup authority-lookup" onSubmit={event => { event.preventDefault(); void findAuthority(); }}><label htmlFor="authority-id-lookup">Go to an authority by exact ID</label><div><input id="authority-id-lookup" type="search" value={caLookupInput} onChange={event => { caLookupController.current?.abort(); setCaLookupLoading(false); setCaLookupInput(event.target.value); setCaLookupError(null); }} placeholder="Authority UUID" aria-describedby={caLookupError ? 'authority-lookup-error' : undefined} /><button type="submit" disabled={caLookupLoading}>{caLookupLoading ? 'Finding…' : 'Find'}</button></div></form>{caLookupError && <p id="authority-lookup-error" className="lookup-error authority-lookup-message" role="alert">{caLookupError}</p>}{caLookupResult && !cas.some(ca => ca.ca_id === caLookupResult.ca_id) && <p className="lookup-result authority-lookup-message">Selected: <button className="link-button" onClick={() => { setSelectedCaId(caLookupResult.ca_id); setSection('authorities'); }}>{caLookupResult.display_name}</button></p>}{authoritySearchForm("side-ca-search")}<label className="filter-field authority-filter"><span>Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Name, ID or policy" /></label>{filteredCas.length === 0 ? <p className="filter-empty">{cas.length === 0 ? 'No authorities loaded. Find one by exact ID or retry the inventory.' : 'No matching authority among loaded records.'}</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />}{caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="link-button pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}</div><div className="detail-panel">
-            {!selectedCa && <EmptyDetail title="No authority selected" detail="Select a loaded authority or find one by exact ID." />}
-            {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div><span className="state-pill"><span className="status-dot" /> LAB RECORD</span></div>
-              {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /><Info label="OPERATIONAL STATE" value={selectedCa.operational_state ?? 'Not managed by the CA lifecycle'} /></div><div className="subtle-panel"><b>About this record</b><p>This console shows database metadata. It does not assert that a public CA certificate, signing key or policy publication has been independently verified.</p></div><div className="quick-links"><button onClick={() => setSection('profiles')}>View profile proposals →</button><button onClick={() => setSection('certificates')}>View certificates →</button><button onClick={() => setSection('audit')}>View audit trail →</button></div></div>}
-              {section === 'certificates' && user && selectedCaId && (tokenRoles(user.access_token).includes(CERTIFICATE_REQUESTER_ROLE) || tokenRoles(user.access_token).includes(REGISTRATION_OFFICER_ROLE)) && <CertificateApplicationPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId} token={user.access_token} canRequest={tokenRoles(user.access_token).includes(CERTIFICATE_REQUESTER_ROLE)} canDecide={tokenRoles(user.access_token).includes(REGISTRATION_OFFICER_ROLE)} onUnauthorized={rejectSession} />}
-              {section === 'profiles' && (selectedCa?.operational_state === 'SUSPENDED' || selectedCa?.operational_state === 'RETIRED') && <div className="notice warning" role="status">This authority is {selectedCa.operational_state}: its profile revisions cannot be activated{selectedCa.operational_state === 'RETIRED' ? ', and its active revisions were retired with it' : ' until it is reactivated'}.</div>}
-              {section === 'profiles' && user && <ProfileDraftPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} onUnauthorized={rejectSession} linkedDetail={routeDetail?.kind === 'profile' ? routeDetail : null} onOpenDetail={detail => setRouteDetail(detail)} onCloseDetail={closeDetail} />}
-              {section === 'certificates' && <div className="detail-content"><div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${scopedCertificates.length} loaded records` : `${scopedCertificates.length} records loaded`}</span></div><form className="exact-lookup" onSubmit={event => { event.preventDefault(); const query = normalizeLiteralPrefix(cnSearchInput); if (!validLiteralPrefix(query)) { setCnSearchError('Enter at least two and at most 255 CN characters.'); return; } setCnSearchError(null); setCnSearchTerm(query); }}><label htmlFor="certificate-cn-search">Search CN prefix across this authority’s full certificate history</label><div><input id="certificate-cn-search" type="search" value={cnSearchInput} onChange={event => { setCnSearchInput(event.target.value); setCnSearchError(null); }} placeholder="First characters of a CN" aria-describedby={cnSearchError ? 'certificate-cn-search-error' : undefined} /><button type="submit">Search</button>{cnSearchTerm && <button type="button" onClick={() => { setCnSearchInput(''); setCnSearchTerm(null); }}>Clear</button>}</div></form>{cnSearchError && <p id="certificate-cn-search-error" className="lookup-error" role="alert">{cnSearchError}</p>}{cnSearchTerm && <p className="lookup-result">Showing CN prefix matches for <strong>{cnSearchTerm}</strong> across the authority’s history.</p>}<form className="exact-lookup" onSubmit={event => { event.preventDefault(); const query = sanSearchInput.trim(); if (!/^[a-zA-Z0-9.*_-]{1,253}$/.test(query)) { setSanSearchError('Enter an exact ASCII DNS SAN (1–253 characters).'); return; } setSanSearchError(null); setSanSearchTerm(query); }}><label htmlFor="certificate-san-search">Search exact DNS SAN across this authority’s full certificate history</label><div><input id="certificate-san-search" type="search" value={sanSearchInput} onChange={event => { setSanSearchInput(event.target.value); setSanSearchError(null); }} placeholder="Exact DNS name" aria-describedby={sanSearchError ? 'certificate-san-search-error' : undefined} /><button type="submit">Search SAN</button>{sanSearchTerm && <button type="button" onClick={() => { setSanSearchInput(''); setSanSearchTerm(null); }}>Clear SAN</button>}</div></form>{sanSearchError && <p id="certificate-san-search-error" className="lookup-error" role="alert">{sanSearchError}</p>}{sanSearchTerm && <p className="lookup-result">Showing exact DNS SAN <strong>{sanSearchTerm}</strong> across the authority’s history. Historical records without verified SAN metadata are excluded.</p>}<form className="exact-lookup" onSubmit={event => { event.preventDefault(); setExpiryBeforeTerm(expiryBeforeInput || null); }}><label htmlFor="certificate-expiry-before">Recorded valid-until before this UTC date (exclusive)</label><div><input id="certificate-expiry-before" type="date" value={expiryBeforeInput} onChange={event => setExpiryBeforeInput(event.target.value)} /><button type="submit">Apply date</button>{expiryBeforeTerm && <button type="button" onClick={() => { setExpiryBeforeInput(''); setExpiryBeforeTerm(null); }}>Clear date</button>}</div></form>{expiryBeforeTerm && <p className="lookup-result">Showing certificates with a recorded valid-until before <strong>{expiryBeforeTerm} UTC</strong>. Unknown dates are excluded; this is not a trust or revocation check.</p>}<form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findCertificate(); }}><label htmlFor="certificate-request-lookup">Find a certificate by exact request ID or serial across this authority's history</label><div><input id="certificate-request-lookup" type="search" value={lookupInput} onChange={event => { lookupController.current?.abort(); setLookupLoading(false); setLookupInput(event.target.value); setLookupResult(null); setLookupError(null); }} placeholder="Request UUID or serial hex" aria-describedby={lookupError ? 'certificate-lookup-error' : undefined} /><button type="submit" disabled={lookupLoading}>{lookupLoading ? 'Finding…' : 'Find'}</button></div></form>{lookupError && <p id="certificate-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}{lookupResult?.ca_id === selectedCaId && <p className="lookup-result">Found serial <span className="mono">{lookupResult.serial_hex}</span> <button className="link-button" onClick={() => openCertificate(lookupResult)}>View detail</button></p>}{certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : scopedCertificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="No certificate metadata matches the active server filters in this authority, or no certificates are recorded." /> : <><label className="filter-field"><span>Sort loaded certificates</span><select value={certificateSort} onChange={event => setCertificateSort(event.target.value as CertificateSort)}><option value="newest">Newest signed first (all pages)</option><option value="oldest">Oldest signed first (all pages)</option><option value="cn">CN A–Z (loaded rows)</option><option value="serial">Serial hex A–Z (loaded rows)</option></select></label><label className="filter-field"><span>Filter loaded certificates</span><input type="search" value={certificateFilter} onChange={event => setCertificateFilter(event.target.value)} placeholder="CN, serial, fingerprint, request ID or state" /></label>{filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records. Find by exact request ID or serial above to search the full history.</p> : <><div className="csv-actions"><span>{selectedCertificateRows.length} of {MAX_CSV_ROWS} visible certificates selected</span><button type="button" disabled={selectedCertificateRows.length === 0} onClick={() => downloadSelectedCsv('certificate')}>Export selected CSV</button>{selectedCertificateIds.length > 0 && <button type="button" className="link-button" onClick={() => setSelectedCertificateIds([])}>Clear selection</button>}</div><div className="table-wrap"><table className="certificate-table"><thead><tr><th className="selection-column">SELECT</th><th>CN</th><th>SERIAL</th><th>STATE</th><th>RECORDED PERIOD</th><th>SIGNED</th><th>FINGERPRINT SHA-256</th></tr></thead><tbody>{sortedCertificates.map(cert => <tr key={cert.request_id}><td><input type="checkbox" aria-label={`Select certificate ${cert.serial_hex} for CSV export`} checked={selectedCertificateIds.includes(cert.request_id)} disabled={!selectedCertificateIds.includes(cert.request_id) && selectedCertificateIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('certificate', cert.request_id)} /></td><td className="certificate-cn" title={cert.subject_cn ?? 'CN not recorded'}>{cert.subject_cn ? <button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate for ${cert.subject_cn}`}>{cert.subject_cn}</button> : <span className="muted">—</span>}</td><td className="mono"><button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><span className="row-state">{cert.state}</span></td><td title="Based only on recorded X.509 dates; this is not a trust or revocation check">{recordedValidityStatus(cert, validityClock)}</td><td>{displayDate(cert.signed_at)}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div></>}{certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="link-button pagination-action" disabled={certificateMoreLoading} onClick={() => void loadOlder('certificates')}>{certificateMoreLoading ? 'Loading…' : 'Load older certificates'}</button>)}</>}</div>}
-              {section === 'audit' && <div className="detail-content"><div className="table-heading"><h3>Recent events</h3><span>{auditFilter.trim() ? `${filteredAuditEvents.length} of ${scopedAuditEvents.length} loaded records` : `${scopedAuditEvents.length} records loaded`}</span></div><form className="exact-lookup" onSubmit={event => { event.preventDefault(); const result = prepareAuditQuery({ from: auditFrom, until: auditUntil, eventType: auditEventType, decision: auditDecision, policyVersion: auditPolicyVersion }); setAuditFilterError(result.error); if (result.query !== null) setAuditQuery(result.query); }}><label>Filter the full audit history</label><div><input type="date" aria-label="From date inclusive" value={auditFrom} onChange={event => setAuditFrom(event.target.value)} /><input type="date" aria-label="Before date exclusive" value={auditUntil} onChange={event => setAuditUntil(event.target.value)} /><input type="search" aria-label="Exact event type" placeholder="Exact event type" value={auditEventType} onChange={event => setAuditEventType(event.target.value)} /><input type="search" aria-label="Exact decision" placeholder="Exact decision" value={auditDecision} onChange={event => setAuditDecision(event.target.value)} /><input type="search" aria-label="Exact policy version" placeholder="Exact policy version" value={auditPolicyVersion} onChange={event => setAuditPolicyVersion(event.target.value)} /><button type="submit">Apply</button>{auditQuery && <button type="button" onClick={() => { setAuditFrom(''); setAuditUntil(''); setAuditEventType(''); setAuditDecision(''); setAuditPolicyVersion(''); setAuditQuery(''); }}>Clear</button>}</div></form>{auditFilterError && <p className="lookup-error" role="alert">{auditFilterError}</p>}{auditQuery && <p className="lookup-result">Server filters are active for this authority’s full audit history.</p>}<form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findAuditEvent(); }}><label htmlFor="audit-event-lookup">Find an event by exact ID across this authority's history</label><div><input id="audit-event-lookup" type="search" value={auditLookupInput} onChange={event => { auditLookupController.current?.abort(); setAuditLookupLoading(false); setAuditLookupInput(event.target.value); setAuditLookupResult(null); setAuditLookupError(null); }} placeholder="Event UUID" aria-describedby={auditLookupError ? 'audit-lookup-error' : undefined} /><button type="submit" disabled={auditLookupLoading}>{auditLookupLoading ? 'Finding…' : 'Find'}</button></div></form>{auditLookupError && <p id="audit-lookup-error" className="lookup-error" role="alert">{auditLookupError}</p>}{auditLookupResult?.ca_id === selectedCaId && <p className="lookup-result">Found event <span className="mono">{auditLookupResult.event_id}</span> <button className="link-button" onClick={() => openAuditEvent(auditLookupResult)}>View detail</button></p>}{auditLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setAuditReload(value => value + 1)} /> : scopedAuditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events match the active server filters, or no events are recorded for this authority." /> : <><label className="filter-field"><span>Sort loaded audit events</span><select value={auditSort} onChange={event => setAuditSort(event.target.value as AuditSort)}><option value="newest">Newest recorded first (all pages)</option><option value="oldest">Oldest recorded first (all pages)</option><option value="type">Event type A–Z (loaded rows)</option><option value="decision">Decision A–Z (loaded rows)</option></select></label><label className="filter-field"><span>Filter loaded audit events</span><input type="search" value={auditFilter} onChange={event => setAuditFilter(event.target.value)} placeholder="Event ID, type, decision or policy" /></label>{filteredAuditEvents.length === 0 ? <p className="filter-empty">No matching event among loaded records.</p> : <><div className="csv-actions"><span>{selectedAuditRows.length} of {MAX_CSV_ROWS} visible events selected</span><button type="button" disabled={selectedAuditRows.length === 0} onClick={() => downloadSelectedCsv('audit')}>Export selected CSV</button>{selectedAuditIds.length > 0 && <button type="button" className="link-button" onClick={() => setSelectedAuditIds([])}>Clear selection</button>}</div><div className="timeline">{sortedAuditEvents.map(event => <div className="timeline-item" key={event.event_id}><span className="timeline-dot" /><input type="checkbox" aria-label={`Select audit event ${event.event_id} for CSV export`} checked={selectedAuditIds.includes(event.event_id)} disabled={!selectedAuditIds.includes(event.event_id) && selectedAuditIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('audit', event.event_id)} /><div><button className="record-link" onClick={() => openAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}>{event.event_type}</button><p>{event.decision}</p><small>{displayDate(event.recorded_at)} · Policy {event.policy_version ?? 'not recorded'}</small></div></div>)}</div></>}{auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="link-button pagination-action" disabled={auditMoreLoading} onClick={() => void loadOlder('audit')}>{auditMoreLoading ? 'Loading…' : 'Load older audit events'}</button>)}</>}</div>}
-            </>}
-          </div></div>}
         </>}
+
+        {section === 'authorities' && (isCaAdmin || isCaApprover) && <div className="ui-block"><CaProposalPanel key={reload} token={user.access_token} canAdminister={isCaAdmin} canApprove={isCaApprover} onUnauthorized={rejectSession} /></div>}
+
+        {needsAuthority && isReader && <div className="workspace-grid"><div className="authority-panel">
+          <div className="panel-heading"><span>AUTHORITIES</span><span>{cas.length}{caCursor ? '+' : ''}</span></div>
+          <label className="filter-field authority-filter"><span className="sr-only">Filter loaded authorities</span><input type="search" value={caFilter} onChange={event => setCaFilter(event.target.value)} placeholder="Filter by name, ID or policy" /></label>
+          {filteredCas.length === 0 ? <p className="filter-empty">{cas.length === 0 ? 'No authorities loaded.' : 'No matching authority among loaded records.'}</p> : <AuthorityList cas={filteredCas} selectedCaId={selectedCaId} onSelect={setSelectedCaId} compact />}
+          {caCursor && (caMoreError ? <LoadFailure message={caMoreError} onRetry={() => void loadMoreCas()} /> : <button className="ui-button ui-button-ghost ui-button-sm pagination-action" disabled={caMoreLoading} onClick={() => void loadMoreCas()}>{caMoreLoading ? 'Loading…' : 'Load more authorities'}</button>)}
+          <details className="ui-disclosure authority-more"><summary>Search all authorities</summary>
+            {authoritySearchForm('side-ca-search')}
+            <form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findAuthority(); }}><label htmlFor="authority-id-lookup">Go to an authority by exact ID</label><div><input id="authority-id-lookup" type="search" value={caLookupInput} onChange={event => { caLookupController.current?.abort(); setCaLookupLoading(false); setCaLookupInput(event.target.value); setCaLookupError(null); }} placeholder="Authority UUID" aria-describedby={caLookupError ? 'authority-lookup-error' : undefined} /><button type="submit" disabled={caLookupLoading}>{caLookupLoading ? 'Finding…' : 'Find'}</button></div></form>
+            {caLookupError && <p id="authority-lookup-error" className="lookup-error" role="alert">{caLookupError}</p>}
+            {caLookupResult && !cas.some(ca => ca.ca_id === caLookupResult.ca_id) && <p className="lookup-result">Selected: <button className="link-button" onClick={() => setSelectedCaId(caLookupResult.ca_id)}>{caLookupResult.display_name}</button></p>}
+          </details>
+        </div><div className="detail-panel">
+          {!selectedCa && <EmptyDetail title="No authority selected" detail="Select an authority on the left, or search all authorities." />}
+          {selectedCa && <><div className="detail-header"><div><div className="eyebrow">CERTIFICATE AUTHORITY</div><h2>{selectedCa.display_name}</h2><span className="mono muted">{selectedCa.ca_id}</span></div>{selectedCa.operational_state ? <StatusBadge status={selectedCa.operational_state} /> : <span className="state-pill">OWNER RECORD</span>}</div>
+            {section === 'authorities' && <div className="detail-content"><div className="detail-grid"><Info label="POLICY VERSION" value={selectedCa.policy_version} /><Info label="CREATED" value={displayDate(selectedCa.created_at)} /><Info label="PARENT AUTHORITY" value={selectedCa.parent_ca_id ? shortId(selectedCa.parent_ca_id) : 'Root / not recorded'} /><Info label="AUTHORITY ID" value={shortId(selectedCa.ca_id)} /><Info label="OPERATIONAL STATE" value={selectedCa.operational_state ?? 'Not managed by the CA lifecycle'} /></div><p className="ui-hint ui-spaced">Database metadata only: this view does not assert that a CA certificate, signing key or policy publication has been independently verified.</p><div className="ui-actions"><button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setSection('profiles')}><Icon name="profile" size={15} />Profiles</button>{(isRequester || isOfficer) && <button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setSection('requests')}><Icon name="request" size={15} />Requests</button>}<button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setSection('certificates')}><Icon name="certificate" size={15} />Certificates</button><button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setSection('revocation')}><Icon name="revocation" size={15} />CRLs</button><button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setSection('audit')}><Icon name="audit" size={15} />Audit trail</button></div></div>}
+            {section === 'profiles' && (selectedCa?.operational_state === 'SUSPENDED' || selectedCa?.operational_state === 'RETIRED') && <div className="detail-content ui-tight"><Notice tone="warning">This authority is {selectedCa.operational_state}: its profile revisions cannot be activated{selectedCa.operational_state === 'RETIRED' ? ', and its active revisions were retired with it' : ' until it is reactivated'}.</Notice></div>}
+            {section === 'profiles' && <ProfileDraftPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} onUnauthorized={rejectSession} linkedDetail={routeDetail?.kind === 'profile' ? routeDetail : null} onOpenDetail={detail => setRouteDetail(detail)} onCloseDetail={closeDetail} />}
+            {section === 'requests' && <div className="detail-content"><RequestsPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} canRequest={isRequester} canDecide={isOfficer} onUnauthorized={rejectSession} /></div>}
+            {section === 'revocation' && <div className="detail-content"><CrlPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} canPublish={isOfficer} onUnauthorized={rejectSession} onOpenRequests={() => setSection('requests')} /></div>}
+            {section === 'certificates' && <div className="detail-content">
+              <div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${scopedCertificates.length} loaded records` : `${scopedCertificates.length} records loaded`}</span></div>
+              <div className="ui-toolbar">
+                <label className="ui-field ui-field-grow"><span>Filter loaded certificates</span><input type="search" value={certificateFilter} onChange={event => setCertificateFilter(event.target.value)} placeholder="CN, serial, fingerprint, request ID or state" /></label>
+                <label className="ui-field"><span>Sort loaded certificates</span><select value={certificateSort} onChange={event => setCertificateSort(event.target.value as CertificateSort)}><option value="newest">Newest signed first (all pages)</option><option value="oldest">Oldest signed first (all pages)</option><option value="cn">CN A–Z (loaded rows)</option><option value="serial">Serial hex A–Z (loaded rows)</option></select></label>
+              </div>
+              <Disclosure active={certificateServerFilters > 0} summary={<><Icon name="filter" size={15} />Search the full history{certificateServerFilters > 0 && ` (${certificateServerFilters} active)`}</>}><div className="ui-search-grid">
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); const query = normalizeLiteralPrefix(cnSearchInput); if (!validLiteralPrefix(query)) { setCnSearchError('Enter at least two and at most 255 CN characters.'); return; } setCnSearchError(null); setCnSearchTerm(query); }}><label htmlFor="certificate-cn-search">CN prefix</label><div><input id="certificate-cn-search" type="search" value={cnSearchInput} onChange={event => { setCnSearchInput(event.target.value); setCnSearchError(null); }} placeholder="First characters of a CN" aria-describedby={cnSearchError ? 'certificate-cn-search-error' : undefined} /><button type="submit">Search</button>{cnSearchTerm && <button type="button" onClick={() => { setCnSearchInput(''); setCnSearchTerm(null); }}>Clear</button>}</div>{cnSearchError && <p id="certificate-cn-search-error" className="lookup-error" role="alert">{cnSearchError}</p>}{cnSearchTerm && <p className="lookup-result">Showing CN prefix matches for <strong>{cnSearchTerm}</strong> across the authority’s history.</p>}</form>
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); const query = sanSearchInput.trim(); if (!/^[a-zA-Z0-9.*_-]{1,253}$/.test(query)) { setSanSearchError('Enter an exact ASCII DNS SAN (1–253 characters).'); return; } setSanSearchError(null); setSanSearchTerm(query); }}><label htmlFor="certificate-san-search">Exact DNS SAN</label><div><input id="certificate-san-search" type="search" value={sanSearchInput} onChange={event => { setSanSearchInput(event.target.value); setSanSearchError(null); }} placeholder="Exact DNS name" aria-describedby={sanSearchError ? 'certificate-san-search-error' : undefined} /><button type="submit">Search SAN</button>{sanSearchTerm && <button type="button" onClick={() => { setSanSearchInput(''); setSanSearchTerm(null); }}>Clear SAN</button>}</div>{sanSearchError && <p id="certificate-san-search-error" className="lookup-error" role="alert">{sanSearchError}</p>}{sanSearchTerm && <p className="lookup-result">Showing exact DNS SAN <strong>{sanSearchTerm}</strong> across the authority’s history. Historical records without verified SAN metadata are excluded.</p>}</form>
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); setExpiryBeforeTerm(expiryBeforeInput || null); }}><label htmlFor="certificate-expiry-before">Valid until before (UTC, exclusive)</label><div><input id="certificate-expiry-before" type="date" value={expiryBeforeInput} onChange={event => setExpiryBeforeInput(event.target.value)} /><button type="submit">Apply date</button>{expiryBeforeTerm && <button type="button" onClick={() => { setExpiryBeforeInput(''); setExpiryBeforeTerm(null); }}>Clear date</button>}</div>{expiryBeforeTerm && <p className="lookup-result">Showing certificates with a recorded valid-until before <strong>{expiryBeforeTerm} UTC</strong>. Unknown dates are excluded; this is not a trust or revocation check.</p>}</form>
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findCertificate(); }}><label htmlFor="certificate-request-lookup">Request ID or serial</label><div><input id="certificate-request-lookup" type="search" value={lookupInput} onChange={event => { lookupController.current?.abort(); setLookupLoading(false); setLookupInput(event.target.value); setLookupResult(null); setLookupError(null); }} placeholder="Request UUID or serial hex" aria-describedby={lookupError ? 'certificate-lookup-error' : undefined} /><button type="submit" disabled={lookupLoading}>{lookupLoading ? 'Finding…' : 'Find'}</button></div>{lookupError && <p id="certificate-lookup-error" className="lookup-error" role="alert">{lookupError}</p>}{lookupResult?.ca_id === selectedCaId && <p className="lookup-result">Found serial <span className="mono">{lookupResult.serial_hex}</span> <button type="button" className="link-button" onClick={() => openCertificate(lookupResult)}>View detail</button></p>}</form>
+              </div></Disclosure>
+              {certificateLoading ? <LoadingRows /> : certificateError ? <LoadFailure message={certificateError} onRetry={() => setCertificateReload(value => value + 1)} /> : scopedCertificates.length === 0 ? <EmptyDetail title="No certificates recorded" detail="No certificate metadata matches the active server filters in this authority, or no certificates are recorded." /> : filteredCertificates.length === 0 ? <p className="filter-empty">No matching certificate among loaded records. Search the full history above.</p> : <>
+                {selectionBar('certificate', selectedCertificateRows.length, sortedCertificates.length)}
+                <div className="table-wrap"><table className="certificate-table ui-table"><thead><tr><th className="selection-column"><HeaderCheckbox state={certificateHeader} label="Select all visible certificates" onChange={() => selectRows('certificate', 'toggle-visible')} /></th><th>Common name</th><th>Serial</th><th>State</th><th>Recorded period</th><th>Signed</th><th>SHA-256</th></tr></thead><tbody>{sortedCertificates.map(cert => <tr key={cert.request_id} className={selectedCertificateIds.includes(cert.request_id) ? 'ui-row-selected' : undefined}><td><input type="checkbox" aria-label={`Select certificate ${cert.serial_hex} for CSV export`} checked={selectedCertificateIds.includes(cert.request_id)} disabled={!selectedCertificateIds.includes(cert.request_id) && selectedCertificateIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('certificate', cert.request_id)} /></td><td className="certificate-cn" title={cert.subject_cn ?? 'CN not recorded'}>{cert.subject_cn ? <button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate for ${cert.subject_cn}`}>{cert.subject_cn}</button> : <span className="muted">—</span>}</td><td className="mono"><button className="record-link" onClick={() => openCertificate(cert)} aria-label={`View certificate ${cert.serial_hex}`}>{shortId(cert.serial_hex)}</button></td><td><StatusBadge status={cert.state} /></td><td>{(() => { const period = recordedValidityStatus(cert, validityClock); return <Tag tone={period === 'Within period' ? 'good' : period === 'Period ended' ? 'bad' : period === 'Not yet in period' ? 'info' : 'neutral'} title="Based only on recorded X.509 dates; this is not a trust or revocation check">{period}</Tag>; })()}{(() => { const elapsed = lifetimeElapsed(cert, validityClock); return elapsed === null ? null : <div className={`ui-life${elapsed >= 1 ? ' ended' : elapsed > 0.85 ? ' late' : ''}`} title={`${Math.round(elapsed * 100)}% of the recorded lifetime elapsed`}><span style={{ width: `${Math.max(2, elapsed * 100)}%` }} /></div>; })()}</td><td className="ui-nowrap">{cert.signed_at ? <TimeAgo value={cert.signed_at} now={new Date(validityClock)} /> : <span className="ui-sub">Not signed</span>}</td><td className="mono" title={cert.fingerprint_sha256}>{shortId(cert.fingerprint_sha256)}</td></tr>)}</tbody></table></div>
+                <p className="ui-hint">The state is the issuance record; revocation status is shown under Requests and on the CRLs.</p>
+              </>}
+              {certificateCursor && (certificateMoreError ? <LoadFailure message={certificateMoreError} onRetry={() => void loadOlder('certificates')} /> : <button className="ui-button ui-button-secondary ui-button-sm pagination-action" disabled={certificateMoreLoading} onClick={() => void loadOlder('certificates')}>{certificateMoreLoading ? 'Loading…' : 'Load older certificates'}</button>)}
+            </div>}
+            {section === 'audit' && <div className="detail-content">
+              <div className="table-heading"><h3>Recent events</h3><span>{auditFilter.trim() ? `${filteredAuditEvents.length} of ${scopedAuditEvents.length} loaded records` : `${scopedAuditEvents.length} records loaded`}</span></div>
+              <div className="ui-toolbar">
+                <label className="ui-field ui-field-grow"><span>Filter loaded audit events</span><input type="search" value={auditFilter} onChange={event => setAuditFilter(event.target.value)} placeholder="Event ID, type, decision or policy" /></label>
+                <label className="ui-field"><span>Sort loaded audit events</span><select value={auditSort} onChange={event => setAuditSort(event.target.value as AuditSort)}><option value="newest">Newest recorded first (all pages)</option><option value="oldest">Oldest recorded first (all pages)</option><option value="type">Event type A–Z (loaded rows)</option><option value="decision">Decision A–Z (loaded rows)</option></select></label>
+              </div>
+              <div className="ui-chip-rows">
+                <FilterChips label="Filter loaded events by outcome" value={auditOutcome} onChange={setAuditOutcome} options={[
+                  { id: 'all', label: 'All outcomes', count: scopedAuditEvents.length },
+                  { id: 'allowed', label: 'Allowed', count: auditOutcomeCounts.get('allowed') ?? 0, tone: 'good' },
+                  { id: 'denied', label: 'Denied', count: auditOutcomeCounts.get('denied') ?? 0, tone: 'bad' },
+                  { id: 'attention', label: 'Needs attention', count: auditOutcomeCounts.get('attention') ?? 0, tone: 'warn' },
+                  { id: 'other', label: 'Results & transitions', count: auditOutcomeCounts.get('other') ?? 0, tone: 'neutral' },
+                ]} />
+                <FilterChips label="Filter loaded events by category" value={auditCategory} onChange={setAuditCategory} options={[
+                  { id: 'all' as const, label: 'All categories', count: scopedAuditEvents.length },
+                  ...(Object.keys(CATEGORY_LABELS) as EventCategory[]).filter(category => auditCategoryCounts.get(category)).map(category => ({ id: category, label: CATEGORY_LABELS[category], count: auditCategoryCounts.get(category) ?? 0 })),
+                ]} />
+              </div>
+              <Disclosure active={Boolean(auditQuery)} summary={<><Icon name="filter" size={15} />Filter the full history{auditQuery && ' (active)'}</>}>
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); const result = prepareAuditQuery({ from: auditFrom, until: auditUntil, eventType: auditEventType, decision: auditDecision, policyVersion: auditPolicyVersion }); setAuditFilterError(result.error); if (result.query !== null) setAuditQuery(result.query); }}><label>Server-side filters</label><div className="ui-filter-row"><input type="date" aria-label="From date inclusive" value={auditFrom} onChange={event => setAuditFrom(event.target.value)} /><input type="date" aria-label="Before date exclusive" value={auditUntil} onChange={event => setAuditUntil(event.target.value)} /><input type="search" aria-label="Exact event type" placeholder="Exact event type" value={auditEventType} onChange={event => setAuditEventType(event.target.value)} /><input type="search" aria-label="Exact decision" placeholder="Exact decision" value={auditDecision} onChange={event => setAuditDecision(event.target.value)} /><input type="search" aria-label="Exact policy version" placeholder="Exact policy version" value={auditPolicyVersion} onChange={event => setAuditPolicyVersion(event.target.value)} /><button type="submit">Apply</button>{auditQuery && <button type="button" onClick={() => { setAuditFrom(''); setAuditUntil(''); setAuditEventType(''); setAuditDecision(''); setAuditPolicyVersion(''); setAuditQuery(''); }}>Clear</button>}</div></form>
+                {auditFilterError && <p className="lookup-error" role="alert">{auditFilterError}</p>}{auditQuery && <p className="lookup-result">Server filters are active for this authority’s full audit history.</p>}
+                <form className="exact-lookup" onSubmit={event => { event.preventDefault(); void findAuditEvent(); }}><label htmlFor="audit-event-lookup">Find an event by exact ID</label><div><input id="audit-event-lookup" type="search" value={auditLookupInput} onChange={event => { auditLookupController.current?.abort(); setAuditLookupLoading(false); setAuditLookupInput(event.target.value); setAuditLookupResult(null); setAuditLookupError(null); }} placeholder="Event UUID" aria-describedby={auditLookupError ? 'audit-lookup-error' : undefined} /><button type="submit" disabled={auditLookupLoading}>{auditLookupLoading ? 'Finding…' : 'Find'}</button></div></form>
+                {auditLookupError && <p id="audit-lookup-error" className="lookup-error" role="alert">{auditLookupError}</p>}{auditLookupResult?.ca_id === selectedCaId && <p className="lookup-result">Found event <span className="mono">{auditLookupResult.event_id}</span> <button type="button" className="link-button" onClick={() => openAuditEvent(auditLookupResult)}>View detail</button></p>}
+              </Disclosure>
+              {auditLoading ? <LoadingRows /> : auditError ? <LoadFailure message={auditError} onRetry={() => setAuditReload(value => value + 1)} /> : scopedAuditEvents.length === 0 ? <EmptyDetail title="No audit events recorded" detail="No events match the active server filters, or no events are recorded for this authority." /> : filteredAuditEvents.length === 0 ? <p className="filter-empty">No matching event among loaded records.</p> : <>
+                {selectionBar('audit', selectedAuditRows.length, sortedAuditEvents.length)}
+                <div className="table-wrap"><table className="ui-table ui-table-compact" aria-label="Audit events"><thead><tr><th className="selection-column"><HeaderCheckbox state={auditHeader} label="Select all visible audit events" onChange={() => selectRows('audit', 'toggle-visible')} /></th><th>When</th><th>Event</th><th>Outcome</th><th>Policy</th></tr></thead>
+                  <tbody>{sortedAuditEvents.map((event, index) => <Fragment key={event.event_id}>{(auditSort === 'newest' || auditSort === 'oldest') && (index === 0 || dayLabel(sortedAuditEvents[index - 1].recorded_at, new Date(validityClock)) !== dayLabel(event.recorded_at, new Date(validityClock))) && <tr className="ui-group-row" aria-hidden="true"><td colSpan={5}>{dayLabel(event.recorded_at, new Date(validityClock))}</td></tr>}<tr className={selectedAuditIds.includes(event.event_id) ? 'ui-row-selected ui-row-clickable' : 'ui-row-clickable'} onClick={clicked => { if (!(clicked.target as HTMLElement).closest('input, button, a')) openAuditEvent(event); }}><td><input type="checkbox" aria-label={`Select audit event ${event.event_id} for CSV export`} checked={selectedAuditIds.includes(event.event_id)} disabled={!selectedAuditIds.includes(event.event_id) && selectedAuditIds.length >= MAX_CSV_ROWS} onChange={() => toggleExportRow('audit', event.event_id)} /></td><td className="ui-nowrap"><TimeAgo value={event.recorded_at} now={new Date(validityClock)} /></td><td><button type="button" className="ui-row-button" onClick={() => openAuditEvent(event)} aria-label={`View audit event ${event.event_id}`}><EventLabel type={event.event_type} /></button></td><td><OutcomeBadge decision={event.decision} /></td><td>{event.policy_version ? <span className="ui-chip">{event.policy_version}</span> : <span className="ui-sub" title="No policy version recorded for this event">—<span className="sr-only">No policy version recorded</span></span>}</td></tr></Fragment>)}</tbody></table></div>
+              </>}
+              {auditCursor && (auditMoreError ? <LoadFailure message={auditMoreError} onRetry={() => void loadOlder('audit')} /> : <button className="ui-button ui-button-secondary ui-button-sm pagination-action" disabled={auditMoreLoading} onClick={() => void loadOlder('audit')}>{auditMoreLoading ? 'Loading…' : 'Load older audit events'}</button>)}
+            </div>}
+          </>}
+        </div></div>}
+        {needsAuthority && !isReader && section !== 'authorities' && section !== 'requests' && <div className="empty-state"><div className="empty-icon"><Icon name="authority" size={30} /></div><h2>Not in your roles</h2><p>This view needs the reader role and an authority in your scope.</p></div>}
+        {section === 'requests' && !isReader && (isRequester || isOfficer) && <div className="empty-state"><div className="empty-icon"><Icon name="request" size={30} /></div><h2>No authority to choose</h2><p>Requests are listed per authority; your account also needs the reader role and an authority in its scope.</p></div>}
       </main>
-      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} />}
-      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} onClose={closeDetail} />}
+      {selectedCertificate?.ca_id === selectedCaId && section === 'certificates' && (scopedCertificates.some(cert => cert.request_id === selectedCertificate.request_id) || lookupResult?.request_id === selectedCertificate.request_id) && <CertificateDialog certificate={selectedCertificate} now={validityClock} onClose={closeDetail} {...neighbours(sortedCertificates, cert => cert.request_id === selectedCertificate.request_id, openCertificate)} />}
+      {selectedAuditEvent?.ca_id === selectedCaId && section === 'audit' && (scopedAuditEvents.some(event => event.event_id === selectedAuditEvent.event_id) || auditLookupResult?.event_id === selectedAuditEvent.event_id) && <AuditDialog event={selectedAuditEvent} now={validityClock} onClose={closeDetail} {...neighbours(sortedAuditEvents, row => row.event_id === selectedAuditEvent.event_id, openAuditEvent)} />}
     </div>
+    <Toaster />
+    <CommandPalette items={paletteItems} open={paletteOpen} onClose={() => setPaletteOpen(false)} />
   </div>;
 }
 
-function MetadataDialog({ titleId, title, eyebrow, fields, copyJson, note, onClose }: { titleId: string; title: string; eyebrow: string; fields: { label: string; value: string; copyable?: boolean }[]; copyJson: string; note: string; onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [copyFeedback, setCopyFeedback] = useState('');
-  async function copyValue(label: string, value: string, visible = true) {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopyFeedback(`${label} copied.`);
-    } catch {
-      setCopyFeedback(visible ? `Could not copy ${label}. Select the value to copy it manually.` : `Could not copy ${label}.`);
-    }
-  }
-  useEffect(() => {
-    const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
-  return <dialog ref={dialog} className="certificate-dialog" aria-labelledby={titleId} onClose={onClose}>
-    <div className="dialog-heading"><div><div className="eyebrow">{eyebrow}</div><h2 id={titleId}>{title}</h2></div><button type="button" className="dialog-close" aria-label={`Close ${title.toLowerCase()}`} onClick={() => dialog.current?.close()}><span aria-hidden="true">×</span></button></div>
-    <div className="detail-grid">{fields.map(field => <div className="info-cell" key={field.label}><span>{field.label}</span><div className="metadata-value"><strong>{field.value}</strong>{field.copyable && <button type="button" className="link-button" aria-label={`Copy ${field.label.toLowerCase()}`} onClick={() => void copyValue(field.label, field.value)}>Copy</button>}</div></div>)}</div>
-    <button type="button" className="metadata-copy-json" onClick={() => void copyValue('metadata JSON', copyJson, false)}>Copy metadata JSON</button>
-    {copyFeedback && <p className="copy-feedback" role="status">{copyFeedback}</p>}
-    <p className="dialog-note">{note}</p>
-  </dialog>;
+function RoleCard({ icon, title, text, action, onOpen }: { icon: IconName; title: string; text: string; action: string; onOpen: () => void }) {
+  return <div className="ui-role-card"><div className="ui-role-icon"><Icon name={icon} size={20} /></div><h3>{title}</h3><p>{text}</p><button type="button" className="ui-button ui-button-secondary ui-button-sm" onClick={onOpen}>{action}<Icon name="chevron" size={15} /></button></div>;
 }
 
-function CertificateDialog({ certificate, now, onClose }: { certificate: Certificate; now: number; onClose: () => void }) {
-  return <MetadataDialog titleId="certificate-dialog-title" title="Certificate detail" eyebrow="CERTIFICATE METADATA" onClose={onClose}
-    copyJson={certificateMetadataJson(certificate)}
-    fields={[{ label: 'CN', value: certificate.subject_cn || 'Not recorded' }, { label: 'DNS SAN', value: certificate.san_dns?.length ? certificate.san_dns.join(', ') : certificate.san_dns ? 'None' : 'Not recorded' }, { label: 'VALID FROM', value: displayDate(certificate.not_before) }, { label: 'VALID UNTIL', value: displayDate(certificate.not_after) }, { label: 'RECORDED PERIOD', value: recordedValidityStatus(certificate, now) }, { label: 'SERIAL', value: certificate.serial_hex, copyable: true }, { label: 'FINGERPRINT SHA-256', value: certificate.fingerprint_sha256, copyable: true }, { label: 'REQUEST ID', value: certificate.request_id, copyable: true }, { label: 'STATE', value: certificate.state }, { label: 'SIGNED', value: displayDate(certificate.signed_at) }, { label: 'PUBLISHED', value: displayDate(certificate.published_at) }]}
-    note="For actual lab issuance, validity and SAN come from independently verified DER. This database may include synthetic fixtures. The recorded period is not a live path or revocation check." />;
+const DAY_MS = 86_400_000;
+
+/** Previous/next handlers and a position label for a record within a list. */
+function neighbours<T>(rows: T[], isCurrent: (row: T) => boolean, open: (row: T) => void) {
+  const index = rows.findIndex(isCurrent);
+  if (index < 0) return { onPrevious: null, onNext: null, position: '' };
+  return {
+    onPrevious: index > 0 ? () => open(rows[index - 1]) : null,
+    onNext: index < rows.length - 1 ? () => open(rows[index + 1]) : null,
+    position: `${index + 1} of ${rows.length}`,
+  };
 }
 
-function AuditDialog({ event, onClose }: { event: AuditEvent; onClose: () => void }) {
-  return <MetadataDialog titleId="audit-dialog-title" title="Audit event detail" eyebrow="AUDIT METADATA" onClose={onClose}
-    copyJson={auditMetadataJson(event)}
-    fields={[{ label: 'EVENT ID', value: event.event_id, copyable: true }, { label: 'EVENT TYPE', value: event.event_type }, { label: 'DECISION', value: event.decision }, { label: 'POLICY VERSION', value: event.policy_version ?? 'Not recorded' }, { label: 'RECORDED', value: displayDate(event.recorded_at) }]}
-    note="Database metadata only. This view does not include actor identity or independent audit integrity proof." />;
+function ValiditySummary({ certificate, now }: { certificate: Certificate; now: number }) {
+  const elapsed = lifetimeElapsed(certificate, now);
+  if (elapsed === null) return <div className="ui-validity">
+    <div className="ui-validity-head"><span className="ui-summary-label">Recorded validity</span><Tag tone="neutral">Not recorded</Tag></div>
+    <p className="ui-sub">No X.509 validity dates are recorded for this certificate.</p>
+  </div>;
+  const end = Date.parse(certificate.not_after!);
+  const start = Date.parse(certificate.not_before!);
+  const days = Math.round((end - now) / DAY_MS);
+  const status = now < start ? 'Not yet valid' : days > 0 ? `${days} day${days === 1 ? '' : 's'} remaining` : `Ended ${-days} day${days === -1 ? '' : 's'} ago`;
+  const tone = now < start ? 'info' : days <= 0 ? 'bad' : days <= 30 ? 'warn' : 'good';
+  return <div className="ui-validity">
+    <div className="ui-validity-head"><span className="ui-summary-label">Recorded validity</span><Tag tone={tone}>{status}</Tag></div>
+    <div className={`ui-validity-bar ui-tone-${tone}`}><span style={{ width: `${Math.max(1.5, elapsed * 100)}%` }} /><i style={{ left: `${Math.min(100, Math.max(0, elapsed * 100))}%` }} title="Now" /></div>
+    <div className="ui-validity-dates"><div><small>Not before</small><strong>{displayDate(certificate.not_before)}</strong></div><div><small>Not after</small><strong>{displayDate(certificate.not_after)}</strong></div></div>
+  </div>;
 }
 
-function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: string }) {
-  return <div className="metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{detail}</small></div>;
+function CertificateDialog({ certificate, now, onClose, onPrevious, onNext, position }: { certificate: Certificate; now: number; onClose: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; position: string }) {
+  const period = recordedValidityStatus(certificate, now);
+  return <DetailDrawer label="Certificate detail" eyebrow="Certificate" icon="certificate" tone="good" closeLabel="Close certificate detail" onClose={onClose}
+    onPrevious={onPrevious} onNext={onNext} position={position}
+    title={certificate.subject_cn || 'Common name not recorded'}
+    subtitle={<span className="mono">Serial {certificate.serial_hex}</span>}
+    badges={<><StatusBadge status={certificate.state} /><Tag tone={period === 'Within period' ? 'good' : period === 'Period ended' ? 'bad' : period === 'Not yet in period' ? 'info' : 'neutral'}>{period}</Tag></>}
+    actions={<CopyJsonButton json={certificateMetadataJson(certificate)} />}
+    summary={<ValiditySummary certificate={certificate} now={now} />}
+    note="For actual lab issuance, validity and SAN come from independently verified DER. This database may include synthetic fixtures. The recorded period is not a live path or revocation check.">
+    <DrawerSection title="Subject">
+      <Fact label="DNS names (SAN)">{certificate.san_dns?.length ? <span className="ui-chip-list">{certificate.san_dns.map(name => <span key={name} className="ui-chip">{name}</span>)}</span> : certificate.san_dns ? 'None' : 'Not recorded'}</Fact>
+      <Fact label="Recorded period">{period}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Identifiers">
+      <Fact label="Serial" copy={certificate.serial_hex} mono>{certificate.serial_hex}</Fact>
+      <Fact label="Fingerprint SHA-256" copy={certificate.fingerprint_sha256} mono>{certificate.fingerprint_sha256.match(/.{1,8}/gu)?.join(' ') ?? certificate.fingerprint_sha256}</Fact>
+      <Fact label="Request ID" copy={certificate.request_id} mono>{certificate.request_id}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Lifecycle">
+      <Fact label="Issuance state"><StatusBadge status={certificate.state} /></Fact>
+      <Fact label="Signed">{certificate.signed_at ? <TimeAgo value={certificate.signed_at} now={new Date(now)} /> : 'Not signed'}</Fact>
+      <Fact label="Published">{certificate.published_at ? <TimeAgo value={certificate.published_at} now={new Date(now)} /> : 'Not recorded'}</Fact>
+    </DrawerSection>
+  </DetailDrawer>;
 }
+
+function AuditDialog({ event, now, onClose, onPrevious, onNext, position }: { event: AuditEvent; now: number; onClose: () => void; onPrevious: (() => void) | null; onNext: (() => void) | null; position: string }) {
+  const described = describeEvent(event.event_type);
+  const group = outcomeGroup(event.decision);
+  return <DetailDrawer label="Audit event detail" eyebrow={`Audit event · ${CATEGORY_LABELS[described.category]}`} icon={CATEGORY_ICON[described.category]}
+    tone={group === 'denied' ? 'bad' : group === 'attention' ? 'warn' : group === 'allowed' ? 'good' : 'info'}
+    closeLabel="Close audit event detail" onClose={onClose} onPrevious={onPrevious} onNext={onNext} position={position}
+    title={described.label} subtitle={<code>{event.event_type}</code>}
+    badges={<><OutcomeBadge decision={event.decision} />{event.policy_version && <span className="ui-chip">policy {event.policy_version}</span>}</>}
+    actions={<CopyJsonButton json={auditMetadataJson(event)} />}
+    summary={<div className="ui-outcome-summary"><span className="ui-summary-label">What happened</span><p>{explainOutcome(event.decision)}</p><TimeAgo value={event.recorded_at} now={new Date(now)} /></div>}
+    note="Database metadata only. This view does not include actor identity or independent audit integrity proof.">
+    <DrawerSection title="Record">
+      <Fact label="Event ID" copy={event.event_id} mono>{event.event_id}</Fact>
+      <Fact label="Recorded decision" mono>{event.decision || '—'}</Fact>
+      <Fact label="Policy version">{event.policy_version ?? 'Not recorded'}</Fact>
+      <Fact label="Recorded at">{displayDate(event.recorded_at)}</Fact>
+      <Fact label="Authority ID" copy={event.ca_id} mono>{event.ca_id}</Fact>
+    </DrawerSection>
+  </DetailDrawer>;
+}
+
+const CATEGORY_ICON: Record<EventCategory, IconName> = {
+  certificate: 'certificate', request: 'request', signing: 'key', crl: 'revocation', profile: 'profile', authority: 'authority', policy: 'policy', other: 'info',
+};
 
 function AuthorityList({ cas, selectedCaId, onSelect, compact = false }: { cas: CertificateAuthority[]; selectedCaId: string | null; onSelect: (id: string) => void; compact?: boolean }) {
-  return <div className={compact ? 'authority-list compact' : 'authority-list'}>{cas.map(ca => <button key={ca.ca_id} className={ca.ca_id === selectedCaId ? 'authority-row selected' : 'authority-row'} aria-pressed={ca.ca_id === selectedCaId} onClick={() => onSelect(ca.ca_id)}><span className="ca-emblem">◇</span><span className="ca-text"><strong>{ca.display_name}</strong><small>{shortId(ca.ca_id)} · Policy {ca.policy_version}{ca.operational_state && ca.operational_state !== 'ACTIVE' ? ` · ${ca.operational_state}` : ''}</small></span><span className="row-arrow">→</span></button>)}</div>;
+  return <div className={compact ? 'authority-list compact' : 'authority-list'}>{cas.map(ca => <button key={ca.ca_id} className={ca.ca_id === selectedCaId ? 'authority-row selected' : 'authority-row'} aria-pressed={ca.ca_id === selectedCaId} onClick={() => onSelect(ca.ca_id)}><span className="ca-emblem"><Icon name="authority" size={17} /></span><span className="ca-text"><strong>{ca.display_name}</strong><small>{shortId(ca.ca_id)} · Policy {ca.policy_version}{ca.operational_state && ca.operational_state !== 'ACTIVE' ? ` · ${ca.operational_state}` : ''}</small></span><span className="row-arrow"><Icon name="chevron" size={16} /></span></button>)}</div>;
 }
 
 function Info({ label, value }: { label: string; value: string }) {
   return <div className="info-cell"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function LoadingRows() { return <div className="loading-detail"><span className="spinner" /> Loading records…</div>; }
+function LoadingRows() { return <div className="ui-skeleton" role="status" aria-label="Loading records">{[0, 1, 2, 3, 4].map(row => <div key={row} className="ui-skeleton-row" style={{ opacity: 1 - row * .15 }} />)}</div>; }
 function LoadFailure({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="notice error" role="alert">{message} <button onClick={onRetry}>Retry</button></div>;
+  return <Notice tone="error" action={<button type="button" className="ui-button ui-button-secondary ui-button-sm" onClick={onRetry}>Retry</button>}>{message}</Notice>;
 }
-function EmptyDetail({ title, detail }: { title: string; detail: string }) { return <div className="empty-detail"><div>□</div><strong>{title}</strong><p>{detail}</p></div>; }
+function EmptyDetail({ title, detail }: { title: string; detail: string }) { return <div className="empty-detail"><div><Icon name="info" size={26} /></div><strong>{title}</strong><p>{detail}</p></div>; }

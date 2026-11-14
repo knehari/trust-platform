@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { ApiError, apiPost } from './api';
+import { Notice } from './ui';
 import type { CaProposal } from './CaProposalPanel';
 
 interface Claim {
@@ -116,42 +117,42 @@ export function CaOperation({ token, proposal, canAdminister, canApprove, onChan
   if (state !== 'ACTIVE' && state !== 'SUSPENDED') return null;
   const validReason = reason.trim() === reason && reason.length > 0 && reason.length <= 500;
   const command = claim ? `printf '%s' '${claim.claim}' | openssl dgst -sha256 -sign .lab-keys/<your-ca-approver-key>.pem | openssl base64 -A` : '';
-  return <div className="subtle-panel ca-operation">
-    <b>Operation ({state})</b>
+  return <div className="ca-action-block">
+    <strong className="ca-action-title">Operation ({state})</strong>
     {canAdminister && !request && <>
-      <label className="form-field"><span>Reason for {proposal.display_name}</span>
+      <label className="ui-field"><span>Reason for {proposal.display_name}</span>
         <input value={reason} maxLength={500} onChange={event => setReason(event.target.value)} /></label>
-      <div className="form-actions">
-        {state === 'ACTIVE' && <button type="button" disabled={busy || !validReason}
+      <div className="ui-actions">
+        {state === 'ACTIVE' && <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy || !validReason}
           onClick={() => void write(`${base}/suspension`, { reason }, () => `${proposal.display_name} is now SUSPENDED.`)}>Suspend this CA</button>}
-        {state === 'SUSPENDED' && <button type="button" disabled={busy || !validReason}
+        {state === 'SUSPENDED' && <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy || !validReason}
           onClick={() => void write(`${base}/change-requests`, { action: 'reactivate', reason }, () => `Reactivation of ${proposal.display_name} requested.`)}>Request reactivation</button>}
-        <button type="button" className="link-button" disabled={busy || !validReason}
+        <button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={busy || !validReason}
           onClick={() => void write(`${base}/change-requests`, { action: 'retire', reason }, () => `Retirement of ${proposal.display_name} requested.`)}>Request retirement</button>
       </div>
-      <p><small>Suspension takes effect at once and blocks profile activations. Reactivation and retirement need two CA approvers; retirement also retires the CA's active profile revisions and cannot be undone.</small></p>
+      <p className="ui-hint">Suspension takes effect at once and blocks profile activations. Reactivation and retirement need two CA approvers; retirement also retires the CA's active profile revisions and cannot be undone.</p>
     </>}
     {request && action && <>
       <p>Pending {ACTION_LABEL[action]} ({proposal.change_status}, {proposal.change_approval_count ?? 0}/2 approvals): {proposal.change_reason}</p>
-      {canApprove && proposal.change_status === 'OPEN' && !claim && <div className="form-actions">
-        <button type="button" disabled={busy} onClick={() => void prepare('approve')}>Prepare approval of the {ACTION_LABEL[action]}</button>
-        <button type="button" className="link-button" disabled={busy} onClick={() => void prepare('reject')}>Prepare rejection of the {ACTION_LABEL[action]}</button>
+      {canApprove && proposal.change_status === 'OPEN' && !claim && <div className="ui-actions">
+        <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={() => void prepare('approve')}>Prepare approval of the {ACTION_LABEL[action]}</button>
+        <button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={busy} onClick={() => void prepare('reject')}>Prepare rejection of the {ACTION_LABEL[action]}</button>
       </div>}
       {claim && <>
-        <label className="form-field"><span>Change claim to sign ({claim.decision}, key {claim.key_id}, valid 10 minutes)</span>
+        <label className="ui-field"><span>Change claim to sign ({claim.decision}, key {claim.key_id}, valid 10 minutes)</span>
           <textarea readOnly rows={4} value={claim.claim} className="mono" /></label>
         <pre className="decision-command">{command}</pre>
-        <label className="form-field"><span>Change decision signature (base64, DER)</span>
+        <label className="ui-field"><span>Change decision signature (base64, DER)</span>
           <textarea rows={3} value={signature} onChange={event => { setSignature(event.target.value); setError(null); }} spellCheck={false} /></label>
-        <div className="form-actions">
-          <button type="button" disabled={busy} onClick={record}>{busy ? 'Verifying…' : 'Record change decision'}</button>
-          <button type="button" className="link-button" disabled={busy} onClick={() => setClaim(null)}>Cancel</button>
+        <div className="ui-actions">
+          <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy} onClick={record}>{busy ? 'Verifying…' : 'Record change decision'}</button>
+          <button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={busy} onClick={() => setClaim(null)}>Cancel</button>
         </div>
       </>}
-      {canAdminister && proposal.change_status === 'APPROVED' && <button type="button" disabled={busy}
+      {canAdminister && proposal.change_status === 'APPROVED' && <button type="button" className="ui-button ui-button-primary ui-button-sm" disabled={busy}
         onClick={() => void write(`${request}/application`, {}, value => `${proposal.display_name} is now ${String(value.operational_state)}.`)}>
         Apply the {ACTION_LABEL[action]}</button>}
     </>}
-    {error && <p className="lookup-error" role="alert">{error}</p>}
+    {error && <Notice tone="error" onDismiss={() => setError(null)}>{error}</Notice>}
   </div>;
 }
