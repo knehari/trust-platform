@@ -49,5 +49,17 @@ for approver in approver-1:APPROVER_1 approver-2:APPROVER_2 ca-approver-1:CA_APP
     added=$((added + 1))
   fi
 done
+# The lab signer's audit key (ADR-0023): signs checkpoints of the audit
+# chain, never certificates or CRLs. Only .lab-keys/audit/ is mounted for it;
+# the public key is what lab_verify_audit_chain checks checkpoints against.
+mkdir -p .lab-keys/audit
+chmod 700 .lab-keys/audit
+if [ ! -s .lab-keys/audit/audit-checkpoint.pem ]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out .lab-keys/audit/audit-checkpoint.pem
+fi
+chmod 600 .lab-keys/audit/audit-checkpoint.pem
+openssl ec -in .lab-keys/audit/audit-checkpoint.pem -pubout \
+  -out .lab-keys/audit/audit-checkpoint.pub.pem 2>/dev/null
+chmod 644 .lab-keys/audit/audit-checkpoint.pub.pem
 chmod 600 .env.lab
 echo "Private .env.lab ready for the disposable laboratory stack ($added value(s) added)."

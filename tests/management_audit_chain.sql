@@ -209,7 +209,8 @@ RESET ROLE;
 -- disabling the triggers, which the external head detects).
 SELECT pg_temp.expect_state($$UPDATE audit_chain_link SET sealed_at = now()$$, 'P0001');
 SELECT pg_temp.expect_state($$DELETE FROM audit_chain_link$$, 'P0001');
-SELECT pg_temp.expect_state($$TRUNCATE audit_chain_link$$, 'P0001');
+-- CASCADE: since migration 0037 checkpoints reference links.
+SELECT pg_temp.expect_state($$TRUNCATE audit_chain_link CASCADE$$, 'P0001');
 SELECT pg_temp.expect_state($$TRUNCATE audit_event CASCADE$$, 'P0001');
 SELECT pg_temp.expect_state($$DELETE FROM audit_event WHERE event_id = 'a0a0a0a0-0000-4000-8000-0000000000e4'$$, 'P0001');
 -- A link must reference an existing event, once.

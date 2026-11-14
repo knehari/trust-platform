@@ -95,9 +95,15 @@ services:
       TRUST_SIGNER_DATABASE_URL: postgresql://trust_signer_lab:${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_SIGNER_CA_ID: dddddddd-dddd-4ddd-8ddd-dddddddddddd
       TRUST_SIGNER_KEY_FILE: /lab-keys/ca/ca-root-lab-issuing-ca.pem
+      # Signed audit checkpoints (ADR-0023): a separate audit key, and the
+      # signer's memory of its last checkpoint, outside the database.
+      TRUST_SIGNER_AUDIT_KEY_FILE: /lab-keys/audit/audit-checkpoint.pem
+      TRUST_SIGNER_AUDIT_STATE_FILE: /var/lib/trust-signer/audit-state.json
     volumes:
       - ./.lab-keys/ca:/lab-keys/ca:ro
+      - ./.lab-keys/audit:/lab-keys/audit:ro
       - trust_signer_socket:/run/trust-signer
+      - trust_signer_state:/var/lib/trust-signer
     healthcheck:
       test: ["CMD-SHELL", "test -S /run/trust-signer/signer.sock"]
       interval: 3s
@@ -130,6 +136,8 @@ services:
       TRUST_CRL_RENEWAL_INTERVAL_SECONDS: "3600"
       # Seal committed audit events into the tamper-evident chain (ADR-0022).
       TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "60"
+      # Ask the signer to sign the chain's head (ADR-0023).
+      TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
       interval: 3s
@@ -159,6 +167,7 @@ services:
 volumes:
   trust_lab_pg:
   trust_signer_socket:
+  trust_signer_state:
 
 networks:
   lab:
