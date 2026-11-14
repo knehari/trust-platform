@@ -8,7 +8,7 @@ import { sortLoadedCertificates, type CertificateSort } from './certificate-sort
 import { recordedValidityStatus } from './certificate-validity';
 import { normalizeLiteralPrefix, validLiteralPrefix } from './literal-prefix';
 import { auditMetadataJson, certificateMetadataJson } from './metadata-copy';
-import { navigationUrl, readNavigation, type DetailLink, type Section } from './navigation';
+import { navGroupOf, navigationUrl, readNavigation, visibleNavGroups, type DetailLink, type NavGroupId, type Section } from './navigation';
 import { oidcConfigurationError, userManager } from './oidc';
 import { appendUniquePage, requireAdvancingCursor } from './pagination';
 import { requireExactRecord, requireScopedRows, visibleScopedRows } from './scope';
@@ -42,6 +42,9 @@ function displayDate(value: string | null): string {
 function shortId(value: string): string {
   return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
+
+// Sidebar icon of each PKI component group.
+const GROUP_ICONS: Record<NavGroupId, IconName> = { supervision: 'overview', ca: 'authority', ra: 'request', va: 'revocation' };
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -129,6 +132,7 @@ export function App() {
   const [selectedAuditIds, setSelectedAuditIds] = useState<string[]>([]);
   const [validityClock, setValidityClock] = useState(() => Date.now());
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<NavGroupId[]>([]);
   const [theme, setTheme] = useState<ThemeChoice>(() => storedTheme());
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -775,8 +779,11 @@ export function App() {
     { id: 'channels', label: 'RA channel', icon: 'key', show: isReader },
     { id: 'audit', label: 'Audit trail', icon: 'audit', show: isReader },
   ];
+  const navGroups = visibleNavGroups(navItems.filter(item => item.show).map(item => item.id));
+  const activeGroup = navGroupOf(section);
+  const activeGroupLabel = navGroups.find(group => group.id === activeGroup)?.label;
   const paletteItems: PaletteItem[] = [
-    ...navItems.filter(item => item.show).map(item => ({ id: `section-${item.id}`, group: 'Sections', label: item.label, icon: item.icon, hint: section === item.id ? 'Current' : undefined, run: () => setSection(item.id) })),
+    ...navItems.filter(item => item.show).map(item => ({ id: `section-${item.id}`, group: navGroups.find(group => group.id === navGroupOf(item.id))?.label ?? 'Sections', label: item.label, icon: item.icon, hint: section === item.id ? 'Current' : undefined, run: () => setSection(item.id) })),
     ...cas.map(ca => ({ id: `ca-${ca.ca_id}`, group: 'Authorities', label: ca.display_name, icon: 'authority' as IconName, hint: `${shortId(ca.ca_id)} · ${ca.policy_version}`, run: () => { setSelectedCaId(ca.ca_id); if (section === 'overview') setSection('authorities'); } })),
   ];
   const headings: Record<Section, [string, string]> = {
@@ -809,21 +816,37 @@ export function App() {
       <div className="brand"><div className="brand-mark">S</div><span>SOVEREIGN<br /><b>TRUST</b></span></div>
       <div className="workspace-tag"><span className="status-dot" /> LAB WORKSPACE</div>
       <nav aria-label="Main navigation" className="nav">
-        {navItems.filter(item => item.show).map(item => <button key={item.id} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined} onClick={() => setSection(item.id)}>
-          <Icon name={item.icon} /> <span className="nav-text">{item.label}</span>{item.count !== undefined && <small>{item.count}</small>}
-        </button>)}
+        {navGroups.map(group => {
+          const current = group.id === activeGroup;
+          const open = current || !collapsedGroups.includes(group.id);
+          return <div key={group.id} className={`nav-group${open ? '' : ' collapsed'}`}>
+            <button type="button" className="nav-group-head" aria-expanded={open} aria-controls={`nav-group-${group.id}`}
+              aria-disabled={current || undefined} title={current ? 'Contains the current page' : undefined}
+              onClick={() => { if (!current) setCollapsedGroups(list => list.includes(group.id) ? list.filter(id => id !== group.id) : [...list, group.id]); }}>
+              <Icon name={GROUP_ICONS[group.id]} /><span className="nav-text">{group.label}</span><span className="nav-chevron" aria-hidden="true"><Icon name="chevron" size={14} /></span>
+            </button>
+            <div className="nav-group-items" id={`nav-group-${group.id}`}>
+              {group.sections.map(id => {
+                const item = navItems.find(candidate => candidate.id === id)!;
+                return <button key={id} className={`nav-item${section === id ? ' active' : ''}`} aria-current={section === id ? 'page' : undefined} onClick={() => setSection(id)}>
+                  <span className="nav-text">{item.label}</span>{item.count !== undefined && <span className="nav-count" title={`${item.count} loaded`}>{item.count}</span>}
+                </button>;
+              })}
+            </div>
+          </div>;
+        })}
       </nav>
       <div className="sidebar-bottom"><div className="sidebar-note">{readOnly ? <>Read-only access<br /><span>Your roles allow consultation only.</span></> : <>Laboratory access<br /><span>Actions follow your roles and the server-side grants of each authority; the API checks every request.</span></>}</div><div className="version">TRUST PLATFORM · V0.1 LAB</div></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {navItems.find(item => item.id === section)?.label}{needsAuthority && selectedCa && <><span>/</span> {selectedCa.display_name}</>}</div>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {activeGroupLabel && <span className="crumb-group">{activeGroupLabel} <span>/</span> </span>}{navItems.find(item => item.id === section)?.label}{needsAuthority && selectedCa && <><span>/</span> {selectedCa.display_name}</>}</div>
         <div className="top-actions"><button type="button" className="ui-search-trigger" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K"><Icon name="search" size={15} />Go to…<span className="ui-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span></button><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span>
           <button type="button" className="ui-icon-button" aria-label={`Theme: ${theme}. Switch to ${nextTheme(theme)}`} title={`Theme: ${theme} (click for ${nextTheme(theme)})`} onClick={() => { const next = nextTheme(theme); setTheme(next); applyTheme(next); }}><Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'monitor'} /></button>
           <button className="ui-icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}><Icon name="refresh" /></button>
           <div className="ui-user"><div className="user-avatar" aria-hidden="true">{String(name).slice(0, 1).toUpperCase()}</div><span>{name}</span></div>
           <button className="ui-button ui-button-ghost ui-button-sm" onClick={() => void userManager?.signoutRedirect()}><Icon name="signOut" size={15} />Sign out</button></div></header>
       <main className="content">
-        <div className="page-heading"><div><h1>{headings[section][0]}</h1><p>{headings[section][1]}</p></div><div className="view-link-tools"><button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={!navigationReady} onClick={() => void copyViewLink()}><Icon name="link" size={15} />Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
+        <div className="page-heading"><div>{activeGroupLabel && <div className="eyebrow nav-eyebrow">{activeGroupLabel}</div>}<h1>{headings[section][0]}</h1><p>{headings[section][1]}</p></div><div className="view-link-tools"><button type="button" className="ui-button ui-button-ghost ui-button-sm" disabled={!navigationReady} onClick={() => void copyViewLink()}><Icon name="link" size={15} />Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
         {dataError && <Notice tone="error" action={<button className="ui-button ui-button-secondary ui-button-sm" onClick={() => setReload(value => value + 1)}>Retry</button>}>{dataError}</Notice>}
         {linkedCaError && <Notice tone="error" onDismiss={() => setLinkedCaError(null)}>{linkedCaError}</Notice>}
         {linkedDetailError && <Notice tone="error" onDismiss={() => setLinkedDetailError(null)}>{linkedDetailError}</Notice>}

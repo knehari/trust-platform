@@ -69,3 +69,25 @@ test('profile history filter accepts only canonical identifiers', () => {
     assert.equal(canonicalProfileId(id), false);
   }
 });
+
+test('every section belongs to exactly one navigation group', async () => {
+  const { NAV_GROUPS, navGroupOf } = await import('../src/navigation.ts');
+  const all = ['overview', 'authorities', 'profiles', 'requests', 'certificates', 'revocation', 'channels', 'audit'];
+  const listed = NAV_GROUPS.flatMap(group => group.sections);
+  assert.deepEqual([...listed].sort(), [...all].sort());
+  assert.equal(new Set(listed).size, listed.length);
+  assert.equal(navGroupOf('certificates'), 'ca');
+  assert.equal(navGroupOf('requests'), 'ra');
+  assert.equal(navGroupOf('revocation'), 'va');
+  assert.equal(navGroupOf('audit'), 'supervision');
+});
+
+test('navigation groups show only visible sections and drop empty groups', async () => {
+  const { visibleNavGroups } = await import('../src/navigation.ts');
+  assert.deepEqual(visibleNavGroups(['overview', 'requests']), [
+    { id: 'supervision', label: 'Supervision', sections: ['overview'] },
+    { id: 'ra', label: 'RA functions', sections: ['requests'] },
+  ]);
+  assert.deepEqual(visibleNavGroups(['revocation', 'overview', 'certificates']).map(group => group.id), ['supervision', 'ca', 'va']);
+  assert.deepEqual(visibleNavGroups([]), []);
+});
