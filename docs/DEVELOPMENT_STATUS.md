@@ -171,3 +171,14 @@ On phones the groups flatten into the existing single scrolling row. `src/naviga
 Mockup screens without an API are not added: tokens, officers, roles, backup, metrics, editable CRL policy with dual control, and OCSP. They would show simulated data.
 
 Verified with 88 frontend tests, typecheck and build. A Chromium render with a synthetic token and no API checked the grouping, folding, breadcrumb, eyebrow and phone layout, for three role sets. The laboratory e2e suites run in CI.
+
+Authority and CRL detail panels (2026-11-14, display only): the slide-over panel already used for certificates, audit events and profiles now also opens for authorities and CRLs, using only data the API already returns.
+- **Authorities:** a "View details" button opens a panel with three sections. Identity: ID (copyable), parent, policy version, creation date. Lifecycle: operational state. Revocation publication: CRL status, latest CRL, next update, distribution point, automatic renewal and publication on revocation, read from `GET /crl-status`. Links lead to the authority's certificates, profiles, CRLs and audit trail.
+- **CRLs:** a published CRL opens from its number or a "Details" button. The panel shows its validity window as a bar, its state, entries, SHA-256 (copyable), publication date and distribution point, and offers the DER download.
+- **Both:** previous/next navigation and a JSON copy of the metadata.
+
+`src/crl-validity.ts` derives a CRL's state and elapsed share. A CRL is Current while it is the latest and before its next update, Expired when it is the latest and past it, and Superseded otherwise. Unit tests cover both functions.
+
+The panels state that they show database metadata, not an independent verification.
+
+Verified with 90 frontend tests, typecheck and build. A Chromium render with a synthetic token and a synthetic local API checked the opening of both panels, the navigation between records and the Superseded state.
