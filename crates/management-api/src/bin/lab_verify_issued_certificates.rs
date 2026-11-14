@@ -131,14 +131,29 @@ fn problems(record: &Issued) -> Vec<String> {
 /// Revocations without an approved request of the same reason, by an
 /// officer other than the requester.
 fn revocation_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgres::Error> {
+    // A revocation an RA signed (migration 0039) is requested and approved
+    // by that RA; ra_revocation_problems verifies its signature. Every other
+    // revocation needs an officer other than the requester.
+    let ra_signed = if db
+        .query_one(
+            "SELECT to_regclass('public.ra_revocation_request') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        "EXISTS (SELECT 1 FROM ra_revocation_request rr WHERE rr.revocation_id = q.revocation_id \
+         AND de.actor_issuer = 'urn:trust-platform:ra' AND de.actor_subject = rr.ra_id)"
+    } else {
+        "false"
+    };
     Ok(db
         .query(
-            "SELECT encode(r.serial_der_content, 'hex'), concat_ws('; ', \
+            &format!("SELECT encode(r.serial_der_content, 'hex'), concat_ws('; ', \
                  CASE WHEN q.revocation_id IS NULL THEN 'no approved revocation request' END, \
                  CASE WHEN q.reason_code <> r.reason_code THEN 'reason differs from the request' END, \
                  CASE WHEN qe.actor_issuer = de.actor_issuer AND qe.actor_subject = de.actor_subject \
-                      THEN 'approved by its requester' END, \
-                 CASE WHEN de.event_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM management_role_grant g \
+                      AND NOT {ra_signed} THEN 'approved by its requester' END, \
+                 CASE WHEN de.event_id IS NOT NULL AND NOT {ra_signed} AND NOT EXISTS (SELECT 1 FROM management_role_grant g \
                       WHERE g.issuer = de.actor_issuer AND g.subject = de.actor_subject \
                         AND g.ca_id = r.ca_id AND g.lifecycle_role = 'registration-officer') \
                       THEN 'approver holds no registration-officer grant' END) \
@@ -151,7 +166,7 @@ fn revocation_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgre
                               WHERE d.revocation_id = q.revocation_id AND d.decision = 'approve') \
              LEFT JOIN certificate_application_event qe ON qe.event_id = q.requested_event_id \
              LEFT JOIN certificate_revocation_decision dd ON dd.revocation_id = q.revocation_id \
-             LEFT JOIN certificate_application_event de ON de.event_id = dd.decided_event_id",
+             LEFT JOIN certificate_application_event de ON de.event_id = dd.decided_event_id"),
             &[],
         )?
         .into_iter()
@@ -316,6 +331,79 @@ fn ra_request_problems(db: &mut Client) -> Result<(usize, Vec<(String, String)>)
     Ok((rows.len(), problems))
 }
 
+/// Every RA-signed revocation (migration 0039): the stored bytes are the
+/// revocation's, the RA's key signed them, and the RA obtained the
+/// certificate through the channel.
+fn ra_revocation_problems(
+    db: &mut Client,
+) -> Result<(usize, Vec<(String, String)>), postgres::Error> {
+    if !db
+        .query_one(
+            "SELECT to_regclass('public.ra_revocation_request') IS NOT NULL",
+            &[],
+        )?
+        .get::<_, bool>(0)
+    {
+        return Ok((0, Vec::new()));
+    }
+    let rows = db.query(
+        "SELECT rr.ra_id, uuid_send(rr.request_id), uuid_send(rr.ca_id), q.serial_der_content, q.reason_code, \
+                q.reason, extract(epoch FROM rr.signed_at)::bigint, rr.message, rr.signature, s.public_key_sec1, \
+                encode(q.serial_der_content, 'hex'), \
+                EXISTS (SELECT 1 FROM ra_issuance_request ri WHERE ri.ra_id = rr.ra_id \
+                        AND ri.application_id = q.application_id) \
+         FROM ra_revocation_request rr \
+         JOIN certificate_revocation_request q ON q.revocation_id = rr.revocation_id \
+         JOIN ra_system s ON s.ra_id = rr.ra_id \
+         ORDER BY rr.recorded_at",
+        &[],
+    )?;
+    let mut problems = Vec::new();
+    for row in &rows {
+        let serial_hex: String = row.get(10);
+        let ids = (
+            <[u8; 16]>::try_from(row.get::<_, Vec<u8>>(1).as_slice()).ok(),
+            <[u8; 16]>::try_from(row.get::<_, Vec<u8>>(2).as_slice()).ok(),
+        );
+        let (Some(request_id), Some(ca_id)) = ids else {
+            problems.push((serial_hex, "malformed identifiers".to_owned()));
+            continue;
+        };
+        let ra_id: String = row.get(0);
+        let serial: Vec<u8> = row.get(3);
+        let reason_code: i16 = row.get(4);
+        let reason: String = row.get(5);
+        let rebuilt = trust_pki_core::ra_request::ra_revocation_message(
+            &trust_pki_core::ra_request::RaRevocationRequest {
+                ra_id: &ra_id,
+                ca_id,
+                request_id,
+                serial: &serial,
+                reason_code: u16::try_from(reason_code).unwrap_or(u16::MAX),
+                reason: &reason,
+                signed_at_unix: row.get(6),
+            },
+        );
+        let message: Vec<u8> = row.get(7);
+        let mut reasons = Vec::new();
+        if rebuilt.as_deref().ok() != Some(message.as_slice()) {
+            reasons.push("the stored bytes are not the revocation's");
+        }
+        let signature: Vec<u8> = row.get(8);
+        let key: Vec<u8> = row.get(9);
+        if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
+            reasons.push("the RA's key did not sign the stored bytes");
+        }
+        if !row.get::<_, bool>(11) {
+            reasons.push("the RA did not obtain this certificate");
+        }
+        if !reasons.is_empty() {
+            problems.push((serial_hex, reasons.join("; ")));
+        }
+    }
+    Ok((rows.len(), problems))
+}
+
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
@@ -385,6 +473,11 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         failed += 1;
         eprintln!("FAIL CRL {label}: {reasons}");
     }
+    let (ra_revocations, ra_revocation_failures) = ra_revocation_problems(&mut db)?;
+    for (serial, reasons) in &ra_revocation_failures {
+        failed += 1;
+        eprintln!("FAIL RA revocation of serial {serial}: {reasons}");
+    }
     let (ra_count, ra_requests) = ra_request_problems(&mut db)?;
     for (application, reasons) in &ra_requests {
         failed += 1;
@@ -395,7 +488,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         return Ok(ExitCode::FAILURE);
     }
     println!(
-        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s) and {ra_count} RA-signed request(s) verified independently",
+        "PASS: {} certificate(s) issued for applications, {revoked} revocation(s), {crl_count} CRL(s), {ra_count} RA-signed request(s) and {ra_revocations} RA-signed revocation(s) verified independently",
         rows.len()
     );
     Ok(ExitCode::SUCCESS)

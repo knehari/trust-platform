@@ -586,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0038")?;
+    .map_err(|_| "management views unavailable or older than migration 0039")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -812,6 +812,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/ra/cas/{ca_id}/certificates",
             axum::routing::post(ra_channel::issue_for_ra),
+        )
+        .route(
+            "/v1/ra/cas/{ca_id}/revocations",
+            axum::routing::post(ra_channel::revoke_for_ra),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -1100,6 +1104,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_audit_chain_version() = 1 \
              AND management_audit_checkpoint_version() = 1 \
              AND management_ra_channel_version() = 1 \
+             AND management_ra_revocation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -5432,6 +5437,140 @@ mod tests {
         // The application is the RA's, approved by the RA, visible to readers.
         let item = listed(ra_issued["application_id"].as_str().unwrap().to_owned()).await;
         assert_eq!(item["status"].as_str(), Some("ISSUED"));
+
+        // The RA revokes the certificate it obtained (ADR-0026), with a
+        // signed request; nothing else.
+        let ra_serial = ra_issued["serial_hex"].as_str().unwrap().to_owned();
+        let revocation_body =
+            |request_id: &str, serial_hex: &str, signed_at: i64, sign_with: &p256::SecretKey| {
+                use p256::ecdsa::{signature::Signer, SigningKey};
+                let serial: Vec<u8> = (0..serial_hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&serial_hex[i..i + 2], 16).unwrap())
+                    .collect();
+                let message = trust_pki_core::ra_request::ra_revocation_message(
+                    &trust_pki_core::ra_request::RaRevocationRequest {
+                        ra_id: "test-ra",
+                        ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                        request_id: *uuid::Uuid::parse_str(request_id).unwrap().as_bytes(),
+                        serial: &serial,
+                        reason_code: 1,
+                        reason: "subscriber reported a key compromise",
+                        signed_at_unix: signed_at,
+                    },
+                )
+                .unwrap();
+                let signature: Signature = SigningKey::from(sign_with).sign(&message);
+                json!({
+                    "ra_id": "test-ra", "request_id": request_id, "serial_hex": serial_hex,
+                    "reason_code": 1, "reason": "subscriber reported a key compromise",
+                    "signed_at": signed_at,
+                    "signature_der_base64": base64::engine::general_purpose::STANDARD
+                        .encode(signature.to_der().as_bytes()),
+                })
+            };
+        let revoke_post = |body: serde_json::Value| {
+            let app = app.clone();
+            let path = format!("/v1/ra/cas/{ca}/revocations");
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(path)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let revocation_request = random_uuid().to_string();
+        assert_eq!(
+            revoke_post(revocation_body(
+                &revocation_request,
+                &ra_serial,
+                now,
+                &stranger
+            ))
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        // A certificate the RA did not obtain (the requester's first one).
+        assert_eq!(
+            revoke_post(revocation_body(
+                &random_uuid().to_string(),
+                issued["serial_hex"].as_str().unwrap(),
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let (status, revoked) = revoke_post(revocation_body(
+            &revocation_request,
+            &ra_serial,
+            now,
+            &ra_key,
+        ))
+        .await;
+        assert_eq!(
+            (
+                status,
+                revoked["status"].as_str(),
+                revoked["serial_hex"].as_str()
+            ),
+            (
+                StatusCode::CREATED,
+                Some("REVOKED"),
+                Some(ra_serial.as_str())
+            )
+        );
+        let (status, again) = revoke_post(revocation_body(
+            &revocation_request,
+            &ra_serial,
+            now,
+            &ra_key,
+        ))
+        .await;
+        assert_eq!(
+            (status, again["revoked_at"].clone()),
+            (StatusCode::OK, revoked["revoked_at"].clone())
+        );
+        assert_eq!(
+            revoke_post(revocation_body(
+                &random_uuid().to_string(),
+                &ra_serial,
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        // The next CRL lists it with the RA's reason code.
+        let (status, after_ra) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let der = crl_der(after_ra["crl_pem"].as_str().unwrap());
+        assert!(crl_verifies(&der));
+        let crl =
+            <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(&der).unwrap();
+        assert!(crl
+            .tbs_cert_list
+            .revoked_certificates
+            .unwrap()
+            .iter()
+            .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == ra_serial));
         let _ = std::fs::remove_dir_all(key_dir);
     }
 

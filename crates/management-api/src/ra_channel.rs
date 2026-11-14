@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
     csr::{verify_pkcs10_p256, CsrValidationError},
-    ra_request::{ra_issuance_message, RaIssuanceRequest},
+    ra_request::{
+        ra_issuance_message, ra_revocation_message, RaIssuanceRequest, RaRevocationRequest,
+    },
 };
 use x509_cert::{
     der::{pem::LineEnding, Decode, EncodePem},
@@ -156,16 +158,6 @@ pub(crate) async fn issue_for_ra(
     let signature = STANDARD
         .decode(request.signature_der_base64.trim())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let now = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
-            .as_secs(),
-    )
-    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    if (now - request.signed_at).abs() > FRESHNESS_SECONDS {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
     let writer_url = state
         .writer_database_url
         .clone()
@@ -174,21 +166,7 @@ pub(crate) async fn issue_for_ra(
         .signer_socket
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    // The RA's key, as the database owner registered it.
     let ra_id = request.ra_id.clone();
-    let key: Option<Vec<u8>> = query_db(writer_url.clone(), state.database_slots.clone(), {
-        let ra_id = ra_id.clone();
-        move |db| {
-            Ok(db
-                .query_one("SELECT ra_system_key_lab($1)", &[&ra_id])?
-                .get(0))
-        }
-    })
-    .await?;
-    let Some(key) = key else {
-        return Err(StatusCode::UNAUTHORIZED);
-    };
     let csr_sha256: [u8; 32] = Sha256::digest(&csr_der).into();
     let message = ra_issuance_message(&RaIssuanceRequest {
         ra_id: &request.ra_id,
@@ -201,12 +179,15 @@ pub(crate) async fn issue_for_ra(
         signed_at_unix: request.signed_at,
     })
     .map_err(|_| StatusCode::BAD_REQUEST)?;
-    if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, &message, &signature).is_err() {
-        write_log(serde_json::json!({
-            "event": "ra_issuance", "ra_id": ra_id, "status": "BAD_SIGNATURE",
-        }));
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    authenticate(
+        &state,
+        &writer_url,
+        &ra_id,
+        request.signed_at,
+        &message,
+        &signature,
+    )
+    .await?;
 
     // The RA authenticated. The CSR must prove possession of its key and name
     // exactly the first DNS name; its extensions are never used.
@@ -347,4 +328,193 @@ mod tests {
         let parsed = uuid::Uuid::parse_str(&a).unwrap();
         assert_eq!(parsed.get_version_num(), 8);
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaRevocationBody {
+    ra_id: String,
+    request_id: String,
+    /// The certificate's serial, lowercase or uppercase hexadecimal.
+    serial_hex: String,
+    reason_code: u16,
+    reason: String,
+    signed_at: i64,
+    signature_der_base64: String,
+}
+
+#[derive(Serialize)]
+struct RaRevocationResponse {
+    ca_id: String,
+    ra_id: String,
+    request_id: String,
+    serial_hex: String,
+    revocation_id: String,
+    status: &'static str,
+    revoked_at: Option<String>,
+}
+
+/// Freshness, the registered key and the signature over `message`: 401 on
+/// any failure, before the request reaches the database functions.
+async fn authenticate(
+    state: &AppState,
+    writer_url: &str,
+    ra_id: &str,
+    signed_at: i64,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), StatusCode> {
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .as_secs(),
+    )
+    .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if (now - signed_at).abs() > FRESHNESS_SECONDS {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let lookup = ra_id.to_owned();
+    let key: Option<Vec<u8>> = query_db(
+        writer_url.to_owned(),
+        state.database_slots.clone(),
+        move |db| {
+            Ok(db
+                .query_one("SELECT ra_system_key_lab($1)", &[&lookup])?
+                .get(0))
+        },
+    )
+    .await?;
+    let Some(key) = key else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if trust_pki_crypto::verify_p256_ecdsa_sha256(&key, message, signature).is_err() {
+        write_log(serde_json::json!({
+            "event": "ra_request", "ra_id": ra_id, "status": "BAD_SIGNATURE",
+        }));
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(())
+}
+
+fn serial_bytes(raw: &str) -> Option<Vec<u8>> {
+    let raw = raw.trim().to_ascii_lowercase();
+    if raw.is_empty() || raw.len() > 40 || raw.len() % 2 != 0 {
+        return None;
+    }
+    (0..raw.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(raw.get(index..index + 2)?, 16).ok())
+        .collect()
+}
+
+/// `POST /v1/ra/cas/{ca_id}/revocations` (ADR-0026): revokes a certificate
+/// the signing RA obtained through the channel. 201 when revoked; 200 for a
+/// replay of the same signed request; 401 for an unknown RA, a stale request
+/// or a bad signature; 404 when this RA obtained no certificate with that
+/// serial; 409 when already revoked, a request is open, the request id was
+/// used for other bytes, or the CA is retired.
+pub(crate) async fn revoke_for_ra(
+    State(state): State<AppState>,
+    Path(raw_ca): Path<String>,
+    body: Bytes,
+) -> Result<Response, StatusCode> {
+    let request: RaRevocationBody =
+        serde_json::from_slice(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let ca_uuid = uuid::Uuid::parse_str(&raw_ca).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request_uuid =
+        uuid::Uuid::parse_str(&request.request_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let serial = serial_bytes(&request.serial_hex).ok_or(StatusCode::BAD_REQUEST)?;
+    if !valid_ra_id(&request.ra_id)
+        || request.reason_code > 10
+        || request.reason.is_empty()
+        || request.reason.chars().count() > 500
+        || request.reason.chars().any(char::is_control)
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let signature = STANDARD
+        .decode(request.signature_der_base64.trim())
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let writer_url = state
+        .writer_database_url
+        .clone()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let message = ra_revocation_message(&RaRevocationRequest {
+        ra_id: &request.ra_id,
+        ca_id: *ca_uuid.as_bytes(),
+        request_id: *request_uuid.as_bytes(),
+        serial: &serial,
+        reason_code: request.reason_code,
+        reason: &request.reason,
+        signed_at_unix: request.signed_at,
+    })
+    .map_err(|_| StatusCode::BAD_REQUEST)?;
+    authenticate(
+        &state,
+        &writer_url,
+        &request.ra_id,
+        request.signed_at,
+        &message,
+        &signature,
+    )
+    .await?;
+
+    let ca_id = ca_uuid.to_string();
+    let request_id = request_uuid.to_string();
+    let reason_code = i16::try_from(request.reason_code).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let args = (
+        request.ra_id.clone(),
+        ca_id.clone(),
+        request_id.clone(),
+        serial.clone(),
+        reason_code,
+        request.reason,
+        request.signed_at,
+        signature,
+    );
+    let (revocation_id, revoked_at, replayed) =
+        query_db(writer_url, state.database_slots.clone(), move |db| {
+            Ok(
+                match db.query_one(
+                    "SELECT revocation_id::text, revoked_at, replayed FROM submit_ra_revocation_lab($1, \
+                     $2::text::uuid, $3::text::uuid, $4, $5, $6, $7, $8)",
+                    &[
+                        &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
+                    ],
+                ) {
+                    Ok(row) => Ok((
+                        row.get::<_, String>(0),
+                        row.get::<_, Option<String>>(1),
+                        row.get::<_, bool>(2),
+                    )),
+                    Err(error) => Err(write_status(&error)),
+                },
+            )
+        })
+        .await??;
+    let serial_hex = hex(&serial);
+    write_log(serde_json::json!({
+        "event": "ra_revocation", "ca_id": ca_id, "ra_id": request.ra_id,
+        "request_id": request_id, "serial_hex": serial_hex,
+        "status": if replayed { "REPLAYED" } else { "REVOKED" },
+    }));
+    let code = if replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((
+        code,
+        Json(RaRevocationResponse {
+            ca_id,
+            ra_id: request.ra_id,
+            request_id,
+            serial_hex,
+            revocation_id,
+            status: "REVOKED",
+            revoked_at,
+        }),
+    )
+        .into_response())
 }

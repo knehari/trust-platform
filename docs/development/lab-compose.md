@@ -150,3 +150,5 @@ VALUES ('urn:trust-platform:ra', 'my-ra', '<ca_id>', 'certificate-requester');
 ```
 
 The RA then calls `POST /v1/ra/cas/<ca_id>/certificates` with the body described in the OpenAPI contract. The signature is ECDSA P-256 with SHA-256 (DER, base64) over `trust_pki_core::ra_request::ra_issuance_message`, and `signed_at` must be within five minutes. `frontend/dev/certificate-application-e2e.mjs` builds such a request with Node's crypto. To stop an RA, set `enabled = false`.
+
+The same RA revokes a certificate it obtained with `POST /v1/ra/cas/<ca_id>/revocations` (ADR-0026). The request is signed over `trust_pki_core::ra_request::ra_revocation_message`, and the revocation appears on the next CRL.

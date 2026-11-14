@@ -86,4 +86,12 @@ RA issuance channel (2026-11-09, ADR-0025 Proposed): migration 0038 adds the own
 - the four audit tools (one RA request verified);
 - the four e2e suites; the certificate-application suite acts as an RA, signs with Node's crypto, and OpenSSL verifies the issued certificate.
 
-Open: revocation through the channel, RA key rotation, production transport. CI has not yet run on this branch.
+Open: revocation through the channel, RA key rotation, production transport. CI passed on Draft #201 (all seven jobs).
+
+RA revocation channel (2026-11-10, ADR-0026 Proposed): migration 0039 adds the append-only `ra_revocation_request` and `submit_ra_revocation_lab`. `POST /v1/ra/cas/{ca_id}/revocations` is authenticated like RA issuance (freshness, registered key, signature over the serial, reason code, reason and identifiers). The RA can revoke only certificates it obtained through the channel. Its signed request is both the revocation request and its approval, under the rules of migration 0031 and the CRL lock. `lab_verify_issued_certificates` accepts that self-approval only for RA-signed revocations, and verifies their bytes and signatures. Verified locally:
+- the new SQL suite;
+- 63 API tests, including the HTTP scenario (401, 404, 201, replay, 409, and the serial on the next verified CRL);
+- the four audit tools (one RA-signed revocation);
+- the four e2e suites; the certificate-application suite revokes as the RA, and `openssl verify -crl_check` reports the certificate revoked after the next CRL.
+
+Open: on-revocation CRL publication or OCSP, RA key rotation, production transport. CI has not yet run on this branch.
