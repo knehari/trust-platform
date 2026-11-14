@@ -19,8 +19,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requiredEnv, signIn } from './keycloak-login.mjs';
+import { labBrowserOptions } from './lab-browser.mjs';
 
-const realm = 'http://127.0.0.1:8080/realms/trust-lab';
+const realm = 'https://127.0.0.1:8443/realms/trust-lab';
 // HTTPS, verified against the lab CA through NODE_EXTRA_CA_CERTS (ADR-0032).
 const api = process.env.TRUST_E2E_API ?? 'https://127.0.0.1:8081';
 // The separate static CRL server the publisher fills (ADR-0030).
@@ -308,8 +309,7 @@ try {
     const submitted = await apply('console.lab.invalid', ['console.lab.invalid']);
     assert.equal(submitted.status, 201);
     const { chromium } = await import('playwright');
-    const browser = await chromium.launch({ headless: true,
-      ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}) });
+    const browser = await chromium.launch(labBrowserOptions());
     try {
       const page = await browser.newPage();
       page.setDefaultTimeout(15_000);
@@ -344,8 +344,7 @@ try {
     const asked = await send('POST', `${applications}/${submitted.body.application_id}/revocation-requests`, requester,
       { reason_code: 4, reason: 'replaced by a new certificate' });
     assert.equal(asked.status, 201);
-    const again = await chromium.launch({ headless: true,
-      ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}) });
+    const again = await chromium.launch(labBrowserOptions());
     try {
       const page = await again.newPage();
       page.setDefaultTimeout(15_000);

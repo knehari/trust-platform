@@ -4,7 +4,7 @@
 -- the database owner holds grants; the API exposes no grant-write route.
 -- Usage: psql -v ON_ERROR_STOP=1 -v ca=dddddddd-dddd-4ddd-8ddd-dddddddddddd -f provision-issuing-ca.sql
 -- The subjects are the trust-lab realm's fixed user IDs.
-\set issuer 'http://127.0.0.1:8080/realms/trust-lab'
+\set issuer 'https://127.0.0.1:8443/realms/trust-lab'
 BEGIN;
 -- psql does not substitute variables inside DO blocks: pass the CA through a
 -- transaction-local setting.
