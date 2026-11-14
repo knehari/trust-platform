@@ -20,6 +20,10 @@ interface CrlStatus {
   expired: boolean;
   /** The API's renewal task publishes this CA's CRL when due (migration 0035). */
   auto_renewal?: boolean;
+  /** A CRL is published as soon as a revocation is recorded (migration 0040). */
+  publish_on_revocation?: boolean;
+  /** Revocations and voided serials not yet on the latest published CRL. */
+  unpublished_entries?: number;
 }
 
 interface CrlPublication {
@@ -120,11 +124,17 @@ export function CrlPanel({ caId, token, canPublish, onUnauthorized, onOpenReques
       <div className="ui-stat"><span>Latest CRL</span><strong>{status?.latest_crl_number ?? '—'}</strong><small>{crls ? `${crls.length} published` : '—'}</small></div>
       <div className="ui-stat"><span>Next update</span><strong className="ui-stat-text">{displayDate(status?.next_update ?? null)}</strong><small>{status?.auto_renewal ? 'Renewed automatically when due' : 'Renew before this date'}</small></div>
     </div>
+    {status && (status.unpublished_entries ?? 0) > 0 && <Notice tone={status.publish_on_revocation && status.auto_renewal ? 'info' : 'warning'}>
+      {status.unpublished_entries === 1 ? '1 revocation is' : `${status.unpublished_entries} revocations are`} not yet on the published CRL.
+      {status.publish_on_revocation && status.auto_renewal ? ' The platform is publishing a new CRL now.' : ' Relying parties will see it after the next CRL is published.'}</Notice>}
     {status?.expired && <Notice tone="error">The latest CRL expired: relying parties may reject this authority’s certificates until a new CRL is published.</Notice>}
     {status && !status.expired && status.renewal_due && <Notice tone={status.auto_renewal ? 'info' : 'warning'}>{status.latest_crl_number === null ? 'No CRL has been published for this authority yet.' : `CRL ${status.latest_crl_number} must be renewed before ${displayDate(status.next_update)}.`}{status.auto_renewal ? ' The platform renews it automatically at its next renewal pass.' : ''}</Notice>}
     {status && <p className="ui-hint">{status.auto_renewal
       ? <><Icon name="refresh" size={14} /> Automatic renewal is on: the platform publishes a new CRL when the current one is within two days of its next update. Officers can still publish at any time.</>
-      : 'Automatic renewal is off for this authority: a registration officer must publish before the next update.'}</p>}
+      : 'Automatic renewal is off for this authority: a registration officer must publish before the next update.'}
+      {status.publish_on_revocation !== undefined && <> {status.publish_on_revocation
+        ? (status.auto_renewal ? 'A new CRL is also published as soon as a revocation is recorded.' : 'Publication on revocation is on, but needs automatic renewal to take effect.')
+        : 'Revocations wait for the next scheduled or manual publication.'}</>}</p>}
     {status && <div className="ui-card"><div className="ui-kv"><span>Public distribution point</span>{status.distribution_point
       ? <div className="ui-copy-line"><code>{status.distribution_point}</code><button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => void navigator.clipboard.writeText(status.distribution_point!)}><Icon name="copy" size={15} />Copy</button></div>
       : <p className="ui-hint">Not published: the database owner has not configured a distribution point for this authority.</p>}</div></div>}

@@ -499,6 +499,9 @@ pub(crate) async fn revoke_for_ra(
         "request_id": request_id, "serial_hex": serial_hex,
         "status": if replayed { "REPLAYED" } else { "REVOKED" },
     }));
+    if !replayed {
+        crate::crl_publication::renew_after_revocation(&state);
+    }
     let code = if replayed {
         StatusCode::OK
     } else {

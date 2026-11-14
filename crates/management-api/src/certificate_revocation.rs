@@ -210,6 +210,9 @@ pub(crate) async fn decide_revocation(
         "application_id": application_id, "revocation_id": revocation_id, "status": status,
         "operation_id": operation, "replayed": replayed,
     }));
+    if !replayed && status == "REVOKED" {
+        crate::crl_publication::renew_after_revocation(&state);
+    }
     let code = if replayed {
         StatusCode::OK
     } else {

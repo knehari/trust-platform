@@ -51,7 +51,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, seal.event_uuid, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, cs.auto_renewal, pub.crl_number \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, cs.auto_renewal, cs.publish_on_revocation, cs.unpublished_entries, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub, management_audit_seal seal LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -586,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0039")?;
+    .map_err(|_| "management views unavailable or older than migration 0040")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -1105,6 +1105,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_audit_checkpoint_version() = 1 \
              AND management_ra_channel_version() = 1 \
              AND management_ra_revocation_version() = 1 \
+             AND management_crl_on_revocation_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -5571,6 +5572,131 @@ mod tests {
             .unwrap()
             .iter()
             .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == ra_serial));
+
+        // Publish on revocation (migration 0040): off by default, the status
+        // says so; once the owner turns it on, the next revocation publishes a
+        // CRL by itself, through the renewer, with nobody asking.
+        let crl_status = |token: String| {
+            let path = format!("/v1/cas/{ca}/crl-status");
+            async move { send("GET", &token, path, None).await.1 }
+        };
+        let before = crl_status(officer.clone()).await;
+        assert_eq!(
+            (
+                before["publish_on_revocation"].as_bool(),
+                before["unpublished_entries"].as_i64()
+            ),
+            (Some(false), Some(0))
+        );
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO ca_crl_policy (ca_id, publish_on_revocation) VALUES ('{owner_ca}', true)"
+            ))
+        })
+        .await
+        .unwrap();
+        let second_request = random_uuid().to_string();
+        let second_names = vec!["two.ra.lab.invalid".to_owned()];
+        let second_subject = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let second_csr = <x509_cert::request::CertReq as x509_cert::der::DecodePem>::from_pem(
+            lab_csr("two.ra.lab.invalid", &second_subject),
+        )
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let second_body = {
+            use p256::ecdsa::{signature::Signer, SigningKey};
+            let message = trust_pki_core::ra_request::ra_issuance_message(
+                &trust_pki_core::ra_request::RaIssuanceRequest {
+                    ra_id: "test-ra",
+                    ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                    profile_id: "server",
+                    request_id: *uuid::Uuid::parse_str(&second_request).unwrap().as_bytes(),
+                    csr_sha256: <sha2::Sha256 as sha2::Digest>::digest(&second_csr).into(),
+                    dns_names: &second_names,
+                    validity_days: 30,
+                    signed_at_unix: now,
+                },
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::from(&ra_key).sign(&message);
+            json!({
+                "ra_id": "test-ra", "request_id": second_request, "profile_id": "server",
+                "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&second_csr),
+                "dns_names": second_names, "validity_days": 30, "signed_at": now,
+                "signature_der_base64": base64::engine::general_purpose::STANDARD
+                    .encode(signature.to_der().as_bytes()),
+            })
+        };
+        let (status, second) = ra_post(second_body).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let second_serial = second["serial_hex"].as_str().unwrap().to_owned();
+        let latest_before = crl_status(officer.clone()).await["latest_crl_number"]
+            .as_i64()
+            .unwrap();
+        let (status, _) = revoke_post(revocation_body(
+            &random_uuid().to_string(),
+            &second_serial,
+            now,
+            &ra_key,
+        ))
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        // The background pass publishes; wait for it, bounded.
+        let mut published = serde_json::Value::Null;
+        for _ in 0..50 {
+            published = crl_status(officer.clone()).await;
+            if published["latest_crl_number"].as_i64() > Some(latest_before)
+                && published["unpublished_entries"].as_i64() == Some(0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        assert_eq!(
+            (
+                published["publish_on_revocation"].as_bool(),
+                published["unpublished_entries"].as_i64(),
+                published["latest_crl_number"].as_i64() > Some(latest_before)
+            ),
+            (Some(true), Some(0), true),
+            "{published}"
+        );
+        let newest = published["latest_crl_number"].as_i64().unwrap();
+        let (status, _, newest_der) = {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{crls}/{newest}"))
+                        .header("authorization", format!("Bearer {officer}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec();
+            (status, (), body)
+        };
+        assert_eq!(status, StatusCode::OK);
+        assert!(crl_verifies(&newest_der));
+        let newest_crl =
+            <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(&newest_der)
+                .unwrap();
+        assert!(newest_crl
+            .tbs_cert_list
+            .revoked_certificates
+            .unwrap()
+            .iter()
+            .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == second_serial));
         let _ = std::fs::remove_dir_all(key_dir);
     }
 
