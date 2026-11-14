@@ -1,4 +1,4 @@
-//! Transactional laboratory runner for management migrations 0012–0037.
+//! Transactional laboratory runner for management migrations 0012–0038.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
 use postgres::{Client, NoTls, Transaction};
@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
 const LOCK_ID: i64 = 0x5452_5553_544d_474d;
-const MIGRATIONS: [(&str, &str, &[&str]); 26] = [
+const MIGRATIONS: [(&str, &str, &[&str]); 27] = [
     (
         "0012_management_read_views",
         include_str!(concat!(
@@ -287,6 +287,18 @@ const MIGRATIONS: [(&str, &str, &[&str]); 26] = [
         )),
         &["public.audit_chain_checkpoint"],
     ),
+    (
+        "0038_ra_issuance_channel",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations/0038_ra_issuance_channel.sql"
+        )),
+        &[
+            "public.ra_system",
+            "public.ra_profile_grant",
+            "public.ra_issuance_request",
+        ],
+    ),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -301,7 +313,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         apply_migration(&mut client, version, source, expected_relations)?;
     }
     client.query_one("SELECT pg_advisory_unlock($1)", &[&LOCK_ID])?;
-    println!("PASS: management migrations 0012–0037 recorded and current");
+    println!("PASS: management migrations 0012–0038 recorded and current");
     Ok(())
 }
 
@@ -431,6 +443,15 @@ fn schema_present(
             &[],
         )?;
         return Ok((0..2).all(|index| row.get::<usize, bool>(index) == require_all));
+    }
+    if version == "0038_ra_issuance_channel" {
+        let present: bool = tx
+            .query_one(
+                "SELECT to_regprocedure('management_ra_channel_version()') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        return Ok(present == require_all && relations_present(tx, relations, require_all)?);
     }
     if version == "0037_audit_chain_checkpoint" {
         let present: bool = tx

@@ -13,7 +13,7 @@
 // Run on a fresh stack with .env.lab loaded, after the other suites.
 import assert from 'node:assert/strict';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign as signBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -291,6 +291,53 @@ try {
     const text = openssl(['crl', '-in', file, '-noout', '-text']);
     assert.match(text, new RegExp(`Serial Number: ${voided.body.serial_hex.toUpperCase()}`));
     assert.ok(published.body.entry_count >= 2, `entry count ${published.body.entry_count}`);
+  });
+
+  await check('a registered RA system obtains a certificate with a request it signs, without a user token (ADR-0025)', async () => {
+    // The RA's own key: ephemeral here, registered by the database owner.
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const jwk = publicKey.export({ format: 'jwk' });
+    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]);
+    execSync(`${ownerPsql} -f -`, { input: `
+      INSERT INTO ra_system (ra_id, display_name, public_key_sec1) VALUES ('lab-ra-e2e', 'E2E RA', '\\x${point.toString('hex')}');
+      INSERT INTO ra_profile_grant (ra_id, ca_id, profile_id) VALUES ('lab-ra-e2e', '${issuingCa}', 'server');
+      INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
+        VALUES ('urn:trust-platform:ra', 'lab-ra-e2e', '${issuingCa}', 'certificate-requester');` });
+    const csrDer = execFileSync('openssl', ['req', '-outform', 'DER'], { input: csr('ra.lab.invalid'), stdio: ['pipe', 'pipe', 'ignore'] });
+    const text = value => { const bytes = Buffer.from(value, 'utf8'); const length = Buffer.alloc(4); length.writeUInt32BE(bytes.length); return Buffer.concat([length, bytes]); };
+    const uuidBytes = value => Buffer.from(value.replaceAll('-', ''), 'hex');
+    // trust_pki_core::ra_request::ra_issuance_message, built independently.
+    const body = (requestId, names, signedAt, key = privateKey) => {
+      const count = Buffer.alloc(4); count.writeUInt32BE(names.length);
+      const validity = Buffer.alloc(4); validity.writeUInt32BE(30);
+      const when = Buffer.alloc(8); when.writeBigInt64BE(BigInt(signedAt));
+      const message = Buffer.concat([Buffer.from('trust-platform:ra-issuance-request:v1\0'), text('lab-ra-e2e'), uuidBytes(issuingCa),
+        text('server'), uuidBytes(requestId), execFileSync('openssl', ['dgst', '-sha256', '-binary'], { input: csrDer }),
+        count, ...names.map(text), validity, when]);
+      return { ra_id: 'lab-ra-e2e', request_id: requestId, profile_id: 'server', csr_der_base64: csrDer.toString('base64'),
+        dns_names: names, validity_days: 30, signed_at: signedAt, signature_der_base64: signBytes('sha256', message, key).toString('base64') };
+    };
+    const post = async payload => {
+      const response = await fetch(`${api}/v1/ra/cas/${issuingCa}/certificates`, { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      const raw = await response.text();
+      return { status: response.status, body: raw ? JSON.parse(raw) : null };
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const requestId = randomUUID();
+    const names = ['ra.lab.invalid', 'www.ra.lab.invalid'];
+    const stranger = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+    assert.equal((await post(body(requestId, names, now, stranger))).status, 401, 'another key');
+    assert.equal((await post(body(requestId, names, now - 900))).status, 401, 'a stale request');
+    const issued = await post(body(requestId, names, now));
+    assert.deepEqual([issued.status, issued.body.status], [201, 'ISSUED']);
+    const file = join(keys, 'ra-issued.pem');
+    writeFileSync(file, issued.body.certificate_pem);
+    const verified = opensslOutcome(['verify', '-CAfile', issuingRoot, '-purpose', 'sslserver', '-verify_hostname', 'www.ra.lab.invalid', file]);
+    assert.ok(verified.ok && /: OK/.test(verified.output), verified.output);
+    const replay = await post(body(requestId, names, now));
+    assert.deepEqual([replay.status, replay.body.certificate_sha256], [200, issued.body.certificate_sha256]);
+    assert.equal((await post(body(requestId, ['ra.lab.invalid'], now))).status, 409, 'same id, other request');
   });
 
   await check('the API seals committed audit events into the tamper-evident chain (ADR-0022)', async () => {

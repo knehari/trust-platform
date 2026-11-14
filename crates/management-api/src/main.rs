@@ -13,6 +13,7 @@ mod profile_activation;
 mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
+mod ra_channel;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -585,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0037")?;
+    .map_err(|_| "management views unavailable or older than migration 0038")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -806,6 +807,11 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/public/crls/{ca_id}/latest.crl",
             get(crl_publication::public_latest_crl),
+        )
+        // Signed by a registered RA system, not an OIDC token (ADR-0025).
+        .route(
+            "/v1/ra/cas/{ca_id}/certificates",
+            axum::routing::post(ra_channel::issue_for_ra),
         )
         .route("/v1/cas/{ca_id}/certificates", get(list_certificates))
         .route(
@@ -1093,6 +1099,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_crl_renewal_version() = 1 \
              AND management_audit_chain_version() = 1 \
              AND management_audit_checkpoint_version() = 1 \
+             AND management_ra_channel_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -5256,6 +5263,175 @@ mod tests {
             .find(|entry| hex_bytes(entry.serial_number.as_bytes()) == void_serial)
             .expect("the voided serial is listed");
         assert!(voided_entry.crl_entry_extensions.is_none());
+
+        // A registered RA system (ADR-0025) obtains a certificate with a
+        // request it signs; no OIDC token.
+        let ra_key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let ra_point = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(
+            &ra_key.public_key(),
+            false,
+        )
+        .as_bytes()
+        .to_vec();
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.execute(
+                "INSERT INTO ra_system (ra_id, display_name, public_key_sec1) VALUES ('test-ra', 'Test RA', $1)",
+                &[&ra_point],
+            )?;
+            db.batch_execute(&format!(
+                "INSERT INTO ra_profile_grant (ra_id, ca_id, profile_id) VALUES ('test-ra', '{owner_ca}', 'server');
+                 INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
+                 VALUES ('urn:trust-platform:ra', 'test-ra', '{owner_ca}', 'certificate-requester');"
+            ))
+        })
+        .await
+        .unwrap();
+        let ra_subject = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let ra_csr = <x509_cert::request::CertReq as x509_cert::der::DecodePem>::from_pem(lab_csr(
+            "ra.lab.invalid",
+            &ra_subject,
+        ))
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        // A signed RA request body; `sign_with` lets a test use another key.
+        let ra_body = |request_id: &str,
+                       names: Vec<String>,
+                       signed_at: i64,
+                       sign_with: &p256::SecretKey| {
+            use p256::ecdsa::{signature::Signer, SigningKey};
+            let message = trust_pki_core::ra_request::ra_issuance_message(
+                &trust_pki_core::ra_request::RaIssuanceRequest {
+                    ra_id: "test-ra",
+                    ca_id: *uuid::Uuid::parse_str(&ca).unwrap().as_bytes(),
+                    profile_id: "server",
+                    request_id: *uuid::Uuid::parse_str(request_id).unwrap().as_bytes(),
+                    csr_sha256: <sha2::Sha256 as sha2::Digest>::digest(&ra_csr).into(),
+                    dns_names: &names,
+                    validity_days: 30,
+                    signed_at_unix: signed_at,
+                },
+            )
+            .unwrap();
+            let signature: Signature = SigningKey::from(sign_with).sign(&message);
+            json!({
+                "ra_id": "test-ra", "request_id": request_id, "profile_id": "server",
+                "csr_der_base64": base64::engine::general_purpose::STANDARD.encode(&ra_csr), "dns_names": names,
+                "validity_days": 30, "signed_at": signed_at,
+                "signature_der_base64": base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes()),
+            })
+        };
+        let ra_post = |body: serde_json::Value| {
+            let app = app.clone();
+            let path = format!("/v1/ra/cas/{ca}/certificates");
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(path)
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                )
+            }
+        };
+        let names = || vec!["ra.lab.invalid".to_owned(), "www.ra.lab.invalid".to_owned()];
+        let ra_request = random_uuid().to_string();
+        // Another key, a stale request, or a tampered body: 401, nothing recorded.
+        let stranger = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        assert_eq!(
+            ra_post(ra_body(&ra_request, names(), now, &stranger))
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ra_post(ra_body(&ra_request, names(), now - 600, &ra_key))
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let mut tampered = ra_body(&ra_request, names(), now, &ra_key);
+        tampered["dns_names"] = json!(["ra.lab.invalid", "evil.lab.invalid"]);
+        assert_eq!(ra_post(tampered).await.0, StatusCode::UNAUTHORIZED);
+        // Names outside the profile's zones: the RA signed them, the CA refuses.
+        let outside = ra_body(
+            &random_uuid().to_string(),
+            vec!["ra.lab.invalid".to_owned(), "ra.example.com".to_owned()],
+            now,
+            &ra_key,
+        );
+        assert_eq!(ra_post(outside).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+        // Accepted: issued once, under the CA key, to the CSR's key.
+        let (status, ra_issued) = ra_post(ra_body(&ra_request, names(), now, &ra_key)).await;
+        assert_eq!(
+            (status, ra_issued["status"].as_str()),
+            (StatusCode::CREATED, Some("ISSUED"))
+        );
+        let ra_certificate =
+            x509_cert::Certificate::from_pem(ra_issued["certificate_pem"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(
+            ra_certificate.tbs_certificate.subject.to_string(),
+            "CN=ra.lab.invalid"
+        );
+        assert_eq!(
+            ra_certificate
+                .tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .raw_bytes(),
+            lab_spki(&ra_subject).subject_public_key.raw_bytes()
+        );
+        {
+            use p256::ecdsa::{signature::Verifier, VerifyingKey};
+            let signature = Signature::from_der(ra_certificate.signature.raw_bytes()).unwrap();
+            assert!(VerifyingKey::from(ca_key.public_key())
+                .verify(
+                    &ra_certificate.tbs_certificate.to_der().unwrap(),
+                    &signature
+                )
+                .is_ok());
+        }
+        // The same signed request replays the same certificate; other bytes
+        // under the same request id conflict.
+        let (status, replayed) = ra_post(ra_body(&ra_request, names(), now, &ra_key)).await;
+        assert_eq!(
+            (status, replayed["certificate_sha256"].as_str()),
+            (StatusCode::OK, ra_issued["certificate_sha256"].as_str())
+        );
+        assert_eq!(
+            ra_post(ra_body(
+                &ra_request,
+                vec!["ra.lab.invalid".to_owned()],
+                now,
+                &ra_key
+            ))
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        // The application is the RA's, approved by the RA, visible to readers.
+        let item = listed(ra_issued["application_id"].as_str().unwrap().to_owned()).await;
+        assert_eq!(item["status"].as_str(), Some("ISSUED"));
         let _ = std::fs::remove_dir_all(key_dir);
     }
 

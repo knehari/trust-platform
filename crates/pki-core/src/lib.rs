@@ -7,6 +7,7 @@ pub mod application_leaf;
 pub mod audit_chain;
 pub mod audit_manifest;
 pub mod capacity_policy;
+pub mod ra_request;
 pub mod signer_capabilities;
 
 pub mod audit_integrity;
