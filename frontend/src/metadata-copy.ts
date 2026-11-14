@@ -26,5 +26,6 @@ export function auditMetadataJson(event: AuditEvent): string {
     decision: event.decision,
     policy_version: event.policy_version,
     recorded_at: event.recorded_at,
+    chain_sealed: event.chain_sealed ?? null,
   }, null, 2);
 }

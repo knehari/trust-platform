@@ -207,6 +207,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0033_management_certificate_revocation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0034_application_issuance_void.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0035_crl_auto_renewal.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < migrations/0036_audit_event_chain.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_api_readonly.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_profile_draft.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_san.sql
@@ -230,6 +231,7 @@ jobs:
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_certificate_revocation.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_application_void.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_crl_renewal.sql
+          docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/management_audit_chain.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/schema_invariants.sql
           docker exec -i "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 < tests/transactional_issuance.sql
           bash tests/transactional_concurrency.sh "$CONTAINER"
@@ -264,6 +266,15 @@ jobs:
           # And every certificate issued for an application, its revocations and CRLs.
           TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" \
             cargo run --locked -p trust-management-api --bin lab_verify_issued_certificates
+          # Seal every event the suites recorded, then verify the chain independently.
+          docker exec "$CONTAINER" psql -U trust_ci -d trust_ci -v ON_ERROR_STOP=1 -c "SELECT * FROM seal_audit_events_lab(10000)"
+          TRUST_VERIFY_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_ci" TRUST_AUDIT_REQUIRE_SEALED=1 \
+            cargo run --locked -p trust-management-api --bin lab_verify_audit_chain
+          # The tool detects altered, unlinked, removed and rebuilt history.
+          cargo build --locked -p trust-management-api --bin lab_verify_audit_chain
+          docker exec "$CONTAINER" createdb -U trust_ci trust_audit_tamper
+          TRUST_AUDIT_TAMPER_DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_audit_tamper" \
+            bash tests/management_audit_chain_tamper.sh
           # Negative test: strict mode must fail if a DB-dependent test has no URL.
           if env -u TRUST_CI_DATABASE_URL TRUST_REQUIRE_DATABASE=1 cargo test -p trust-pki-core --test lab_rsa_pss_postgres --features postgres-store,lab-software --locked; then
             echo "FAIL: DB-dependent test passed without its mandatory DB URL" >&2
@@ -284,7 +295,7 @@ jobs:
           test -n "$CONTAINER"
           docker exec "$CONTAINER" createdb -U trust_ci trust_pagination
           DATABASE_URL="postgresql://trust_ci:test-only-not-secret@127.0.0.1:5432/trust_pagination"
-          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql migrations/0029*.sql migrations/0030*.sql migrations/0031*.sql migrations/0032*.sql migrations/0033*.sql migrations/0034*.sql migrations/0035*.sql; do
+          for migration in migrations/000*.sql migrations/0010*.sql migrations/0011*.sql migrations/0012*.sql migrations/0013*.sql migrations/0014*.sql migrations/0015*.sql migrations/0016*.sql migrations/0017*.sql migrations/0018*.sql migrations/0019*.sql migrations/0020*.sql migrations/0021*.sql migrations/0022*.sql migrations/0023*.sql migrations/0024*.sql migrations/0025*.sql migrations/0026*.sql migrations/0027*.sql migrations/0028*.sql migrations/0029*.sql migrations/0030*.sql migrations/0031*.sql migrations/0032*.sql migrations/0033*.sql migrations/0034*.sql migrations/0035*.sql migrations/0036*.sql; do
             psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
           done
           psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f tests/management_history_pagination_seed.sql >/dev/null

@@ -1,3 +1,4 @@
+mod audit_chain;
 mod auth;
 mod ca_certificate;
 mod ca_decision;
@@ -47,11 +48,11 @@ const HISTORY_PAGE_SIZE: usize = 100;
 /// columns of migration 0017, the SAN view of 0018, the lowered CN of 0019
 /// and the bounds view of 0020; LIMIT 0 reads no row.
 const MANAGEMENT_VIEWS_CHECK: &str =
-    "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, s.signed_at_window, \
+    "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, seal.event_uuid, s.signed_at_window, \
      b.newest_signed_window \
      , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, cs.auto_renewal, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
-     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub LIMIT 0";
+     management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub, management_audit_seal seal LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -114,6 +115,9 @@ struct Audit {
     decision: String,
     policy_version: Option<String>,
     recorded_at: String,
+    /// Whether the event is sealed in the tamper-evident chain (migration
+    /// 0036); an unsealed event is not yet protected.
+    chain_sealed: bool,
 }
 
 #[derive(Serialize)]
@@ -581,7 +585,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0035")?;
+    .map_err(|_| "management views unavailable or older than migration 0036")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -640,6 +644,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         crl_publication::spawn_renewer(state.clone(), Duration::from_secs(seconds));
         write_log(
             serde_json::json!({"event":"crl_auto_renewal_enabled","interval_seconds":seconds}),
+        );
+    }
+    if let Some(seconds) = env::var("TRUST_AUDIT_SEAL_INTERVAL_SECONDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        let seconds: u64 = seconds
+            .parse()
+            .ok()
+            .filter(|value| (5..=86_400).contains(value))
+            .ok_or("TRUST_AUDIT_SEAL_INTERVAL_SECONDS must be 5 to 86400")?;
+        if state.writer_database_url.is_none() {
+            return Err("audit sealing needs TRUST_WRITER_DATABASE_URL".into());
+        }
+        audit_chain::spawn_sealer(state.clone(), Duration::from_secs(seconds));
+        write_log(
+            serde_json::json!({"event":"audit_chain_sealing_enabled","interval_seconds":seconds}),
         );
     }
     let app = router(state);
@@ -1036,6 +1057,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND NOT EXISTS (SELECT 1 FROM management_ca) \
              AND NOT EXISTS (SELECT 1 FROM management_certificate) \
              AND NOT EXISTS (SELECT 1 FROM management_audit) \
+             AND NOT EXISTS (SELECT 1 FROM management_audit_seal) \
              AND NOT EXISTS (SELECT 1 FROM management_reader_scope) \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_san) \
              AND NOT EXISTS (SELECT 1 FROM management_history_bounds) \
@@ -1050,6 +1072,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_certificate_revocation_version() = 1 \
              AND management_application_void_version() = 1 \
              AND management_crl_renewal_version() = 1 \
+             AND management_audit_chain_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -1574,7 +1597,7 @@ async fn list_audit(
     let (before_time, before_id) = cursor.map_or((None, None), |(time, id)| (Some(time), Some(id)));
     let issuer = claims.iss;
     let subject = claims.sub;
-    let rows = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
+    let (items, has_more) = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let deadline = Instant::now() + Duration::from_millis(DATABASE_STATEMENT_TIMEOUT_MS);
         let mut tx = history_transaction(db)?;
         let granted: bool = tx.query_one(
@@ -1603,15 +1626,16 @@ async fn list_audit(
             from_cursor: before_time.is_some(),
         };
         let rows = slices.read(&mut tx, deadline)?;
+        let has_more = rows.len() > HISTORY_PAGE_SIZE;
+        let mut items: Vec<Audit> = rows
+            .into_iter()
+            .take(HISTORY_PAGE_SIZE)
+            .map(audit_from_row)
+            .collect();
+        mark_sealed(&mut tx, &ca_id, &mut items)?;
         tx.commit()?;
-        Ok(Some(rows))
+        Ok(Some((items, has_more)))
     }).await?.ok_or(StatusCode::FORBIDDEN)?;
-    let has_more = rows.len() > HISTORY_PAGE_SIZE;
-    let items: Vec<Audit> = rows
-        .into_iter()
-        .take(HISTORY_PAGE_SIZE)
-        .map(audit_from_row)
-        .collect();
     let next = has_more.then(|| {
         let last = items.last().expect("nonempty page has a final item");
         format!("{}|{}", last.recorded_at, last.event_id)
@@ -1627,7 +1651,35 @@ fn audit_from_row(row: Row) -> Audit {
         decision: row.get(3),
         policy_version: row.get(4),
         recorded_at: row.get(5),
+        chain_sealed: false,
     }
+}
+
+/// Marks the events of one page that are sealed into the audit chain
+/// (migration 0036), with one index lookup per event through the reader's
+/// filtered seal view, so history queries keep their plans.
+fn mark_sealed(
+    db: &mut impl postgres::GenericClient,
+    ca_id: &str,
+    events: &mut [Audit],
+) -> Result<(), postgres::Error> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<String> = events.iter().map(|event| event.event_id.clone()).collect();
+    let sealed: std::collections::HashSet<String> = db
+        .query(
+            "SELECT event_uuid::text FROM management_audit_seal \
+             WHERE ca_id=$1 AND event_uuid = ANY($2::text[]::uuid[])",
+            &[&ca_id, &ids],
+        )?
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    for event in events {
+        event.chain_sealed = sealed.contains(&event.event_id);
+    }
+    Ok(())
 }
 
 async fn get_audit_event(
@@ -1642,21 +1694,25 @@ async fn get_audit_event(
         .to_string();
     let issuer = claims.iss;
     let subject = claims.sub;
-    let row = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
+    let event = query_db_as(state.database_url, state.database_slots, (issuer.clone(), subject.clone()), move |db| {
         let granted: bool = db.query_one(
             "SELECT EXISTS(SELECT 1 FROM management_reader_scope WHERE issuer=$1 AND subject=$2 AND ca_id=$3)",
             &[&issuer, &subject, &ca_id],
         )?.get(0);
         if !granted { return Ok(None); }
-        db.query_opt(
+        let Some(row) = db.query_opt(
             "SELECT event_id,ca_id,event_type,decision,policy_version,recorded_at \
              FROM management_audit WHERE ca_id=$1 AND event_id=$2 AND EXISTS \
              (SELECT 1 FROM management_reader_scope WHERE issuer=$3 AND subject=$4 AND ca_id=$1)",
             &[&ca_id, &event_id, &issuer, &subject],
-        ).map(Some)
+        )? else { return Ok(Some(None)); };
+        let mut events = [audit_from_row(row)];
+        mark_sealed(db, &ca_id, &mut events)?;
+        let [event] = events;
+        Ok(Some(Some(event)))
     }).await?.ok_or(StatusCode::FORBIDDEN)?
       .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(audit_from_row(row)))
+    Ok(Json(event))
 }
 
 #[cfg(test)]
@@ -4631,6 +4687,26 @@ mod tests {
         );
         // Now fresh: a second pass publishes nothing.
         assert_eq!(crl_publication::renew_due_crls(&state).await, Ok(vec![]));
+        // The renewal's audit event is not yet sealed into the chain
+        // (migration 0036); a sealing pass seals it, and readers see it.
+        let audit_path = format!("/v1/cas/{ca}/audit?event_type=crl.published");
+        let (_, published_events) = send("GET", &officer, audit_path.clone(), None).await;
+        let published_events = published_events.as_array().unwrap().clone();
+        assert_eq!(published_events.len(), 1);
+        assert_eq!(published_events[0]["chain_sealed"], json!(false));
+        let pass = audit_chain::seal_pending_events(&state).await.unwrap();
+        assert!(pass.sealed >= 1 && pass.head_seq >= pass.sealed);
+        assert_eq!(pass.head_hash.len(), 64);
+        let (_, published_events) = send("GET", &officer, audit_path, None).await;
+        assert_eq!(published_events[0]["chain_sealed"], json!(true));
+        let event_path = format!(
+            "/v1/cas/{ca}/audit/{}",
+            published_events[0]["event_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            send("GET", &officer, event_path, None).await.1["chain_sealed"],
+            json!(true)
+        );
         let (_, listed_crls) = send("GET", &officer, crls.clone(), None).await;
         let first_crl = &listed_crls.as_array().unwrap()[0];
         assert_eq!(
@@ -6984,6 +7060,7 @@ mod tests {
             "management_ca",
             "management_certificate",
             "management_audit",
+            "management_audit_seal",
             "management_reader_scope",
             "management_certificate_san",
             "management_history_bounds",

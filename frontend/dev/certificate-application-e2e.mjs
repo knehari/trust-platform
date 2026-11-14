@@ -292,6 +292,28 @@ try {
     assert.match(text, new RegExp(`Serial Number: ${voided.body.serial_hex.toUpperCase()}`));
     assert.ok(published.body.entry_count >= 2, `entry count ${published.body.entry_count}`);
   });
+
+  await check('the API seals committed audit events into the tamper-evident chain (ADR-0022)', async () => {
+    // A fresh token: the sealing pass may take up to the configured interval.
+    const reader = await token('lab-ra-officer', 'TRUST_LAB_PW_RA_OFFICER');
+    const path = `/v1/cas/${issuingCa}/audit?event_type=certificate.application.voided`;
+    const deadline = Date.now() + 90_000;
+    let events = [];
+    for (;;) {
+      const listed = await send('GET', path, reader);
+      assert.equal(listed.status, 200);
+      events = listed.body;
+      assert.ok(events.length >= 1, 'the void was audited');
+      assert.ok(events.every(event => typeof event.chain_sealed === 'boolean'), 'every event reports its seal');
+      if (events.every(event => event.chain_sealed)) break;
+      assert.ok(Date.now() < deadline, 'events still unsealed after 90 s: is TRUST_AUDIT_SEAL_INTERVAL_SECONDS set?');
+      await new Promise(resolve => setTimeout(resolve, 2_000));
+    }
+    const detail = await send('GET', `/v1/cas/${issuingCa}/audit/${events[0].event_id}`, reader);
+    assert.deepEqual([detail.status, detail.body.chain_sealed], [200, true]);
+    // Readers learn only the flag, never the global sequence or hashes.
+    assert.deepEqual(Object.keys(detail.body).sort(), ['ca_id', 'chain_sealed', 'decision', 'event_id', 'event_type', 'policy_version', 'recorded_at']);
+  });
 } finally {
   rmSync(keys, { recursive: true, force: true });
   rmSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem'), { force: true });

@@ -102,3 +102,23 @@ The `laboratory-compose` GitHub Actions job builds the images and runs the same 
 ## Automatic CRL renewal (ADR-0021)
 
 The API service sets `TRUST_CRL_RENEWAL_INTERVAL_SECONDS=3600`. The issuing CA's provisioning (`scripts/lab/provision-issuing-ca.sql`) grants the system principal `urn:trust-platform:system`/`crl-renewer` the `crl-publisher` role. Every hour, the API publishes the CRL of each granted CA that is due (none yet, or nextUpdate within two days). Each pass is logged as `crl_auto_renewal` in the API logs (`docker compose … logs api`). The Revocation & CRLs view shows "Automatic renewal is on".
+
+## Tamper-evident audit chain (ADR-0022)
+
+The API service sets `TRUST_AUDIT_SEAL_INTERVAL_SECONDS=60`. Every minute, it seals the committed audit events not yet sealed into the hash chain and logs `audit_chain_sealed` with the new head. In the console, the detail of an audit event shows "Sealed" or "Not yet sealed".
+
+The chain is evidence only against a head kept outside the database. To export one, run the independent tool as the database owner. The Compose file does not publish the database port; for this check, publish it on the loopback interface with a local override file (for example `ports: ["127.0.0.1:55432:5432"]` on the `db` service), then from the repository:
+
+```sh
+TRUST_VERIFY_DATABASE_URL=postgresql://trust_lab:<owner password>@127.0.0.1:<port>/trust_lab \
+  cargo run -p trust-management-api --bin lab_verify_audit_chain > audit-head.json
+```
+
+Keep `audit-head.json` somewhere the database owner cannot change. Later, check that nothing sealed up to that head was altered, removed or reordered:
+
+```sh
+TRUST_AUDIT_EXPECTED_HEAD="<head_seq>:<head_hash>" TRUST_VERIFY_DATABASE_URL=… \
+  cargo run -p trust-management-api --bin lab_verify_audit_chain
+```
+
+The head is not signed and its export is not automated: this is a laboratory procedure, not a retention or custody control.

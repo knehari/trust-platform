@@ -1744,6 +1744,7 @@ components:
         decision: { type: string }
         policy_version: { type: [string, 'null'] }
         recorded_at: { type: string, format: date-time }
+        chain_sealed: { type: boolean, description: 'Whether the event is sealed into the tamper-evident audit chain (migration 0036, ADR-0022). Integrity is proven only by the independent verification tool against a head exported earlier; the global sequence and hashes are not exposed to readers.' }
   responses:
     BadRequest: { description: Invalid identifier or cursor }
     Unauthorized: { description: Missing or invalid access token }

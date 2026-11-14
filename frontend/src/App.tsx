@@ -1001,16 +1001,19 @@ function AuditDialog({ event, now, onClose, onPrevious, onNext, position }: { ev
     tone={group === 'denied' ? 'bad' : group === 'attention' ? 'warn' : group === 'allowed' ? 'good' : 'info'}
     closeLabel="Close audit event detail" onClose={onClose} onPrevious={onPrevious} onNext={onNext} position={position}
     title={described.label} subtitle={<code>{event.event_type}</code>}
-    badges={<><OutcomeBadge decision={event.decision} />{event.policy_version && <span className="ui-chip">policy {event.policy_version}</span>}</>}
+    badges={<><OutcomeBadge decision={event.decision} />{event.policy_version && <span className="ui-chip">policy {event.policy_version}</span>}{event.chain_sealed === true && <Tag tone="good" title="Sealed into the tamper-evident audit chain">Sealed</Tag>}{event.chain_sealed === false && <Tag tone="warn" title="Not yet sealed: the next sealing pass will add it to the chain">Not yet sealed</Tag>}</>}
     actions={<CopyJsonButton json={auditMetadataJson(event)} />}
     summary={<div className="ui-outcome-summary"><span className="ui-summary-label">What happened</span><p>{explainOutcome(event.decision)}</p><TimeAgo value={event.recorded_at} now={new Date(now)} /></div>}
-    note="Database metadata only. This view does not include actor identity or independent audit integrity proof.">
+    note="Database metadata only. This view does not include actor identity. A seal shows the event is in the hash chain; integrity is proven only by the independent verification tool against a head exported earlier.">
     <DrawerSection title="Record">
       <Fact label="Event ID" copy={event.event_id} mono>{event.event_id}</Fact>
       <Fact label="Recorded decision" mono>{event.decision || '—'}</Fact>
       <Fact label="Policy version">{event.policy_version ?? 'Not recorded'}</Fact>
       <Fact label="Recorded at">{displayDate(event.recorded_at)}</Fact>
       <Fact label="Authority ID" copy={event.ca_id} mono>{event.ca_id}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Tamper evidence">
+      <Fact label="Audit chain seal">{event.chain_sealed === true ? 'Sealed into the hash chain' : event.chain_sealed === false ? 'Not yet sealed (waiting for the next sealing pass)' : 'Not reported by this API version'}</Fact>
     </DrawerSection>
   </DetailDrawer>;
 }
