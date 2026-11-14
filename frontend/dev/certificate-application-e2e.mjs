@@ -209,6 +209,12 @@ try {
     const listed = await send('GET', applications, officer);
     const mine = listed.body.find(item => item.application_id === applicationId);
     assert.deepEqual([mine.status, mine.revocation_reason_code], ['REVOKED', 1]);
+    // The inventory reports the recorded revocation beside the issuance state (migration 0033).
+    const inventory = await send('GET', `/v1/cas/${issuingCa}/certificates/by-serial/${serial}`, officer);
+    assert.equal(inventory.status, 200);
+    assert.equal(inventory.body.state, 'SIGNED');
+    assert.equal(inventory.body.revocation_reason, 1);
+    assert.match(inventory.body.revoked_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
     const { published, file } = await publish();
     assert.deepEqual([published.body.crl_number > crlNumber, published.body.entry_count], [true, 1]);

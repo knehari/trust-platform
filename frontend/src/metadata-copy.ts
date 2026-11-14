@@ -13,6 +13,8 @@ export function certificateMetadataJson(certificate: Certificate): string {
     state: certificate.state,
     signed_at: certificate.signed_at,
     published_at: certificate.published_at,
+    revoked_at: certificate.revoked_at ?? null,
+    revocation_reason: certificate.revocation_reason ?? null,
   }, null, 2);
 }
 

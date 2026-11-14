@@ -39,3 +39,10 @@ test('profile proposal CSV exports an allowlist without actor identity and neutr
   assert.equal(result.includes('private-actor'), false);
   assert.equal(result.includes('never-export'), false);
 });
+
+test('certificate CSV reports a recorded revocation', () => {
+  const result = certificateCsv([{ ...certificate, revoked_at: '2026-11-01T10:00:00.000Z', revocation_reason: 1 }]);
+  const [header, row] = result.replace(/^\uFEFF/u, '').split('\r\n');
+  assert.match(header, /"revoked_at","revocation_reason"$/u);
+  assert.match(row, /"2026-11-01T10:00:00\.000Z","1"$/u);
+});

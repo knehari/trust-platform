@@ -11,12 +11,13 @@ export interface Bucket { key: string; start: number; end: number; count: number
 function startOfUtcDay(time: number): number { return Math.floor(time / DAY) * DAY; }
 
 /** Certificates whose recorded notAfter falls in each of the next `weeks` weeks. */
-export function expiryBuckets(certificates: Pick<Certificate, 'not_after'>[], now: number, weeks = 12): Bucket[] {
+export function expiryBuckets(certificates: Pick<Certificate, 'not_after' | 'revoked_at'>[], now: number, weeks = 12): Bucket[] {
   const start = startOfUtcDay(now);
   const buckets: Bucket[] = Array.from({ length: weeks }, (_, index) => ({
     key: `w${index}`, start: start + index * 7 * DAY, end: start + (index + 1) * 7 * DAY, count: 0, extra: 0,
   }));
   for (const certificate of certificates) {
+    if (certificate.revoked_at) continue;
     const end = certificate.not_after ? Date.parse(certificate.not_after) : NaN;
     if (!Number.isFinite(end) || end < now) continue;
     const bucket = buckets.find(item => end >= item.start && end < item.end);
@@ -42,12 +43,14 @@ export function activityByDay(events: Pick<AuditEvent, 'recorded_at' | 'decision
   return buckets;
 }
 
-export interface CertificateHealth { valid: number; expiringSoon: number; expired: number; unknown: number }
+export interface CertificateHealth { valid: number; expiringSoon: number; expired: number; unknown: number; revoked: number }
 
 /** Recorded-validity health of loaded certificates; `soonDays` marks renewals. */
-export function certificateHealth(certificates: Pick<Certificate, 'not_before' | 'not_after'>[], now: number, soonDays = 30): CertificateHealth {
-  const health = { valid: 0, expiringSoon: 0, expired: 0, unknown: 0 };
+export function certificateHealth(certificates: Pick<Certificate, 'not_before' | 'not_after' | 'revoked_at'>[], now: number, soonDays = 30): CertificateHealth {
+  const health = { valid: 0, expiringSoon: 0, expired: 0, unknown: 0, revoked: 0 };
   for (const certificate of certificates) {
+    // A recorded revocation outranks the validity period.
+    if (certificate.revoked_at) { health.revoked += 1; continue; }
     const start = certificate.not_before ? Date.parse(certificate.not_before) : NaN;
     const end = certificate.not_after ? Date.parse(certificate.not_after) : NaN;
     if (!Number.isFinite(start) || !Number.isFinite(end)) health.unknown += 1;

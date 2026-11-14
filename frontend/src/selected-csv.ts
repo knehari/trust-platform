@@ -17,8 +17,8 @@ export function csv(header: string[], rows: (string | null)[][]): string {
 
 export function certificateCsv(rows: Certificate[]): string {
   return csv(
-    ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'not_before', 'not_after', 'san_dns', 'fingerprint_sha256', 'state', 'signed_at', 'published_at'],
-    rows.map(row => [row.ca_id, row.request_id, row.serial_hex, row.subject_cn, row.not_before, row.not_after, row.san_dns?.join('; ') ?? null, row.fingerprint_sha256, row.state, row.signed_at, row.published_at]),
+    ['ca_id', 'request_id', 'serial_hex', 'subject_cn', 'not_before', 'not_after', 'san_dns', 'fingerprint_sha256', 'state', 'signed_at', 'published_at', 'revoked_at', 'revocation_reason'],
+    rows.map(row => [row.ca_id, row.request_id, row.serial_hex, row.subject_cn, row.not_before, row.not_after, row.san_dns?.join('; ') ?? null, row.fingerprint_sha256, row.state, row.signed_at, row.published_at, row.revoked_at ?? null, row.revocation_reason == null ? null : String(row.revocation_reason)]),
   );
 }
 

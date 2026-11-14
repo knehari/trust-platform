@@ -1631,7 +1631,7 @@ components:
         certificate_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
     Certificate:
       type: object
-      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns]
+      required: [ca_id, serial_hex, fingerprint_sha256, request_id, state, signed_at, published_at, subject_cn, not_before, not_after, san_dns, revoked_at, revocation_reason]
       properties:
         ca_id: { type: string, format: uuid }
         serial_hex: { type: string }
@@ -1644,6 +1644,8 @@ components:
         not_before: { type: [string, 'null'], format: date-time, description: Validity start parsed from independently verified certificate DER; null for historical records. }
         not_after: { type: [string, 'null'], format: date-time, description: Validity end parsed from independently verified certificate DER; null for historical records. }
         san_dns: { type: [array, 'null'], items: { type: string }, description: DNS SANs parsed from independently verified certificate DER; empty when no DNS SAN exists, null for historical records. }
+        revoked_at: { type: [string, 'null'], format: date-time, description: 'When an approved revocation of this certificate was recorded (migration 0033); null when none is recorded. The issuance state is unchanged; relying parties learn of the revocation from the next published CRL.' }
+        revocation_reason: { type: [integer, 'null'], minimum: 0, maximum: 10, description: RFC 5280 CRLReason code of the recorded revocation; null when none is recorded. }
     AuditEvent:
       type: object
       required: [event_id, ca_id, event_type, decision, policy_version, recorded_at]
