@@ -34,7 +34,6 @@
 //! `TRUST_VERIFY_DATABASE_URL=… cargo run -p trust-management-api --bin lab_verify_audit_chain`
 use std::{collections::HashMap, env, error::Error, fs, io, process::ExitCode};
 
-use postgres::{Client, NoTls};
 use sha2::{Digest, Sha256};
 use trust_pki_core::audit_chain::{
     audit_checkpoint_message, audit_event_digest, next_audit_hash, AuditEventFields, GENESIS_HASH,
@@ -123,7 +122,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         .map(|path| read_public_key(&path))
         .transpose()
         .map_err(io::Error::other)?;
-    let mut db = Client::connect(&url, NoTls)?;
+    let mut db = trust_db_connect::connect(&url)?;
     // One snapshot for the links and the unsealed count.
     let mut tx = db
         .build_transaction()

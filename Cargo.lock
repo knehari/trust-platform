@@ -1883,6 +1883,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-postgres-rustls"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c2ad44aa0ae96db89c4742212ed41645b2f597311ff6e1945542a4d9fadc2fb"
+dependencies = [
+ "rustls",
+ "sha2 0.11.1",
+ "tokio",
+ "tokio-postgres",
+ "tokio-rustls",
+ "x509-cert",
+]
+
+[[package]]
 name = "tokio-rustls"
 version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1980,9 +1994,20 @@ dependencies = [
  "postgres",
  "rand 0.8.5",
  "serde_json",
+ "trust-db-connect",
  "trust-pki-core",
  "trust-pki-crypto",
  "x509-cert",
+]
+
+[[package]]
+name = "trust-db-connect"
+version = "0.1.0"
+dependencies = [
+ "postgres",
+ "rustls",
+ "serde_json",
+ "tokio-postgres-rustls",
 ]
 
 [[package]]
@@ -1996,6 +2021,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "trust-db-connect",
  "trust-pki-core",
  "x509-cert",
 ]
@@ -2019,6 +2045,7 @@ dependencies = [
  "tokio",
  "tower",
  "trust-crl-publisher",
+ "trust-db-connect",
  "trust-lab-signer",
  "trust-pki-core",
  "trust-pki-crypto",

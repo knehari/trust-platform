@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pki-core", "crates/pki-policy", "crates/pki-crypto", "crates/management-api", "crates/lab-signer", "crates/crl-publisher"]
+members = ["crates/pki-core", "crates/pki-policy", "crates/pki-crypto", "crates/management-api", "crates/lab-signer", "crates/crl-publisher", "crates/db-connect"]
 resolver = "2"
 
 [workspace.package]

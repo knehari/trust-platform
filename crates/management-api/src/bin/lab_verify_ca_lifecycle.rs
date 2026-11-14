@@ -33,7 +33,7 @@ use std::{
     time::SystemTime,
 };
 
-use postgres::{Client, NoTls};
+use postgres::Client;
 
 #[allow(dead_code)]
 #[path = "../ca_certificate.rs"]
@@ -246,7 +246,7 @@ fn activation_problems(db: &mut Client) -> Result<Vec<(String, String)>, postgre
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
-    let mut db = Client::connect(&url, NoTls)
+    let mut db = trust_db_connect::connect(&url)
         .map_err(|_| io::Error::other("CA lifecycle database unavailable"))?;
     let mut failed = 0usize;
     let certificates = load_certificates(&mut db)?;

@@ -51,7 +51,7 @@
 //! `TRUST_VERIFY_DATABASE_URL=… cargo run -p trust-management-api --bin lab_verify_issued_certificates`
 use std::{env, error::Error, io, process::ExitCode, time::SystemTime};
 
-use postgres::{Client, NoTls};
+use postgres::Client;
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
     application_crl::{build_crl_tbs, parse_utc_seconds, verify_crl, CrlEntry, CrlFacts},
@@ -728,7 +728,7 @@ fn proofs_schema(db: &mut Client) -> Result<bool, postgres::Error> {
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
-    let mut db = Client::connect(&url, NoTls)
+    let mut db = trust_db_connect::connect(&url)
         .map_err(|_| io::Error::other("issuance database unavailable"))?;
     // Since 0041 an issuance needs a signed proof. Intents recorded before it
     // was applied (per the runner's ledger) had none to give.

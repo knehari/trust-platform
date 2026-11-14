@@ -18,10 +18,36 @@ services:
       TRUST_LAB_CA_APPROVER_2_SEC1: ${TRUST_LAB_CA_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_RA_OFFICER_SEC1: ${TRUST_LAB_RA_OFFICER_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_RA_OFFICER_2_SEC1: ${TRUST_LAB_RA_OFFICER_2_SEC1:?Run scripts/lab/init-env.sh first}
+    # TLS only over the network (ADR-0031). The server key is copied with the
+    # ownership and mode PostgreSQL requires; the CA key is mounted nowhere.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        install -d -o postgres -g postgres -m 700 /run/pgtls &&
+        install -o postgres -g postgres -m 600 /lab-tls/db.key /run/pgtls/db.key &&
+        install -o postgres -g postgres -m 644 /lab-tls/db.crt /run/pgtls/db.crt &&
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/run/pgtls/db.crt
+      - -c
+      - ssl_key_file=/run/pgtls/db.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - hba_file=/lab-tls/pg_hba.conf
     volumes:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro
       - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - ./.lab-keys/tls/db.crt:/lab-tls/db.crt:ro
+      - ./.lab-keys/tls/db.key:/lab-tls/db.key:ro
+      - ./scripts/lab/pg_hba.conf:/lab-tls/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_lab -d trust_lab"]
       interval: 3s
@@ -96,6 +122,7 @@ services:
       TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
       TRUST_SIGNER_SOCKET_OWNER: "65534:65534"
       TRUST_SIGNER_DATABASE_URL: postgresql://trust_signer_lab:${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
+      TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
       TRUST_SIGNER_CA_ID: dddddddd-dddd-4ddd-8ddd-dddddddddddd
       TRUST_SIGNER_KEY_FILE: /lab-keys/ca/ca-root-lab-issuing-ca.pem
       # Signed audit checkpoints (ADR-0023): a separate audit key, and the
@@ -103,6 +130,7 @@ services:
       TRUST_SIGNER_AUDIT_KEY_FILE: /lab-keys/audit/audit-checkpoint.pem
       TRUST_SIGNER_AUDIT_STATE_FILE: /var/lib/trust-signer/audit-state.json
     volumes:
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
       - ./.lab-keys/ca:/lab-keys/ca:ro
       - ./.lab-keys/audit:/lab-keys/audit:ro
       - trust_signer_socket:/run/trust-signer
@@ -125,7 +153,9 @@ services:
       signer: {condition: service_healthy}
     volumes:
       - trust_signer_socket:/run/trust-signer
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
     environment:
+      TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
       TRUST_OIDC_ISSUER: http://127.0.0.1:8080/realms/trust-lab
       TRUST_OIDC_AUDIENCE: trust-api
       TRUST_OIDC_CLIENT_ID: trust-console
@@ -160,8 +190,10 @@ services:
       TRUST_PUBLISHER_DATABASE_URL: postgresql://trust_publisher_lab:${TRUST_LAB_PUBLISHER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_PUBLISHER_DIR: /srv/crl
       TRUST_PUBLISHER_INTERVAL_SECONDS: "2"
+      TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
     volumes:
       - trust_crl_public:/srv/crl
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
     networks: [lab]
 
   crl-web:

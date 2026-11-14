@@ -7,8 +7,6 @@
 //! `--once` runs a single pass and exits.
 use std::{env, path::PathBuf, process::ExitCode, thread, time::Duration};
 
-use postgres::{Client, NoTls};
-
 fn main() -> ExitCode {
     let (Ok(url), Ok(dir)) = (
         env::var("TRUST_PUBLISHER_DATABASE_URL"),
@@ -25,7 +23,7 @@ fn main() -> ExitCode {
         .filter(|seconds| (1..=3600).contains(seconds))
         .unwrap_or(10);
     loop {
-        match Client::connect(&url, NoTls) {
+        match trust_db_connect::connect(&url) {
             Ok(mut db) => match trust_crl_publisher::restricted_login(&mut db) {
                 Ok(true) => {
                     if let Err(error) = trust_crl_publisher::publish_once(&mut db, &root) {

@@ -1,7 +1,7 @@
 //! Transactional laboratory runner for management migrations 0012–0043.
 //! It deliberately refuses to adopt an existing, untracked management schema.
 
-use postgres::{Client, NoTls, Transaction};
+use postgres::{Client, Transaction};
 use sha2::{Digest, Sha256};
 use std::{env, error::Error, io};
 
@@ -353,7 +353,7 @@ const MIGRATIONS: [(&str, &str, &[&str]); 32] = [
 fn main() -> Result<(), Box<dyn Error>> {
     let database_url = env::var("TRUST_MIGRATION_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_MIGRATION_DATABASE_URL for a lab database"))?;
-    let mut client = Client::connect(&database_url, NoTls)
+    let mut client = trust_db_connect::connect(&database_url)
         .map_err(|_| io::Error::other("management migration database unavailable"))?;
     client.batch_execute("SET search_path = public")?;
     client.query_one("SELECT pg_advisory_lock($1)", &[&LOCK_ID])?;

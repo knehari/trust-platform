@@ -16,7 +16,7 @@
 //! `TRUST_VERIFY_DATABASE_URL=… cargo run -p trust-management-api --bin lab_verify_profile_decisions`
 use std::{collections::BTreeMap, env, error::Error, io, process::ExitCode};
 
-use postgres::{Client, NoTls};
+use postgres::Client;
 
 #[derive(Debug)]
 struct RecordedDecision {
@@ -106,7 +106,7 @@ fn load(db: &mut Client) -> Result<Vec<RecordedDecision>, postgres::Error> {
 fn main() -> Result<ExitCode, Box<dyn Error>> {
     let url = env::var("TRUST_VERIFY_DATABASE_URL")
         .map_err(|_| io::Error::other("set TRUST_VERIFY_DATABASE_URL to a lab database"))?;
-    let mut db = Client::connect(&url, NoTls)
+    let mut db = trust_db_connect::connect(&url)
         .map_err(|_| io::Error::other("profile decision database unavailable"))?;
     let decisions = load(&mut db)?;
     let mut failed = 0usize;

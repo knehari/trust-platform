@@ -26,6 +26,14 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Build and test with committed lockfile
         run: cargo test --workspace --all-targets --all-features --locked
+      - name: Database TLS is required and verified (ADR-0031)
+        run: |
+          set -euo pipefail
+          if ! ls -d /usr/lib/postgresql/*/bin >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql
+          fi
+          cargo build --locked -p trust-db-connect --bin trust-db-check
+          bash tests/database_tls.sh
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: CP/CPS generation stays draft only
