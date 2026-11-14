@@ -104,3 +104,13 @@ CRL publication on revocation (2026-11-10, ADR-0027 Proposed): migration 0040 ad
 - the four e2e suites: on the lab, the RA's revocation is published by itself, fetched from the public distribution point, and `openssl verify -crl_check` reports the certificate revoked.
 
 Open: OCSP, delta CRLs. CI has not yet run on this branch.
+
+Signer-verified authorization (2026-11-11, ADR-0028 Proposed), branch `claude/signer-authorization-proofs` on #203: migration 0041 adds owner-registered registration officer keys, signed officer decisions (`decision-claims`, then a signed `decision`), RA requests version 2 (subject CN chosen among the validated names, optional extensions), the owner's per-profile allow-list of optional extensions (`client-auth` only) and the signer's `lab_signer_authorization` view. The lab signer rebuilds and verifies the RA's or officer's signature for every intent before claiming it; CSRs are checked for proof of possession only, the subject and EKU come from the authorization. The API refuses issuance without a proof before reserving a serial. Incompatible: the unsigned decision body is refused (400). Verified locally:
+- the new SQL suite `management_authorization_proofs.sql` and the earlier suites on the 0041 schema;
+- 80 pki-core tests (`--features lab-software`: 112), 17 signer tests (missing, doubled, wrong-key, revoked-key, rejected, altered proofs, v1/v2 RA, subject correction with `client-auth`);
+- 63 API tests with the real signer, including signed decisions and an RA v2 request whose certificate carries the corrected subject and both TLS EKUs;
+- the audit tools (4 signed officer decisions, RA v2 requests verified);
+- 80 frontend tests and the build;
+- the four e2e suites; the certificate-application suite signs decisions with the lab officer keys, approves in the console with a pasted OpenSSL signature, shows an unsigned approval is never issued, and verifies the RA v2 certificate with `openssl verify -purpose sslserver` and `sslclient`.
+
+Not done: the owner login can still register keys; officer and RA keys are lab software files; legacy approvals without a proof cannot be issued. CI has not yet run on this branch.

@@ -115,6 +115,15 @@ try {
   const requester = await token('lab-requester', 'TRUST_LAB_PW_REQUESTER');
   const officer = await token('lab-ra-officer', 'TRUST_LAB_PW_RA_OFFICER');
   const applications = `/v1/cas/${issuingCa}/certificate-applications`;
+  // A registration officer's signed decision (ADR-0028): the database builds
+  // the claim; the officer signs it with their own key, like OpenSSL would.
+  async function decide(id, token, keyName, decision, reason) {
+    const base = `${applications}/${id}`;
+    const claim = await send('POST', `${base}/decision-claims`, token, { decision });
+    if (claim.status !== 200) return claim;
+    return send('POST', `${base}/decision`, token, { decision, reason, issued_at: claim.body.issued_at,
+      signature_der_base64: sign(keyName, claim.body.claim) });
+  }
   const apply = (commonName, names, days = 30, pem = csr(commonName)) => send('POST', applications, requester,
     { profile_id: 'server', csr_pem: pem, common_name: commonName, dns_names: names, validity_days: days });
 
@@ -130,12 +139,22 @@ try {
     applicationId = submitted.body.application_id;
   });
 
-  await check('a registration officer, not the requester, approves the exact application once', async () => {
+  await check('a registration officer, not the requester, approves the exact application once with a signed decision', async () => {
     const decision = `${applications}/${applicationId}/decision`;
-    assert.equal((await send('POST', decision, requester, { decision: 'approve', reason: 'self' })).status, 403);
-    const approved = await send('POST', decision, officer, { decision: 'approve', reason: 'names and key checked' });
+    assert.equal((await send('POST', `${applications}/${applicationId}/decision-claims`, requester, { decision: 'approve' })).status, 403);
+    const claim = await send('POST', `${applications}/${applicationId}/decision-claims`, officer, { decision: 'approve' });
+    assert.equal(claim.status, 200);
+    assert.match(claim.body.claim, new RegExp(`^trust-platform/issuance-authorization/v1;decision=approve;ca=${issuingCa};application=${applicationId};`));
+    assert.match(claim.body.claim, /;subject_cn=www\.lab\.invalid;dns_names=www\.lab\.invalid,api\.lab\.invalid;validity_days=90;extensions=;key=lab-ra-officer-p256;/);
+    // Signed by another officer's key, or unsigned: refused, nothing recorded.
+    for (const signature of [sign('lab-ra-officer-2', claim.body.claim), sign('lab-approver-1', claim.body.claim)]) {
+      assert.equal((await send('POST', decision, officer, { decision: 'approve', reason: 'checked',
+        issued_at: claim.body.issued_at, signature_der_base64: signature })).status, 422);
+    }
+    assert.equal((await send('POST', decision, officer, { decision: 'approve', reason: 'checked' })).status, 400);
+    const approved = await decide(applicationId, officer, 'lab-ra-officer', 'approve', 'names and key checked');
     assert.deepEqual([approved.status, approved.body.status], [201, 'APPROVED']);
-    assert.equal((await send('POST', decision, officer, { decision: 'reject', reason: 'again' })).status, 409);
+    assert.equal((await decide(applicationId, officer, 'lab-ra-officer', 'reject', 'again')).status, 409);
     const listed = await send('GET', applications, officer);
     const mine = listed.body.find(item => item.application_id === applicationId);
     assert.deepEqual([mine.status, mine.subject_cn, mine.dns_names], ['APPROVED', 'www.lab.invalid', ['www.lab.invalid', 'api.lab.invalid']]);
@@ -245,10 +264,60 @@ try {
     assert.equal(rejected.status, 201);
     const pending = await apply('new.lab.invalid', ['new.lab.invalid']);
     assert.equal(pending.status, 201);
-    const decision = `${applications}/${rejected.body.application_id}/decision`;
-    assert.equal((await send('POST', decision, officer, { decision: 'reject', reason: 'not needed' })).status, 201);
+    assert.equal((await decide(rejected.body.application_id, officer, 'lab-ra-officer', 'reject', 'not needed')).status, 201);
     assert.equal((await send('POST', `${applications}/${rejected.body.application_id}/issuance`, officer, {})).status, 409);
     assert.equal((await send('POST', `${applications}/${pending.body.application_id}/issuance`, requester, {})).status, 409);
+  });
+
+  await check('in the console, an officer prepares the claim, signs it outside the browser and records the approval (ADR-0028)', async () => {
+    const submitted = await apply('console.lab.invalid', ['console.lab.invalid']);
+    assert.equal(submitted.status, 201);
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true,
+      ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}) });
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(15_000);
+      await page.goto(`http://127.0.0.1:5173/?view=requests&ca=${issuingCa}`);
+      await page.getByRole('button', { name: /Sign in with your organization/i }).click();
+      await page.locator('#username').fill('lab-ra-officer');
+      await page.locator('#password').fill(requiredEnv('TRUST_LAB_PW_RA_OFFICER'));
+      await page.locator('#kc-login').click();
+      const row = page.getByRole('row').filter({ hasText: 'console.lab.invalid' });
+      await row.getByRole('button', { name: 'Review' }).click();
+      await page.getByLabel('Decision reason for console.lab.invalid').fill('names and key checked in the console');
+      await page.getByRole('button', { name: 'Prepare approval' }).click();
+      const claim = await page.getByLabel('Decision claim for console.lab.invalid').inputValue();
+      assert.match(claim, new RegExp(`^trust-platform/issuance-authorization/v1;decision=approve;ca=${issuingCa};application=${submitted.body.application_id};`));
+      // A signature by another key is refused, and nothing is recorded.
+      await page.getByLabel('Decision signature for console.lab.invalid').fill(sign('lab-ra-officer-2', claim));
+      await page.getByRole('button', { name: 'Record approval' }).click();
+      await page.getByRole('alert').filter({ hasText: 'does not verify with your registered key' }).waitFor();
+      await page.getByLabel('Decision signature for console.lab.invalid').fill(sign('lab-ra-officer', claim));
+      await page.getByRole('button', { name: 'Record approval' }).click();
+      await page.getByRole('status').filter({ hasText: 'approved with your signed decision' }).waitFor();
+    } finally {
+      await browser.close();
+    }
+    const item = (await send('GET', applications, officer)).body.find(row => row.application_id === submitted.body.application_id);
+    assert.equal(item.status, 'APPROVED');
+    const issued = await send('POST', `${applications}/${submitted.body.application_id}/issuance`, officer, {});
+    assert.deepEqual([issued.status, issued.body.status], [201, 'ISSUED']);
+  });
+
+  await check('an approval recorded without a signed proof is never signed (ADR-0028)', async () => {
+    const unsigned = await apply('unsigned.lab.invalid', ['unsigned.lab.invalid']);
+    assert.equal(unsigned.status, 201);
+    const id = unsigned.body.application_id;
+    // What a compromised API could still write: an approval with no officer
+    // signature. The issuance is refused before any intent is journaled.
+    execSync(`${ownerPsql} -f -`, { stdio: ['pipe', 'ignore', 'inherit'], input: `
+      SELECT 1 FROM decide_certificate_application_lab('${realm}', '7c1a0000-0000-4000-8000-000000000016', '${issuingCa}',
+        '${id}', 'approve', 'no signature', gen_random_uuid(), digest('unsigned', 'sha256'));` });
+    const item = async () => (await send('GET', applications, officer)).body.find(row => row.application_id === id);
+    assert.equal((await item()).status, 'APPROVED');
+    assert.equal((await send('POST', `${applications}/${id}/issuance`, officer, {})).status, 409);
+    assert.equal((await item()).status, 'APPROVED', 'no intent journaled, nothing to reconcile');
   });
 
   await check('two registration officers void an ambiguous issuance; the next CRL lists its serial (ADR-0020)', async () => {
@@ -256,7 +325,7 @@ try {
     const submitted = await apply('void.lab.invalid', ['void.lab.invalid']);
     assert.equal(submitted.status, 201);
     const id = submitted.body.application_id;
-    assert.equal((await send('POST', `${applications}/${id}/decision`, officer, { decision: 'approve', reason: 'checked' })).status, 201);
+    assert.equal((await decide(id, officer, 'lab-ra-officer', 'approve', 'checked')).status, 201);
     // The database owner reproduces what the API records when the signer
     // times out: issuance started, intent journaled, outcome ambiguous.
     // The signer never sees this intent, so it is never claimed.
@@ -307,15 +376,21 @@ try {
     const text = value => { const bytes = Buffer.from(value, 'utf8'); const length = Buffer.alloc(4); length.writeUInt32BE(bytes.length); return Buffer.concat([length, bytes]); };
     const uuidBytes = value => Buffer.from(value.replaceAll('-', ''), 'hex');
     // trust_pki_core::ra_request::ra_issuance_message, built independently.
-    const body = (requestId, names, signedAt, key = privateKey) => {
+    const body = (requestId, names, signedAt, key = privateKey, v2 = null, der = csrDer) => {
       const count = Buffer.alloc(4); count.writeUInt32BE(names.length);
       const validity = Buffer.alloc(4); validity.writeUInt32BE(30);
       const when = Buffer.alloc(8); when.writeBigInt64BE(BigInt(signedAt));
-      const message = Buffer.concat([Buffer.from('trust-platform:ra-issuance-request:v1\0'), text('lab-ra-e2e'), uuidBytes(issuingCa),
-        text('server'), uuidBytes(requestId), execFileSync('openssl', ['dgst', '-sha256', '-binary'], { input: csrDer }),
-        count, ...names.map(text), validity, when]);
-      return { ra_id: 'lab-ra-e2e', request_id: requestId, profile_id: 'server', csr_der_base64: csrDer.toString('base64'),
-        dns_names: names, validity_days: 30, signed_at: signedAt, signature_der_base64: signBytes('sha256', message, key).toString('base64') };
+      const fields = [text('lab-ra-e2e'), uuidBytes(issuingCa), text('server'), uuidBytes(requestId),
+        execFileSync('openssl', ['dgst', '-sha256', '-binary'], { input: der }), count, ...names.map(text), validity, when];
+      // Version 2 (ADR-0028) also signs the subject CN and the extensions.
+      const extensions = v2?.extensions ?? [];
+      const extensionCount = Buffer.alloc(4); extensionCount.writeUInt32BE(extensions.length);
+      const message = v2
+        ? Buffer.concat([Buffer.from('trust-platform:ra-issuance-request:v2\0'), ...fields, text(v2.subject_cn), extensionCount, ...extensions.map(text)])
+        : Buffer.concat([Buffer.from('trust-platform:ra-issuance-request:v1\0'), ...fields]);
+      return { ra_id: 'lab-ra-e2e', request_id: requestId, profile_id: 'server', csr_der_base64: der.toString('base64'),
+        dns_names: names, validity_days: 30, signed_at: signedAt, signature_der_base64: signBytes('sha256', message, key).toString('base64'),
+        ...(v2 ? { subject_cn: v2.subject_cn, extensions } : {}) };
     };
     const post = async payload => {
       const response = await fetch(`${api}/v1/ra/cas/${issuingCa}/certificates`, { method: 'POST',
@@ -338,6 +413,27 @@ try {
     const replay = await post(body(requestId, names, now));
     assert.deepEqual([replay.status, replay.body.certificate_sha256], [200, issued.body.certificate_sha256]);
     assert.equal((await post(body(requestId, ['ra.lab.invalid'], now))).status, 409, 'same id, other request');
+
+    // Version 2: the CSR names "typo.lab.invalid"; the RA signs the subject it
+    // validated and client authentication, once the owner allows it.
+    const typoDer = execFileSync('openssl', ['req', '-outform', 'DER'], { input: csr('typo.lab.invalid'), stdio: ['pipe', 'pipe', 'ignore'] });
+    const v2Names = ['ra2.lab.invalid', 'www.ra2.lab.invalid'];
+    const v2 = { subject_cn: 'www.ra2.lab.invalid', extensions: ['client-auth'] };
+    assert.equal((await post(body(randomUUID(), v2Names, now, privateKey, null, typoDer))).status, 422, 'v1 with a CSR naming another subject');
+    assert.equal((await post(body(randomUUID(), v2Names, now, privateKey, v2, typoDer))).status, 422, 'client-auth not allowed yet');
+    execSync(`${ownerPsql} -f -`, { input: `INSERT INTO profile_optional_extension (ca_id, profile_id, extension)
+      VALUES ('${issuingCa}', 'server', 'client-auth') ON CONFLICT DO NOTHING;` });
+    const corrected = await post(body(randomUUID(), v2Names, now, privateKey, v2, typoDer));
+    assert.deepEqual([corrected.status, corrected.body.status], [201, 'ISSUED']);
+    const correctedFile = join(keys, 'ra-corrected.pem');
+    writeFileSync(correctedFile, corrected.body.certificate_pem);
+    const correctedText = openssl(['x509', '-in', correctedFile, '-noout', '-subject', '-ext', 'extendedKeyUsage']);
+    assert.match(correctedText, /subject=CN\s?=\s?www\.ra2\.lab\.invalid/);
+    assert.match(correctedText, /TLS Web Server Authentication, TLS Web Client Authentication/);
+    for (const purpose of ['sslserver', 'sslclient']) {
+      const ok = opensslOutcome(['verify', '-CAfile', issuingRoot, '-purpose', purpose, correctedFile]);
+      assert.ok(ok.ok && /: OK/.test(ok.output), `${purpose}: ${ok.output}`);
+    }
 
     // The RA revokes it with a signed request (ADR-0026); the next CRL lists it.
     const serialBytes = Buffer.from(issued.body.serial_hex, 'hex');

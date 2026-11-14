@@ -15,6 +15,8 @@ services:
       TRUST_LAB_APPROVER_2_SEC1: ${TRUST_LAB_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_CA_APPROVER_1_SEC1: ${TRUST_LAB_CA_APPROVER_1_SEC1:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_CA_APPROVER_2_SEC1: ${TRUST_LAB_CA_APPROVER_2_SEC1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_RA_OFFICER_SEC1: ${TRUST_LAB_RA_OFFICER_SEC1:?Run scripts/lab/init-env.sh first}
+      TRUST_LAB_RA_OFFICER_2_SEC1: ${TRUST_LAB_RA_OFFICER_2_SEC1:?Run scripts/lab/init-env.sh first}
     volumes:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro

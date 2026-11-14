@@ -11,6 +11,7 @@ done
 psql -v ON_ERROR_STOP=1 -v api_password="$TRUST_LAB_API_PASSWORD" -v writer_password="$TRUST_LAB_WRITER_PASSWORD" -v signer_password="$TRUST_LAB_SIGNER_PASSWORD" \
   -v approver1_sec1="$TRUST_LAB_APPROVER_1_SEC1" -v approver2_sec1="$TRUST_LAB_APPROVER_2_SEC1" \
   -v ca_approver1_sec1="$TRUST_LAB_CA_APPROVER_1_SEC1" -v ca_approver2_sec1="$TRUST_LAB_CA_APPROVER_2_SEC1" \
+  -v ra_officer_sec1="$TRUST_LAB_RA_OFFICER_SEC1" -v ra_officer2_sec1="$TRUST_LAB_RA_OFFICER_2_SEC1" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
 SELECT format('CREATE ROLE trust_api_lab LOGIN INHERIT PASSWORD %L', :'api_password') \gexec
 GRANT trust_api_reader TO trust_api_lab;
@@ -78,6 +79,12 @@ INSERT INTO ca_signing_capability(ca_id,suite_id) VALUES
 INSERT INTO profile_approver_key(key_id,issuer,subject,public_key_sec1) VALUES
   ('lab-approver-1-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000003',decode(:'approver1_sec1','hex')),
   ('lab-approver-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000004',decode(:'approver2_sec1','hex'));
+-- Registration officer keys (migration 0041, ADR-0028): lab-ra-officer and
+-- lab-ra-officer-2 sign their decisions on certificate applications; the
+-- signer verifies the signatures with these keys before it signs.
+INSERT INTO registration_officer_key(key_id,issuer,subject,public_key_sec1) VALUES
+  ('lab-ra-officer-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000016',decode(:'ra_officer_sec1','hex')),
+  ('lab-ra-officer-2-p256','http://127.0.0.1:8080/realms/trust-lab','7c1a0000-0000-4000-8000-000000000017',decode(:'ra_officer2_sec1','hex'));
 -- Inert profile proposals; no revision can authorize issuance.
 INSERT INTO certificate_profile_draft
   (ca_id,profile_id,revision,display_name,policy_version,max_validity_days,

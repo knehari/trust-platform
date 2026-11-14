@@ -38,9 +38,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
     application_leaf::{
-        assemble_certificate, build_server_leaf_tbs, verify_server_leaf, LeafFacts,
+        assemble_certificate, build_server_leaf_tbs, optional_extensions_valid, verify_server_leaf,
+        LeafFacts,
     },
-    csr::verify_pkcs10_p256,
+    csr::verify_pkcs10_p256_possession,
     orchestrator::{
         issue_once, CertificateAssembler, CertificateVerifier, ExternalSigner, IssuanceJournal,
         IssuancePlan, IssueError,
@@ -265,6 +266,9 @@ struct OwnedFacts {
     subject_public_key: x509_cert::spki::SubjectPublicKeyInfoOwned,
     issuer: Certificate,
     crl_distribution_point: Option<String>,
+    /// The optional extensions the application's authorization names
+    /// (migration 0041).
+    client_auth: bool,
 }
 
 impl OwnedFacts {
@@ -276,6 +280,7 @@ impl OwnedFacts {
             validity_days: self.validity_days,
             serial: &self.serial,
             crl_distribution_point: self.crl_distribution_point.as_deref(),
+            client_auth: self.client_auth,
         }
     }
 }
@@ -318,6 +323,22 @@ pub(crate) fn issue(
     request_sha256: &[u8],
     socket: PathBuf,
 ) -> Result<Result<Outcome, StatusCode>, postgres::Error> {
+    // The signer signs only with a signed authorization: an RA request or an
+    // officer's signed approval (ADR-0028). Without one, nothing is written:
+    // no serial is reserved and no intent is journaled, so the refusal is
+    // never an ambiguous outcome.
+    let (authorized, extensions): (bool, Option<Vec<String>>) = match db.query_one(
+        "SELECT application_authorization_present_lab($1::text::uuid, $2::text::uuid), \
+         application_extensions_lab($1::text::uuid, $2::text::uuid)",
+        &[&caller.ca_id, &caller.application_id],
+    ) {
+        Ok(row) => (row.get(0), row.get(1)),
+        Err(error) => return Ok(Err(write_status(&error))),
+    };
+    if !authorized {
+        return Ok(Err(StatusCode::CONFLICT));
+    }
+    let extensions = extensions.unwrap_or_default();
     let row = match db.query_one(
         "SELECT request_id::text, request_state, serial, operation_ref, csr_der, subject_cn, \
          dns_names, validity_days, issuer_certificate_der, policy_version FROM \
@@ -351,10 +372,14 @@ pub(crate) fn issue(
         Ok(issuer) => issuer,
         Err(_) => return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY)),
     };
-    // The stored CSR again: its key is the certificate's subject key.
-    let Ok(csr) = verify_pkcs10_p256(&csr_der, &subject_cn) else {
+    // The stored CSR again: its key is the certificate's subject key. Its
+    // subject is not: the authorization binds the subject (ADR-0028).
+    let Ok(csr) = verify_pkcs10_p256_possession(&csr_der) else {
         return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
     };
+    if !optional_extensions_valid(&extensions) {
+        return Ok(Err(StatusCode::UNPROCESSABLE_ENTITY));
+    }
     // Where the CA publishes its CRLs (migration 0032); the journal records
     // the same URL with the intent, and the signer refuses any other.
     let crl_distribution_point: Option<String> = match db.query_one(
@@ -371,6 +396,9 @@ pub(crate) fn issue(
     };
     let facts = OwnedFacts {
         crl_distribution_point,
+        client_auth: extensions
+            .iter()
+            .any(|extension| extension == "client-auth"),
         subject_cn,
         dns_names: row.get(6),
         validity_days: u32::try_from(validity_days).unwrap_or(0),

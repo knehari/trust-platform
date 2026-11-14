@@ -914,10 +914,60 @@ paths:
         '422':
           description: "The CSR is refused (body reason: Encoding, SubjectMismatch, InvalidSignature or UnsupportedKey), or the CA is not an ACTIVE lifecycle-managed CA, or the names, validity or key do not fit the profile (no body). Nothing was recorded."
         '503': { description: The write database login is not configured or the database is unavailable }
+  /v1/cas/{ca_id}/certificate-applications/{application_id}/decision-claims:
+    post:
+      summary: Prepare the claim a registration officer signs to decide on an application (laboratory, migration 0041)
+      description: >-
+        Records nothing. Requires the trust-registration-officer role, the CA in scope, a registration-officer
+        grant and an active registration officer key the database owner registered. Returns the exact one-line
+        claim the database builds (trust_pki_core::authorization::officer_decision_claim): decision, CA,
+        application, profile and revision, SHA-256 of the CSR DER, subject CN, DNS names, validity, optional
+        extensions, key and issued_at. The claim is valid for 600 seconds. The laboratory signer verifies the
+        officer's signature over the same claim, rebuilt from the application, before it signs (ADR-0028,
+        Proposed).
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+        - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        '200':
+          description: The claim to sign
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decision, claim, key_id, issued_at, valid_for_seconds]
+                properties:
+                  decision: { type: string, enum: [approve, reject] }
+                  claim: { type: string }
+                  key_id: { type: string }
+                  issued_at: { type: string, description: 'UTC, YYYY-MM-DDTHH:MM:SS.mmmZ' }
+                  valid_for_seconds: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing role, scope or grant, or no registered officer key }
+        '404': { description: No such application for this CA }
+        '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificate-applications/{application_id}/decision:
     post:
-      summary: Approve or reject a certificate application (laboratory, migration 0029)
-      description: Requires the trust-registration-officer role, the CA in scope and a registration-officer grant; the officer cannot be the requester. Once per application. Approval also requires the CA to be ACTIVE and the application's revision to be still the profile's active one. Nothing is signed (ADR-0016, Proposed).
+      summary: Record a registration officer's signed decision on a certificate application (laboratory, migrations 0029 and 0041)
+      description: >-
+        Requires the trust-registration-officer role, the CA in scope and a registration-officer grant; the officer
+        cannot be the requester. Once per application. Approval also requires the CA to be ACTIVE and the
+        application's revision to be still the profile's active one. Since migration 0041 the decision carries the
+        officer's ECDSA P-256 / SHA-256 DER signature over the claim from decision-claims, issued less than ten
+        minutes ago; the API verifies it with the officer's registered key in the recording transaction (422 and
+        nothing recorded when it does not verify). The laboratory signer verifies it again before signing
+        (ADR-0028, Proposed). Incompatible change: unsigned decisions are refused (400).
       parameters:
         - $ref: '#/components/parameters/CaId'
         - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
@@ -929,10 +979,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [decision, reason]
+              required: [decision, reason, issued_at, signature_der_base64]
               properties:
                 decision: { type: string, enum: [approve, reject] }
                 reason: { type: string, minLength: 1, maxLength: 500 }
+                issued_at: { type: string, description: The issued_at of the signed claim }
+                signature_der_base64: { type: string, description: 'DER ECDSA signature, base64, 8 to 80 bytes' }
       responses:
         '201':
           description: Decision recorded
@@ -950,14 +1002,15 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Missing role, scope or grant, or the caller is the requester }
         '404': { description: No such application for this CA }
-        '409': { description: Idempotency key reused, already decided, or (approval) the CA or the revision is no longer active }
+        '409': { description: Idempotency key reused, already decided, the claim expired, or (approval) the CA or the revision is no longer active }
         '413': { description: Request body above 16 KiB }
         '415': { description: Content type is not application/json }
+        '422': { description: The signature does not verify with the officer's registered key over the claim; nothing recorded }
         '503': { description: The write database login is not configured or the database is unavailable }
   /v1/cas/{ca_id}/certificate-applications/{application_id}/issuance:
     post:
       summary: Issue an approved certificate application through the laboratory signer (laboratory, migration 0030)
-      description: "Requires the trust-registration-officer role with a registration-officer grant, or the trust-certificate-requester role for the application's own requester while still granted; the CA in scope. The database requires the application APPROVED, the CA ACTIVE and its revision still active, then reserves an issuer-scoped serial. The API builds the server leaf TBS from the stored CSR's key and the application's names, journals the signing intent, and asks the laboratory signer over a Unix socket; the signer re-checks everything independently and claims the intent once. The API verifies the certificate independently before it is stored. An intent is never signed twice. Laboratory software key only (ADR-0017, Proposed)."
+      description: "Requires the trust-registration-officer role with a registration-officer grant, or the trust-certificate-requester role for the application's own requester while still granted; the CA in scope. The database requires the application APPROVED, the CA ACTIVE and its revision still active, then reserves an issuer-scoped serial. The API builds the server leaf TBS from the stored CSR's key and the application's names, journals the signing intent, and asks the laboratory signer over a Unix socket; the signer re-checks everything independently and claims the intent once. The API verifies the certificate independently before it is stored. An intent is never signed twice. Laboratory software key only (ADR-0017, Proposed). Since migration 0041 the application must carry a signed authorization (an RA request, or a registration officer's signed approval); without one the API refuses with 409 before reserving a serial, and the signer refuses any intent whose authorization signature does not verify with a key the database owner registered (ADR-0028, Proposed)."
       parameters:
         - $ref: '#/components/parameters/CaId'
         - { in: path, name: application_id, required: true, schema: { type: string, format: uuid } }
@@ -1262,7 +1315,12 @@ paths:
         DNS names in order, validity, signed_at), with the public key the database owner registered. The RA has
         validated the subscriber and the names (ADR-0024); the CA still applies the profile (zones, count,
         validity, key) and issues once through the journaled signer (ADR-0025, Proposed). signed_at must be
-        within 300 seconds of the server clock. The first DNS name is the subject CN, and the CSR must name it.
+        within 300 seconds of the server clock. Version 1 (no subject_cn): the first DNS name is the subject CN,
+        and the CSR must name it. Version 2 (subject_cn present, migration 0041, ADR-0028): the RA signs
+        ra_issuance_message_v2, which adds the subject CN it chose among the DNS names and the optional
+        extensions; the CSR is checked for proof of possession only, so the RA can correct its subject. An
+        extension must be allowed by the database owner for the profile on this CA (422 otherwise). The
+        laboratory signer verifies the RA's signature again before it signs.
       security: []
       parameters:
         - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
@@ -1283,6 +1341,12 @@ paths:
                 validity_days: { type: integer, minimum: 1, maximum: 825 }
                 signed_at: { type: integer, format: int64, description: Unix seconds }
                 signature_der_base64: { type: string }
+                subject_cn: { type: string, description: 'Version 2: the subject CN, one of dns_names' }
+                extensions:
+                  type: array
+                  maxItems: 1
+                  items: { type: string, enum: [client-auth] }
+                  description: 'Version 2 only: optional extensions, in catalogue order (client-auth adds the TLS client EKU)'
       responses:
         '201': { description: Issued; the body carries the certificate PEM, serial and SHA-256 }
         '200': { description: The same signed request again; the same certificate }
@@ -1290,7 +1354,7 @@ paths:
         '401': { description: Unknown or disabled RA, stale request, or a signature that does not verify }
         '403': { description: The profile is not granted to this RA for this CA }
         '409': { description: The request_id was used for other signed bytes, or an intent already exists }
-        '422': { description: The CSR or the names do not fit the profile (zones, count, validity, key) }
+        '422': { description: 'The CSR or the names do not fit the profile (zones, count, validity, key), or an extension the profile does not allow' }
         '502': { description: The signing outcome is ambiguous; the request needs reconciliation (ADR-0020) }
         '503': { description: No writer login or signer configured, or the database is unavailable }
   /v1/ra/cas/{ca_id}/revocations:

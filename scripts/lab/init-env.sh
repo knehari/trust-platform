@@ -30,7 +30,10 @@ done
 # only directory the lab signer container mounts (ADR-0017).
 mkdir -p .lab-keys/ca
 chmod 700 .lab-keys .lab-keys/ca
-for approver in approver-1:APPROVER_1 approver-2:APPROVER_2 ca-approver-1:CA_APPROVER_1 ca-approver-2:CA_APPROVER_2; do
+# Registration officers sign their decisions on certificate applications
+# with their own keys (ADR-0028); the signer verifies those signatures.
+for approver in approver-1:APPROVER_1 approver-2:APPROVER_2 ca-approver-1:CA_APPROVER_1 ca-approver-2:CA_APPROVER_2 \
+    ra-officer:RA_OFFICER ra-officer-2:RA_OFFICER_2; do
   key=".lab-keys/lab-${approver%%:*}.pem"
   name="TRUST_LAB_${approver#*:}_SEC1"
   if [ ! -s "$key" ]; then

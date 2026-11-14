@@ -6,7 +6,12 @@
 //! `trust_pki_core::ra_request::ra_issuance_message`. The API:
 //! 1. checks freshness and the signature with the key the database owner
 //!    registered;
-//! 2. verifies the CSR (proof of possession, subject CN = first name);
+//! 2. verifies the CSR: proof of possession, and in a version 1 request a
+//!    subject CN equal to the first name. A version 2 request (migration
+//!    0041, ADR-0028) also signs the subject CN, which the RA chooses among
+//!    its validated names whatever the CSR says, and optional extensions the
+//!    profile allows for the CA (`client-auth`); the CSR's subject is then
+//!    ignored;
 //! 3. records the RA's request as a submitted and approved application under
 //!    the profile's rules (migration 0038);
 //! 4. issues once, through the journaled path and the separate signer
@@ -26,9 +31,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
-    csr::{verify_pkcs10_p256, CsrValidationError},
+    application_leaf::optional_extensions_valid,
+    csr::{verify_pkcs10_p256, verify_pkcs10_p256_possession, CsrValidationError},
     ra_request::{
-        ra_issuance_message, ra_revocation_message, RaIssuanceRequest, RaRevocationRequest,
+        ra_issuance_message, ra_issuance_message_v2, ra_revocation_message, RaIssuanceRequest,
+        RaIssuanceRequestV2, RaRevocationRequest,
     },
 };
 use x509_cert::{
@@ -60,6 +67,12 @@ struct RaIssuanceBody {
     validity_days: u32,
     signed_at: i64,
     signature_der_base64: String,
+    /// Version 2 only: the certificate's subject CN, one of `dns_names`.
+    #[serde(default)]
+    subject_cn: Option<String>,
+    /// Version 2 only: optional extensions, in catalogue order.
+    #[serde(default)]
+    extensions: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +165,22 @@ pub(crate) async fn issue_for_ra(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Version 2 when the RA names the subject; extensions need version 2.
+    let version2 = request.subject_cn.is_some();
+    let extensions = request.extensions.clone().unwrap_or_default();
+    if (!version2 && request.extensions.is_some())
+        || !optional_extensions_valid(&extensions)
+        || request
+            .subject_cn
+            .as_ref()
+            .is_some_and(|cn| !request.dns_names.contains(cn))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let subject_cn = request
+        .subject_cn
+        .clone()
+        .unwrap_or_else(|| request.dns_names[0].clone());
     let csr_der = STANDARD
         .decode(request.csr_der_base64.trim())
         .map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -168,7 +197,7 @@ pub(crate) async fn issue_for_ra(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let ra_id = request.ra_id.clone();
     let csr_sha256: [u8; 32] = Sha256::digest(&csr_der).into();
-    let message = ra_issuance_message(&RaIssuanceRequest {
+    let base = RaIssuanceRequest {
         ra_id: &request.ra_id,
         ca_id: *ca_uuid.as_bytes(),
         profile_id: &request.profile_id,
@@ -177,7 +206,16 @@ pub(crate) async fn issue_for_ra(
         dns_names: &request.dns_names,
         validity_days: request.validity_days,
         signed_at_unix: request.signed_at,
-    })
+    };
+    let message = if version2 {
+        ra_issuance_message_v2(&RaIssuanceRequestV2 {
+            base,
+            subject_cn: &subject_cn,
+            extensions: &extensions,
+        })
+    } else {
+        ra_issuance_message(&base)
+    }
     .map_err(|_| StatusCode::BAD_REQUEST)?;
     authenticate(
         &state,
@@ -189,9 +227,16 @@ pub(crate) async fn issue_for_ra(
     )
     .await?;
 
-    // The RA authenticated. The CSR must prove possession of its key and name
-    // exactly the first DNS name; its extensions are never used.
-    let verified = match verify_pkcs10_p256(&csr_der, &request.dns_names[0]) {
+    // The RA authenticated. The CSR must prove possession of its key; in
+    // version 1 it must also name exactly the first DNS name. In version 2
+    // the RA signed the subject, so the CSR's is not used. CSR extensions are
+    // never used.
+    let verified = if version2 {
+        verify_pkcs10_p256_possession(&csr_der)
+    } else {
+        verify_pkcs10_p256(&csr_der, &request.dns_names[0])
+    };
+    let verified = match verified {
         Ok(verified) => verified,
         Err(error) => {
             let reason = match error {
@@ -222,21 +267,42 @@ pub(crate) async fn issue_for_ra(
         request_id.clone(),
         csr_der,
         spki_sha256,
-        request.dns_names[0].clone(),
+        subject_cn,
         request.dns_names,
         i32::try_from(request.validity_days).map_err(|_| StatusCode::BAD_REQUEST)?,
         request.signed_at,
         signature,
     );
     let (application_id, done) = query_db(writer_url, state.database_slots.clone(), move |db| {
-        let submitted = db.query_one(
-            "SELECT application_id::text, replayed FROM submit_ra_issuance_lab($1, $2::text::uuid, \
-             $3, $4::text::uuid, $5, $6, $7, $8, $9, $10, $11)",
-            &[
-                &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8,
-                &args.9, &args.10,
-            ],
-        );
+        let submitted = if version2 {
+            db.query_one(
+                "SELECT application_id::text, replayed FROM submit_ra_issuance_v2_lab($1, \
+                 $2::text::uuid, $3, $4::text::uuid, $5, $6, $7, $8, $9, $10, $11, $12)",
+                &[
+                    &args.0,
+                    &args.1,
+                    &args.2,
+                    &args.3,
+                    &args.4,
+                    &args.5,
+                    &args.6,
+                    &args.7,
+                    &args.8,
+                    &args.9,
+                    &extensions,
+                    &args.10,
+                ],
+            )
+        } else {
+            db.query_one(
+                "SELECT application_id::text, replayed FROM submit_ra_issuance_lab($1, \
+                 $2::text::uuid, $3, $4::text::uuid, $5, $6, $7, $8, $9, $10, $11)",
+                &[
+                    &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7,
+                    &args.8, &args.9, &args.10,
+                ],
+            )
+        };
         let submitted = match submitted {
             Ok(row) => row,
             Err(error) => return Ok(Err(write_status(&error))),
