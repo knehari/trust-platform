@@ -38,3 +38,26 @@ export function navigationUrl(section: Section, caId: string | null, detail: Det
   }
   return `/?${params.toString()}`;
 }
+
+// The console's sections, grouped by the PKI component they belong to. Every
+// section belongs to exactly one group; the order here is the sidebar order.
+export type NavGroupId = 'supervision' | 'ca' | 'ra' | 'va';
+export const NAV_GROUPS: readonly { id: NavGroupId; label: string; sections: readonly Section[] }[] = [
+  { id: 'supervision', label: 'Supervision', sections: ['overview', 'audit'] },
+  { id: 'ca', label: 'CA functions', sections: ['authorities', 'certificates', 'profiles'] },
+  { id: 'ra', label: 'RA functions', sections: ['requests', 'channels'] },
+  { id: 'va', label: 'VA functions', sections: ['revocation'] },
+];
+
+export function navGroupOf(section: Section): NavGroupId {
+  return NAV_GROUPS.find(group => group.sections.includes(section))?.id ?? 'supervision';
+}
+
+// The groups that hold at least one visible section, each listing only its
+// visible sections. Visibility is a display hint from the token's roles; the
+// API still authorizes every request.
+export function visibleNavGroups(visible: readonly Section[]): { id: NavGroupId; label: string; sections: Section[] }[] {
+  return NAV_GROUPS
+    .map(group => ({ id: group.id, label: group.label, sections: group.sections.filter(section => visible.includes(section)) }))
+    .filter(group => group.sections.length > 0);
+}

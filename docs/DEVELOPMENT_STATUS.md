@@ -155,3 +155,19 @@ OCSP architecture (2026-11-13, ADR-0043 Proposed, design only), branch `claude/o
 RA channel in the console (2026-11-13, ADR-0044 Proposed), branch `claude/console-ra-policies` on #221: migration 0049 reader views `management_ra_system` (enabled, profiles, effective quotas and last-hour use, zones, key fingerprints and dates) and `management_short_lived_profile`, principal-filtered, reader-only; `GET /v1/cas/{ca_id}/ra-systems` and `/short-lived-profiles`; console section "RA channel" (quota meters, zones, keys with rotation and retirement, short-lived profiles), read-only. New `management_ra_policy_views.sql`; HTTP test (test RA with both keys and fingerprints, short-lived profile); frontend tests (86). Verified locally: SQL suites, API suite (67), migration runner 0012–0049, fmt, clippy, tsc; full Docker stack (`up.sh --reset --demo`, sandbox override) with the demo e2e, and the section checked in Chromium with live data (default and owner-set policy, key rotation, short-lived profile).
 
 Text contrast (2026-11-14, display only): secondary text in the light theme reached only 2.3–4.4:1 against its background. That covers page subtitles, column headers, metric labels, notes, timestamps, empty and loading states, teal links, and status pills on tinted backgrounds. Every text colour in `style.css` now reaches the WCAG 2.1 AA minimum of 4.5:1: greys use `#5f6f7f`, links `#1f7a6d`, and text on tinted pills `#186458`. In `ui.css`, `--ui-text-3` follows. The sidebar version line was raised to `#8ba4b8` on navy. Three decorative marks stay lighter: the breadcrumb separator, the row arrow (3.2:1 for a graphic) and the empty-state illustration. `src/theme-dark.css` was regenerated with `node dev/dark-theme.mjs`. Verified by a static contrast check of every text colour against its declared background, 86 frontend tests, typecheck and build. The pages were not checked by rendering them in a browser, because that needs the laboratory stack.
+
+Navigation by PKI component (2026-11-14, display only): the sidebar groups the existing pages by component, as in the owner-reviewed mockup:
+- **Supervision:** Overview, Audit trail.
+- **CA functions:** Authorities, Certificates, Profiles.
+- **RA functions:** Requests, RA channel.
+- **VA functions:** Revocation & CRLs.
+
+Each group has an icon, a heading and a chevron. A group folds away, except the one holding the current page. Pages sit indented under their group. The active page has no left bar, and counts are fixed circles.
+
+The breadcrumb and the page eyebrow name the group, and the command palette groups pages the same way. Groups and pages still follow the token's roles, as a display hint; the API authorizes every request.
+
+On phones the groups flatten into the existing single scrolling row. `src/navigation.ts` holds the grouping (`NAV_GROUPS`, `navGroupOf`, `visibleNavGroups`), and two unit tests check that every section belongs to exactly one group and that empty groups are hidden.
+
+Mockup screens without an API are not added: tokens, officers, roles, backup, metrics, editable CRL policy with dual control, and OCSP. They would show simulated data.
+
+Verified with 88 frontend tests, typecheck and build. A Chromium render with a synthetic token and no API checked the grouping, folding, breadcrumb, eyebrow and phone layout, for three role sets. The laboratory e2e suites run in CI.

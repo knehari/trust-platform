@@ -466,3 +466,38 @@ table[aria-label='Audit events'] td:last-child, table[aria-label='Audit events']
 .ra-keys li { display: grid; }
 .ra-keys li.retired { opacity: .6; }
 .ui-spaced-sm { margin-top: 6px; }
+
+/* ---- Sidebar grouped by PKI component (Supervision, CA, RA, VA) ---- */
+.nav { gap: 6px; }
+.nav-group + .nav-group { border-top: 1px solid #172f44; padding-top: 6px; }
+.nav .nav-group-head { width: 100%; color: #eef4f8; font-weight: 700; gap: 11px; padding: 9px 12px; }
+.nav .nav-group-head .icon { color: #79d3c3; opacity: 1; }
+.nav .nav-group-head .nav-text { font-size: 14px; font-weight: 700; }
+.nav .nav-group-head:hover { background: #132c40; color: #fff; }
+.nav .nav-group-head[aria-disabled="true"] { cursor: default; }
+.nav .nav-group-head[aria-disabled="true"]:hover { background: transparent; }
+.nav .nav-group-head .nav-chevron { width: auto; font-size: inherit; font-weight: inherit; }
+.nav-chevron { display: inline-grid; place-items: center; color: #6f899e; transition: transform .12s; }
+.nav-group-head[aria-expanded="true"] .nav-chevron { transform: rotate(90deg); }
+.nav-group-head[aria-disabled="true"] .nav-chevron { visibility: hidden; }
+.nav-group-items { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.nav-group.collapsed .nav-group-items { display: none; }
+.nav .nav-item { padding: 8px 12px 8px 41px; color: #a9bccb; font-weight: 500; }
+.nav .nav-item .nav-text { font-size: 13px; font-weight: 500; }
+.nav .nav-item:hover, .nav .nav-item.active { background: #1b3e53; color: #fff; }
+.nav .nav-item.active { box-shadow: none; }
+.nav .nav-item.active .nav-text { font-weight: 600; }
+/* Counts stay round: a fixed circle, never a stretched pill. */
+.nav .nav-item .nav-count { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #24405e; color: #dbe4ee; font-size: 10px; font-weight: 700; letter-spacing: 0; }
+@media (prefers-reduced-motion: reduce) { .nav-chevron { transition: none; } }
+.nav-eyebrow { text-transform: uppercase; }
+.breadcrumb .crumb-group { padding: 0; color: inherit; }
+@media (max-width: 760px) {
+  .crumb-group { display: none; }
+  /* The phone layout keeps one scrolling row of pages: no group headers. */
+  .nav-group { display: contents; }
+  .nav-group + .nav-group { border-top: 0; padding-top: 0; }
+  .nav .nav-group-head { display: none; }
+  .nav-group-items, .nav-group.collapsed .nav-group-items { display: contents; }
+  .nav .nav-item { padding: 9px 12px; }
+}
