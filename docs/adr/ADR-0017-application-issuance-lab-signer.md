@@ -204,7 +204,9 @@ The owner chose (decision of 2026-11-08):
   its serial goes on later CRLs.*
 - **No revocation, CRL or OCSP** for these certificates.
 - **No domain-control validation.** The registration officer's approval is
-  the only check of the names. The decision is not signed.
+  the only check of the names. The decision is not signed. *Per ADR-0024
+  (Proposed), identity and domain validation belong to the RA or the CLM;
+  the CA enforces the profile's zones.*
 - **Key custody.**
   - The CA key is a host file, read by a container running as root (to
     read the host-owned 0600 file).

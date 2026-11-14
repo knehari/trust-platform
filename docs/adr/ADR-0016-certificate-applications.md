@@ -188,7 +188,9 @@ The owner chose (decision of 2026-11-07):
 - **Nothing is signed or issued.** No serial, signing intent or
   certificate exists.
 - **Domain control is not validated.** The names are only checked against
-  the profile's zones; there is no ACME-like challenge.
+  the profile's zones; there is no ACME-like challenge. *Per ADR-0024
+  (Proposed), this is the RA's or the CLM's responsibility, not the CA's;
+  this flow is the laboratory's stand-in for a light RA.*
 - **Only P-256 CSRs** with a subject of exactly one CN; no other key type.
 - **One officer suffices.** The registration decision is not signed; the
   officer is a separately authenticated person with a grant.
