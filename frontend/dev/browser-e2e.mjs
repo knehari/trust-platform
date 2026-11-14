@@ -446,8 +446,13 @@ try {
 
   console.log(`Browser E2E passed: Keycloak sign-in and sign-out, ${process.env.TRUST_LAB_PW_AUTHOR ? 'profile draft recorded, submitted, approved by two signing approvers, activated and retired from the console, ' : ''}${process.env.TRUST_LAB_PW_CA_ADMIN ? 'CA proposed, its OpenSSL root registered, approved by two signing CA approvers, activated and suspended from the console, ' : ''}OIDC, scoped direct links, denial, pagination, dialogs, SAN search, recorded validity cutoff, audit decision/policy filters${process.env.TRUST_E2E_SKIP_CN ? '' : ', CN search'}${process.env.TRUST_E2E_SKIP_CSV ? '' : ', selected CSV'}.`);
 } catch (error) {
-  console.error('Browser E2E failed at', page.url());
-  console.error((await page.locator('main').innerText()).slice(0, 1800));
+  // Report every page still open (the reader page and, for example, the
+  // approver page whose step failed), not only the first page: a dump of
+  // the wrong page once hid a 401 that had signed the approver out.
+  for (const open of browser.contexts().flatMap(context => context.pages())) {
+    console.error('Browser E2E failed; open page:', open.url());
+    console.error((await open.locator('body').innerText().catch(() => '(page text unavailable)')).slice(0, 1800));
+  }
   throw error;
 } finally {
   await browser.close();

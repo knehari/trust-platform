@@ -208,7 +208,10 @@ impl OidcVerifier {
         drop(cache);
         // One refresh at a time. A forged unknown kid cannot trigger unbounded
         // network requests or make a stale key usable while the issuer is down.
-        let _guard = self.inner.refresh_lock.try_lock().map_err(|_| ())?;
+        // Concurrent requests wait for the refresh in flight (bounded by the
+        // client timeout) and re-check the cache below, instead of being
+        // refused with 401 while their valid key is being re-fetched.
+        let _guard = self.inner.refresh_lock.lock().await;
         let mut cache = self.inner.keys.write().await;
         if cache.fetched_at.elapsed() < MAX_JWKS_AGE && cache.keys.contains_key(kid) {
             return Ok(());
@@ -466,6 +469,54 @@ mod tests {
             .is_err());
     }
 
+    /// Regression (compose-smoke, PR #216 run 43178145213): when the JWKS
+    /// cache had aged out, the request that won the refresh lock refreshed
+    /// it while concurrent requests with the same valid token were refused
+    /// at once with 401, and the console ended the user's session.
+    /// Concurrent requests now wait for the single in-flight refresh.
+    #[tokio::test]
+    async fn concurrent_requests_wait_for_a_stale_jwks_refresh() {
+        async fn slow_jwks(State(state): State<TestIssuer>) -> Json<serde_json::Value> {
+            state.jwks_reads.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Json(state.jwks.read().await.clone())
+        }
+        let key = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let state = TestIssuer {
+            issuer: issuer.clone(),
+            jwks: Arc::new(RwLock::new(json!({"keys":[test_jwk(&key,"current")]}))),
+            jwks_reads: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route("/.well-known/openid-configuration", get(discovery))
+            .route("/jwks", get(slow_jwks))
+            .with_state(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let verifier = OidcVerifier::discover(&issuer, "trust-api", "trust-console")
+            .await
+            .unwrap();
+        assert_eq!(state.jwks_reads.load(Ordering::SeqCst), 1);
+        {
+            let mut cache = verifier.inner.keys.write().await;
+            cache.fetched_at = Instant::now() - MAX_JWKS_AGE;
+            cache.last_attempt = Instant::now() - MIN_REFRESH_INTERVAL;
+        }
+        let token = test_token(&key, &issuer, "current");
+        let reads = tokio::join!(
+            verifier.verify(&token),
+            verifier.verify(&token),
+            verifier.verify(&token),
+            verifier.verify(&token),
+        );
+        assert!(reads.0.is_ok() && reads.1.is_ok() && reads.2.is_ok() && reads.3.is_ok());
+        // One refresh served every concurrent request.
+        assert_eq!(state.jwks_reads.load(Ordering::SeqCst), 2);
+        server.abort();
+        let _ = server.await;
+    }
+
     #[tokio::test]
     async fn rotated_jwks_replaces_removed_keys_and_limits_refresh_attempts() {
         let first = RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
@@ -495,7 +546,8 @@ mod tests {
             verifier.verify(&second_token),
             verifier.verify(&second_token),
         );
-        assert!(first_read.is_ok() || second_read.is_ok() || third_read.is_ok());
+        // Concurrent reads with the rotated key all wait for one refresh.
+        assert!(first_read.is_ok() && second_read.is_ok() && third_read.is_ok());
         assert!(verifier.verify(&second_token).await.is_ok());
         assert!(verifier.verify(&first_token).await.is_err());
         assert_eq!(state.jwks_reads.load(Ordering::SeqCst), 2);
