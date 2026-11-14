@@ -33,6 +33,8 @@ rand = "=0.8.5"
 trust-pki-core = { path = "../pki-core", features = ["lab-software"] }
 # The laboratory signer, run in-process by the issuance test only.
 trust-lab-signer = { path = "../lab-signer" }
+# The CRL publisher, run in-process by the issuance test only (ADR-0030).
+trust-crl-publisher = { path = "../crl-publisher" }
 rsa = { version = "=0.9.8", features = ["pem"] }
 tower = "=0.5.3"
 http-body-util = "=0.1.5"

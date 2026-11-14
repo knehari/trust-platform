@@ -1973,6 +1973,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-crl-publisher"
+version = "0.1.0"
+dependencies = [
+ "p256",
+ "postgres",
+ "rand 0.8.5",
+ "serde_json",
+ "trust-pki-core",
+ "trust-pki-crypto",
+ "x509-cert",
+]
+
+[[package]]
 name = "trust-lab-signer"
 version = "0.1.0"
 dependencies = [
@@ -2005,6 +2018,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower",
+ "trust-crl-publisher",
  "trust-lab-signer",
  "trust-pki-core",
  "trust-pki-crypto",

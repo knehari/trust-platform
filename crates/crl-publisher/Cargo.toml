@@ -1,0 +1,18 @@
+[package]
+name = "trust-crl-publisher"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Laboratory CRL publisher (ADR-0030): reads the latest published CRLs through its own read-only login, verifies them under the issuer certificate and writes them atomically to a static tree. Holds no key and serves nothing."
+
+[dependencies]
+postgres = "=0.19.12"
+serde_json = "=1.0.149"
+trust-pki-crypto = { path = "../pki-crypto" }
+x509-cert = { version = "=0.2.5", features = ["pem"] }
+
+[dev-dependencies]
+p256 = { version = "=0.13.2", features = ["ecdsa", "pkcs8"] }
+rand = "=0.8.5"
+trust-pki-core = { path = "../pki-core" }

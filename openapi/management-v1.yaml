@@ -1383,21 +1383,6 @@ paths:
         '403': { description: Missing reader role or CA outside the signed scope }
         '404': { description: Not a lifecycle-managed CA granted to the reader }
         '503': { description: The database is unavailable }
-  /v1/public/crls/{ca_id}/latest.crl:
-    get:
-      summary: The latest published CRL of a CA, WITHOUT authentication (laboratory, migration 0032)
-      description: Served only for CAs whose database owner configured CRL publication; this is the cRLDistributionPoints URI their new certificates carry. CRLs are public and signed; nothing else is exposed (ADR-0019, Proposed).
-      security: []
-      parameters:
-        - { in: path, name: ca_id, required: true, schema: { type: string, format: uuid } }
-      responses:
-        '200':
-          description: The CRL exactly as stored
-          content:
-            application/pkix-crl:
-              schema: { type: string, format: binary }
-        '404': { description: Not a UUID, not a publishing CA, or no CRL yet }
-        '503': { description: The database is unavailable or too many requests }
   /v1/ra/cas/{ca_id}/certificates:
     post:
       summary: Issue a certificate for a registered RA system's signed request (laboratory, migration 0038)

@@ -3,6 +3,10 @@
 **Status:** Proposed · 2026-11-08. It is not accepted; acceptance needs the
 owner's decision and an independent security review (AGENTS.md).
 
+**Superseded in part by [ADR-0030](ADR-0030-separate-crl-publication.md):**
+the distribution point path is unchanged, but a separate publisher and
+static server serve it; the API's anonymous route is removed.
+
 **Scope:**
 - migration 0032;
 - two API routes;

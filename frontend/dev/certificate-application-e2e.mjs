@@ -22,6 +22,8 @@ import { requiredEnv, signIn } from './keycloak-login.mjs';
 
 const realm = 'http://127.0.0.1:8080/realms/trust-lab';
 const api = 'http://127.0.0.1:8081';
+// The separate static CRL server the publisher fills (ADR-0030).
+const crlWeb = 'http://127.0.0.1:8082';
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const issuingCa = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const caName = 'Lab Issuing CA';
@@ -176,7 +178,7 @@ try {
     assert.match(text, /TLS Web Server Authentication/);
     // It names the CA's public latest-CRL route (ADR-0019).
     const points = openssl(['x509', '-in', certificate, '-noout', '-ext', 'crlDistributionPoints']);
-    assert.match(points, new RegExp(`URI:${api}/v1/public/crls/${issuingCa}/latest\\.crl`));
+    assert.match(points, new RegExp(`URI:${crlWeb}/v1/public/crls/${issuingCa}/latest\\.crl`));
     // The certificate carries the applicant's own key, never the CA's.
     const applicantKey = openssl(['pkey', '-in', keyOf.get('www.lab.invalid'), '-pubout']);
     assert.equal(openssl(['x509', '-in', certificate, '-noout', '-pubkey']), applicantKey);
@@ -190,11 +192,27 @@ try {
   });
 
   const crls = `/v1/cas/${issuingCa}/crls`;
+  // The static server serves the CRL once the publisher verified and wrote it.
+  const publicCrl = async number => {
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const response = await fetch(`${crlWeb}/v1/public/crls/${issuingCa}/latest.crl`);
+      if (response.status === 200) {
+        const der = Buffer.from(await response.arrayBuffer());
+        const text = execFileSync('openssl', ['crl', '-inform', 'DER', '-noout', '-crlnumber'], { input: der }).toString();
+        const served = parseInt(text.split('=')[1], 16);
+        if (served >= number) return { der, served, type: response.headers.get('content-type') };
+      }
+      assert.ok(Date.now() < deadline, `CRL ${number} not served by the static server`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  };
   const publish = async () => {
     const published = await send('POST', crls, officer, {});
     assert.deepEqual([published.status, published.body.status], [201, 'PUBLISHED']);
     const file = join(keys, `crl-${published.body.crl_number}.pem`);
     writeFileSync(file, published.body.crl_pem);
+    await publicCrl(published.body.crl_number);
     return { published, file };
   };
 
@@ -257,8 +275,14 @@ try {
     assert.ok(!checked.ok && /certificate revoked/.test(checked.output), checked.output);
     const downloaded = opensslOutcome(['verify', '-crl_check', '-crl_download', '-CAfile', issuingRoot, issuedCertificate]);
     assert.ok(!downloaded.ok && /certificate revoked/.test(downloaded.output), downloaded.output);
-    const unauthenticated = await fetch(`${api}/v1/public/crls/${issuingCa}/latest.crl`);
-    assert.deepEqual([unauthenticated.status, unauthenticated.headers.get('content-type')], [200, 'application/pkix-crl']);
+    // The management API serves nothing anonymous; the static server serves
+    // exactly the CRL the officer received (ADR-0030).
+    assert.equal((await fetch(`${api}/v1/public/crls/${issuingCa}/latest.crl`)).status, 404);
+    const served = await publicCrl(published.body.crl_number);
+    assert.deepEqual([served.served, served.type], [published.body.crl_number, 'application/pkix-crl']);
+    assert.equal(served.der.toString('base64'), execFileSync('openssl', ['crl', '-in', file, '-outform', 'DER']).toString('base64'));
+    assert.equal((await fetch(`${crlWeb}/v1/public/crls/${issuingCa}/`)).status, 404, 'no listing');
+    assert.equal((await fetch(`${crlWeb}/v1/public/crls/${issuingCa}/latest.crl`, { method: 'POST' })).status, 403);
     // Readers list the CRLs and fetch the same DER the officer received.
     const list = await send('GET', crls, officer);
     assert.deepEqual(list.body.map(item => item.crl_number).slice(0, 2), [published.body.crl_number, crlNumber]);
@@ -526,10 +550,9 @@ try {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
     // Relying parties fetch it from the public distribution point.
-    const latest = await fetch(`${api}/v1/public/crls/${issuingCa}/latest.crl`);
-    assert.equal(latest.status, 200);
+    const latest = await publicCrl(status.latest_crl_number);
     const crlDer = join(keys, 'on-revocation.crl');
-    writeFileSync(crlDer, Buffer.from(await latest.arrayBuffer()));
+    writeFileSync(crlDer, latest.der);
     const crlFile = join(keys, 'on-revocation.pem');
     openssl(['crl', '-inform', 'DER', '-in', crlDer, '-out', crlFile]);
     const checked = opensslOutcome(['verify', '-crl_check', '-CAfile', issuingRoot, '-CRLfile', crlFile, file]);

@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "trust-platform-locked-source-dependencies",
-  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-9981c28f85abf5fd835bc3dd9b6cb4bae469bb7e57fa7dff6f9b1e2c1c55a245",
+  "documentNamespace": "https://github.com/knehari/trust-platform/spdxdocs/lockfiles-169a24b62d8d2183dc53a6fb93837f405e80e9481a338b23778f3085c8d7742e",
   "creationInfo": {
-    "created": "2026-11-08T00:12:18Z",
+    "created": "2026-11-11T11:12:47Z",
     "creators": [
       "Tool: trust-lockfile-sbom-1.0"
     ],
@@ -4205,6 +4205,16 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-cargo-9620f40d3be622fedd26",
+      "name": "trust-crl-publisher",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "SPDXID": "SPDXRef-cargo-c422e833641bbe7c4d5d",
       "name": "trust-lab-signer",
       "versionInfo": "0.1.0",
@@ -6439,6 +6449,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT",
       "relationshipType": "DESCRIBES",
       "relatedSpdxElement": "SPDXRef-cargo-63b5158bc6b7e5dc4b3b"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-cargo-9620f40d3be622fedd26"
     },
     {
       "spdxElementId": "SPDXRef-DOCUMENT",

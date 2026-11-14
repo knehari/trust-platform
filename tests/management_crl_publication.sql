@@ -158,10 +158,12 @@ SET LOCAL ROLE trust_profile_writer;
 SELECT store_crl_lab('https://issuer.iss.invalid', 'ra-1', 'c5c5c5c5-0000-4000-8000-00000000000c',
     current_setting('test.crl_intent')::uuid, decode(repeat('e1', 200), 'hex'));
 RESET ROLE;
-SET LOCAL ROLE trust_api_reader;
+-- The public view is read as the owner: since migration 0043 only the
+-- separate publisher reads CRLs for publication (crl_publisher_feed).
 DO $test$ BEGIN
     IF EXISTS (SELECT 1 FROM public_crl_latest) THEN RAISE EXCEPTION 'an unpublished CA has a public CRL'; END IF;
 END $test$;
+SET LOCAL ROLE trust_api_reader;
 SELECT pg_temp.expect_state('SELECT 1 FROM ca_crl_distribution_point', '42501');
 SELECT pg_temp.expect_state('SELECT 1 FROM crl_document', '42501');
 RESET ROLE;
@@ -222,14 +224,12 @@ END $test$;
 SELECT pg_temp.expect_state($q$UPDATE signing_intent_crl_distribution_point SET url = 'http://evil.invalid'$q$, 'P0001');
 
 -- Public: the latest CRL of a published CA only, without a principal.
-SET LOCAL ROLE trust_api_reader;
 DO $test$ BEGIN
     IF (SELECT string_agg(ca_id || ':' || crl_number || ':' || octet_length(crl_der), ',') FROM public_crl_latest)
        <> 'c5c5c5c5-0000-4000-8000-00000000000c:1:200' THEN
         RAISE EXCEPTION 'unexpected public CRL';
     END IF;
 END $test$;
-RESET ROLE;
 SET LOCAL ROLE trust_profile_writer;
 SELECT pg_temp.publish_crl('crl-2');
 RESET ROLE;
@@ -242,12 +242,12 @@ SELECT store_crl_lab('https://issuer.iss.invalid', 'ra-1', 'c5c5c5c5-0000-4000-8
 -- A later, unpublished intent does not change what is public.
 SELECT pg_temp.publish_crl('crl-3');
 RESET ROLE;
-SET LOCAL ROLE trust_api_reader;
 DO $test$ BEGIN
     IF (SELECT string_agg(crl_number || ':' || octet_length(crl_der), ',') FROM public_crl_latest) <> '2:201' THEN
         RAISE EXCEPTION 'the public CRL is not the latest published one';
     END IF;
 END $test$;
+SET LOCAL ROLE trust_api_reader;
 
 -- Readers of the CA see the distribution point and the renewal state;
 -- others see nothing.

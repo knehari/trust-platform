@@ -509,33 +509,6 @@ pub(crate) async fn crl_status(
     ))
 }
 
-/// `GET /v1/public/crls/{ca_id}/latest.crl`, WITHOUT authentication: the
-/// latest published CRL of a CA whose owner configured publication
-/// (migration 0032), as DER. CRLs are public by design; the view exposes
-/// nothing else. 404 for any other CA, or before its first CRL.
-pub(crate) async fn public_latest_crl(
-    State(state): State<AppState>,
-    Path(raw_ca): Path<String>,
-) -> Result<Response, StatusCode> {
-    let ca_id = uuid::Uuid::parse_str(&raw_ca)
-        .map_err(|_| StatusCode::NOT_FOUND)?
-        .to_string();
-    let row = query_db(state.database_url, state.database_slots, move |db| {
-        db.query_opt(
-            "SELECT crl_der FROM public_crl_latest WHERE ca_id = $1",
-            &[&ca_id],
-        )
-    })
-    .await?
-    .ok_or(StatusCode::NOT_FOUND)?;
-    let mut response = row.get::<_, Vec<u8>>(0).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/pkix-crl"),
-    );
-    Ok(response)
-}
-
 /// `GET /v1/cas/{ca_id}/crls/{crl_number}`: one published CRL as DER.
 pub(crate) async fn read_crl(
     State(state): State<AppState>,
