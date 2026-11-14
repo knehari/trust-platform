@@ -6,8 +6,15 @@
 //!   is handed to the API's user. Nothing listens on the network.
 //! - `TRUST_SIGNER_DATABASE_URL`: a login holding only `trust_lab_signer`.
 //! - `TRUST_SIGNER_CA_ID`: the one CA this signer serves.
-//! - `TRUST_SIGNER_KEY_FILE`: that CA's P-256 key (PEM). Read for each
-//!   request and checked against the CA's attested key; never logged.
+//! - The CA key, exactly one of (ADR-0034):
+//!   - `TRUST_SIGNER_KEY_FILE`: a laboratory P-256 software key (PEM), read
+//!     for each request;
+//!   - `TRUST_SIGNER_PKCS11_MODULE`, `TRUST_SIGNER_PKCS11_TOKEN_LABEL`,
+//!     `TRUST_SIGNER_PKCS11_KEY_LABEL` and `TRUST_SIGNER_PKCS11_PIN`: a key
+//!     generated in a PKCS#11 token, sensitive and never extractable.
+//!
+//!   Either way the key is checked against the CA's attested key for each
+//!   request, and never logged.
 //!
 //! - `TRUST_SIGNER_AUDIT_KEY_FILE` and `TRUST_SIGNER_AUDIT_STATE_FILE`
 //!   (optional, together): the P-256 audit key that signs checkpoints of the
@@ -30,14 +37,33 @@ use std::{
     path::PathBuf,
 };
 
-use trust_lab_signer::service::{log, restricted_login, serve, Config};
+use trust_lab_signer::{
+    ca_key::{Pkcs11Config, Pkcs11Key},
+    service::{log, restricted_login, serve, CaKeySource, Config},
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let socket = PathBuf::from(env::var("TRUST_SIGNER_SOCKET")?);
+    let ca_key = match (
+        optional_path("TRUST_SIGNER_KEY_FILE"),
+        Pkcs11Config::from_env()?,
+    ) {
+        (Some(file), None) => CaKeySource::File(file),
+        (None, Some(pkcs11)) => CaKeySource::Pkcs11(
+            Pkcs11Key::open(&pkcs11)
+                .map_err(|refusal| format!("PKCS#11 token: {}", refusal.code()))?,
+        ),
+        _ => {
+            return Err(
+                "set exactly one of TRUST_SIGNER_KEY_FILE and TRUST_SIGNER_PKCS11_MODULE".into(),
+            )
+        }
+    };
+    let pkcs11 = matches!(ca_key, CaKeySource::Pkcs11(_));
     let config = Config {
         database_url: env::var("TRUST_SIGNER_DATABASE_URL")?,
         ca_id: uuid_text(&env::var("TRUST_SIGNER_CA_ID")?)?,
-        key_file: PathBuf::from(env::var("TRUST_SIGNER_KEY_FILE")?),
+        ca_key,
         audit_key_file: optional_path("TRUST_SIGNER_AUDIT_KEY_FILE"),
         audit_state_file: optional_path("TRUST_SIGNER_AUDIT_STATE_FILE"),
     };
@@ -61,7 +87,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("TRUST_SIGNER_SOCKET_OWNER is uid:gid")?;
         chown(&socket, Some(uid.parse()?), Some(gid.parse()?))?;
     }
-    log(serde_json::json!({"event": "lab_signer_started", "ca_id": config.ca_id}));
+    log(serde_json::json!({
+        "event": "lab_signer_started", "ca_id": config.ca_id,
+        "ca_key": if pkcs11 { "pkcs11" } else { "software_file" },
+    }));
     // One request at a time: the laboratory needs no concurrency, and the
     // database claim serializes signing anyway.
     serve(&config, &listener);

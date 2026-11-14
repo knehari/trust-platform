@@ -26,12 +26,12 @@
 use std::time::SystemTime;
 
 pub mod audit;
+pub mod ca_key;
+
+pub use ca_key::CaKey;
 
 use p256::{
-    ecdsa::{signature::Signer, Signature, SigningKey},
-    elliptic_curve::sec1::ToEncodedPoint,
-    pkcs8::DecodePrivateKey,
-    SecretKey,
+    ecdsa::Signature, elliptic_curve::sec1::ToEncodedPoint, pkcs8::DecodePrivateKey, SecretKey,
 };
 use sha2::{Digest, Sha256};
 use trust_pki_core::{
@@ -267,6 +267,13 @@ pub enum Refusal {
     AuditChain,
     /// A stored checkpoint is not this key's signature over the chain.
     AuditCheckpointSignature,
+    /// The PKCS#11 module, token, session or signature failed (ADR-0034).
+    Token,
+    /// The token key is not a P-256 key generated in the token and never
+    /// extractable (ADR-0034).
+    KeyNotProtected,
+    /// Ceremony: an object already has the key's label; nothing is replaced.
+    KeyExists,
 }
 
 impl Refusal {
@@ -475,8 +482,8 @@ pub trait CrlStore {
 
 /// The DER SubjectPublicKeyInfo of a P-256 key, named-curve form, as in the
 /// registered issuer certificate.
-pub fn spki_der(key: &SecretKey) -> Result<Vec<u8>, Refusal> {
-    let point = key.public_key().to_encoded_point(false);
+pub fn spki_der<K: CaKey + ?Sized>(key: &K) -> Result<Vec<u8>, Refusal> {
+    let point = key.public_key()?.to_encoded_point(false);
     SubjectPublicKeyInfoOwned {
         algorithm: AlgorithmIdentifierOwned {
             oid: ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
@@ -501,8 +508,8 @@ pub fn parse_key_pem(pem: &str) -> Result<SecretKey, Refusal> {
 
 /// The CA's registered issuer certificate, once the key is shown to be the
 /// one the approvers attested for this CA.
-fn ca_issuer(
-    key: &SecretKey,
+fn ca_issuer<K: CaKey + ?Sized>(
+    key: &K,
     issuer_certificate_der: &[u8],
     issuer_spki_sha256: &[u8],
 ) -> Result<Certificate, Refusal> {
@@ -526,10 +533,10 @@ fn ca_issuer(
 
 /// Decides and, when everything holds, signs the CRL `tbs_der` for the CRL
 /// intent `intent_id`.
-pub fn sign_crl_intent<S: CrlStore>(
+pub fn sign_crl_intent<S: CrlStore, K: CaKey + ?Sized>(
     store: &mut S,
     ca_id: &str,
-    key: &SecretKey,
+    key: &K,
     intent_id: &str,
     tbs_der: &[u8],
 ) -> Result<Vec<u8>, Refusal> {
@@ -579,15 +586,14 @@ pub fn sign_crl_intent<S: CrlStore>(
     // Every entry is backed by a key the API cannot register.
     verify_entry_proofs(&record.entries, &store.crl_entry_proofs(intent_id)?)?;
     store.claim_crl(intent_id, &sha256(tbs_der))?;
-    let signature: Signature = SigningKey::from(key.clone()).sign(tbs_der);
-    Ok(signature.to_der().as_bytes().to_vec())
+    key.sign_sha256(tbs_der)
 }
 
 /// Decides and, when everything holds, signs `tbs_der` for `intent_id`.
-pub fn sign_intent<S: IntentStore>(
+pub fn sign_intent<S: IntentStore, K: CaKey + ?Sized>(
     store: &mut S,
     ca_id: &str,
-    key: &SecretKey,
+    key: &K,
     intent_id: &str,
     tbs_der: &[u8],
     now: SystemTime,
@@ -650,8 +656,7 @@ pub fn sign_intent<S: IntentStore>(
     verify_authorization(&record, &authorization)?;
     // The database records the single claim; a second one is refused.
     store.claim(intent_id, &record.tbs_sha256)?;
-    let signature: Signature = SigningKey::from(key.clone()).sign(tbs_der);
-    Ok(signature.to_der().as_bytes().to_vec())
+    key.sign_sha256(tbs_der)
 }
 
 /// The signer process: PostgreSQL access and the Unix socket protocol.
@@ -674,7 +679,8 @@ pub mod service {
             decode_state, encode_state, hex, sign_audit_checkpoint, AuditLink, AuditStore,
             CheckpointState, LinkEvent, StoredCheckpoint,
         },
-        parse_key_pem, sign_crl_intent, sign_intent, spki_der, AuthorizationRecord,
+        ca_key::Pkcs11Key,
+        parse_key_pem, sign_crl_intent, sign_intent, spki_der, AuthorizationRecord, CaKey,
         CrlIntentRecord, CrlStore, EntryOfficerProof, EntryProof, IntentRecord, IntentStore,
         OfficerProof, RaProof, RaRevocationProof, Refusal,
     };
@@ -951,10 +957,33 @@ pub mod service {
         tbs_der_base64: Option<String>,
     }
 
+    /// Where the CA key is (ADR-0034).
+    pub enum CaKeySource {
+        /// A laboratory software key file (PEM), read for each request.
+        File(PathBuf),
+        /// A key generated in a PKCS#11 token, which never leaves it.
+        Pkcs11(Pkcs11Key),
+    }
+
+    impl CaKeySource {
+        fn with_key<T>(
+            &self,
+            use_key: impl FnOnce(&dyn CaKey) -> Result<T, Refusal>,
+        ) -> Result<T, Refusal> {
+            match self {
+                CaKeySource::File(path) => {
+                    let pem = fs::read_to_string(path).map_err(|_| Refusal::KeyFile)?;
+                    use_key(&parse_key_pem(&pem)?)
+                }
+                CaKeySource::Pkcs11(key) => use_key(key),
+            }
+        }
+    }
+
     pub struct Config {
         pub database_url: String,
         pub ca_id: String,
-        pub key_file: PathBuf,
+        pub ca_key: CaKeySource,
         /// The P-256 audit key (ADR-0023); without it, checkpoints are refused.
         pub audit_key_file: Option<PathBuf>,
         /// Where the signer remembers its last checkpoint, outside the database.
@@ -991,11 +1020,9 @@ pub mod service {
         let pem = fs::read_to_string(key_file).map_err(|_| Refusal::AuditKeyFile)?;
         let key = parse_key_pem(&pem).map_err(|_| Refusal::AuditKeyFile)?;
         // Never the CA key (when the CA key exists yet).
-        if let Ok(ca_pem) = fs::read_to_string(&config.key_file) {
-            if let Ok(ca_key) = parse_key_pem(&ca_pem) {
-                if spki_der(&ca_key)? == spki_der(&key).map_err(|_| Refusal::AuditKeyFile)? {
-                    return Err(Refusal::AuditKeyIsCaKey);
-                }
+        if let Ok(ca_spki) = config.ca_key.with_key(|ca_key| spki_der(ca_key)) {
+            if ca_spki == spki_der(&key).map_err(|_| Refusal::AuditKeyFile)? {
+                return Err(Refusal::AuditKeyIsCaKey);
             }
         }
         let state = read_state(state_file)?;
@@ -1073,24 +1100,28 @@ pub mod service {
         let tbs = STANDARD
             .decode(tbs_der_base64.trim())
             .map_err(|_| fail(Refusal::BadRequest))?;
-        let pem = fs::read_to_string(&config.key_file).map_err(|_| fail(Refusal::KeyFile))?;
-        let key = parse_key_pem(&pem).map_err(fail)?;
-        let mut db =
-            trust_db_connect::connect(&config.database_url).map_err(|_| fail(Refusal::Database))?;
-        let mut store = PgIntentStore { db: &mut db };
-        let signature = match request.kind.as_deref() {
-            None | Some("certificate") => sign_intent(
-                &mut store,
-                &config.ca_id,
-                &key,
-                &intent_id,
-                &tbs,
-                SystemTime::now(),
-            ),
-            Some("crl") => sign_crl_intent(&mut store, &config.ca_id, &key, &intent_id, &tbs),
-            Some(_) => Err(Refusal::BadRequest),
-        }
-        .map_err(fail)?;
+        let signature = config
+            .ca_key
+            .with_key(|key| {
+                let mut db = trust_db_connect::connect(&config.database_url)
+                    .map_err(|_| Refusal::Database)?;
+                let mut store = PgIntentStore { db: &mut db };
+                match request.kind.as_deref() {
+                    None | Some("certificate") => sign_intent(
+                        &mut store,
+                        &config.ca_id,
+                        key,
+                        &intent_id,
+                        &tbs,
+                        SystemTime::now(),
+                    ),
+                    Some("crl") => {
+                        sign_crl_intent(&mut store, &config.ca_id, key, &intent_id, &tbs)
+                    }
+                    Some(_) => Err(Refusal::BadRequest),
+                }
+            })
+            .map_err(fail)?;
         Ok((
             intent,
             serde_json::json!({"signature_der_base64": STANDARD.encode(signature)}),
@@ -1141,6 +1172,7 @@ pub mod service {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::ecdsa::{signature::Signer, SigningKey};
     use std::str::FromStr;
     use std::time::Duration;
     use trust_pki_core::application_leaf::build_server_leaf_tbs;

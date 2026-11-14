@@ -11,6 +11,8 @@ base64 = "=0.22.1"
 # The only process that reads a CA private key: a P-256 software key file, for
 # the disposable laboratory only.
 p256 = { version = "=0.13.2", features = ["ecdsa", "pem", "pkcs8"] }
+# PKCS#11 adapter (ADR-0034): the CA key stays in a token, non-extractable.
+cryptoki = "=0.10.0"
 postgres = "=0.19.12"
 trust-db-connect = { path = "../db-connect" }
 serde = { version = "=1.0.229", features = ["derive"] }
