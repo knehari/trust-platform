@@ -12,7 +12,7 @@ export interface Application {
   dns_names: string[];
   validity_days: number;
   status: 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'ISSUING' | 'ISSUED' | 'RECONCILIATION_REQUIRED'
-    | 'REVOCATION_REQUESTED' | 'REVOKED';
+    | 'REVOCATION_REQUESTED' | 'REVOKED' | 'VOIDED';
   decision_reason: string | null;
   submitted_at: string;
   decided_at: string | null;
@@ -22,6 +22,12 @@ export interface Application {
   open_revocation_reason_code: number | null;
   revocation_reason_code: number | null;
   revoked_at: string | null;
+  /** Reconciliation of an ambiguous issuance (migration 0034). */
+  void_status?: 'PROPOSED' | 'VOIDED' | null;
+  void_signer_claimed?: boolean | null;
+  void_proposed_by_reader?: boolean | null;
+  void_serial_hex?: string | null;
+  voided_at?: string | null;
 }
 
 interface Issuance {
@@ -37,14 +43,15 @@ export const REASONS: [number, string][] = [
 ];
 export const reasonName = (code: number | null) => REASONS.find(([value]) => value === code)?.[1] ?? String(code);
 
-type Filter = 'all' | 'decide' | 'approved' | 'issued' | 'revocation' | 'closed';
+type Filter = 'all' | 'decide' | 'approved' | 'issued' | 'revocation' | 'reconcile' | 'closed';
 const FILTERS: { id: Filter; label: string; matches: (status: Application['status']) => boolean }[] = [
   { id: 'all', label: 'All', matches: () => true },
   { id: 'decide', label: 'Awaiting decision', matches: status => status === 'SUBMITTED' },
   { id: 'approved', label: 'Ready to issue', matches: status => status === 'APPROVED' },
   { id: 'issued', label: 'Issued', matches: status => status === 'ISSUED' || status === 'ISSUING' },
   { id: 'revocation', label: 'Revocation requested', matches: status => status === 'REVOCATION_REQUESTED' },
-  { id: 'closed', label: 'Closed', matches: status => status === 'REJECTED' || status === 'REVOKED' || status === 'RECONCILIATION_REQUIRED' },
+  { id: 'reconcile', label: 'Needs reconciliation', matches: status => status === 'RECONCILIATION_REQUIRED' },
+  { id: 'closed', label: 'Closed', matches: status => status === 'REJECTED' || status === 'REVOKED' || status === 'VOIDED' },
 ];
 
 export function writeError(failure: unknown, action: string): string {
@@ -204,12 +211,20 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
           const canAskRevocation = item.status === 'ISSUED' && (canRequest || canDecide);
           const decideApplication = canDecide && item.status === 'SUBMITTED';
           const decideRevocation = canDecide && item.status === 'REVOCATION_REQUESTED' && item.open_revocation_id;
+          // Reconciliation (ADR-0020): one officer proposes, another confirms.
+          const proposeVoid = canDecide && item.status === 'RECONCILIATION_REQUIRED' && !item.void_status;
+          const confirmVoid = canDecide && item.status === 'RECONCILIATION_REQUIRED' && item.void_status === 'PROPOSED' && !item.void_proposed_by_reader;
           return [<tr key={item.application_id} className={expanded ? 'ui-row-open' : undefined}>
             <td><strong>{item.subject_cn}</strong><div className="ui-sub">{item.dns_names.join(', ')}</div></td>
             <td><StatusBadge status={item.status} />
               {item.certificate_serial_hex && <div className="ui-sub mono">Serial {item.certificate_serial_hex.slice(0, 16)}…</div>}
               {item.revoked_at && <div className="ui-sub">Revoked {displayDate(item.revoked_at)} · {reasonName(item.revocation_reason_code)}</div>}
               {item.status === 'REVOCATION_REQUESTED' && <div className="ui-sub">Reason: {reasonName(item.open_revocation_reason_code)}</div>}
+              {item.status === 'RECONCILIATION_REQUIRED' && <div className="ui-sub">{item.void_status === 'PROPOSED'
+                ? (item.void_proposed_by_reader ? 'You proposed to void it; another officer must confirm.' : 'A void was proposed; another officer must confirm.')
+                : 'Signing outcome unknown: never re-signed.'}</div>}
+              {item.void_status && item.void_signer_claimed !== null && item.void_signer_claimed !== undefined && <div className="ui-sub">{item.void_signer_claimed ? 'The signer had claimed it: a certificate may exist.' : 'The signer never claimed it.'}</div>}
+              {item.status === 'VOIDED' && item.void_serial_hex && <div className="ui-sub mono">Serial {item.void_serial_hex.slice(0, 16)}… listed on CRLs since {displayDate(item.voided_at ?? null)}</div>}
               {item.decision_reason && <div className="ui-sub">“{item.decision_reason}”</div>}</td>
             <td>{item.profile_id} r{item.revision}<div className="ui-sub">{item.validity_days} days</div></td>
             <td>{displayDate(item.submitted_at)}</td>
@@ -219,17 +234,20 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                   if (value.certificate_pem && value.serial_hex) setIssued({ subject: item.subject_cn, pem: value.certificate_pem, serial: value.serial_hex });
                   return status === 201 ? `Certificate for ${item.subject_cn} issued.` : `The certificate for ${item.subject_cn} was already issued.`;
                 })}>Issue certificate</button>}
-              {(decideApplication || decideRevocation || canAskRevocation) && <button type="button" className="ui-button ui-button-secondary ui-button-sm"
+              {(decideApplication || decideRevocation || canAskRevocation || proposeVoid || confirmVoid) && <button type="button" className="ui-button ui-button-secondary ui-button-sm"
                 aria-expanded={expanded} onClick={() => { setOpen(expanded ? null : item.application_id); setReason(''); }}>
-                {decideApplication ? 'Review' : decideRevocation ? 'Review revocation' : 'Revoke…'}</button>}
+                {decideApplication ? 'Review' : decideRevocation ? 'Review revocation' : proposeVoid ? 'Reconcile…' : confirmVoid ? 'Review void' : 'Revoke…'}</button>}
             </div></td>
           </tr>,
           expanded && <tr key={`${item.application_id}-form`} className="ui-row-detail"><td colSpan={5}>
+            {(proposeVoid || confirmVoid) && <Notice tone="warning">{proposeVoid
+              ? 'Voiding closes this request for good. Its serial is never reused and is listed on every later CRL, in case the signer produced a certificate. A second registration officer must confirm. The requester can then submit a new request.'
+              : `Confirming lists serial ${item.void_serial_hex ?? ''} on the next CRL and closes the request. ${item.void_signer_claimed ? 'The signer had claimed this intent, so a certificate with this serial may exist.' : 'The signer never claimed this intent.'}`}</Notice>}
             <form className="ui-inline-form" onSubmit={event => event.preventDefault()}>
               {canAskRevocation && <label className="ui-field"><span>Reason</span><select aria-label={`Revocation reason for ${item.subject_cn}`} value={reasonCode} onChange={event => setReasonCode(Number(event.target.value))}>
                 {REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
-              <label className="ui-field ui-field-grow"><span>{canAskRevocation ? 'Explanation' : 'Decision reason'}</span>
-                <input autoFocus aria-label={canAskRevocation ? `Revocation explanation for ${item.subject_cn}` : decideRevocation ? `Revocation decision reason for ${item.subject_cn}` : `Decision reason for ${item.subject_cn}`}
+              <label className="ui-field ui-field-grow"><span>{canAskRevocation || proposeVoid || confirmVoid ? 'Explanation' : 'Decision reason'}</span>
+                <input autoFocus aria-label={canAskRevocation ? `Revocation explanation for ${item.subject_cn}` : proposeVoid || confirmVoid ? `Void explanation for ${item.subject_cn}` : decideRevocation ? `Revocation decision reason for ${item.subject_cn}` : `Decision reason for ${item.subject_cn}`}
                   value={reason} onChange={event => setReason(event.target.value)} /></label>
               <div className="ui-actions">
                 {decideApplication && <>
@@ -241,6 +259,8 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                   <button type="button" className="ui-button ui-button-secondary ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests/${item.open_revocation_id}/decision`, { decision: 'reject', reason: reason.trim() }, 'reject the revocation', () => `Revocation of ${item.subject_cn} rejected.`)}>Reject revocation</button>
                 </>}
                 {canAskRevocation && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/revocation-requests`, { reason_code: reasonCode, reason: reason.trim() }, 'request the revocation', () => `Revocation of ${item.subject_cn} requested. A registration officer who did not ask must approve it.`)}>Request revocation</button>}
+                {proposeVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write<{ signer_claimed: boolean }>(`${base}/${item.application_id}/void-proposal`, { reason: reason.trim() }, 'propose the void', value => `Void of ${item.subject_cn} proposed${value.signer_claimed ? ' (the signer had claimed it)' : ''}. Another officer must confirm.`)}>Propose void</button>}
+                {confirmVoid && <button type="button" className="ui-button ui-button-danger ui-button-sm" disabled={busy || !reason.trim()} onClick={() => void write(`${base}/${item.application_id}/void-confirmation`, { reason: reason.trim() }, 'confirm the void', () => `${item.subject_cn} voided. Its serial appears on the next CRL.`)}>Confirm void</button>}
                 <button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setOpen(null)}>Cancel</button>
               </div>
             </form>

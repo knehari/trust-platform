@@ -61,3 +61,10 @@ test('every outcome shape has a plain explanation', async () => {
   assert.match(explainOutcome('created:abc'), /referencing abc/);
   assert.match(explainOutcome(''), /none/);
 });
+
+test('reconciliation events and outcomes have labels', () => {
+  assert.equal(describeEvent('certificate.application.voided').label, 'Issuance voided');
+  assert.equal(describeEvent('certificate.application.void_proposed').category, 'request');
+  assert.equal(humanizeStatus('signer_claimed'), 'Signer had claimed');
+  assert.equal(humanizeStatus('VOIDED'), 'Voided');
+});

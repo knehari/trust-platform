@@ -110,6 +110,8 @@ fi
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f migrations/0033_management_certificate_revocation.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
+  -f migrations/0034_application_issuance_void.sql >/dev/null
+"$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_populated_upgrade_verify.sql >/dev/null
 "$psql_bin" "$database_url" -X -v ON_ERROR_STOP=1 \
   -f tests/management_api_readonly.sql >/dev/null

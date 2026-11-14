@@ -17,12 +17,13 @@ DO $check$ BEGIN
 END $check$;
 INSERT INTO management_reader_grant (issuer, subject, ca_id)
 SELECT :'issuer', '7c1a0000-0000-4000-8000-0000000000' || n, :'ca'::uuid
-FROM unnest(ARRAY['03', '04', '05', '11', '15', '16']) n
+FROM unnest(ARRAY['03', '04', '05', '11', '15', '16', '17']) n
 ON CONFLICT DO NOTHING;
 INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role)
 SELECT :'issuer', '7c1a0000-0000-4000-8000-0000000000' || n, :'ca'::uuid, r
 FROM (VALUES ('11', 'profile-editor'), ('03', 'policy-approver'), ('04', 'policy-approver'),
-             ('05', 'ca-operator'), ('15', 'certificate-requester'), ('16', 'registration-officer')) AS g(n, r)
+             ('05', 'ca-operator'), ('15', 'certificate-requester'), ('16', 'registration-officer'),
+             ('17', 'registration-officer')) AS g(n, r)
 ON CONFLICT DO NOTHING;
 -- Public CRL publication (migration 0032, ADR-0019): certificates of this CA
 -- name the API's unauthenticated latest-CRL route, on the laboratory's

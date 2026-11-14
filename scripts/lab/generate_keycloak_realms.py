@@ -92,6 +92,9 @@ lab_users = [
     user(14, "lab-ca-approver-2", "TRUST_LAB_PW_CA_APPROVER_2", ["trust-ca-approver"], []),
     user(15, "lab-requester", "TRUST_LAB_PW_REQUESTER", ["trust-ca-reader", "trust-certificate-requester"], [LAB_ISSUING_CA]),
     user(16, "lab-ra-officer", "TRUST_LAB_PW_RA_OFFICER", ["trust-ca-reader", "trust-registration-officer"], [LAB_ISSUING_CA]),
+    # A second officer for dual-control steps: revocation decisions and the
+    # confirmation of a void (ADR-0018, ADR-0020).
+    user(17, "lab-ra-officer-2", "TRUST_LAB_PW_RA_OFFICER_2", ["trust-ca-reader", "trust-registration-officer"], [LAB_ISSUING_CA]),
     {"id": uid(9), "username": "service-account-trust-lab-workload", "enabled": True,
      "serviceAccountClientId": "trust-lab-workload",
      "attributes": {"ca_ids": ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"]},

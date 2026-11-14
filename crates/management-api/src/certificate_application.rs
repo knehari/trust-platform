@@ -94,6 +94,16 @@ struct Application {
     open_revocation_reason_code: Option<i16>,
     revocation_reason_code: Option<i16>,
     revoked_at: Option<String>,
+    /// PROPOSED or VOIDED once an officer proposed to void an ambiguous
+    /// issuance (migration 0034); null otherwise.
+    void_status: Option<String>,
+    /// Whether the signer had claimed the intent before the outcome became
+    /// ambiguous, so a certificate with the serial may exist.
+    void_signer_claimed: Option<bool>,
+    /// Whether the reader made the proposal (they cannot confirm it).
+    void_proposed_by_reader: Option<bool>,
+    void_serial_hex: Option<String>,
+    voided_at: Option<String>,
 }
 
 /// A lowercase LDH DNS name of at least two labels; no wildcard. The
@@ -346,7 +356,8 @@ pub(crate) async fn list_applications(
                 "SELECT application_id, ca_id, profile_id, revision, csr_sha256, subject_cn, \
                  dns_names, validity_days, status, decision_reason, submitted_at, decided_at, \
                  certificate_serial_hex, certificate_sha256, certificate_request_id, \
-                 open_revocation_id, open_revocation_reason_code, revocation_reason_code, revoked_at \
+                 open_revocation_id, open_revocation_reason_code, revocation_reason_code, revoked_at, \
+                 void_status, void_signer_claimed, void_proposed_by_reader, void_serial_hex, voided_at \
                  FROM management_certificate_application WHERE ca_id = $1 \
                  ORDER BY submitted_at DESC, application_id LIMIT 100",
                 &[&ca_id],
@@ -376,6 +387,11 @@ pub(crate) async fn list_applications(
             open_revocation_reason_code: row.get(16),
             revocation_reason_code: row.get(17),
             revoked_at: row.get(18),
+            void_status: row.get(19),
+            void_signer_claimed: row.get(20),
+            void_proposed_by_reader: row.get(21),
+            void_serial_hex: row.get(22),
+            voided_at: row.get(23),
         })
         .collect();
     Ok(with_replay_header(Json(items).into_response(), false))

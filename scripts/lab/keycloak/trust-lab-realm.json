@@ -577,6 +577,31 @@
       ]
     },
     {
+      "id": "7c1a0000-0000-4000-8000-000000000017",
+      "username": "lab-ra-officer-2",
+      "enabled": true,
+      "firstName": "lab-ra-officer-2",
+      "lastName": "Laboratory",
+      "email": "lab-ra-officer-2@lab.invalid",
+      "emailVerified": true,
+      "attributes": {
+        "ca_ids": [
+          "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${TRUST_LAB_PW_RA_OFFICER_2}",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "trust-ca-reader",
+        "trust-registration-officer"
+      ]
+    },
+    {
       "id": "7c1a0000-0000-4000-8000-000000000009",
       "username": "service-account-trust-lab-workload",
       "enabled": true,

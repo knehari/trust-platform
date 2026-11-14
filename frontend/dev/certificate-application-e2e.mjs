@@ -250,6 +250,48 @@ try {
     assert.equal((await send('POST', `${applications}/${rejected.body.application_id}/issuance`, officer, {})).status, 409);
     assert.equal((await send('POST', `${applications}/${pending.body.application_id}/issuance`, requester, {})).status, 409);
   });
+
+  await check('two registration officers void an ambiguous issuance; the next CRL lists its serial (ADR-0020)', async () => {
+    const officer2 = await token('lab-ra-officer-2', 'TRUST_LAB_PW_RA_OFFICER_2');
+    const submitted = await apply('void.lab.invalid', ['void.lab.invalid']);
+    assert.equal(submitted.status, 201);
+    const id = submitted.body.application_id;
+    assert.equal((await send('POST', `${applications}/${id}/decision`, officer, { decision: 'approve', reason: 'checked' })).status, 201);
+    // The database owner reproduces what the API records when the signer
+    // times out: issuance started, intent journaled, outcome ambiguous.
+    // The signer never sees this intent, so it is never claimed.
+    const officerSubject = '7c1a0000-0000-4000-8000-000000000016';
+    execSync(`${ownerPsql} -f -`, { stdio: ['pipe', 'ignore', 'inherit'], input: `
+      SELECT 1 FROM begin_application_issuance_lab('${realm}', '${officerSubject}', '${issuingCa}', '${id}', gen_random_uuid(), digest('void', 'sha256'));
+      SELECT 1 FROM record_application_signing_intent_lab('${realm}', '${officerSubject}', '${issuingCa}', '${id}', 'lab-signer:timeout', digest('void-tbs', 'sha256'));
+      SELECT mark_application_signing_uncertain_lab('${realm}', '${officerSubject}', '${issuingCa}', '${id}');` });
+    const item = async () => (await send('GET', applications, officer)).body.find(row => row.application_id === id);
+    assert.equal((await item()).status, 'RECONCILIATION_REQUIRED');
+    // Never re-signed.
+    assert.equal((await send('POST', `${applications}/${id}/issuance`, officer, {})).status, 409);
+
+    const reason = { reason: 'signer timed out; no claim recorded' };
+    assert.equal((await send('POST', `${applications}/${id}/void-proposal`, requester, reason)).status, 403);
+    const proposed = await send('POST', `${applications}/${id}/void-proposal`, officer, reason);
+    assert.deepEqual([proposed.status, proposed.body.void_status, proposed.body.signer_claimed], [201, 'PROPOSED', false]);
+    assert.equal((await send('POST', `${applications}/${id}/void-proposal`, officer2, reason)).status, 409);
+    assert.equal((await send('POST', `${applications}/${id}/void-confirmation`, officer, reason)).status, 403);
+    const key = randomUUID();
+    const voided = await send('POST', `${applications}/${id}/void-confirmation`, officer2, reason, key);
+    assert.deepEqual([voided.status, voided.body.status], [201, 'VOIDED']);
+    const replay = await send('POST', `${applications}/${id}/void-confirmation`, officer2, reason, key);
+    assert.deepEqual([replay.status, replay.body.voided_at], [200, voided.body.voided_at]);
+    const listed = await item();
+    assert.deepEqual([listed.status, listed.void_status, listed.void_serial_hex, listed.void_proposed_by_reader],
+      ['VOIDED', 'VOIDED', voided.body.serial_hex, true]);
+
+    const { published, file } = await publish();
+    const verified = opensslOutcome(['crl', '-in', file, '-CAfile', issuingRoot, '-noout', '-verify']);
+    assert.ok(verified.ok && /verify OK/.test(verified.output), verified.output);
+    const text = openssl(['crl', '-in', file, '-noout', '-text']);
+    assert.match(text, new RegExp(`Serial Number: ${voided.body.serial_hex.toUpperCase()}`));
+    assert.ok(published.body.entry_count >= 2, `entry count ${published.body.entry_count}`);
+  });
 } finally {
   rmSync(keys, { recursive: true, force: true });
   rmSync(join(repository, '.lab-keys', 'ca', 'ca-root-lab-issuing-ca.pem'), { force: true });

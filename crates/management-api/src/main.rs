@@ -6,6 +6,7 @@ mod ca_proposal;
 mod certificate_application;
 mod certificate_issuance;
 mod certificate_revocation;
+mod certificate_void;
 mod crl_publication;
 mod profile_activation;
 mod profile_decision;
@@ -48,7 +49,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, crl.crl_number, cs.renewal_due, pub.crl_number \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -580,7 +581,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0033")?;
+    .map_err(|_| "management views unavailable or older than migration 0034")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -719,6 +720,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision",
             axum::routing::post(certificate_revocation::decide_revocation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/void-proposal",
+            axum::routing::post(certificate_void::propose_void),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation",
+            axum::routing::post(certificate_void::confirm_void),
         )
         .route(
             "/v1/cas/{ca_id}/crls",
@@ -1017,6 +1026,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_revocation_crl_version() = 1 \
              AND management_crl_publication_version() = 1 \
              AND management_certificate_revocation_version() = 1 \
+             AND management_application_void_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -4461,7 +4471,7 @@ mod tests {
             issue(officer.clone(), second.clone()).await.0,
             StatusCode::CONFLICT
         );
-        let item = listed(second).await;
+        let item = listed(second.clone()).await;
         assert_eq!(
             (
                 item["status"].as_str(),
@@ -4904,6 +4914,115 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![6, 3, 2, 1]
         );
+
+        // Reconciliation (migration 0034): two officers void the ambiguous
+        // issuance of `second`; the next CRL lists its serial, unsigned.
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
+                    ('https://issuer.example.test', 'officer-2-http', '{owner_ca}', 'registration-officer');"
+            ))
+        })
+        .await
+        .unwrap();
+        let officer_2 = token(
+            "officer-2-http",
+            json!(["trust-registration-officer", "trust-ca-reader"]),
+            json!([ca.clone()]),
+        );
+        let proposal = format!("{apps}/{second}/void-proposal");
+        let confirmation = format!("{apps}/{second}/void-confirmation");
+        let reason = json!({"reason": "signer refused before claiming"});
+        assert_eq!(
+            send("POST", &requester, proposal.clone(), Some(reason.clone()))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send("POST", &officer, confirmation.clone(), Some(reason.clone()))
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                format!("{apps}/{first}/void-proposal"),
+                Some(reason.clone())
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+        let (status, proposed) =
+            send("POST", &officer, proposal.clone(), Some(reason.clone())).await;
+        assert_eq!(
+            (
+                status,
+                proposed["void_status"].as_str(),
+                proposed["signer_claimed"].as_bool()
+            ),
+            (StatusCode::CREATED, Some("PROPOSED"), Some(false))
+        );
+        assert_eq!(
+            send("POST", &officer, confirmation.clone(), Some(reason.clone()))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, voided) = send(
+            "POST",
+            &officer_2,
+            confirmation.clone(),
+            Some(reason.clone()),
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                voided["status"].as_str(),
+                voided["voided_at"].is_string()
+            ),
+            (StatusCode::CREATED, Some("VOIDED"), true)
+        );
+        let void_serial = voided["serial_hex"].as_str().unwrap().to_owned();
+        let item = listed(second.clone()).await;
+        assert_eq!(
+            (
+                item["status"].as_str(),
+                item["void_status"].as_str(),
+                item["void_serial_hex"].as_str(),
+                item["void_proposed_by_reader"].as_bool()
+            ),
+            (
+                Some("VOIDED"),
+                Some("VOIDED"),
+                Some(void_serial.as_str()),
+                Some(true)
+            )
+        );
+        let (status, after_void) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (
+                status,
+                after_void["crl_number"].as_i64(),
+                after_void["entry_count"].as_u64()
+            ),
+            (StatusCode::CREATED, Some(7), Some(2))
+        );
+        let der = crl_der(after_void["crl_pem"].as_str().unwrap());
+        assert!(crl_verifies(&der));
+        let crl =
+            <x509_cert::crl::CertificateList as x509_cert::der::Decode>::from_der(&der).unwrap();
+        let entries = crl.tbs_cert_list.revoked_certificates.unwrap();
+        let voided_entry = entries
+            .iter()
+            .find(|entry| hex_bytes(entry.serial_number.as_bytes()) == void_serial)
+            .expect("the voided serial is listed");
+        assert!(voided_entry.crl_entry_extensions.is_none());
         let _ = std::fs::remove_dir_all(key_dir);
     }
 
