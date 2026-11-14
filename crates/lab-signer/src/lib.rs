@@ -37,10 +37,14 @@ use sha2::{Digest, Sha256};
 use trust_pki_core::{
     application_crl::{check_crl_tbs, parse_utc_seconds, CrlEntry, CrlError, CrlFacts},
     application_leaf::{check_server_leaf_tbs, optional_extensions_valid, LeafError, LeafFacts},
-    authorization::{officer_decision_claim, OfficerDecision},
+    authorization::{
+        officer_decision_claim, revocation_decision_claim, void_confirmation_claim,
+        OfficerDecision, RevocationDecision, VoidConfirmation,
+    },
     csr::verify_pkcs10_p256_possession,
     ra_request::{
-        ra_issuance_message, ra_issuance_message_v2, RaIssuanceRequest, RaIssuanceRequestV2,
+        ra_issuance_message, ra_issuance_message_v2, ra_revocation_message, RaIssuanceRequest,
+        RaIssuanceRequestV2, RaRevocationRequest,
     },
 };
 use x509_cert::{
@@ -298,9 +302,174 @@ pub struct CrlIntentRecord {
     pub entries: Vec<(Vec<u8>, String, i16)>,
 }
 
+/// The proof of one CRL entry, from `lab_signer_crl_entry_proof` (migration
+/// 0042, ADR-0029).
+#[derive(Debug, Clone)]
+pub struct EntryProof {
+    /// `revocation` or `void`.
+    pub kind: String,
+    pub serial: Vec<u8>,
+    pub revoked_at: String,
+    pub reason_code: i16,
+    /// Recorded before proofs were required: listed without one.
+    pub legacy: bool,
+    pub ca_id: String,
+    pub application_id: Option<String>,
+    pub revocation_id: Option<String>,
+    /// An RA's signed revocation.
+    pub ra: Option<RaRevocationProof>,
+    /// An officer's signed approval or void confirmation.
+    pub officer: Option<EntryOfficerProof>,
+    pub void_signer_claimed: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaRevocationProof {
+    pub ra_id: String,
+    pub request_id: String,
+    pub reason: String,
+    pub signed_at_unix: i64,
+    pub signature: Vec<u8>,
+    pub public_key_sec1: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryOfficerProof {
+    pub decision: String,
+    pub key_id: String,
+    pub issued_at: String,
+    pub signature: Vec<u8>,
+    pub public_key_sec1: Vec<u8>,
+    /// The key was active when the claim was issued. A key revoked later
+    /// still covers what it signed: a CRL never drops a revocation.
+    pub key_valid: bool,
+}
+
+/// Checks that every entry the CRL will list is backed by a signature of a key
+/// the API cannot register (ADR-0029): an RA's signed revocation, an officer's
+/// signed revocation approval, or the confirming officer's signed void. The
+/// signed bytes are rebuilt from the entry's facts.
+pub fn verify_entry_proofs(
+    entries: &[(Vec<u8>, String, i16)],
+    proofs: &[EntryProof],
+) -> Result<(), Refusal> {
+    let mut listed: Vec<(&[u8], &str, i16)> = entries
+        .iter()
+        .map(|(serial, at, reason)| (serial.as_slice(), at.as_str(), *reason))
+        .collect();
+    let mut proven: Vec<(&[u8], &str, i16)> = proofs
+        .iter()
+        .map(|proof| {
+            (
+                proof.serial.as_slice(),
+                proof.revoked_at.as_str(),
+                proof.reason_code,
+            )
+        })
+        .collect();
+    listed.sort_unstable();
+    proven.sort_unstable();
+    if listed != proven {
+        return Err(Refusal::Unauthorized);
+    }
+    for proof in proofs {
+        if !proof.legacy {
+            verify_entry_proof(proof)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_entry_proof(proof: &EntryProof) -> Result<(), Refusal> {
+    match (proof.kind.as_str(), &proof.ra, &proof.officer) {
+        ("revocation", Some(ra), None) => {
+            let (Some(ca_id), Some(request_id), Ok(reason_code)) = (
+                uuid_bytes(&proof.ca_id),
+                uuid_bytes(&ra.request_id),
+                u16::try_from(proof.reason_code),
+            ) else {
+                return Err(Refusal::Unauthorized);
+            };
+            let message = ra_revocation_message(&RaRevocationRequest {
+                ra_id: &ra.ra_id,
+                ca_id,
+                request_id,
+                serial: &proof.serial,
+                reason_code,
+                reason: &ra.reason,
+                signed_at_unix: ra.signed_at_unix,
+            })
+            .map_err(|_| Refusal::Unauthorized)?;
+            if !signed_by(&ra.public_key_sec1, &message, &ra.signature) {
+                return Err(Refusal::AuthorizationSignature);
+            }
+            Ok(())
+        }
+        ("revocation", None, Some(officer)) => {
+            let (Some(application_id), Some(revocation_id)) =
+                (&proof.application_id, &proof.revocation_id)
+            else {
+                return Err(Refusal::Unauthorized);
+            };
+            if officer.decision != "approve" || !officer.key_valid {
+                return Err(Refusal::Unauthorized);
+            }
+            let claim = revocation_decision_claim(&RevocationDecision {
+                decision: &officer.decision,
+                ca_id: &proof.ca_id,
+                application_id,
+                revocation_id,
+                serial: &proof.serial,
+                reason_code: proof.reason_code,
+                key_id: &officer.key_id,
+                issued_at: &officer.issued_at,
+            })
+            .map_err(|_| Refusal::Unauthorized)?;
+            if !signed_by(
+                &officer.public_key_sec1,
+                claim.as_bytes(),
+                &officer.signature,
+            ) {
+                return Err(Refusal::AuthorizationSignature);
+            }
+            Ok(())
+        }
+        ("void", None, Some(officer)) => {
+            let (Some(application_id), Some(signer_claimed)) =
+                (&proof.application_id, proof.void_signer_claimed)
+            else {
+                return Err(Refusal::Unauthorized);
+            };
+            if proof.reason_code != 0 || !officer.key_valid {
+                return Err(Refusal::Unauthorized);
+            }
+            let claim = void_confirmation_claim(&VoidConfirmation {
+                ca_id: &proof.ca_id,
+                application_id,
+                serial: &proof.serial,
+                signer_claimed,
+                key_id: &officer.key_id,
+                issued_at: &officer.issued_at,
+            })
+            .map_err(|_| Refusal::Unauthorized)?;
+            if !signed_by(
+                &officer.public_key_sec1,
+                claim.as_bytes(),
+                &officer.signature,
+            ) {
+                return Err(Refusal::AuthorizationSignature);
+            }
+            Ok(())
+        }
+        // No proof, both, or an unknown kind: never listed by this signer.
+        _ => Err(Refusal::Unauthorized),
+    }
+}
+
 /// The signer's access for CRLs: read one intent and its entries, claim it.
 pub trait CrlStore {
     fn crl_intent(&mut self, intent_id: &str) -> Result<Option<CrlIntentRecord>, Refusal>;
+    fn crl_entry_proofs(&mut self, intent_id: &str) -> Result<Vec<EntryProof>, Refusal>;
     fn claim_crl(&mut self, intent_id: &str, tbs_sha256: &[u8]) -> Result<(), Refusal>;
 }
 
@@ -407,6 +576,8 @@ pub fn sign_crl_intent<S: CrlStore>(
         entries: &entries,
     };
     check_crl_tbs(&issuer, &facts, &tbs).map_err(Refusal::Crl)?;
+    // Every entry is backed by a key the API cannot register.
+    verify_entry_proofs(&record.entries, &store.crl_entry_proofs(intent_id)?)?;
     store.claim_crl(intent_id, &sha256(tbs_der))?;
     let signature: Signature = SigningKey::from(key.clone()).sign(tbs_der);
     Ok(signature.to_der().as_bytes().to_vec())
@@ -504,7 +675,8 @@ pub mod service {
             CheckpointState, LinkEvent, StoredCheckpoint,
         },
         parse_key_pem, sign_crl_intent, sign_intent, spki_der, AuthorizationRecord,
-        CrlIntentRecord, CrlStore, IntentRecord, IntentStore, OfficerProof, RaProof, Refusal,
+        CrlIntentRecord, CrlStore, EntryOfficerProof, EntryProof, IntentRecord, IntentStore,
+        OfficerProof, RaProof, RaRevocationProof, Refusal,
     };
 
     const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
@@ -631,6 +803,53 @@ pub mod service {
                 claimed: row.get(8),
                 entries,
             }))
+        }
+
+        fn crl_entry_proofs(&mut self, intent_id: &str) -> Result<Vec<EntryProof>, Refusal> {
+            Ok(self
+                .db
+                .query(
+                    "SELECT kind, serial, revoked_at, reason_code, legacy, ca_id, application_id, \
+                     revocation_id, ra_id, ra_request_id, ra_reason, ra_signed_at, ra_signature, \
+                     ra_public_key, officer_decision, officer_key_id, officer_issued_at, \
+                     officer_signature, officer_public_key, officer_key_valid, void_signer_claimed \
+                     FROM lab_signer_crl_entry_proof WHERE intent_id = $1",
+                    &[&intent_id],
+                )
+                .map_err(|_| Refusal::Database)?
+                .into_iter()
+                .map(|row| EntryProof {
+                    kind: row.get(0),
+                    serial: row.get(1),
+                    revoked_at: row.get(2),
+                    reason_code: row.get(3),
+                    legacy: row.get(4),
+                    ca_id: row.get(5),
+                    application_id: row.get(6),
+                    revocation_id: row.get(7),
+                    ra: row
+                        .get::<_, Option<String>>(8)
+                        .map(|ra_id| RaRevocationProof {
+                            ra_id,
+                            request_id: row.get(9),
+                            reason: row.get(10),
+                            signed_at_unix: row.get(11),
+                            signature: row.get(12),
+                            public_key_sec1: row.get(13),
+                        }),
+                    officer: row
+                        .get::<_, Option<String>>(14)
+                        .map(|decision| EntryOfficerProof {
+                            decision,
+                            key_id: row.get(15),
+                            issued_at: row.get(16),
+                            signature: row.get(17),
+                            public_key_sec1: row.get(18),
+                            key_valid: row.get(19),
+                        }),
+                    void_signer_claimed: row.get(20),
+                })
+                .collect())
         }
 
         fn claim_crl(&mut self, intent_id: &str, tbs_sha256: &[u8]) -> Result<(), Refusal> {
@@ -888,6 +1107,7 @@ pub mod service {
                  AND management_crl_publication_version() = 1 \
                  AND management_audit_checkpoint_version() = 1 \
                  AND management_authorization_proofs_version() = 1 \
+                 AND management_revocation_proofs_version() = 1 \
                  AND NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = current_user \
                      AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb)) \
                  AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -1435,6 +1655,7 @@ mod tests {
 
     struct FakeCrlStore {
         record: Option<CrlIntentRecord>,
+        proofs: Vec<EntryProof>,
         claims: Vec<String>,
     }
 
@@ -1448,6 +1669,13 @@ mod tests {
                     record.claimed = self.claims.iter().any(|claim| claim == intent_id);
                     record
                 }))
+        }
+        fn crl_entry_proofs(&mut self, intent_id: &str) -> Result<Vec<EntryProof>, Refusal> {
+            Ok(if intent_id == "crl-1" {
+                self.proofs.clone()
+            } else {
+                vec![]
+            })
         }
         fn claim_crl(&mut self, intent_id: &str, _tbs_sha256: &[u8]) -> Result<(), Refusal> {
             if self.claims.iter().any(|claim| claim == intent_id) {
@@ -1463,6 +1691,84 @@ mod tests {
         store: FakeCrlStore,
         tbs_der: Vec<u8>,
         issuer: Certificate,
+        officer_key: SecretKey,
+    }
+
+    const REVOCATION: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    /// An officer's signed approval of the revocation of `serial`.
+    fn revocation_proof(
+        key: &SecretKey,
+        serial: &[u8],
+        revoked_at: &str,
+        reason_code: i16,
+    ) -> EntryProof {
+        let issued_at = "2026-11-07T09:59:00.000Z";
+        let claim = revocation_decision_claim(&RevocationDecision {
+            decision: "approve",
+            ca_id: CA,
+            application_id: APPLICATION,
+            revocation_id: REVOCATION,
+            serial,
+            reason_code,
+            key_id: "officer-1",
+            issued_at,
+        })
+        .unwrap();
+        EntryProof {
+            kind: "revocation".into(),
+            serial: serial.to_vec(),
+            revoked_at: revoked_at.into(),
+            reason_code,
+            legacy: false,
+            ca_id: CA.into(),
+            application_id: Some(APPLICATION.into()),
+            revocation_id: Some(REVOCATION.into()),
+            ra: None,
+            officer: Some(EntryOfficerProof {
+                decision: "approve".into(),
+                key_id: "officer-1".into(),
+                issued_at: issued_at.into(),
+                signature: sign_der(key, claim.as_bytes()),
+                public_key_sec1: public_sec1(key),
+                key_valid: true,
+            }),
+            void_signer_claimed: None,
+        }
+    }
+
+    /// The confirming officer's signed void of `serial`.
+    fn void_proof(key: &SecretKey, serial: &[u8], voided_at: &str) -> EntryProof {
+        let issued_at = "2026-11-07T10:59:00.000Z";
+        let claim = void_confirmation_claim(&VoidConfirmation {
+            ca_id: CA,
+            application_id: APPLICATION,
+            serial,
+            signer_claimed: true,
+            key_id: "officer-2",
+            issued_at,
+        })
+        .unwrap();
+        EntryProof {
+            kind: "void".into(),
+            serial: serial.to_vec(),
+            revoked_at: voided_at.into(),
+            reason_code: 0,
+            legacy: false,
+            ca_id: CA.into(),
+            application_id: Some(APPLICATION.into()),
+            revocation_id: None,
+            ra: None,
+            officer: Some(EntryOfficerProof {
+                decision: "approve".into(),
+                key_id: "officer-2".into(),
+                issued_at: issued_at.into(),
+                signature: sign_der(key, claim.as_bytes()),
+                public_key_sec1: public_sec1(key),
+                key_valid: true,
+            }),
+            void_signer_claimed: Some(true),
+        }
     }
 
     fn crl_fixture() -> CrlFixture {
@@ -1494,8 +1800,13 @@ mod tests {
         .unwrap()
         .to_der()
         .unwrap();
+        let officer_key = SecretKey::random(&mut rand::rngs::OsRng);
+        let proofs = vec![
+            revocation_proof(&officer_key, &[0x41, 0x01], "2026-11-07T10:00:00Z", 1),
+            void_proof(&officer_key, &[0x42, 0x02], "2026-11-07T11:00:00Z"),
+        ];
         let record = CrlIntentRecord {
-            ca_id: "ca-1".into(),
+            ca_id: CA.into(),
             crl_number: 3,
             tbs_sha256: Some(Sha256::digest(&tbs_der).to_vec()),
             this_update: "2026-11-08T00:00:00Z".into(),
@@ -1510,10 +1821,12 @@ mod tests {
             ca_key,
             store: FakeCrlStore {
                 record: Some(record),
+                proofs,
                 claims: vec![],
             },
             tbs_der,
             issuer,
+            officer_key,
         }
     }
 
@@ -1524,7 +1837,123 @@ mod tests {
     fn sign_crl(f: &mut CrlFixture) -> Result<Vec<u8>, Refusal> {
         let key = f.ca_key.clone();
         let tbs = f.tbs_der.clone();
-        sign_crl_intent(&mut f.store, "ca-1", &key, "crl-1", &tbs)
+        sign_crl_intent(&mut f.store, CA, &key, "crl-1", &tbs)
+    }
+
+    #[test]
+    fn every_crl_entry_needs_a_signed_proof_before_any_claim() {
+        let refused = |change: &dyn Fn(&mut CrlFixture)| {
+            let mut f = crl_fixture();
+            change(&mut f);
+            let result = sign_crl(&mut f);
+            assert!(
+                f.store.claims.is_empty(),
+                "a refused CRL request claimed the intent"
+            );
+            result.unwrap_err()
+        };
+        let other = SecretKey::random(&mut rand::rngs::OsRng);
+        // An entry without a proof, or a proof for nothing listed.
+        assert_eq!(
+            refused(&|f| {
+                f.store.proofs.pop();
+            }),
+            Refusal::Unauthorized
+        );
+        assert_eq!(
+            refused(&|f| {
+                let key = f.officer_key.clone();
+                f.store
+                    .proofs
+                    .push(void_proof(&key, &[0x43], "2026-11-07T12:00:00Z"));
+            }),
+            Refusal::Unauthorized
+        );
+        // Signed by another key, or for another reason or serial.
+        assert_eq!(
+            refused(&|f| f.store.proofs[0] =
+                revocation_proof(&other, &[0x41, 0x01], "2026-11-07T10:00:00Z", 1)
+                    .with_key(&f.officer_key)),
+            Refusal::AuthorizationSignature
+        );
+        assert_eq!(
+            refused(&|f| f.store.proofs[0].officer.as_mut().unwrap().issued_at =
+                "2026-11-07T09:59:01.000Z".into()),
+            Refusal::AuthorizationSignature
+        );
+        assert_eq!(
+            refused(&|f| f.store.proofs[1].void_signer_claimed = Some(false)),
+            Refusal::AuthorizationSignature
+        );
+        // A rejection, a key not active when it signed, no officer at all.
+        assert_eq!(
+            refused(&|f| f.store.proofs[0].officer.as_mut().unwrap().decision = "reject".into()),
+            Refusal::Unauthorized
+        );
+        assert_eq!(
+            refused(&|f| f.store.proofs[1].officer.as_mut().unwrap().key_valid = false),
+            Refusal::Unauthorized
+        );
+        assert_eq!(
+            refused(&|f| f.store.proofs[0].officer = None),
+            Refusal::Unauthorized
+        );
+        // A void listed with a reason code.
+        assert_eq!(
+            refused(&|f| f.store.proofs[1].kind = "revocation".into()),
+            Refusal::Unauthorized
+        );
+    }
+
+    impl EntryProof {
+        /// The same proof, claiming to be signed by `key`'s public key.
+        fn with_key(mut self, key: &SecretKey) -> Self {
+            self.officer.as_mut().unwrap().public_key_sec1 = public_sec1(key);
+            self
+        }
+    }
+
+    #[test]
+    fn legacy_entries_and_ra_revocations_are_listed() {
+        // Recorded before proofs were required: listed without one.
+        let mut f = crl_fixture();
+        f.store.proofs[0].officer = None;
+        f.store.proofs[0].legacy = true;
+        assert!(sign_crl(&mut f).is_ok());
+        // An RA's signed revocation, checked with the RA's key.
+        let ra_key = SecretKey::random(&mut rand::rngs::OsRng);
+        let ra = |reason: &str| {
+            let message = ra_revocation_message(&RaRevocationRequest {
+                ra_id: "lab-ra",
+                ca_id: uuid_bytes(CA).unwrap(),
+                request_id: uuid_bytes(RA_REQUEST).unwrap(),
+                serial: &[0x41, 0x01],
+                reason_code: 1,
+                reason,
+                signed_at_unix: 1_794_000_000,
+            })
+            .unwrap();
+            RaRevocationProof {
+                ra_id: "lab-ra".into(),
+                request_id: RA_REQUEST.into(),
+                reason: "key compromise".into(),
+                signed_at_unix: 1_794_000_000,
+                signature: sign_der(&ra_key, &message),
+                public_key_sec1: public_sec1(&ra_key),
+            }
+        };
+        let mut f = crl_fixture();
+        f.store.proofs[0].officer = None;
+        f.store.proofs[0].ra = Some(ra("key compromise"));
+        assert!(sign_crl(&mut f).is_ok());
+        let mut f = crl_fixture();
+        f.store.proofs[0].officer = None;
+        f.store.proofs[0].ra = Some(ra("another reason"));
+        assert_eq!(
+            sign_crl(&mut f).unwrap_err(),
+            Refusal::AuthorizationSignature
+        );
+        assert!(f.store.claims.is_empty());
     }
 
     #[test]

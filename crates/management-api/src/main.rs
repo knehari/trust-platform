@@ -586,7 +586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0041")?;
+    .map_err(|_| "management views unavailable or older than migration 0042")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -791,6 +791,14 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/void-proposal",
             axum::routing::post(certificate_void::propose_void),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation-claims",
+            axum::routing::post(certificate_void::prepare_void_confirmation),
+        )
+        .route(
+            "/v1/cas/{ca_id}/certificate-applications/{application_id}/revocation-requests/{revocation_id}/decision-claims",
+            axum::routing::post(certificate_revocation::prepare_revocation_decision),
         )
         .route(
             "/v1/cas/{ca_id}/certificate-applications/{application_id}/void-confirmation",
@@ -1111,6 +1119,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_ra_revocation_version() = 1 \
              AND management_crl_on_revocation_version() = 1 \
              AND management_authorization_proofs_version() = 1 \
+             AND management_revocation_proofs_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -2124,25 +2133,34 @@ mod tests {
     }
 
     /// Registration officer keys for the application tests (migration 0041):
-    /// [0x66; 32] for officer-http and [0x77; 32] for requester-http. The
+    /// [0x66; 32] for officer-http, [0x77; 32] for requester-http and
+    /// [0x88; 32] for officer-2-http. The
     /// tests register them as the owner; registering twice is a no-op.
     fn officer_key_sql() -> String {
         use p256::ecdsa::SigningKey;
-        [(0x66u8, "officer-http"), (0x77, "requester-http")]
-            .iter()
-            .map(|(scalar, subject)| {
-                let point = SigningKey::from_slice(&[*scalar; 32])
-                    .unwrap()
-                    .verifying_key()
-                    .to_encoded_point(false);
-                let hex: String = point.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-                format!(
-                    "INSERT INTO registration_officer_key (key_id, issuer, subject, public_key_sec1) \
+        [
+            (0x66u8, "officer-http"),
+            (0x77, "requester-http"),
+            (0x88, "officer-2-http"),
+        ]
+        .iter()
+        .map(|(scalar, subject)| {
+            let point = SigningKey::from_slice(&[*scalar; 32])
+                .unwrap()
+                .verifying_key()
+                .to_encoded_point(false);
+            let hex: String = point
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!(
+                "INSERT INTO registration_officer_key (key_id, issuer, subject, public_key_sec1) \
                      VALUES ('{subject}-p256', 'https://issuer.example.test', '{subject}', \
                      decode('{hex}', 'hex')) ON CONFLICT DO NOTHING;"
-                )
-            })
-            .collect()
+            )
+        })
+        .collect()
     }
 
     /// The base64 DER signature of an officer test key over a claim.
@@ -4996,26 +5014,74 @@ mod tests {
             (status, requested["status"].as_str()),
             (StatusCode::CREATED, Some("REVOCATION_REQUESTED"))
         );
+        // Revocation decisions are signed (migration 0042).
         let decision = format!(
             "{revocations}/{}/decision",
+            requested["revocation_id"].as_str().unwrap()
+        );
+        let decision_claims = format!(
+            "{revocations}/{}/decision-claims",
             requested["revocation_id"].as_str().unwrap()
         );
         assert_eq!(
             send(
                 "POST",
                 &requester,
-                decision.clone(),
-                Some(json!({"decision": "approve", "reason": "self"}))
+                decision_claims.clone(),
+                Some(json!({"decision": "approve"}))
             )
             .await
             .0,
             StatusCode::FORBIDDEN
         );
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                decision.clone(),
+                Some(json!({"decision": "approve", "reason": "unsigned"}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, revocation_claim) = send(
+            "POST",
+            &officer,
+            decision_claims.clone(),
+            Some(json!({"decision": "approve"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(revocation_claim["claim"]
+            .as_str()
+            .unwrap()
+            .starts_with("trust-platform/revocation-authorization/v1;decision=approve;"));
+        assert!(revocation_claim["claim"]
+            .as_str()
+            .unwrap()
+            .contains(";reason_code=1;key=officer-http-p256;"));
+        let signed_revocation = |decision: &str, claim: &serde_json::Value, scalar: u8| {
+            Some(json!({"decision": decision, "reason": "confirmed",
+                        "issued_at": claim["issued_at"],
+                        "signature_der_base64": officer_signature(scalar, claim)}))
+        };
+        assert_eq!(
+            send(
+                "POST",
+                &officer,
+                decision.clone(),
+                signed_revocation("approve", &revocation_claim, 0x88)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
         let (status, decided) = send(
             "POST",
             &officer,
             decision.clone(),
-            Some(json!({"decision": "approve", "reason": "confirmed"})),
+            signed_revocation("approve", &revocation_claim, 0x66),
         )
         .await;
         assert_eq!(
@@ -5026,12 +5092,19 @@ mod tests {
             ),
             (StatusCode::CREATED, Some("REVOKED"), true)
         );
+        let (_, reject_claim) = send(
+            "POST",
+            &officer,
+            decision_claims,
+            Some(json!({"decision": "reject"})),
+        )
+        .await;
         assert_eq!(
             send(
                 "POST",
                 &officer,
                 decision,
-                Some(json!({"decision": "reject", "reason": "again"}))
+                signed_revocation("reject", &reject_claim, 0x66)
             )
             .await
             .0,
@@ -5304,7 +5377,14 @@ mod tests {
         );
         let proposal = format!("{apps}/{second}/void-proposal");
         let confirmation = format!("{apps}/{second}/void-confirmation");
+        let confirmation_claims = format!("{apps}/{second}/void-confirmation-claims");
         let reason = json!({"reason": "signer refused before claiming"});
+        // Confirmations are signed (migration 0042).
+        let signed_void = |claim: &serde_json::Value, scalar: u8| {
+            Some(json!({"reason": "signer refused before claiming",
+                        "issued_at": claim["issued_at"],
+                        "signature_der_base64": officer_signature(scalar, claim)}))
+        };
         assert_eq!(
             send("POST", &requester, proposal.clone(), Some(reason.clone()))
                 .await
@@ -5312,9 +5392,14 @@ mod tests {
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            send("POST", &officer, confirmation.clone(), Some(reason.clone()))
-                .await
-                .0,
+            send(
+                "POST",
+                &officer,
+                confirmation_claims.clone(),
+                Some(json!({}))
+            )
+            .await
+            .0,
             StatusCode::NOT_FOUND
         );
         assert_eq!(
@@ -5338,17 +5423,66 @@ mod tests {
             ),
             (StatusCode::CREATED, Some("PROPOSED"), Some(false))
         );
+        // The proposer gets a claim but cannot confirm; an unsigned or
+        // wrongly signed confirmation is refused.
+        let (status, own_claim) = send(
+            "POST",
+            &officer,
+            confirmation_claims.clone(),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
         assert_eq!(
-            send("POST", &officer, confirmation.clone(), Some(reason.clone()))
-                .await
-                .0,
+            send(
+                "POST",
+                &officer,
+                confirmation.clone(),
+                signed_void(&own_claim, 0x66)
+            )
+            .await
+            .0,
             StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(
+                "POST",
+                &officer_2,
+                confirmation.clone(),
+                Some(reason.clone())
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, void_claim) = send(
+            "POST",
+            &officer_2,
+            confirmation_claims.clone(),
+            Some(json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(void_claim["claim"]
+            .as_str()
+            .unwrap()
+            .starts_with("trust-platform/void-authorization/v1;"));
+        assert_eq!(
+            send(
+                "POST",
+                &officer_2,
+                confirmation.clone(),
+                signed_void(&void_claim, 0x66)
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
         );
         let (status, voided) = send(
             "POST",
             &officer_2,
             confirmation.clone(),
-            Some(reason.clone()),
+            signed_void(&void_claim, 0x88),
         )
         .await;
         assert_eq!(
@@ -5939,6 +6073,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|entry| hex_bytes(entry.serial_number.as_bytes()) == second_serial));
+
+        // What a compromised API could still write (ADR-0029): a revocation
+        // recorded through the unsigned function, without an officer's
+        // signature. The signer refuses any CRL that would list it.
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "SELECT 1 FROM request_certificate_revocation_lab('https://issuer.example.test', 'officer-http', \
+                    '{owner_ca}', (SELECT application_id FROM certificate_application WHERE ca_id = '{owner_ca}' \
+                    AND subject_cn = 'www.ra2.lab.invalid'), 1::smallint, 'forged', gen_random_uuid(), \
+                    digest('forged-request', 'sha256'));
+                 SELECT 1 FROM decide_certificate_revocation_lab('https://issuer.example.test', 'officer-2-http', \
+                    '{owner_ca}', (SELECT application_id FROM certificate_application WHERE ca_id = '{owner_ca}' \
+                    AND subject_cn = 'www.ra2.lab.invalid'), (SELECT q.revocation_id FROM certificate_revocation_request q \
+                    JOIN certificate_application a ON a.application_id = q.application_id \
+                    WHERE a.subject_cn = 'www.ra2.lab.invalid'), 'approve', 'forged', gen_random_uuid(), \
+                    digest('forged-decision', 'sha256'));"
+            ))
+        })
+        .await
+        .unwrap();
+        let (status, refused) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        assert_eq!(
+            (status, refused["status"].as_str()),
+            (StatusCode::BAD_GATEWAY, Some("RECONCILIATION_REQUIRED")),
+            "{refused}"
+        );
         let _ = std::fs::remove_dir_all(key_dir);
     }
 

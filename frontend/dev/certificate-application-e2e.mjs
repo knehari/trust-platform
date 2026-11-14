@@ -221,9 +221,19 @@ try {
     const requested = await send('POST', requests, requester, { reason_code: 1, reason: 'private key exposed' });
     assert.deepEqual([requested.status, requested.body.status], [201, 'REVOCATION_REQUESTED']);
     assert.equal((await send('POST', requests, officer, { reason_code: 4, reason: 'again' })).status, 409);
+    // The officer signs the revocation decision (ADR-0029); the signer checks
+    // that signature again before it lists the serial.
     const decision = `${requests}/${requested.body.revocation_id}/decision`;
-    assert.equal((await send('POST', decision, requester, { decision: 'approve', reason: 'self' })).status, 403);
-    const decided = await send('POST', decision, officer, { decision: 'approve', reason: 'exposure confirmed' });
+    const claims = `${requests}/${requested.body.revocation_id}/decision-claims`;
+    assert.equal((await send('POST', claims, requester, { decision: 'approve' })).status, 403);
+    assert.equal((await send('POST', decision, officer, { decision: 'approve', reason: 'unsigned' })).status, 400);
+    const claim = await send('POST', claims, officer, { decision: 'approve' });
+    assert.equal(claim.status, 200);
+    assert.match(claim.body.claim, new RegExp(`^trust-platform/revocation-authorization/v1;decision=approve;ca=${issuingCa};application=${applicationId};revocation=${requested.body.revocation_id};serial=${serial};reason_code=1;key=lab-ra-officer-p256;`));
+    const signedBody = (keyName, text) => ({ decision: 'approve', reason: 'exposure confirmed', issued_at: claim.body.issued_at,
+      signature_der_base64: sign(keyName, text) });
+    assert.equal((await send('POST', decision, officer, signedBody('lab-ra-officer-2', claim.body.claim))).status, 422);
+    const decided = await send('POST', decision, officer, signedBody('lab-ra-officer', claim.body.claim));
     assert.deepEqual([decided.status, decided.body.status], [201, 'REVOKED']);
     const listed = await send('GET', applications, officer);
     const mine = listed.body.find(item => item.application_id === applicationId);
@@ -269,7 +279,7 @@ try {
     assert.equal((await send('POST', `${applications}/${pending.body.application_id}/issuance`, requester, {})).status, 409);
   });
 
-  await check('in the console, an officer prepares the claim, signs it outside the browser and records the approval (ADR-0028)', async () => {
+  await check('in the console, an officer signs the approval, then the revocation, outside the browser (ADR-0028, ADR-0029)', async () => {
     const submitted = await apply('console.lab.invalid', ['console.lab.invalid']);
     assert.equal(submitted.status, 201);
     const { chromium } = await import('playwright');
@@ -303,6 +313,37 @@ try {
     assert.equal(item.status, 'APPROVED');
     const issued = await send('POST', `${applications}/${submitted.body.application_id}/issuance`, officer, {});
     assert.deepEqual([issued.status, issued.body.status], [201, 'ISSUED']);
+
+    // The requester asks to revoke it; the officer signs the revocation in the
+    // console with the generic claim form (ADR-0029).
+    const asked = await send('POST', `${applications}/${submitted.body.application_id}/revocation-requests`, requester,
+      { reason_code: 4, reason: 'replaced by a new certificate' });
+    assert.equal(asked.status, 201);
+    const again = await chromium.launch({ headless: true,
+      ...(process.env.TRUST_E2E_CHROME_PATH ? { executablePath: process.env.TRUST_E2E_CHROME_PATH } : {}) });
+    try {
+      const page = await again.newPage();
+      page.setDefaultTimeout(15_000);
+      await page.goto(`http://127.0.0.1:5173/?view=requests&ca=${issuingCa}`);
+      await page.getByRole('button', { name: /Sign in with your organization/i }).click();
+      await page.locator('#username').fill('lab-ra-officer');
+      await page.locator('#password').fill(requiredEnv('TRUST_LAB_PW_RA_OFFICER'));
+      await page.locator('#kc-login').click();
+      await page.getByRole('tab', { name: /Revocation requested/ }).click();
+      const row = page.getByRole('row').filter({ hasText: 'console.lab.invalid' });
+      await row.getByRole('button', { name: 'Review revocation' }).click();
+      await page.getByLabel('Revocation decision reason for console.lab.invalid').fill('superseded, checked');
+      await page.getByRole('button', { name: 'Prepare revocation approval' }).click();
+      const claim = await page.getByLabel('Revocation of console.lab.invalid claim').inputValue();
+      assert.match(claim, new RegExp(`^trust-platform/revocation-authorization/v1;decision=approve;ca=${issuingCa};application=${submitted.body.application_id};revocation=${asked.body.revocation_id};serial=${issued.body.serial_hex};reason_code=4;`));
+      await page.getByLabel('Revocation of console.lab.invalid signature').fill(sign('lab-ra-officer', claim));
+      await page.getByRole('button', { name: 'Record revocation' }).click();
+      await page.getByRole('status').filter({ hasText: 'revoked with your signed decision' }).waitFor();
+    } finally {
+      await again.close();
+    }
+    const revoked = (await send('GET', applications, officer)).body.find(row => row.application_id === submitted.body.application_id);
+    assert.equal(revoked.status, 'REVOKED');
   });
 
   await check('an approval recorded without a signed proof is never signed (ADR-0028)', async () => {
@@ -344,11 +385,19 @@ try {
     const proposed = await send('POST', `${applications}/${id}/void-proposal`, officer, reason);
     assert.deepEqual([proposed.status, proposed.body.void_status, proposed.body.signer_claimed], [201, 'PROPOSED', false]);
     assert.equal((await send('POST', `${applications}/${id}/void-proposal`, officer2, reason)).status, 409);
-    assert.equal((await send('POST', `${applications}/${id}/void-confirmation`, officer, reason)).status, 403);
+    // The confirming officer signs (ADR-0029); the proposer cannot confirm.
+    const confirmClaim = async token => send('POST', `${applications}/${id}/void-confirmation-claims`, token, {});
+    const confirmBody = (claim, keyName) => ({ ...reason, issued_at: claim.body.issued_at, signature_der_base64: sign(keyName, claim.body.claim) });
+    const own = await confirmClaim(officer);
+    assert.equal((await send('POST', `${applications}/${id}/void-confirmation`, officer, confirmBody(own, 'lab-ra-officer'))).status, 403);
+    assert.equal((await send('POST', `${applications}/${id}/void-confirmation`, officer2, reason)).status, 400);
+    const voidClaim = await confirmClaim(officer2);
+    assert.match(voidClaim.body.claim, new RegExp(`^trust-platform/void-authorization/v1;ca=${issuingCa};application=${id};serial=[0-9a-f]+;signer_claimed=false;key=lab-ra-officer-2-p256;`));
     const key = randomUUID();
-    const voided = await send('POST', `${applications}/${id}/void-confirmation`, officer2, reason, key);
+    const body = confirmBody(voidClaim, 'lab-ra-officer-2');
+    const voided = await send('POST', `${applications}/${id}/void-confirmation`, officer2, body, key);
     assert.deepEqual([voided.status, voided.body.status], [201, 'VOIDED']);
-    const replay = await send('POST', `${applications}/${id}/void-confirmation`, officer2, reason, key);
+    const replay = await send('POST', `${applications}/${id}/void-confirmation`, officer2, body, key);
     assert.deepEqual([replay.status, replay.body.voided_at], [200, voided.body.voided_at]);
     const listed = await item();
     assert.deepEqual([listed.status, listed.void_status, listed.void_serial_hex, listed.void_proposed_by_reader],

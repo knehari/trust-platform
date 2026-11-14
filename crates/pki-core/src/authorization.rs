@@ -11,6 +11,11 @@
 //! the stored application (`certificate_decision_claim`, migration 0041). The
 //! signer and the audit tool rebuild it here from the same facts, so neither
 //! the API nor the database can approve an issuance without the officer's key.
+//!
+//! The same holds for what a CRL lists (ADR-0029): an officer's approval of a
+//! revocation request, and the officer's confirmation of a void (ADR-0020),
+//! are signed claims too. RA-signed revocations are covered by
+//! `ra_request::ra_revocation_message`.
 
 /// A field that would break the claim's `key=value;` layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +88,74 @@ pub fn officer_decision_claim(decision: &OfficerDecision<'_>) -> Result<String, 
         extensions,
         plain(decision.key_id)?,
         plain(decision.issued_at)?,
+    ))
+}
+
+/// What a registration officer signs to approve or reject a revocation
+/// request. The free-text reason is not part of it; the reason code is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevocationDecision<'a> {
+    /// `approve` or `reject`.
+    pub decision: &'a str,
+    pub ca_id: &'a str,
+    pub application_id: &'a str,
+    pub revocation_id: &'a str,
+    /// The serial's DER content octets.
+    pub serial: &'a [u8],
+    /// RFC 5280 reason code.
+    pub reason_code: i16,
+    pub key_id: &'a str,
+    pub issued_at: &'a str,
+}
+
+/// The revocation claim text (version 1).
+pub fn revocation_decision_claim(
+    decision: &RevocationDecision<'_>,
+) -> Result<String, InvalidClaimField> {
+    if !matches!(decision.decision, "approve" | "reject") || decision.serial.is_empty() {
+        return Err(InvalidClaimField);
+    }
+    Ok(format!(
+        "trust-platform/revocation-authorization/v1;decision={};ca={};application={};\
+         revocation={};serial={};reason_code={};key={};issued_at={}",
+        decision.decision,
+        plain(decision.ca_id)?,
+        plain(decision.application_id)?,
+        plain(decision.revocation_id)?,
+        hex(decision.serial),
+        decision.reason_code,
+        plain(decision.key_id)?,
+        plain(decision.issued_at)?,
+    ))
+}
+
+/// What the second registration officer signs to confirm a proposed void:
+/// the serial is listed on every later CRL (ADR-0020).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoidConfirmation<'a> {
+    pub ca_id: &'a str,
+    pub application_id: &'a str,
+    pub serial: &'a [u8],
+    /// Whether the signer had claimed the ambiguous intent.
+    pub signer_claimed: bool,
+    pub key_id: &'a str,
+    pub issued_at: &'a str,
+}
+
+/// The void confirmation claim text (version 1).
+pub fn void_confirmation_claim(void: &VoidConfirmation<'_>) -> Result<String, InvalidClaimField> {
+    if void.serial.is_empty() {
+        return Err(InvalidClaimField);
+    }
+    Ok(format!(
+        "trust-platform/void-authorization/v1;ca={};application={};serial={};signer_claimed={};\
+         key={};issued_at={}",
+        plain(void.ca_id)?,
+        plain(void.application_id)?,
+        hex(void.serial),
+        void.signer_claimed,
+        plain(void.key_id)?,
+        plain(void.issued_at)?,
     ))
 }
 
@@ -165,5 +238,64 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    // tests/management_revocation_proofs.sql asserts the same texts.
+    #[test]
+    fn revocation_and_void_claims_match_the_database() {
+        let revocation = RevocationDecision {
+            decision: "approve",
+            ca_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            application_id: "11111111-1111-4111-8111-111111111111",
+            revocation_id: "22222222-2222-4222-8222-222222222222",
+            serial: &[0x0a, 0xff],
+            reason_code: 1,
+            key_id: "lab-ra-officer-p256",
+            issued_at: "2026-11-11T09:00:00.000Z",
+        };
+        assert_eq!(
+            revocation_decision_claim(&revocation).unwrap(),
+            "trust-platform/revocation-authorization/v1;decision=approve;\
+             ca=dddddddd-dddd-4ddd-8ddd-dddddddddddd;application=11111111-1111-4111-8111-111111111111;\
+             revocation=22222222-2222-4222-8222-222222222222;serial=0aff;reason_code=1;\
+             key=lab-ra-officer-p256;issued_at=2026-11-11T09:00:00.000Z"
+        );
+        let void = VoidConfirmation {
+            ca_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            application_id: "11111111-1111-4111-8111-111111111111",
+            serial: &[0x0a, 0xff],
+            signer_claimed: false,
+            key_id: "lab-ra-officer-2-p256",
+            issued_at: "2026-11-11T09:00:00.000Z",
+        };
+        assert_eq!(
+            void_confirmation_claim(&void).unwrap(),
+            "trust-platform/void-authorization/v1;ca=dddddddd-dddd-4ddd-8ddd-dddddddddddd;\
+             application=11111111-1111-4111-8111-111111111111;serial=0aff;signer_claimed=false;\
+             key=lab-ra-officer-2-p256;issued_at=2026-11-11T09:00:00.000Z"
+        );
+        for bad in [
+            RevocationDecision {
+                decision: "revoke",
+                ..revocation.clone()
+            },
+            RevocationDecision {
+                serial: &[],
+                ..revocation.clone()
+            },
+            RevocationDecision {
+                key_id: "a;b",
+                ..revocation.clone()
+            },
+        ] {
+            assert_eq!(revocation_decision_claim(&bad), Err(InvalidClaimField));
+        }
+        assert_eq!(
+            void_confirmation_claim(&VoidConfirmation {
+                issued_at: "x=y",
+                ..void
+            }),
+            Err(InvalidClaimField)
+        );
     }
 }
