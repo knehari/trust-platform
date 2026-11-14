@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, apiGet, apiPost } from './api';
-import { Icon, Notice, StatusBadge, toast, type NoticeTone } from './ui';
+import { Icon, Notice, StatusBadge, Tag, toast, type NoticeTone } from './ui';
+import { CopyJsonButton, DetailDrawer, DrawerSection, Fact } from './DetailDrawer';
+import { crlElapsed, crlState } from './crl-validity';
 import { PemBlock, writeError, type Application } from './RequestsPanel';
 
 interface PublishedCrl {
@@ -54,6 +56,7 @@ export function CrlPanel({ caId, token, canPublish, onUnauthorized, onOpenReques
   const [published, setPublished] = useState<{ number: number; pem: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [detailNumber, setDetailNumber] = useState<number | null>(null);
   const key = useRef(crypto.randomUUID());
   const base = `/v1/cas/${encodeURIComponent(caId)}`;
 
@@ -149,11 +152,58 @@ export function CrlPanel({ caId, token, canPublish, onUnauthorized, onOpenReques
       {crls && crls.length > 0 && <div className="ui-table-wrap"><table className="ui-table" aria-label="Published CRLs">
         <thead><tr><th>CRL</th><th>Entries</th><th>Valid</th><th>SHA-256</th><th className="ui-col-actions"><span className="sr-only">Actions</span></th></tr></thead>
         <tbody>{crls.map(row => <tr key={row.crl_number}>
-          <td><strong>{row.crl_number}</strong></td><td>{row.entry_count}</td><td className="ui-nowrap">{displayDate(row.this_update)}<div className="ui-sub">until {displayDate(row.next_update)}</div></td>
+          <td><button type="button" className="link-button" aria-label={`CRL ${row.crl_number} details`} onClick={() => setDetailNumber(row.crl_number)}><strong>{row.crl_number}</strong></button></td><td>{row.entry_count}</td><td className="ui-nowrap">{displayDate(row.this_update)}<div className="ui-sub">until {displayDate(row.next_update)}</div></td>
           <td className="mono" title={row.crl_sha256}>{row.crl_sha256.slice(0, 10)}…</td>
-          <td className="ui-col-actions"><button type="button" className="ui-button ui-button-ghost ui-button-sm" aria-label={`Download CRL ${row.crl_number} (DER)`} onClick={() => void download(row.crl_number)}><Icon name="download" size={15} />DER</button></td>
+          <td className="ui-col-actions"><button type="button" className="ui-button ui-button-ghost ui-button-sm" onClick={() => setDetailNumber(row.crl_number)}><Icon name="info" size={15} />Details</button><button type="button" className="ui-button ui-button-ghost ui-button-sm" aria-label={`Download CRL ${row.crl_number} (DER)`} onClick={() => void download(row.crl_number)}><Icon name="download" size={15} />DER</button></td>
         </tr>)}</tbody>
       </table></div>}
     </div>
+    {crls && detailNumber !== null && (() => {
+      const index = crls.findIndex(row => row.crl_number === detailNumber);
+      if (index < 0) return null;
+      const row = crls[index];
+      return <CrlDrawer key={row.crl_number} crl={row} latestNumber={status?.latest_crl_number ?? null} distributionPoint={status?.distribution_point ?? null}
+        onDownload={() => void download(row.crl_number)} onClose={() => setDetailNumber(null)}
+        onPrevious={index > 0 ? () => setDetailNumber(crls[index - 1].crl_number) : null}
+        onNext={index < crls.length - 1 ? () => setDetailNumber(crls[index + 1].crl_number) : null}
+        position={`${index + 1} of ${crls.length}`} />;
+    })()}
   </section>;
+}
+
+/** Slide-over detail of one published CRL, from the metadata the API returned. */
+function CrlDrawer({ crl, latestNumber, distributionPoint, onDownload, onClose, onPrevious, onNext, position }: {
+  crl: PublishedCrl; latestNumber: number | null; distributionPoint: string | null; onDownload: () => void; onClose: () => void;
+  onPrevious: (() => void) | null; onNext: (() => void) | null; position: string;
+}) {
+  const now = Date.now();
+  const state = crlState(crl.crl_number, latestNumber, crl.next_update, now);
+  const elapsed = crlElapsed(crl.this_update, crl.next_update, now);
+  const tone = state === 'CURRENT' ? 'good' : state === 'EXPIRED' ? 'bad' : 'neutral';
+  const hoursLeft = Math.round((Date.parse(crl.next_update) - now) / 3_600_000);
+  const remaining = state === 'SUPERSEDED' ? `Replaced by CRL ${latestNumber}` : hoursLeft <= 0 ? 'Next update passed'
+    : hoursLeft < 48 ? `${hoursLeft} hour${hoursLeft === 1 ? '' : 's'} left` : `${Math.round(hoursLeft / 24)} days left`;
+  return <DetailDrawer label="CRL detail" eyebrow="Certificate revocation list" icon="revocation" tone={tone} closeLabel="Close CRL detail" onClose={onClose}
+    onPrevious={onPrevious} onNext={onNext} position={position}
+    title={`CRL ${crl.crl_number}`}
+    subtitle={`${crl.entry_count} revoked ${crl.entry_count === 1 ? 'certificate' : 'certificates'} · published ${displayDate(crl.published_at)}`}
+    badges={<StatusBadge status={state} />}
+    actions={<><button type="button" className="ui-button ui-button-secondary ui-button-sm" onClick={onDownload}><Icon name="download" size={15} />Download DER</button><CopyJsonButton json={JSON.stringify(crl, null, 2)} /></>}
+    summary={elapsed === null ? undefined : <div className="ui-validity">
+      <div className="ui-validity-head"><span className="ui-summary-label">Validity window</span><Tag tone={tone}>{remaining}</Tag></div>
+      <div className={`ui-validity-bar ui-tone-${tone}`}><span style={{ width: `${Math.max(1.5, elapsed * 100)}%` }} /><i style={{ left: `${elapsed * 100}%` }} title="Now" /></div>
+      <div className="ui-validity-dates"><div><small>This update</small><strong>{displayDate(crl.this_update)}</strong></div><div><small>Next update</small><strong>{displayDate(crl.next_update)}</strong></div></div>
+    </div>}
+    note="Metadata recorded when the CRL was signed and checked. Relying parties verify the CRL itself against the issuing authority's certificate.">
+    <DrawerSection title="Content">
+      <Fact label="CRL number">{crl.crl_number}</Fact>
+      <Fact label="Entries">{crl.entry_count}</Fact>
+      <Fact label="State">{state === 'CURRENT' ? 'Latest CRL, before its next update' : state === 'EXPIRED' ? 'Latest CRL, past its next update' : `Superseded by CRL ${latestNumber}`}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Integrity and publication">
+      <Fact label="SHA-256" copy={crl.crl_sha256} mono>{crl.crl_sha256.match(/.{1,8}/gu)?.join(' ') ?? crl.crl_sha256}</Fact>
+      <Fact label="Published">{displayDate(crl.published_at)}</Fact>
+      <Fact label="Distribution point" {...(distributionPoint ? { copy: distributionPoint } : {})} mono={Boolean(distributionPoint)}>{distributionPoint ?? 'Not configured by the database owner'}</Fact>
+    </DrawerSection>
+  </DetailDrawer>;
 }
