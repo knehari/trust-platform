@@ -91,6 +91,7 @@ The laboratory stack is up, on loopback only:
   Identity provider  https://127.0.0.1:8443/realms/trust-lab   (Keycloak, lab certificate)
   Management API     https://127.0.0.1:8081/   (lab certificate)
   CRLs               http://127.0.0.1:8082/v1/public/crls/<ca_id>/latest.crl
+  Metrics            http://127.0.0.1:9464/metrics
 
 Your browser does not know the lab service CA. Either import
 .lab-keys/tls/ca.crt as a trusted authority in a test browser profile, or open

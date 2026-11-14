@@ -1,5 +1,6 @@
 -- Migration 0044: the dedicated background worker (ADR-0037). Run as the
--- migration owner after 0044 on a disposable database; every change is
+-- migration owner after 0045 (whose read-only metrics the role also holds,
+-- ADR-0038) on a disposable database; every change is
 -- rolled back. Before 0044 the first statement fails.
 BEGIN;
 
@@ -26,7 +27,9 @@ DECLARE
         'crl_publication_entries_lab(text,text,uuid,uuid)',
         'crl_renewal_candidates_lab(text,text)',
         'management_dedicated_worker_version()',
+        'management_operational_metrics_version()',
         'mark_crl_signing_uncertain_lab(text,text,uuid,uuid)',
+        'operational_metrics_lab()',
         'record_crl_signing_intent_lab(text,text,uuid,uuid,bytea)',
         'seal_audit_events_lab(integer)',
         'store_crl_lab(text,text,uuid,uuid,bytea)'];

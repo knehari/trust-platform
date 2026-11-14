@@ -310,26 +310,6 @@ pub(crate) async fn renew_due_crls(
     Ok(outcomes)
 }
 
-/// Runs a renewal pass shortly after startup, then every `interval`, on its
-/// own thread. A failed pass is logged and retried at the next tick.
-/// A CA with `publish_on_revocation` (migration 0040) becomes due as soon as
-/// a revocation is recorded; the next pass publishes it, so its delay is at
-/// most the interval.
-pub(crate) fn spawn_renewer(context: WorkerContext, interval: std::time::Duration) {
-    let runtime = tokio::runtime::Handle::current();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        loop {
-            if runtime.block_on(renew_due_crls(&context)).is_err() {
-                write_log(
-                    serde_json::json!({"event": "crl_auto_renewal", "status": "UNAVAILABLE"}),
-                );
-            }
-            std::thread::sleep(interval);
-        }
-    });
-}
-
 /// `POST /v1/cas/{ca_id}/crls`: 201 with the CRL; 200 when this key
 /// published it before (no PEM); 409 for an intent already journaled; 502
 /// RECONCILIATION_REQUIRED when the outcome is ambiguous; 503 without a

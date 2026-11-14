@@ -239,6 +239,11 @@ services:
       TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "60"
       # Ask the signer to sign the chain's head (ADR-0023).
       TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
+      # Operational metrics (ADR-0038), Prometheus text format; published on
+      # host loopback only.
+      TRUST_WORKER_METRICS_BIND: 0.0.0.0:9464
+    ports:
+      - "127.0.0.1:9464:9464"
     networks: [lab]
 
   # Separate CRL publication (ADR-0030): the publisher verifies each CRL and
