@@ -72,4 +72,33 @@ if "$ceremony" 'Bad/Name' 30 > /dev/null 2>&1; then fail 'invalid display name a
 [[ $(count trust-test) = "$before" && $(count trust-other) = 0 ]] || fail 'a refused ceremony created objects'
 pass 'refusals: existing label, wrong PIN, unknown token, invalid name; nothing created'
 
-echo 'PKCS#11 CA key tests passed.'
+# 5. The audit checkpoint key (ADR-0035): generated in its own token; only the
+#    public key leaves, and it is the token's.
+softhsm2-util --init-token --free --label trust-audit --so-pin test-only-so-pin --pin test-only-audit-pin >/dev/null
+export TRUST_SIGNER_AUDIT_PKCS11_MODULE=$module TRUST_SIGNER_AUDIT_PKCS11_TOKEN_LABEL=trust-audit \
+  TRUST_SIGNER_AUDIT_PKCS11_KEY_LABEL=audit-checkpoint TRUST_SIGNER_AUDIT_PKCS11_PIN=test-only-audit-pin
+"$ceremony" --audit-key > "$work/audit.pub.pem"
+[[ $(head -n 1 "$work/audit.pub.pem") = '-----BEGIN PUBLIC KEY-----' ]] || fail 'audit key: not a public key PEM'
+openssl pkey -pubin -in "$work/audit.pub.pem" -noout -text | grep -q 'ASN1 OID: prime256v1' || fail 'audit key curve'
+pkcs11-tool --module "$module" --token-label trust-audit --read-object --type pubkey \
+  --label audit-checkpoint -o "$work/audit.der" >/dev/null 2>&1
+[[ $(openssl pkey -pubin -inform DER -in "$work/audit.der" -outform DER | sha256sum) = \
+   $(openssl pkey -pubin -in "$work/audit.pub.pem" -outform DER | sha256sum) ]] || fail 'audit public key is not the token key'
+attributes=$(pkcs11-tool --module "$module" --token-label trust-audit --login --pin test-only-audit-pin \
+  --list-objects --type privkey 2>/dev/null)
+grep -q 'Access: *sensitive, always sensitive, never extractable, local$' <<<"$attributes" || fail "audit attributes: $attributes"
+if "$ceremony" --audit-key > /dev/null 2> "$work/err"; then fail 'audit key replaced'; fi
+grep -q 'KeyExists' "$work/err" || fail "second audit ceremony: $(cat "$work/err")"
+# The CA token's PIN does not open the audit token.
+if TRUST_SIGNER_AUDIT_PKCS11_PIN=$pin "$ceremony" --audit-key > /dev/null 2>&1; then fail 'CA PIN opened the audit token'; fi
+pass 'audit key: generated in its own token, only the public key out, not replaced'
+
+# 6. The signer refuses an audit key in the CA's token, and two audit keys.
+signer=${TRUST_SIGNER_BIN:-target/debug/trust-lab-signer}
+startup() { env TRUST_SIGNER_SOCKET="$work/s.sock" TRUST_SIGNER_DATABASE_URL=postgresql://none@127.0.0.1:1/none \
+  TRUST_SIGNER_CA_ID=dddddddd-dddd-4ddd-8ddd-dddddddddddd TRUST_SIGNER_AUDIT_STATE_FILE="$work/state.json" "$@" "$signer" 2>&1 || true; }
+startup TRUST_SIGNER_AUDIT_PKCS11_TOKEN_LABEL=trust-test | grep -q 'another token than the CA key' || fail 'audit key in the CA token accepted'
+startup TRUST_SIGNER_AUDIT_KEY_FILE="$work/none.pem" | grep -q 'at most one of' || fail 'two audit keys accepted'
+pass 'signer: audit key never in the CA token, never two sources'
+
+echo 'PKCS#11 CA and audit key tests passed.'

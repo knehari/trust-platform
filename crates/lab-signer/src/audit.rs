@@ -11,16 +11,13 @@
 //! who controls the whole database. Without the key, nobody can produce a
 //! checkpoint that `lab_verify_audit_chain` accepts.
 
-use p256::{
-    ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey},
-    SecretKey,
-};
+use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 use trust_pki_core::audit_chain::{
     audit_checkpoint_message, audit_event_digest, next_audit_hash, AuditEventFields, GENESIS_HASH,
 };
 
-use crate::{spki_der, Refusal};
+use crate::{spki_der, P256Key, Refusal};
 
 /// Links read per database call.
 pub const LINK_BATCH: i32 = 10_000;
@@ -90,7 +87,7 @@ pub trait AuditStore {
 }
 
 /// SHA-256 of the key's SubjectPublicKeyInfo DER.
-pub fn audit_key_id(key: &SecretKey) -> Result<[u8; 32], Refusal> {
+pub fn audit_key_id<K: P256Key + ?Sized>(key: &K) -> Result<[u8; 32], Refusal> {
     Ok(Sha256::digest(spki_der(key).map_err(|_| Refusal::AuditKeyFile)?).into())
 }
 
@@ -102,8 +99,8 @@ fn uuid16(value: &[u8]) -> Result<[u8; 16], Refusal> {
     <[u8; 16]>::try_from(value).map_err(|_| Refusal::AuditChain)
 }
 
-fn checkpoint_signature_valid(
-    key: &SecretKey,
+fn checkpoint_signature_valid<K: P256Key + ?Sized>(
+    key: &K,
     key_id: &[u8; 32],
     checkpoint: &StoredCheckpoint,
     chain_hash: &[u8; 32],
@@ -116,20 +113,22 @@ fn checkpoint_signature_valid(
     };
     checkpoint.key_id.as_slice() == key_id
         && checkpoint.chain_hash.as_slice() == chain_hash
-        && VerifyingKey::from(key.public_key())
-            .verify(
-                &audit_checkpoint_message(seq, chain_hash, checkpoint.signed_at_unix, key_id),
-                &signature,
-            )
-            .is_ok()
+        && key.public_key().is_ok_and(|public| {
+            VerifyingKey::from(public)
+                .verify(
+                    &audit_checkpoint_message(seq, chain_hash, checkpoint.signed_at_unix, key_id),
+                    &signature,
+                )
+                .is_ok()
+        })
 }
 
 /// Verifies the chain after `state` (or from the genesis without one) and
 /// signs a checkpoint of its head, which the store records. Refuses before
 /// signing when the database does not extend what this signer signed.
-pub fn sign_audit_checkpoint<S: AuditStore>(
+pub fn sign_audit_checkpoint<S: AuditStore, K: P256Key + ?Sized>(
     store: &mut S,
-    key: &SecretKey,
+    key: &K,
     state: Option<&CheckpointState>,
     now_unix: i64,
 ) -> Result<CheckpointOutcome, Refusal> {
@@ -226,8 +225,7 @@ pub fn sign_audit_checkpoint<S: AuditStore>(
         });
     }
     let message = audit_checkpoint_message(seq, &head, now_unix, &key_id);
-    let signature: Signature = SigningKey::from(key).sign(&message);
-    let signature = signature.to_der().as_bytes().to_vec();
+    let signature = key.sign_sha256(&message)?;
     store.record_checkpoint(seq, &head, &key_id, now_unix, &signature)?;
     Ok(CheckpointOutcome {
         state,
@@ -289,6 +287,7 @@ pub fn decode_state(text: &str) -> Result<CheckpointState, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::SecretKey;
 
     struct Event(&'static str, i64);
 

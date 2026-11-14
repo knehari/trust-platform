@@ -15,7 +15,7 @@
 // Run on a fresh stack with .env.lab loaded, after the other suites.
 import assert from 'node:assert/strict';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
-import { generateKeyPairSync, randomUUID, sign as signBytes } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, randomUUID, sign as signBytes, verify as verifySignature } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -595,6 +595,23 @@ try {
     assert.deepEqual(Object.keys(detail.body).sort(), ['ca_id', 'chain_sealed', 'decision', 'event_id', 'event_type', 'policy_version', 'recorded_at']);
   });
 
+  // The latest checkpoint, verified here with the audit public key that the
+  // key ceremony wrote to the host (ADR-0035), never with a key read from the
+  // database: its key identifier is that key's, and its signature covers the
+  // version-1 checkpoint message (trust_pki_core::audit_chain).
+  const verifyLatestCheckpoint = () => {
+    const publicKey = createPublicKey(readFileSync(join(repository, '.lab-keys', 'audit', 'audit-checkpoint.pub.pem')));
+    const spki = publicKey.export({ type: 'spki', format: 'der' });
+    const [seq, chainHash, signedAt, keyId, signature] = execSync(`${ownerPsql} -At -F '|' -f -`, {
+      input: "SELECT seq, encode(chain_hash, 'hex'), extract(epoch FROM signed_at)::bigint, encode(key_id, 'hex'),         encode(signature, 'hex') FROM audit_chain_checkpoint ORDER BY seq DESC LIMIT 1",
+    }).toString().trim().split('|');
+    assert.equal(keyId, createHash('sha256').update(spki).digest('hex'), 'the checkpoint names the audit token key');
+    const number = value => { const bytes = Buffer.alloc(8); bytes.writeBigInt64BE(BigInt(value)); return bytes; };
+    const message = Buffer.concat([Buffer.from('trust-platform:audit-checkpoint:v1\0'), number(seq),
+      Buffer.from(chainHash, 'hex'), number(signedAt), Buffer.from(keyId, 'hex')]);
+    assert.ok(verifySignature('sha256', message, publicKey, Buffer.from(signature, 'hex')), 'the checkpoint signature verifies');
+  };
+
   await check('the lab signer signs a checkpoint of the sealed chain with its audit key (ADR-0023)', async () => {
     // Read as the database owner: checkpoints are not exposed to readers.
     const query = "SELECT count(*) || ':' || coalesce(max(c.seq), 0) || ':' || \
@@ -606,9 +623,10 @@ try {
       if (Number(count) > 0) {
         assert.equal(matches, 'true', 'every checkpoint names its link hash');
         assert.ok(Number(seq) > 0);
+        verifyLatestCheckpoint();
         break;
       }
-      assert.ok(Date.now() < deadline, 'no checkpoint after 120 s: is TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS set and the signer given an audit key?');
+      assert.ok(Date.now() < deadline, 'no checkpoint after 120 s: is TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS set and the audit key generated (create-audit-key-hsm.sh)?');
       await new Promise(resolve => setTimeout(resolve, 3_000));
     }
   });

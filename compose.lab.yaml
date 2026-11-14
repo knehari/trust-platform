@@ -121,10 +121,11 @@ services:
     # scripts/lab/create-lab-root-hsm.sh inside a SoftHSM2 token kept in the
     # trust_signer_hsm volume, sensitive and never extractable; the signer
     # signs through PKCS#11 and never sees it. SoftHSM2 is a software token:
-    # no hardware protection, lab only. The entrypoint initialises the token
-    # once and drops the SO PIN before starting the signer. It runs as root
-    # to read the host-owned 0600 audit key, and hands its 0600 socket to the
-    # API's user (nobody).
+    # no hardware protection, lab only. The audit checkpoint key lives in a
+    # second token, trust-lab-audit, with its own PIN (ADR-0035). The
+    # entrypoint initialises both tokens once and drops the SO PIN before
+    # starting the signer, which hands its 0600 socket to the API's user
+    # (nobody). It mounts no key file.
     build:
       context: .
       dockerfile: Dockerfile.signer
@@ -141,13 +142,17 @@ services:
       TRUST_SIGNER_PKCS11_KEY_LABEL: ca-root-lab-issuing-ca
       TRUST_SIGNER_PKCS11_PIN: ${TRUST_LAB_HSM_PIN:?Run scripts/lab/init-env.sh first}
       TRUST_LAB_HSM_SO_PIN: ${TRUST_LAB_HSM_SO_PIN:?Run scripts/lab/init-env.sh first}
-      # Signed audit checkpoints (ADR-0023): a separate audit key, and the
-      # signer's memory of its last checkpoint, outside the database.
-      TRUST_SIGNER_AUDIT_KEY_FILE: /lab-keys/audit/audit-checkpoint.pem
+      # Signed audit checkpoints (ADR-0023): the audit key, in its own token
+      # with its own PIN (ADR-0035), made by
+      # scripts/lab/create-audit-key-hsm.sh; and the signer's memory of its
+      # last checkpoint, outside the database.
+      TRUST_SIGNER_AUDIT_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
+      TRUST_SIGNER_AUDIT_PKCS11_TOKEN_LABEL: trust-lab-audit
+      TRUST_SIGNER_AUDIT_PKCS11_KEY_LABEL: audit-checkpoint
+      TRUST_SIGNER_AUDIT_PKCS11_PIN: ${TRUST_LAB_HSM_AUDIT_PIN:?Run scripts/lab/init-env.sh first}
       TRUST_SIGNER_AUDIT_STATE_FILE: /var/lib/trust-signer/audit-state.json
     volumes:
       - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
-      - ./.lab-keys/audit:/lab-keys/audit:ro
       - trust_signer_socket:/run/trust-signer
       - trust_signer_state:/var/lib/trust-signer
       - trust_signer_hsm:/var/lib/softhsm/tokens

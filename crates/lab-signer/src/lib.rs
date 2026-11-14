@@ -28,7 +28,7 @@ use std::time::SystemTime;
 pub mod audit;
 pub mod ca_key;
 
-pub use ca_key::CaKey;
+pub use ca_key::P256Key;
 
 use p256::{
     ecdsa::Signature, elliptic_curve::sec1::ToEncodedPoint, pkcs8::DecodePrivateKey, SecretKey,
@@ -482,7 +482,7 @@ pub trait CrlStore {
 
 /// The DER SubjectPublicKeyInfo of a P-256 key, named-curve form, as in the
 /// registered issuer certificate.
-pub fn spki_der<K: CaKey + ?Sized>(key: &K) -> Result<Vec<u8>, Refusal> {
+pub fn spki_der<K: P256Key + ?Sized>(key: &K) -> Result<Vec<u8>, Refusal> {
     let point = key.public_key()?.to_encoded_point(false);
     SubjectPublicKeyInfoOwned {
         algorithm: AlgorithmIdentifierOwned {
@@ -508,7 +508,7 @@ pub fn parse_key_pem(pem: &str) -> Result<SecretKey, Refusal> {
 
 /// The CA's registered issuer certificate, once the key is shown to be the
 /// one the approvers attested for this CA.
-fn ca_issuer<K: CaKey + ?Sized>(
+fn ca_issuer<K: P256Key + ?Sized>(
     key: &K,
     issuer_certificate_der: &[u8],
     issuer_spki_sha256: &[u8],
@@ -533,7 +533,7 @@ fn ca_issuer<K: CaKey + ?Sized>(
 
 /// Decides and, when everything holds, signs the CRL `tbs_der` for the CRL
 /// intent `intent_id`.
-pub fn sign_crl_intent<S: CrlStore, K: CaKey + ?Sized>(
+pub fn sign_crl_intent<S: CrlStore, K: P256Key + ?Sized>(
     store: &mut S,
     ca_id: &str,
     key: &K,
@@ -590,7 +590,7 @@ pub fn sign_crl_intent<S: CrlStore, K: CaKey + ?Sized>(
 }
 
 /// Decides and, when everything holds, signs `tbs_der` for `intent_id`.
-pub fn sign_intent<S: IntentStore, K: CaKey + ?Sized>(
+pub fn sign_intent<S: IntentStore, K: P256Key + ?Sized>(
     store: &mut S,
     ca_id: &str,
     key: &K,
@@ -680,9 +680,9 @@ pub mod service {
             CheckpointState, LinkEvent, StoredCheckpoint,
         },
         ca_key::Pkcs11Key,
-        parse_key_pem, sign_crl_intent, sign_intent, spki_der, AuthorizationRecord, CaKey,
+        parse_key_pem, sign_crl_intent, sign_intent, spki_der, AuthorizationRecord,
         CrlIntentRecord, CrlStore, EntryOfficerProof, EntryProof, IntentRecord, IntentStore,
-        OfficerProof, RaProof, RaRevocationProof, Refusal,
+        OfficerProof, P256Key, RaProof, RaRevocationProof, Refusal,
     };
 
     const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
@@ -958,24 +958,24 @@ pub mod service {
     }
 
     /// Where the CA key is (ADR-0034).
-    pub enum CaKeySource {
+    pub enum KeySource {
         /// A laboratory software key file (PEM), read for each request.
         File(PathBuf),
         /// A key generated in a PKCS#11 token, which never leaves it.
         Pkcs11(Pkcs11Key),
     }
 
-    impl CaKeySource {
+    impl KeySource {
         fn with_key<T>(
             &self,
-            use_key: impl FnOnce(&dyn CaKey) -> Result<T, Refusal>,
+            use_key: impl FnOnce(&dyn P256Key) -> Result<T, Refusal>,
         ) -> Result<T, Refusal> {
             match self {
-                CaKeySource::File(path) => {
+                KeySource::File(path) => {
                     let pem = fs::read_to_string(path).map_err(|_| Refusal::KeyFile)?;
                     use_key(&parse_key_pem(&pem)?)
                 }
-                CaKeySource::Pkcs11(key) => use_key(key),
+                KeySource::Pkcs11(key) => use_key(key),
             }
         }
     }
@@ -983,9 +983,10 @@ pub mod service {
     pub struct Config {
         pub database_url: String,
         pub ca_id: String,
-        pub ca_key: CaKeySource,
-        /// The P-256 audit key (ADR-0023); without it, checkpoints are refused.
-        pub audit_key_file: Option<PathBuf>,
+        pub ca_key: KeySource,
+        /// The P-256 audit key (ADR-0023), a file or a token key (ADR-0035);
+        /// without it, checkpoints are refused.
+        pub audit_key: Option<KeySource>,
         /// Where the signer remembers its last checkpoint, outside the database.
         pub audit_state_file: Option<PathBuf>,
     }
@@ -1013,15 +1014,28 @@ pub mod service {
     /// One checkpoint request: verify the chain after the remembered state,
     /// sign its head with the audit key, record it, then remember it.
     fn checkpoint(config: &Config) -> Result<serde_json::Value, Refusal> {
-        let (Some(key_file), Some(state_file)) = (&config.audit_key_file, &config.audit_state_file)
+        let (Some(audit_key), Some(state_file)) = (&config.audit_key, &config.audit_state_file)
         else {
             return Err(Refusal::AuditNotConfigured);
         };
-        let pem = fs::read_to_string(key_file).map_err(|_| Refusal::AuditKeyFile)?;
-        let key = parse_key_pem(&pem).map_err(|_| Refusal::AuditKeyFile)?;
+        audit_key
+            .with_key(|key| checkpoint_with(config, key, state_file))
+            .map_err(|refusal| match refusal {
+                // A missing or unreadable audit key file or token key.
+                Refusal::KeyFile => Refusal::AuditKeyFile,
+                other => other,
+            })
+    }
+
+    fn checkpoint_with(
+        config: &Config,
+        key: &dyn P256Key,
+        state_file: &std::path::Path,
+    ) -> Result<serde_json::Value, Refusal> {
+        let audit_spki = spki_der(key)?;
         // Never the CA key (when the CA key exists yet).
         if let Ok(ca_spki) = config.ca_key.with_key(|ca_key| spki_der(ca_key)) {
-            if ca_spki == spki_der(&key).map_err(|_| Refusal::AuditKeyFile)? {
+            if ca_spki == audit_spki {
                 return Err(Refusal::AuditKeyIsCaKey);
             }
         }
@@ -1033,12 +1047,8 @@ pub mod service {
             .map_err(|_| Refusal::Database)?
             .as_secs();
         let now = i64::try_from(now).map_err(|_| Refusal::Database)?;
-        let outcome = sign_audit_checkpoint(
-            &mut PgIntentStore { db: &mut db },
-            &key,
-            state.as_ref(),
-            now,
-        )?;
+        let outcome =
+            sign_audit_checkpoint(&mut PgIntentStore { db: &mut db }, key, state.as_ref(), now)?;
         if outcome.state.seq > 0 && state.as_ref() != Some(&outcome.state) {
             write_state(state_file, &outcome.state)?;
         }

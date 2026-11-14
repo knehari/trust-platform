@@ -11,8 +11,14 @@
 //!    keyCertSign and cRLSign, subject and authority key identifiers);
 //! 3. has the token sign it, verifies the signature, and prints the PEM.
 //!
+//! `trust-lab-ca-ceremony --audit-key`, with the token named by
+//! `TRUST_SIGNER_AUDIT_PKCS11_MODULE`, `_TOKEN_LABEL`, `_KEY_LABEL` and
+//! `_PIN` (ADR-0035): generates the audit checkpoint key the same way, in
+//! its own token, and prints only its public key (SubjectPublicKeyInfo PEM),
+//! the one verifiers check checkpoints against.
+//!
 //! The private key is never read, written or printed: only the certificate
-//! leaves. The serial number comes from the token's generator. Lab only: no
+//! or the public key leaves. The serial number comes from the token's generator. Lab only: no
 //! dual control, witness or quorum, which a real ceremony requires.
 
 use std::{env, process::ExitCode, str::FromStr, time::Duration};
@@ -22,7 +28,7 @@ use p256::{
     elliptic_curve::sec1::ToEncodedPoint,
 };
 use trust_lab_signer::{
-    ca_key::{CaKey, Pkcs11Config, Pkcs11Key},
+    ca_key::{P256Key, Pkcs11Config, Pkcs11Key},
     spki_der,
 };
 use trust_pki_core::x509_extensions::key_identifier;
@@ -55,14 +61,30 @@ fn extension(oid: &str, critical: bool, value: Vec<u8>) -> Result<Extension, Str
 fn display_name(raw: &str) -> Result<&str, String> {
     let valid = !raw.is_empty()
         && raw.len() <= 64
-        && !raw.starts_with(' ')
+        && raw.starts_with(|c: char| c.is_ascii_alphanumeric())
         && !raw.ends_with(' ')
         && raw
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '.' || c == '-');
-    valid
-        .then_some(raw)
-        .ok_or_else(|| "display name: letters, digits, spaces, dots and hyphens only".into())
+    valid.then_some(raw).ok_or_else(|| {
+        "display name: letters, digits, spaces, dots and hyphens, starting with a letter or digit"
+            .into()
+    })
+}
+
+/// The audit key ceremony: a key in the audit token, its public key out.
+fn audit_key() -> Result<String, String> {
+    let config = Pkcs11Config::from_env_prefix("TRUST_SIGNER_AUDIT_PKCS11")?
+        .ok_or("TRUST_SIGNER_AUDIT_PKCS11_MODULE is required")?;
+    let key = Pkcs11Key::open(&config).map_err(|refusal| format!("token: {}", refusal.code()))?;
+    key.generate()
+        .map_err(|refusal| format!("key generation: {}", refusal.code()))?;
+    let spki = SubjectPublicKeyInfoOwned::from_der(
+        &spki_der(&key).map_err(|refusal| format!("public key: {}", refusal.code()))?,
+    )
+    .map_err(|error| error.to_string())?;
+    spki.to_pem(x509_cert::der::pem::LineEnding::LF)
+        .map_err(|error| error.to_string())
 }
 
 fn ceremony(name: &str, days: u64) -> Result<String, String> {
@@ -159,6 +181,7 @@ fn ceremony(name: &str, days: u64) -> Result<String, String> {
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
     let outcome = match &arguments[..] {
+        [flag] if flag == "--audit-key" => audit_key(),
         [name] => display_name(name).and_then(|name| ceremony(name, 1825)),
         [name, days] => display_name(name).and_then(|name| {
             let days = days
@@ -168,7 +191,10 @@ fn main() -> ExitCode {
                 .ok_or("days: an integer from 1 to 7300")?;
             ceremony(name, days)
         }),
-        _ => Err("usage: trust-lab-ca-ceremony \"<display name>\" [days]".into()),
+        _ => Err(
+            "usage: trust-lab-ca-ceremony \"<display name>\" [days] | trust-lab-ca-ceremony --audit-key"
+                .into(),
+        ),
     };
     match outcome {
         Ok(pem) => {
