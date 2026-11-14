@@ -21,3 +21,13 @@ export const CA_ADMINISTRATOR_ROLE = 'trust-ca-administrator';
 export const CA_APPROVER_ROLE = 'trust-ca-approver';
 export const CERTIFICATE_REQUESTER_ROLE = 'trust-certificate-requester';
 export const REGISTRATION_OFFICER_ROLE = 'trust-registration-officer';
+
+// Roles that offer at least one recording action in the console.
+const WRITE_ROLES = [PROFILE_EDITOR_ROLE, POLICY_APPROVER_ROLE, CA_OPERATOR_ROLE, CA_ADMINISTRATOR_ROLE,
+  CA_APPROVER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE];
+
+// Whether the console should present itself as read-only for these roles.
+// A display hint like tokenRoles: the server still decides every request.
+export function readOnlyRoles(roles: string[]): boolean {
+  return !roles.some(role => WRITE_ROLES.includes(role));
+}

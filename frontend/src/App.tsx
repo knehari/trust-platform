@@ -18,7 +18,7 @@ import { canonicalUuid } from './uuid';
 import { ProfileDraftPanel } from './ProfileDraftPanel';
 import { CaProposalPanel } from './CaProposalPanel';
 import { CertificateApplicationPanel } from './CertificateApplicationPanel';
-import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, tokenRoles } from './roles';
+import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
 
 function displayDate(value: string | null): string {
   if (!value) return '—';
@@ -553,6 +553,7 @@ export function App() {
   }, [cas, caFilter]);
   const selectedCa = useMemo(() => cas.find(ca => ca.ca_id === selectedCaId) ?? (caLookupResult?.ca_id === selectedCaId ? caLookupResult : null), [cas, caLookupResult, selectedCaId]);
   const name = user?.profile.preferred_username ?? user?.profile.name ?? user?.profile.sub ?? 'Operator';
+  const readOnly = !user || readOnlyRoles(tokenRoles(user.access_token));
 
   function toggleExportRow(kind: 'certificate' | 'audit', id: string) {
     const update = (current: string[]) => current.includes(id)
@@ -723,10 +724,10 @@ export function App() {
         <button className={section === 'certificates' ? 'active' : ''} aria-current={section === 'certificates' ? 'page' : undefined} onClick={() => setSection('certificates')}><span>▤</span> Certificates</button>
         <button className={section === 'audit' ? 'active' : ''} aria-current={section === 'audit' ? 'page' : undefined} onClick={() => setSection('audit')}><span>◷</span> Audit trail</button>
       </nav>
-      <div className="sidebar-bottom"><div className="sidebar-note">Read-only access<br /><span>Changes and issuance are unavailable in this laboratory console.</span></div><div className="version">TRUST PLATFORM · V0.1 LAB</div></div>
+      <div className="sidebar-bottom"><div className="sidebar-note">{readOnly ? <>Read-only access<br /><span>Your roles allow consultation only.</span></> : <>Laboratory access<br /><span>Actions follow your roles and the server-side grants of each authority; the API checks every request.</span></>}</div><div className="version">TRUST PLATFORM · V0.1 LAB</div></div>
     </aside>
     <div className="main-column">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'profiles' ? 'Profile proposals' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">READ ONLY</span><button className="icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> {section === 'overview' ? 'Overview' : section === 'authorities' ? 'Authorities' : section === 'profiles' ? 'Profile proposals' : section === 'certificates' ? 'Certificates' : 'Audit trail'}</div><div className="top-actions"><span className="read-badge">{readOnly ? 'READ ONLY' : 'LAB ACCESS'}</span><button className="icon-button" title="Refresh data" aria-label="Refresh scoped data" onClick={() => setReload(value => value + 1)}>↻</button><div className="user-avatar" title={name}>{String(name).slice(0, 1).toUpperCase()}</div><button className="text-button" onClick={() => void userManager?.signoutRedirect()}>Sign out</button></div></header>
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">TRUST OPERATIONS / {section.toUpperCase()}</div><h1>{section === 'overview' ? 'Good to see you.' : section === 'authorities' ? 'Certificate authorities' : section === 'profiles' ? 'Profile proposals' : section === 'certificates' ? 'Certificate inventory' : 'Audit trail'}</h1><p>{section === 'overview' ? 'A current view of the authorities in your approved scope.' : section === 'authorities' ? 'Inspect policy references and public CA metadata.' : section === 'profiles' ? 'Review inert certificate-profile drafts for the selected authority.' : section === 'certificates' ? 'Issued certificate metadata for the selected authority.' : 'Recent recorded events for the selected authority.'}</p></div><div className="view-link-tools"><div className="page-date">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div><button type="button" className="copy-view-link" disabled={!navigationReady} onClick={() => void copyViewLink()}>Copy view link</button>{viewLinkStatus && <span className="view-link-status" role="status">{viewLinkStatus}</span>}</div></div>
         {dataError && <div className="notice error" role="alert">{dataError} <button onClick={() => setReload(value => value + 1)}>Retry</button></div>}
