@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "PostgreSQL connections for the platform's processes: TLS with server verification against one configured CA when TRUST_DATABASE_CA_FILE is set (ADR-0031)."
+description = "PostgreSQL connections for the platform's processes: TLS with server verification against one configured CA when TRUST_DATABASE_CA_FILE is set (ADR-0031), and the login's client certificate when TRUST_DATABASE_CLIENT_CERT_DIR is set (ADR-0036)."
 
 [dependencies]
 postgres = "=0.19.12"

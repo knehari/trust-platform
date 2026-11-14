@@ -41,12 +41,17 @@ services:
       - ssl_min_protocol_version=TLSv1.2
       - -c
       - hba_file=/lab-tls/pg_hba.conf
+      # Client certificates are verified against the lab service CA
+      # (ADR-0036).
+      - -c
+      - ssl_ca_file=/lab-tls/ca.crt
     volumes:
       - trust_lab_pg:/var/lib/postgresql/data
       - ./migrations:/lab/migrations:ro
       - ./scripts/lab/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
       - ./.lab-keys/tls/db.crt:/lab-tls/db.crt:ro
       - ./.lab-keys/tls/db.key:/lab-tls/db.key:ro
+      - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
       - ./scripts/lab/pg_hba.conf:/lab-tls/pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U trust_lab -d trust_lab"]
@@ -136,6 +141,8 @@ services:
       TRUST_SIGNER_SOCKET_OWNER: "65534:65534"
       TRUST_SIGNER_DATABASE_URL: postgresql://trust_signer_lab:${TRUST_LAB_SIGNER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
+      # Mutual TLS to the database (ADR-0036): this service's login certificates.
+      TRUST_DATABASE_CLIENT_CERT_DIR: /lab-tls/clients
       TRUST_SIGNER_CA_ID: dddddddd-dddd-4ddd-8ddd-dddddddddddd
       TRUST_SIGNER_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
       TRUST_SIGNER_PKCS11_TOKEN_LABEL: trust-lab-ca
@@ -153,6 +160,7 @@ services:
       TRUST_SIGNER_AUDIT_STATE_FILE: /var/lib/trust-signer/audit-state.json
     volumes:
       - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
+      - ./.lab-keys/tls/clients/signer:/lab-tls/clients:ro
       - trust_signer_socket:/run/trust-signer
       - trust_signer_state:/var/lib/trust-signer
       - trust_signer_hsm:/var/lib/softhsm/tokens
@@ -175,10 +183,13 @@ services:
     volumes:
       - trust_signer_socket:/run/trust-signer
       - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
+      - ./.lab-keys/tls/clients/api:/lab-tls/clients:ro
       - ./.lab-keys/tls/api.crt:/lab-tls/api.crt:ro
       - ./.lab-keys/tls/api.key:/lab-tls/api.key:ro
     environment:
       TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
+      # Mutual TLS to the database (ADR-0036): this service's login certificates.
+      TRUST_DATABASE_CLIENT_CERT_DIR: /lab-tls/clients
       # HTTPS (ADR-0032): no plain HTTP listener.
       TRUST_API_TLS_CERT_FILE: /lab-tls/api.crt
       TRUST_API_TLS_KEY_FILE: /lab-tls/api.key
@@ -218,9 +229,12 @@ services:
       TRUST_PUBLISHER_DIR: /srv/crl
       TRUST_PUBLISHER_INTERVAL_SECONDS: "2"
       TRUST_DATABASE_CA_FILE: /lab-tls/ca.crt
+      # Mutual TLS to the database (ADR-0036): this service's login certificate.
+      TRUST_DATABASE_CLIENT_CERT_DIR: /lab-tls/clients
     volumes:
       - trust_crl_public:/srv/crl
       - ./.lab-keys/tls/ca.crt:/lab-tls/ca.crt:ro
+      - ./.lab-keys/tls/clients/publisher:/lab-tls/clients:ro
     networks: [lab]
 
   crl-web:

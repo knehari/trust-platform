@@ -692,7 +692,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     write_log(
         serde_json::json!({"event":"management_api_started","bind":bind,
-        "database_tls": trust_db_connect::tls_required(), "https": tls.is_some()}),
+        "database_tls": trust_db_connect::tls_required(),
+        "database_client_cert": trust_db_connect::client_cert_required(), "https": tls.is_some()}),
     );
     match tls {
         Some(config) => axum::serve(tls_listener::TlsListener::new(listener, config)?, app).await?,

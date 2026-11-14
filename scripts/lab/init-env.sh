@@ -102,6 +102,31 @@ if [ ! -s .lab-keys/tls/idp.crt ] || [ ! -s .lab-keys/tls/idp.key ]; then
     -CAcreateserial -days 90 -extfile .lab-keys/tls/idp.ext -out .lab-keys/tls/idp.crt 2>/dev/null
   rm -f .lab-keys/tls/idp.csr .lab-keys/tls/idp.ext
 fi
+# Database client certificates (ADR-0036): one per network login, common
+# name = the login, from the same service CA; the server requires it together
+# with the password. Each service mounts only its own directory.
+for entry in api:trust_api_lab api:trust_api_writer_lab signer:trust_signer_lab publisher:trust_publisher_lab; do
+  service=${entry%%:*}
+  login=${entry#*:}
+  dir=.lab-keys/tls/clients/$service
+  mkdir -p "$dir"
+  if [ ! -s "$dir/$login.crt" ] || [ ! -s "$dir/$login.key" ]; then
+    openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$login" \
+      -keyout "$dir/$login.key" -out "$dir/$login.csr" 2>/dev/null
+    printf 'extendedKeyUsage=clientAuth\nkeyUsage=critical,digitalSignature\n' > "$dir/$login.ext"
+    openssl x509 -req -in "$dir/$login.csr" -CA .lab-keys/tls/ca.crt -CAkey .lab-keys/tls/ca.key \
+      -CAcreateserial -days 90 -extfile "$dir/$login.ext" -out "$dir/$login.crt" 2>/dev/null
+    rm -f "$dir/$login.csr" "$dir/$login.ext"
+  fi
+done
+chmod 700 .lab-keys/tls/clients
+chmod 755 .lab-keys/tls/clients/api .lab-keys/tls/clients/signer .lab-keys/tls/clients/publisher
+chmod 644 .lab-keys/tls/clients/*/*.crt
+# The API runs as nobody and reads its keys from a bind mount: world-readable,
+# protected by the 0700 directories above them on the host. The signer and
+# the publisher run as root in their containers: 0600.
+chmod 644 .lab-keys/tls/clients/api/*.key
+chmod 600 .lab-keys/tls/clients/signer/*.key .lab-keys/tls/clients/publisher/*.key
 chmod 600 .lab-keys/tls/ca.key .lab-keys/tls/db.key
 # The API (nobody) and Keycloak (uid 1000) read their keys from bind mounts:
 # those key files are world-readable, protected by the 0700 .lab-keys/tls

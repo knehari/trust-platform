@@ -108,7 +108,7 @@ jobs:
           # The database owner's own action: grants on the new issuing CA.
           export TRUST_LAB_OWNER_PSQL="docker exec -i $DB_CONTAINER psql -U trust_lab -d trust_lab -v ON_ERROR_STOP=1 -q"
           node frontend/dev/certificate-application-e2e.mjs
-      - name: The laboratory database refuses plaintext and serves TLS (ADR-0031)
+      - name: The laboratory database requires mutual TLS (ADR-0031, ADR-0036)
         run: |
           set -euo pipefail
           set -a; . ./.env.lab; set +a
@@ -119,12 +119,23 @@ jobs:
             echo 'FAIL: the database accepted a plaintext TCP connection' >&2
             exit 1
           fi
-          # The services passed the suites above over this listener, so they
-          # connected with TLS (verified against the lab CA, ADR-0031).
-          docker exec -e PGPASSWORD="$TRUST_LAB_DB_PASSWORD" "$DB_CONTAINER" \
-            psql "host=127.0.0.1 user=trust_lab dbname=trust_lab sslmode=require" \
-            -XAtc 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()' | grep -qx t
-          echo 'PASS: plaintext refused, TLS served'
+          # TLS with the right password but no client certificate: refused.
+          out=$(docker exec -e PGPASSWORD="$TRUST_LAB_API_PASSWORD" "$DB_CONTAINER" \
+               psql "host=127.0.0.1 user=trust_api_lab dbname=trust_lab sslmode=require" -XAtc 'SELECT 1' 2>&1 || true)
+          echo "$out" | grep -q 'connection requires a valid client certificate' \
+            || { echo "FAIL: a TLS connection without a client certificate was not refused: $out" >&2; exit 1; }
+          # Every network rule the server loaded requires the client
+          # certificate (verify-full: lab CA, CN = login), and the services
+          # passed the suites above over the network: each of their logins
+          # was therefore authenticated by its certificate and its password.
+          rules=$(docker exec "$DB_CONTAINER" psql -U trust_lab -d trust_lab -XAt -c \
+            "SELECT count(*) FILTER (WHERE type = 'hostssl'), \
+                    count(*) FILTER (WHERE type = 'hostssl' AND NOT ('clientcert=verify-full' = ANY (coalesce(options, '{}')))), \
+                    count(*) FILTER (WHERE type = 'host'), count(*) FILTER (WHERE error IS NOT NULL) \
+             FROM pg_hba_file_rules")
+          echo "hostssl rules|without verify-full|host rules|errors: $rules"
+          [ "$rules" = '2|0|0|0' ] || { echo 'FAIL: a network rule does not require the client certificate' >&2; exit 1; }
+          echo 'PASS: plaintext and certificate-less TLS refused; every network rule requires the login certificate'
       - name: Show bounded service logs on failure
         if: failure()
         run: docker compose --env-file .env.lab -f compose.lab.yaml logs --no-color --tail=80
