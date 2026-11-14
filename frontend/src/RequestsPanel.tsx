@@ -3,6 +3,8 @@ import { ApiError, apiGet, apiPost } from './api';
 import { ApplicationDecision } from './ApplicationDecision';
 import { SignedClaimAction } from './SignedClaimAction';
 import { Icon, Notice, StatusBadge, Tabs, toast, type NoticeTone } from './ui';
+import { CopyJsonButton, DetailDrawer, DrawerSection, Fact } from './DetailDrawer';
+import { requestActions } from './request-actions';
 
 export interface Application {
   application_id: string;
@@ -113,6 +115,7 @@ export function PemBlock({ title, pem, filename, note }: { title: string; pem: s
 export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthorized }: {
   caId: string; token: string; canRequest: boolean; canDecide: boolean; onUnauthorized: () => void;
 }) {
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [items, setItems] = useState<Application[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: NoticeTone; text: string } | null>(null);
@@ -217,15 +220,9 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
         <thead><tr><th>Common name</th><th>Status</th><th>Profile</th><th>Submitted</th><th className="ui-col-actions">Actions</th></tr></thead>
         <tbody>{visible.map(item => {
           const expanded = open === item.application_id;
-          const canIssue = item.status === 'APPROVED' && (canRequest || canDecide);
-          const canAskRevocation = item.status === 'ISSUED' && (canRequest || canDecide);
-          const decideApplication = canDecide && item.status === 'SUBMITTED';
-          const decideRevocation = canDecide && item.status === 'REVOCATION_REQUESTED' && item.open_revocation_id;
-          // Reconciliation (ADR-0020): one officer proposes, another confirms.
-          const proposeVoid = canDecide && item.status === 'RECONCILIATION_REQUIRED' && !item.void_status;
-          const confirmVoid = canDecide && item.status === 'RECONCILIATION_REQUIRED' && item.void_status === 'PROPOSED' && !item.void_proposed_by_reader;
+          const { canIssue, canAskRevocation, decideApplication, decideRevocation, proposeVoid, confirmVoid, formLabel } = requestActions(item, canRequest, canDecide);
           return [<tr key={item.application_id} className={expanded ? 'ui-row-open' : undefined}>
-            <td><strong>{item.subject_cn}</strong><div className="ui-sub">{item.dns_names.join(', ')}</div></td>
+            <td><button type="button" className="link-button ui-request-link" aria-label={`Details of ${item.subject_cn}`} onClick={() => setDetailId(item.application_id)}><strong>{item.subject_cn}</strong></button><div className="ui-sub">{item.dns_names.join(', ')}</div></td>
             <td><StatusBadge status={item.status} />
               {item.certificate_serial_hex && <div className="ui-sub mono">Serial {item.certificate_serial_hex.slice(0, 16)}…</div>}
               {item.revoked_at && <div className="ui-sub">Revoked {displayDate(item.revoked_at)} · {reasonName(item.revocation_reason_code)}</div>}
@@ -244,9 +241,9 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
                   if (value.certificate_pem && value.serial_hex) setIssued({ subject: item.subject_cn, pem: value.certificate_pem, serial: value.serial_hex });
                   return status === 201 ? `Certificate for ${item.subject_cn} issued.` : `The certificate for ${item.subject_cn} was already issued.`;
                 })}>Issue certificate</button>}
-              {(decideApplication || decideRevocation || canAskRevocation || proposeVoid || confirmVoid) && <button type="button" className="ui-button ui-button-secondary ui-button-sm"
+              {formLabel && <button type="button" className="ui-button ui-button-secondary ui-button-sm"
                 aria-expanded={expanded} onClick={() => { setOpen(expanded ? null : item.application_id); setReason(''); }}>
-                {decideApplication ? 'Review' : decideRevocation ? 'Review revocation' : proposeVoid ? 'Reconcile…' : confirmVoid ? 'Review void' : 'Revoke…'}</button>}
+                {formLabel}</button>}
             </div></td>
           </tr>,
           expanded && <tr key={`${item.application_id}-form`} className="ui-row-detail"><td colSpan={5}>
@@ -294,5 +291,77 @@ export function RequestsPanel({ caId, token, canRequest, canDecide, onUnauthoriz
         })}</tbody>
       </table></div>}
     </div>
+    {detailId && (() => {
+      const index = visible.findIndex(item => item.application_id === detailId);
+      if (index < 0) return null;
+      const item = visible[index];
+      const actions = requestActions(item, canRequest, canDecide);
+      return <RequestDrawer key={item.application_id} item={item} actionLabel={actions.formLabel}
+        onAction={() => { setDetailId(null); setOpen(item.application_id); setReason(''); }} onClose={() => setDetailId(null)}
+        onPrevious={index > 0 ? () => setDetailId(visible[index - 1].application_id) : null}
+        onNext={index < visible.length - 1 ? () => setDetailId(visible[index + 1].application_id) : null}
+        position={`${index + 1} of ${visible.length}`} />;
+    })()}
   </section>;
+}
+
+const REQUEST_TONES: Partial<Record<Application['status'], string>> = {
+  SUBMITTED: 'info', APPROVED: 'good', ISSUING: 'info', ISSUED: 'good', REJECTED: 'bad', REVOKED: 'bad',
+  REVOCATION_REQUESTED: 'warn', RECONCILIATION_REQUIRED: 'warn', VOIDED: 'neutral',
+};
+
+/**
+ * Slide-over record of one certificate request and its revocation, from the
+ * metadata the API returned. Decisions stay in the request's inline form:
+ * the panel only points to it when the token's roles allow one.
+ */
+function RequestDrawer({ item, actionLabel, onAction, onClose, onPrevious, onNext, position }: {
+  item: Application; actionLabel: string | null; onAction: () => void; onClose: () => void;
+  onPrevious: (() => void) | null; onNext: (() => void) | null; position: string;
+}) {
+  const revocation = item.status === 'REVOCATION_REQUESTED' || item.status === 'REVOKED';
+  return <DetailDrawer label="Request detail" eyebrow={revocation ? 'Certificate request · revocation' : 'Certificate request'} icon={revocation ? 'revocation' : 'request'}
+    tone={REQUEST_TONES[item.status] ?? 'neutral'} closeLabel="Close request detail" onClose={onClose}
+    onPrevious={onPrevious} onNext={onNext} position={position}
+    title={item.subject_cn}
+    subtitle={<>{item.profile_id} revision {item.revision} · {item.validity_days} days</>}
+    badges={<StatusBadge status={item.status} />}
+    actions={<>{actionLabel && <button type="button" className="ui-button ui-button-primary ui-button-sm" onClick={onAction}>{actionLabel}</button>}<CopyJsonButton json={JSON.stringify(item, null, 2)} /></>}
+    note="Recorded metadata of the request. Decisions are signed with the officer's registered key and verified by the API; the signer checks them again before signing.">
+    <DrawerSection title="Request">
+      <Fact label="Common name">{item.subject_cn}</Fact>
+      <Fact label="DNS names">{item.dns_names.length ? <span className="ui-chip-list">{item.dns_names.map(name => <span key={name} className="ui-chip">{name}</span>)}</span> : 'None'}</Fact>
+      <Fact label="Profile">{item.profile_id} · revision {item.revision}</Fact>
+      <Fact label="Validity requested">{item.validity_days} days</Fact>
+      <Fact label="CSR SHA-256" copy={item.csr_sha256} mono>{item.csr_sha256.match(/.{1,8}/gu)?.join(' ') ?? item.csr_sha256}</Fact>
+      <Fact label="Request ID" copy={item.application_id} mono>{item.application_id}</Fact>
+    </DrawerSection>
+    <DrawerSection title="Decision">
+      <Fact label="Submitted">{displayDate(item.submitted_at)}</Fact>
+      <Fact label="Decided">{displayDate(item.decided_at)}</Fact>
+      <Fact label="Reason">{item.decision_reason ?? '—'}</Fact>
+    </DrawerSection>
+    {item.certificate_serial_hex && <DrawerSection title="Certificate">
+      <Fact label="Serial" copy={item.certificate_serial_hex} mono>{item.certificate_serial_hex}</Fact>
+      {item.certificate_sha256 && <Fact label="Fingerprint SHA-256" copy={item.certificate_sha256} mono>{item.certificate_sha256.match(/.{1,8}/gu)?.join(' ') ?? item.certificate_sha256}</Fact>}
+    </DrawerSection>}
+    {(item.open_revocation_id || item.revoked_at) && <DrawerSection title="Revocation">
+      {item.open_revocation_id && <>
+        <Fact label="Requested reason">{reasonName(item.open_revocation_reason_code)}</Fact>
+        <Fact label="State">Awaiting a registration officer who did not ask for it</Fact>
+        <Fact label="Revocation ID" copy={item.open_revocation_id} mono>{item.open_revocation_id}</Fact>
+      </>}
+      {item.revoked_at && <>
+        <Fact label="Revoked">{displayDate(item.revoked_at)}</Fact>
+        <Fact label="Reason">{reasonName(item.revocation_reason_code)}</Fact>
+        <Fact label="Publication">Listed on every CRL published after the revocation</Fact>
+      </>}
+    </DrawerSection>}
+    {(item.status === 'RECONCILIATION_REQUIRED' || item.status === 'VOIDED') && <DrawerSection title="Reconciliation">
+      <Fact label="State">{item.status === 'VOIDED' ? 'Voided' : item.void_status === 'PROPOSED' ? 'Void proposed; a second officer must confirm' : 'Signing outcome unknown: never re-signed'}</Fact>
+      {item.void_signer_claimed !== null && item.void_signer_claimed !== undefined && <Fact label="Signer">{item.void_signer_claimed ? 'Had claimed the intent: a certificate may exist' : 'Never claimed the intent'}</Fact>}
+      {item.void_serial_hex && <Fact label="Serial listed on CRLs" copy={item.void_serial_hex} mono>{item.void_serial_hex}</Fact>}
+      {item.voided_at && <Fact label="Voided">{displayDate(item.voided_at)}</Fact>}
+    </DrawerSection>}
+  </DetailDrawer>;
 }

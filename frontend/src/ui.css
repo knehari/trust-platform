@@ -501,3 +501,6 @@ table[aria-label='Audit events'] td:last-child, table[aria-label='Audit events']
   .nav-group-items, .nav-group.collapsed .nav-group-items { display: contents; }
   .nav .nav-item { padding: 9px 12px; }
 }
+/* A request's common name opens its detail panel. */
+.ui-request-link { padding: 0; text-align: left; font-size: inherit; }
+.ui-request-link:hover strong { text-decoration: underline; text-underline-offset: 3px; }

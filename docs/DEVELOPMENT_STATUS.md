@@ -182,3 +182,18 @@ Authority and CRL detail panels (2026-11-14, display only): the slide-over panel
 The panels state that they show database metadata, not an independent verification.
 
 Verified with 90 frontend tests, typecheck and build. A Chromium render with a synthetic token and a synthetic local API checked the opening of both panels, the navigation between records and the Superseded state.
+
+Request and revocation detail panel (2026-11-14, display only): a request's common name in Requests opens the slide-over panel with its full record:
+- **Request:** names, profile and revision, validity, copyable CSR SHA-256 and request ID.
+- **Decision:** submission, decision date and reason.
+- **Certificate:** serial and fingerprint.
+- **Revocation:** the open request and its reason, or the recorded revocation.
+- **Reconciliation:** void state, signer claim, voided serial.
+
+The panel adapts its title and colour when a revocation is requested or recorded. It offers previous/next navigation within the current filter and a JSON copy.
+
+Decisions stay in the request's inline form, following the rule "panel to consult, page or form to act". The panel offers one button to that form only when the token's roles allow an action, and the API still decides.
+
+The action logic moved to `src/request-actions.ts`, shared by the table row and the panel, with unit tests (officer review, requester refusal, revocation request, void proposed by one officer and confirmed by another).
+
+Verified with 93 frontend tests, typecheck and build. A Chromium render with a synthetic token and a synthetic local API checked the panel for a requested and a recorded revocation, the button that opens the inline decision form, and the absence of any action on a revoked request.
