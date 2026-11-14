@@ -1,10 +1,32 @@
 -- Migration 0040: publish a CRL as soon as a revocation is recorded, per CA
--- (ADR-0027). Run as the migration owner after 0040 on a disposable database;
+-- (ADR-0027). Run as the migration owner after 0044 on a disposable database;
 -- every change is rolled back. CRL bytes are placeholders. Before 0040 the
--- first statement fails.
+-- first statement fails. Since 0044 (ADR-0037) the renewer acts only from a
+-- worker login: its steps run under SET SESSION AUTHORIZATION.
 BEGIN;
 
 SELECT management_crl_on_revocation_version();
+CREATE ROLE trust_test_revocation_worker LOGIN;
+GRANT trust_worker TO trust_test_revocation_worker;
+-- Runs `p_sql` from the worker login, then returns to the owner.
+CREATE FUNCTION pg_temp.as_worker(p_sql text) RETURNS void LANGUAGE plpgsql AS $fn$
+BEGIN
+    EXECUTE 'SET LOCAL SESSION AUTHORIZATION trust_test_revocation_worker';
+    EXECUTE p_sql;
+    EXECUTE 'RESET SESSION AUTHORIZATION';
+END
+$fn$;
+-- The renewer's candidates, read from the worker login.
+CREATE FUNCTION pg_temp.worker_candidates() RETURNS uuid[] LANGUAGE plpgsql AS $fn$
+DECLARE
+    r uuid[];
+BEGIN
+    EXECUTE 'SET LOCAL SESSION AUTHORIZATION trust_test_revocation_worker';
+    SELECT array_agg(ca_id) INTO r FROM crl_renewal_candidates_lab('urn:trust-platform:system', 'crl-renewer');
+    EXECUTE 'RESET SESSION AUTHORIZATION';
+    RETURN r;
+END
+$fn$;
 
 CREATE FUNCTION pg_temp.expect_state(p_sql text, p_state text) RETURNS void
 LANGUAGE plpgsql AS $fn$
@@ -105,17 +127,24 @@ BEGIN
 END $setup$;
 RESET ROLE;
 
--- Publishes the next CRL as officer ra-1, through the journaled path.
+-- Publishes the next CRL as officer ra-1, through the journaled path; as
+-- the system renewer, the publication steps run from the worker login and
+-- the signer's claim from the owner.
 CREATE FUNCTION pg_temp.publish(p_tag text, p_issuer text DEFAULT 'https://issuer.iss.invalid',
                                 p_subject text DEFAULT 'ra-1') RETURNS void LANGUAGE plpgsql AS $fn$
 DECLARE
     c uuid := 'c5c5c5c5-0000-4000-8000-00000000000c';
+    renewer boolean := p_issuer = 'urn:trust-platform:system';
     r record;
 BEGIN
+    IF renewer THEN EXECUTE 'SET LOCAL SESSION AUTHORIZATION trust_test_revocation_worker'; END IF;
     SELECT * INTO r FROM begin_crl_publication_lab(p_issuer, p_subject, c, gen_random_uuid(), digest(p_tag, 'sha256'));
     PERFORM record_crl_signing_intent_lab(p_issuer, p_subject, c, r.intent_id, digest('tbs-' || p_tag, 'sha256'));
+    IF renewer THEN EXECUTE 'RESET SESSION AUTHORIZATION'; END IF;
     PERFORM claim_lab_crl_intent(r.intent_id, digest('tbs-' || p_tag, 'sha256'));
+    IF renewer THEN EXECUTE 'SET LOCAL SESSION AUTHORIZATION trust_test_revocation_worker'; END IF;
     PERFORM store_crl_lab(p_issuer, p_subject, c, r.intent_id, decode(repeat('e1', 200), 'hex'));
+    IF renewer THEN EXECUTE 'RESET SESSION AUTHORIZATION'; END IF;
 END
 $fn$;
 -- Revokes application `p_name` (requested by req-1, approved by ra-2).
@@ -151,13 +180,12 @@ BEGIN
     IF crl_unpublished_entries(c) <> 1 OR crl_renewal_due(c) THEN
         RAISE EXCEPTION 'without the setting, a revocation must not make the CRL due';
     END IF;
-    IF EXISTS (SELECT 1 FROM crl_renewal_candidates_lab('urn:trust-platform:system', 'crl-renewer')) THEN
+    IF pg_temp.worker_candidates() IS NOT NULL THEN
         RAISE EXCEPTION 'the renewer must have nothing to do';
     END IF;
     -- On: the pending revocation makes the CRL due, for the renewer too.
     INSERT INTO ca_crl_policy (ca_id, publish_on_revocation) VALUES (c, true);
-    IF NOT crl_renewal_due(c) OR (SELECT array_agg(ca_id) FROM crl_renewal_candidates_lab(
-            'urn:trust-platform:system', 'crl-renewer')) IS DISTINCT FROM ARRAY[c] THEN
+    IF NOT crl_renewal_due(c) OR pg_temp.worker_candidates() IS DISTINCT FROM ARRAY[c] THEN
         RAISE EXCEPTION 'with the setting, a pending revocation must make the CRL due';
     END IF;
     -- The renewer publishes it through the journaled path; the new CRL lists
@@ -173,8 +201,9 @@ BEGIN
         RAISE EXCEPTION 'the renewed CRL does not list the revocation';
     END IF;
     -- Without anything pending the renewer is refused again.
-    PERFORM pg_temp.expect_state(format('SELECT * FROM begin_crl_publication_lab(%L, %L, %L, %L, %L)',
-        'urn:trust-platform:system', 'crl-renewer', c, gen_random_uuid(), digest('again', 'sha256')), 'TP409');
+    PERFORM pg_temp.expect_state(format('SELECT pg_temp.as_worker(%L)', format(
+        'SELECT * FROM begin_crl_publication_lab(%L, %L, %L, %L, %L)',
+        'urn:trust-platform:system', 'crl-renewer', c, gen_random_uuid(), digest('again', 'sha256'))), 'TP409');
     -- A second revocation is pending again.
     PERFORM pg_temp.revoke('b');
     IF crl_unpublished_entries(c) <> 1 OR NOT crl_renewal_due(c) THEN

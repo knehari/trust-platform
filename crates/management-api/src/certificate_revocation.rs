@@ -309,9 +309,8 @@ pub(crate) async fn decide_revocation(
         "application_id": application_id, "revocation_id": revocation_id, "status": status,
         "operation_id": operation, "replayed": replayed,
     }));
-    if !replayed && status == "REVOKED" {
-        crate::crl_publication::renew_after_revocation(&state);
-    }
+    // A CA that publishes on revocation is now due; the worker's next
+    // renewal pass publishes its CRL (ADR-0027, ADR-0037).
     let code = if replayed {
         StatusCode::OK
     } else {

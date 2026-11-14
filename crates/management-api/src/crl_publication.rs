@@ -45,7 +45,9 @@ use crate::{
     certificate_application::OFFICER_ROLE,
     certificate_issuance::ask_signer,
     profile_lifecycle::{with_replay_header, write_context, write_status, WriteContext},
-    query_db, query_db_as, scoped_ca_id, write_log, AppState,
+    query_db, query_db_as, scoped_ca_id,
+    worker::WorkerContext,
+    write_log, AppState,
 };
 
 #[derive(Deserialize)]
@@ -249,7 +251,8 @@ fn publish(
 
 /// The system principal of the automatic CRL renewer (migration 0035,
 /// ADR-0021). The database owner grants it `crl-publisher` per CA; it can
-/// only publish a CRL that is due.
+/// only publish a CRL that is due, and only from the worker's login
+/// (migration 0044, ADR-0037).
 pub(crate) const RENEWER_ISSUER: &str = "urn:trust-platform:system";
 pub(crate) const RENEWER_SUBJECT: &str = "crl-renewer";
 
@@ -258,45 +261,46 @@ pub(crate) const RENEWER_SUBJECT: &str = "crl-renewer";
 /// Returns each CA and what happened. Never retries an ambiguous outcome:
 /// the next pass takes a new CRL number.
 pub(crate) async fn renew_due_crls(
-    state: &AppState,
+    context: &WorkerContext,
 ) -> Result<Vec<(String, &'static str)>, StatusCode> {
-    let writer_url = state
-        .writer_database_url
-        .clone()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let socket = state
+    let socket = context
         .signer_socket
         .clone()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    let outcomes = query_db(writer_url, state.database_slots.clone(), move |db| {
-        let candidates: Vec<String> = db
-            .query(
-                "SELECT ca_id::text FROM crl_renewal_candidates_lab($1, $2)",
-                &[&RENEWER_ISSUER, &RENEWER_SUBJECT],
-            )?
-            .iter()
-            .map(|row| row.get(0))
-            .collect();
-        let mut outcomes = Vec::new();
-        for ca_id in candidates {
-            let caller = Caller {
-                issuer: RENEWER_ISSUER.to_owned(),
-                subject: RENEWER_SUBJECT.to_owned(),
-                ca_id: ca_id.clone(),
-            };
-            let operation: String = db.query_one("SELECT gen_random_uuid()::text", &[])?.get(0);
-            let request_sha256 =
-                Sha256::digest(format!("crl-renewal:{ca_id}:{operation}")).to_vec();
-            let outcome = match publish(db, &caller, &operation, &request_sha256, socket.clone())? {
-                Ok((_, Outcome::Published { .. })) => "PUBLISHED",
-                Ok((_, Outcome::AlreadyPublished)) => "ALREADY_PUBLISHED",
-                Ok((_, Outcome::Uncertain)) => "RECONCILIATION_REQUIRED",
-                Err(_) => "REFUSED",
-            };
-            outcomes.push((ca_id, outcome));
-        }
-        Ok(outcomes)
-    })
+    let outcomes = query_db(
+        context.database_url.clone(),
+        context.database_slots.clone(),
+        move |db| {
+            let candidates: Vec<String> = db
+                .query(
+                    "SELECT ca_id::text FROM crl_renewal_candidates_lab($1, $2)",
+                    &[&RENEWER_ISSUER, &RENEWER_SUBJECT],
+                )?
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            let mut outcomes = Vec::new();
+            for ca_id in candidates {
+                let caller = Caller {
+                    issuer: RENEWER_ISSUER.to_owned(),
+                    subject: RENEWER_SUBJECT.to_owned(),
+                    ca_id: ca_id.clone(),
+                };
+                let operation: String = db.query_one("SELECT gen_random_uuid()::text", &[])?.get(0);
+                let request_sha256 =
+                    Sha256::digest(format!("crl-renewal:{ca_id}:{operation}")).to_vec();
+                let outcome =
+                    match publish(db, &caller, &operation, &request_sha256, socket.clone())? {
+                        Ok((_, Outcome::Published { .. })) => "PUBLISHED",
+                        Ok((_, Outcome::AlreadyPublished)) => "ALREADY_PUBLISHED",
+                        Ok((_, Outcome::Uncertain)) => "RECONCILIATION_REQUIRED",
+                        Err(_) => "REFUSED",
+                    };
+                outcomes.push((ca_id, outcome));
+            }
+            Ok(outcomes)
+        },
+    )
     .await?;
     for (ca_id, outcome) in &outcomes {
         write_log(serde_json::json!({
@@ -306,33 +310,17 @@ pub(crate) async fn renew_due_crls(
     Ok(outcomes)
 }
 
-/// Called right after a revocation or a void is recorded: a renewal pass in
-/// the background, so a CA with `publish_on_revocation` (migration 0040)
-/// publishes its next CRL at once. The pass publishes only what the
-/// database says is due, for CAs granted to the renewer; it does nothing
-/// without a writer login and a signer. The response does not wait for it.
-pub(crate) fn renew_after_revocation(state: &AppState) {
-    if state.writer_database_url.is_none() || state.signer_socket.is_none() {
-        return;
-    }
-    let state = state.clone();
-    tokio::spawn(async move {
-        if renew_due_crls(&state).await.is_err() {
-            write_log(serde_json::json!({
-                "event": "crl_auto_renewal", "trigger": "revocation", "status": "UNAVAILABLE",
-            }));
-        }
-    });
-}
-
 /// Runs a renewal pass shortly after startup, then every `interval`, on its
 /// own thread. A failed pass is logged and retried at the next tick.
-pub(crate) fn spawn_renewer(state: AppState, interval: std::time::Duration) {
+/// A CA with `publish_on_revocation` (migration 0040) becomes due as soon as
+/// a revocation is recorded; the next pass publishes it, so its delay is at
+/// most the interval.
+pub(crate) fn spawn_renewer(context: WorkerContext, interval: std::time::Duration) {
     let runtime = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(5));
         loop {
-            if runtime.block_on(renew_due_crls(&state)).is_err() {
+            if runtime.block_on(renew_due_crls(&context)).is_err() {
                 write_log(
                     serde_json::json!({"event": "crl_auto_renewal", "status": "UNAVAILABLE"}),
                 );

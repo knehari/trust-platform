@@ -41,6 +41,13 @@ if [[ "$target_signer_role" != 1 ]]; then
   echo 'Restore target requires NOLOGIN trust_lab_signer role' >&2
   exit 1
 fi
+# Migration 0044 grants the background worker's functions to this role.
+target_worker_role=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_roles WHERE rolname = 'trust_worker' AND NOT rolcanlogin")
+if [[ "$target_worker_role" != 1 ]]; then
+  echo 'Restore target requires NOLOGIN trust_worker role' >&2
+  exit 1
+fi
 # Migration 0043 grants the publisher feed to this role.
 target_publisher_role=$("$psql_bin" "$TRUST_RESTORE_TARGET_URL" -XAt -v ON_ERROR_STOP=1 \
   -c "SELECT count(*) FROM pg_roles WHERE rolname = 'trust_crl_publisher' AND NOT rolcanlogin")

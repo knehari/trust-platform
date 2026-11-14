@@ -269,9 +269,7 @@ pub(crate) async fn confirm_void(
         "application_id": application_id, "serial_hex": serial_hex,
         "operation_id": operation, "replayed": replayed,
     }));
-    if !replayed {
-        crate::crl_publication::renew_after_revocation(&state);
-    }
+    // The worker's next renewal pass publishes the CRL when due (ADR-0037).
     Ok(with_replay_header(
         (
             created(replayed),
