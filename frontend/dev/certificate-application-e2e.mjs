@@ -632,7 +632,8 @@ try {
   });
 } finally {
   rmSync(keys, { recursive: true, force: true });
-  rmSync(issuingRoot, { force: true });
+  // The issuing root certificate stays in .lab-keys/ca/ (public data) so
+  // that certificates and CRLs can be checked with OpenSSL afterwards.
 }
 
 console.log(`Laboratory certificate application suite passed: ${results.length} cases (application ${applicationId}; certificate serial ${serial}, revoked; CRLs from ${crlNumber}).`);
