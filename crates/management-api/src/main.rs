@@ -14,6 +14,7 @@ mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
 mod ra_channel;
+mod tls_listener;
 
 use auth::{Claims, OidcVerifier};
 use axum::{
@@ -685,12 +686,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = router(state);
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
+    // HTTPS when both TLS files are configured (ADR-0032); an incomplete
+    // configuration stops the API instead of falling back to plain HTTP.
+    let tls = tls_listener::config_from_env().map_err(std::io::Error::other)?;
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     write_log(
         serde_json::json!({"event":"management_api_started","bind":bind,
-        "database_tls": trust_db_connect::tls_required()}),
+        "database_tls": trust_db_connect::tls_required(), "https": tls.is_some()}),
     );
-    axum::serve(listener, app).await?;
+    match tls {
+        Some(config) => axum::serve(tls_listener::TlsListener::new(listener, config)?, app).await?,
+        None => axum::serve(listener, app).await?,
+    }
     Ok(())
 }
 

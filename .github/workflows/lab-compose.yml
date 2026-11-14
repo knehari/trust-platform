@@ -6,6 +6,9 @@ on:
       - compose.lab.yaml
       - Dockerfile.api
       - Dockerfile.signer
+      - Dockerfile.publisher
+      - crates/crl-publisher/**
+      - crates/db-connect/**
       - crates/lab-signer/**
       - crates/pki-core/**
       - frontend/**
@@ -25,6 +28,10 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # Node clients verify the API's HTTPS certificate against the lab CA
+      # that init-env.sh generates (ADR-0032).
+      NODE_EXTRA_CA_CERTS: ${{ github.workspace }}/.lab-keys/tls/ca.crt
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Generate disposable credentials and validate Compose
@@ -33,6 +40,19 @@ jobs:
           docker compose --env-file .env.lab -f compose.lab.yaml config --quiet
       - name: Build and start laboratory services
         run: docker compose --env-file .env.lab -f compose.lab.yaml up -d --build --wait --wait-timeout 300
+      - name: The API serves verified HTTPS only (ADR-0032)
+        run: |
+          set -euo pipefail
+          curl --fail --silent --cacert .lab-keys/tls/ca.crt https://127.0.0.1:8081/v1/health
+          if curl --fail --silent --max-time 5 http://127.0.0.1:8081/v1/health; then
+            echo 'FAIL: the API answered plain HTTP' >&2
+            exit 1
+          fi
+          if curl --fail --silent --max-time 5 https://127.0.0.1:8081/v1/health; then
+            echo 'FAIL: the API certificate verified without the lab CA' >&2
+            exit 1
+          fi
+          echo 'PASS: HTTPS verified against the lab CA; plain HTTP and unknown CAs refused'
       - name: Exercise Keycloak sign-in, code/PKCE and scoped database reads
         run: |
           set -a; . ./.env.lab; set +a

@@ -26,6 +26,11 @@ x509-cert = { version = "=0.2.5", features = ["pem"] }
 tokio = { version = "=1.53.2", features = ["macros", "rt-multi-thread", "net", "sync"] }
 uuid = "=1.18.1"
 
+# HTTPS for the API (ADR-0032): the rustls and tokio-rustls versions already
+# locked through reqwest, with the ring provider.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
+
 [dev-dependencies]
 p256 = { version = "=0.13.2", features = ["ecdsa", "pem"] }
 rand = "=0.8.5"

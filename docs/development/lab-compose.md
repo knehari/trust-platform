@@ -167,3 +167,7 @@ The setting takes effect through the CRL renewer: the CA must be granted to `urn
 ## Database TLS
 
 `scripts/lab/init-env.sh` also generates a laboratory service CA and a PostgreSQL server certificate in `.lab-keys/tls/` ([ADR-0031](../adr/ADR-0031-database-tls.md), Proposed). The `db` service accepts TCP connections only over TLS (`scripts/lab/pg_hba.conf`), and the API, signer and publisher verify its certificate against `ca.crt` (`TRUST_DATABASE_CA_FILE`). The CA key stays on the host and is mounted nowhere. `cargo run -p trust-db-connect --bin trust-db-check -- <url> --require-tls` reports whether a connection is encrypted. If `.lab-keys/tls/` is lost, rerun `init-env.sh` and restart the stack.
+
+## API HTTPS
+
+The API serves HTTPS on `https://127.0.0.1:8081` with a certificate `init-env.sh` issues from the same service CA ([ADR-0032](../adr/ADR-0032-api-https.md), Proposed). Run the Node suites with `NODE_EXTRA_CA_CERTS=.lab-keys/tls/ca.crt` (CI sets it), and check the API with `curl --cacert .lab-keys/tls/ca.crt https://127.0.0.1:8081/v1/health`. Plain HTTP on that port is refused. Keycloak stays on plain HTTP for now; the CRL server stays on HTTP by design.

@@ -9,7 +9,8 @@ import { authorizationCode, claims, clientCredentials, requiredEnv, signIn } fro
 const issuerOrigin = 'http://127.0.0.1:8080';
 const realm = `${issuerOrigin}/realms/trust-lab`;
 const foreignRealm = `${issuerOrigin}/realms/trust-lab-foreign`;
-const api = 'http://127.0.0.1:8081';
+// HTTPS, verified against the lab CA through NODE_EXTRA_CA_CERTS (ADR-0032).
+const api = process.env.TRUST_E2E_API ?? 'https://127.0.0.1:8081';
 const allowedCa = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const hiddenCa = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const results = [];
