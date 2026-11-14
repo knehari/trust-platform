@@ -69,6 +69,7 @@ const STATUS_TONES: Record<string, string> = {
   REVOCATION_REQUESTED: 'warn', SUSPENDED: 'warn', RECONCILIATION_REQUIRED: 'warn', RENEWAL_DUE: 'warn',
   REJECTED: 'bad', REVOKED: 'bad', VOIDED: 'neutral', signer_claimed: 'warn', signer_unclaimed: 'info', EXPIRED: 'bad', FAILED: 'bad', deny: 'bad', failed: 'bad', rejected: 'bad',
   DRAFT: 'neutral', SUPERSEDED: 'neutral', RETIRED: 'neutral', NO_CRL: 'neutral',
+  ENABLED: 'good', DISABLED: 'neutral',
 };
 
 /** A status as words with a coloured dot; the raw code is kept as a tooltip and data attribute. */

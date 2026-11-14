@@ -14,6 +14,7 @@ mod profile_decision;
 mod profile_lifecycle;
 mod profile_proposal;
 mod ra_channel;
+mod ra_policy;
 mod tls_listener;
 mod worker;
 mod worker_metrics;
@@ -606,7 +607,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0048")?;
+    .map_err(|_| "management views unavailable or older than migration 0049")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -788,6 +789,15 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/cas/{ca_id}/crl-status",
             get(crl_publication::crl_status),
+        )
+        // The RA channel's policies, read-only (migration 0049, ADR-0044).
+        .route(
+            "/v1/cas/{ca_id}/ra-systems",
+            get(ra_policy::list_ra_systems),
+        )
+        .route(
+            "/v1/cas/{ca_id}/short-lived-profiles",
+            get(ra_policy::list_short_lived_profiles),
         )
         // Signed by a registered RA system, not an OIDC token (ADR-0025).
         .route(
@@ -1095,8 +1105,11 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_ra_hardening_version() = 1 \
              AND management_ra_key_rotation_version() = 1 \
              AND management_short_lived_version() = 1 \
+             AND management_ra_policy_views_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
+             AND NOT EXISTS (SELECT 1 FROM management_ra_system) \
+             AND NOT EXISTS (SELECT 1 FROM management_short_lived_profile) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
             &[],
         )?
@@ -5589,6 +5602,7 @@ mod tests {
         )
         .as_bytes()
         .to_vec();
+        let ra_point_copy = ra_point.clone();
         let owner_ca = ca.clone();
         query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
             db.execute(
@@ -6089,6 +6103,7 @@ mod tests {
         )
         .as_bytes()
         .to_vec();
+        let ra_point2_copy = ra_point2.clone();
         query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
             db.execute(
                 "INSERT INTO ra_system_key (ra_id, key_id, public_key_sec1) VALUES ('test-ra', 0, $1)",
@@ -6251,6 +6266,58 @@ mod tests {
             .await
             .0,
             StatusCode::CONFLICT
+        );
+        // Readers of the CA see the RA's policy and keys, and the
+        // short-lived profile, read-only (migration 0049, ADR-0044).
+        let (status, systems) =
+            send("GET", &officer, format!("/v1/cas/{ca}/ra-systems"), None).await;
+        assert_eq!(status, StatusCode::OK, "{systems}");
+        let test_ra = systems
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|system| system["ra_id"] == "test-ra")
+            .expect("the test RA is listed");
+        assert_eq!(
+            (
+                test_ra["enabled"].as_bool(),
+                test_ra["max_issuance_per_hour"].as_i64(),
+                test_ra["max_revocation_per_hour"].as_i64(),
+                test_ra["allowed_dns_zones"].is_null(),
+                test_ra["profile_ids"].clone(),
+            ),
+            (Some(true), Some(100), Some(20), true, json!(["server"]))
+        );
+        assert!(test_ra["issuance_last_hour"].as_i64().unwrap() >= 3);
+        let keys = test_ra["keys"].as_array().unwrap();
+        let fingerprint = |point: &[u8]| hex_bytes(&<sha2::Sha256 as sha2::Digest>::digest(point));
+        assert_eq!(
+            keys.iter()
+                .map(|key| (
+                    key["key_id"].as_i64().unwrap(),
+                    key["sha256"].as_str().unwrap().to_owned(),
+                    key["retired_at"].is_null()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, fingerprint(&ra_point_copy), false),
+                (2, fingerprint(&ra_point2_copy), true)
+            ]
+        );
+        let (status, short_lived) = send(
+            "GET",
+            &officer,
+            format!("/v1/cas/{ca}/short-lived-profiles"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (
+                status,
+                short_lived[0]["profile_id"].as_str(),
+                short_lived[0]["max_validity_days"].as_i64()
+            ),
+            (StatusCode::OK, Some("server"), Some(3))
         );
         query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), |db| {
             db.batch_execute("DELETE FROM profile_short_lived_policy")

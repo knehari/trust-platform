@@ -1383,6 +1383,74 @@ paths:
         '403': { description: Missing reader role or CA outside the signed scope }
         '404': { description: Not a lifecycle-managed CA granted to the reader }
         '503': { description: The database is unavailable }
+  /v1/cas/{ca_id}/ra-systems:
+    get:
+      summary: The RA systems granted a profile of the CA, with their quotas, use, zones and keys, read-only (laboratory, migration 0049, ADR-0044)
+      description: >-
+        Readers of the CA see each RA system granted at least one of its profiles: whether it is enabled, its
+        profiles, its effective hourly quotas (ADR-0039, defaults 100 and 20) and their use over the last hour,
+        its DNS zones (null: the profiles' own), and its keys (ADR-0040) as SHA-256 fingerprints of the SEC1
+        point with their activation and retirement times. Never a key itself. The database owner sets all of
+        it; nothing here writes. At most 500 rows, ordered by ra_id.
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: RA systems of the CA
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [ra_id, display_name, enabled, profile_ids, max_issuance_per_hour, max_revocation_per_hour, allowed_dns_zones, issuance_last_hour, revocation_last_hour, keys]
+                  properties:
+                    ra_id: { type: string }
+                    display_name: { type: string }
+                    enabled: { type: boolean }
+                    profile_ids: { type: array, items: { type: string } }
+                    max_issuance_per_hour: { type: integer, minimum: 0 }
+                    max_revocation_per_hour: { type: integer, minimum: 0 }
+                    allowed_dns_zones: { type: [array, 'null'], items: { type: string } }
+                    issuance_last_hour: { type: integer, minimum: 0 }
+                    revocation_last_hour: { type: integer, minimum: 0 }
+                    keys:
+                      type: array
+                      items:
+                        type: object
+                        required: [key_id, sha256, activated_at, retired_at]
+                        properties:
+                          key_id: { type: integer, minimum: 1 }
+                          sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+                          activated_at: { type: string, format: date-time }
+                          retired_at: { type: [string, 'null'], format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing reader role or CA outside the signed scope }
+        '503': { description: The database is unavailable }
+  /v1/cas/{ca_id}/short-lived-profiles:
+    get:
+      summary: The CA's short-lived profiles and their bound, read-only (laboratory, migration 0049, ADR-0042, ADR-0044)
+      parameters:
+        - $ref: '#/components/parameters/CaId'
+      responses:
+        '200':
+          description: Short-lived profiles of the CA
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [profile_id, max_validity_days, updated_at]
+                  properties:
+                    profile_id: { type: string }
+                    max_validity_days: { type: integer, minimum: 1, maximum: 7 }
+                    updated_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Missing reader role or CA outside the signed scope }
+        '503': { description: The database is unavailable }
   /v1/ra/cas/{ca_id}/certificates:
     post:
       summary: Issue a certificate for a registered RA system's signed request (laboratory, migration 0038)

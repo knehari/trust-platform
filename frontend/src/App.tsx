@@ -26,6 +26,7 @@ import { CommandPalette, type PaletteItem } from './CommandPalette';
 import { reasonName } from './RequestsPanel';
 import { RequestsPanel } from './RequestsPanel';
 import { CrlPanel } from './CrlPanel';
+import { RaPolicyPanel } from './RaPolicyPanel';
 import { CA_ADMINISTRATOR_ROLE, CA_APPROVER_ROLE, CA_READER_ROLE, CERTIFICATE_REQUESTER_ROLE, REGISTRATION_OFFICER_ROLE, readOnlyRoles, tokenRoles } from './roles';
 import { addWithin, headerState, toggleOne, toggleVisible } from './selection';
 import { Disclosure, EventLabel, FilterChips, Toaster, HeaderCheckbox, Icon, Notice, OutcomeBadge, StatusBadge, Tag, TimeAgo, type IconName } from './ui';
@@ -771,6 +772,7 @@ export function App() {
     { id: 'requests', label: 'Requests', icon: 'request', show: isRequester || isOfficer },
     { id: 'certificates', label: 'Certificates', icon: 'certificate', show: isReader },
     { id: 'revocation', label: 'Revocation & CRLs', icon: 'revocation', show: isReader },
+    { id: 'channels', label: 'RA channel', icon: 'key', show: isReader },
     { id: 'audit', label: 'Audit trail', icon: 'audit', show: isReader },
   ];
   const paletteItems: PaletteItem[] = [
@@ -784,6 +786,7 @@ export function App() {
     requests: ['Certificate requests', 'Submit, decide, issue and revoke certificates of the selected authority.'],
     certificates: ['Certificate inventory', 'Issued certificate metadata of the selected authority.'],
     revocation: ['Revocation & CRLs', 'CRL status, publication and history of the selected authority.'],
+    channels: ['RA channel & policies', 'RA systems, their quotas, zones and keys, and the short-lived profiles of the selected authority (read-only).'],
     audit: ['Audit trail', 'Recorded events of the selected authority.'],
   };
   const needsAuthority = section !== 'overview' && !(section === 'authorities' && !isReader);
@@ -866,6 +869,7 @@ export function App() {
             {section === 'profiles' && (selectedCa?.operational_state === 'SUSPENDED' || selectedCa?.operational_state === 'RETIRED') && <div className="detail-content ui-tight"><Notice tone="warning">This authority is {selectedCa.operational_state}: its profile revisions cannot be activated{selectedCa.operational_state === 'RETIRED' ? ', and its active revisions were retired with it' : ' until it is reactivated'}.</Notice></div>}
             {section === 'profiles' && <ProfileDraftPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} onUnauthorized={rejectSession} linkedDetail={routeDetail?.kind === 'profile' ? routeDetail : null} onOpenDetail={detail => setRouteDetail(detail)} onCloseDetail={closeDetail} />}
             {section === 'requests' && <div className="detail-content"><RequestsPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} canRequest={isRequester} canDecide={isOfficer} onUnauthorized={rejectSession} /></div>}
+            {section === 'channels' && <div className="detail-content"><RaPolicyPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} onUnauthorized={rejectSession} /></div>}
             {section === 'revocation' && <div className="detail-content"><CrlPanel key={`${selectedCaId}/${reload}`} caId={selectedCaId!} token={user.access_token} canPublish={isOfficer} onUnauthorized={rejectSession} onOpenRequests={() => setSection('requests')} /></div>}
             {section === 'certificates' && <div className="detail-content">
               <div className="table-heading"><h3>Certificates</h3><span>{certificateFilter.trim() ? `${filteredCertificates.length} of ${scopedCertificates.length} loaded records` : `${scopedCertificates.length} records loaded`}</span></div>

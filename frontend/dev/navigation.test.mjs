@@ -13,6 +13,7 @@ test('view links round-trip a canonical CA without carrying credentials', () => 
   assert.deepEqual(readNavigation(navigationUrl('profiles', ca).slice(1)), { section: 'profiles', caId: ca, detail: null });
   assert.deepEqual(readNavigation(navigationUrl('requests', ca).slice(1)), { section: 'requests', caId: ca, detail: null });
   assert.deepEqual(readNavigation(navigationUrl('revocation', ca).slice(1)), { section: 'revocation', caId: ca, detail: null });
+  assert.deepEqual(readNavigation(navigationUrl('channels', ca).slice(1)), { section: 'channels', caId: ca, detail: null });
 });
 
 test('untrusted navigation values cannot become paths or authority IDs', () => {
