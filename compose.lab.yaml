@@ -235,10 +235,11 @@ services:
       # CRL renewal (ADR-0021): a pass every 5 seconds publishes each due CRL;
       # a CA that publishes on revocation (ADR-0027) is due at once.
       TRUST_CRL_RENEWAL_INTERVAL_SECONDS: "5"
-      # Seal committed audit events into the tamper-evident chain (ADR-0022).
-      TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "60"
-      # Ask the signer to sign the chain's head (ADR-0023).
-      TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "60"
+      # Seal committed audit events into the tamper-evident chain (ADR-0022),
+      # and ask the signer to sign the chain's head (ADR-0023). Every minute;
+      # TRUST_LAB_AUDIT_INTERVAL_SECONDS shortens it (the recovery drill).
+      TRUST_AUDIT_SEAL_INTERVAL_SECONDS: "${TRUST_LAB_AUDIT_INTERVAL_SECONDS:-60}"
+      TRUST_AUDIT_CHECKPOINT_INTERVAL_SECONDS: "${TRUST_LAB_AUDIT_INTERVAL_SECONDS:-60}"
       # Operational metrics (ADR-0038), Prometheus text format; published on
       # host loopback only.
       TRUST_WORKER_METRICS_BIND: 0.0.0.0:9464
