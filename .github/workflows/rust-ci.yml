@@ -181,21 +181,6 @@ jobs:
           rustc --version --verbose
           cargo --version
           git rev-parse HEAD 'HEAD^{tree}'
-      - name: Dump and restore with the server's PostgreSQL 16 client tools
-        # A newer pg_dump writes settings (e.g. transaction_timeout, 17+) that
-        # a 16 server refuses on restore; the runner image's default client
-        # can be newer than the postgres:16 service.
-        run: |
-          set -euo pipefail
-          if [[ ! -x /usr/lib/postgresql/16/bin/pg_dump ]]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
-          fi
-          /usr/lib/postgresql/16/bin/pg_dump --version | grep -q ' 16\.'
-          /usr/lib/postgresql/16/bin/pg_restore --version | grep -q ' 16\.'
-          {
-            echo 'TRUST_PG_DUMP_BIN=/usr/lib/postgresql/16/bin/pg_dump'
-            echo 'TRUST_PG_RESTORE_BIN=/usr/lib/postgresql/16/bin/pg_restore'
-          } >> "$GITHUB_ENV"
       - name: Apply proposed schema to disposable database
         run: |
           set -euo pipefail
