@@ -5,7 +5,7 @@ import type { Section } from './navigation';
 import { activityByDay, attentionEvents, certificateHealth, expiryBuckets, type Bucket } from './dashboard';
 import { Icon, StatusBadge, type IconName } from './ui';
 
-interface CrlStatus { latest_crl_number: number | null; next_update: string | null; renewal_due: boolean; expired: boolean }
+interface CrlStatus { latest_crl_number: number | null; next_update: string | null; renewal_due: boolean; expired: boolean; auto_renewal?: boolean }
 
 interface QueueItem { id: string; tone: 'bad' | 'warn' | 'info'; icon: IconName; count: number; title: string; detail: string; action: string; section: Section }
 
@@ -59,7 +59,7 @@ export function OverviewDashboard({ ca, certificates, auditEvents, now, token, i
   if (crl && (isOfficer || isReader)) {
     if (crl.expired) queue.push({ id: 'crl', tone: 'bad', icon: 'revocation', count: 1, title: 'The CRL has expired', detail: 'Relying parties may reject certificates until a new CRL is published.', action: isOfficer ? 'Publish CRL' : 'Open CRLs', section: 'revocation' });
     else if (crl.latest_crl_number === null) queue.push({ id: 'crl', tone: 'warn', icon: 'revocation', count: 1, title: 'No CRL published yet', detail: 'Publish one so relying parties can check revocation.', action: isOfficer ? 'Publish CRL' : 'Open CRLs', section: 'revocation' });
-    else if (crl.renewal_due) queue.push({ id: 'crl', tone: 'warn', icon: 'revocation', count: 1, title: `CRL ${crl.latest_crl_number} is due for renewal`, detail: crl.next_update ? `Next update before ${new Date(crl.next_update).toLocaleString()}.` : 'Publish the next CRL.', action: isOfficer ? 'Publish CRL' : 'Open CRLs', section: 'revocation' });
+    else if (crl.renewal_due && !crl.auto_renewal) queue.push({ id: 'crl', tone: 'warn', icon: 'revocation', count: 1, title: `CRL ${crl.latest_crl_number} is due for renewal`, detail: crl.next_update ? `Next update before ${new Date(crl.next_update).toLocaleString()}.` : 'Publish the next CRL.', action: isOfficer ? 'Publish CRL' : 'Open CRLs', section: 'revocation' });
   }
   if (isReader && health.expiringSoon) queue.push({ id: 'expiring', tone: 'warn', icon: 'certificate', count: health.expiringSoon, title: 'Certificates expiring within 30 days', detail: 'Plan their renewal before the recorded notAfter date.', action: 'View certificates', section: 'certificates' });
   if (isReader && attention.reconciliation && !queue.some(item => item.id === 'reconcile')) queue.push({ id: 'recon', tone: 'bad', icon: 'key', count: attention.reconciliation, title: 'Signing results to reconcile', detail: 'A signing outcome was ambiguous in the last 7 days; reconcile before signing again.', action: 'Open audit trail', section: 'audit' });

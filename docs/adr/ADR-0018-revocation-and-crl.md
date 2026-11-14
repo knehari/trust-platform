@@ -209,7 +209,7 @@ The owner chose (decision of 2026-11-08):
 - **No distribution point.** Certificates carry no CRL distribution point,
   and CRLs are behind authentication. A relying party gets them through an
   authorized reader.
-- **No automatic renewal.** CRLs are renewed only when an officer
+- **No automatic renewal.** *(Addressed by ADR-0021, Proposed.)* CRLs are renewed only when an officer
   publishes. Nothing alerts before nextUpdate (seven days).
 - **No reconciliation tool.** A RECONCILIATION_REQUIRED CRL intent is
   simply superseded by the next number. There is no tool to reconcile it

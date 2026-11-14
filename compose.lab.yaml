@@ -125,6 +125,9 @@ services:
       TRUST_WRITER_DATABASE_URL: postgresql://trust_api_writer_lab:${TRUST_LAB_WRITER_PASSWORD:?Run scripts/lab/init-env.sh first}@db:5432/trust_lab
       # Issuance (ADR-0017): the lab signer's socket; without it issuance is 503.
       TRUST_SIGNER_SOCKET: /run/trust-signer/signer.sock
+      # Automatic CRL renewal (ADR-0021): a pass every hour publishes the CRL
+      # of each CA granted to the renewer whose CRL is due.
+      TRUST_CRL_RENEWAL_INTERVAL_SECONDS: "3600"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8081/v1/ready"]
       interval: 3s

@@ -98,3 +98,7 @@ It separately provisions a temporary API login in that cluster and verifies view
 The schema job also injects a mid-restore DDL error in a third disposable database. The restore transaction must roll back all created relations, after which an unmodified retry must pass. This tests SQL restore failure handling, not recovery of the Compose volume or signer state.
 
 The `laboratory-compose` GitHub Actions job builds the images and runs the same scoped smoke on a disposable runner. [Run 39059362985](https://github.com/knehari/trust-platform/actions/runs/39059362985) passed on Draft #53's exact head. Local Docker execution must be recorded separately from CI; a successful `docker compose config` or local PostgreSQL script alone does not establish that the containers start.
+
+## Automatic CRL renewal (ADR-0021)
+
+The API service sets `TRUST_CRL_RENEWAL_INTERVAL_SECONDS=3600`. The issuing CA's provisioning (`scripts/lab/provision-issuing-ca.sql`) grants the system principal `urn:trust-platform:system`/`crl-renewer` the `crl-publisher` role. Every hour, the API publishes the CRL of each granted CA that is due (none yet, or nextUpdate within two days). Each pass is logged as `crl_auto_renewal` in the API logs (`docker compose … logs api`). The Revocation & CRLs view shows "Automatic renewal is on".

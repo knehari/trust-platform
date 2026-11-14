@@ -49,7 +49,7 @@ const HISTORY_PAGE_SIZE: usize = 100;
 const MANAGEMENT_VIEWS_CHECK: &str =
     "SELECT c.signed_at_window, c.subject_cn_lower, c.revoked_at, c.revocation_reason, a.recorded_at_window, s.signed_at_window, \
      b.newest_signed_window \
-     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, pub.crl_number \
+     , p.lifecycle_status, p.approval_count, p.activated_at, k.lifecycle_status, k.spki_sha256, k.approval_count, k.activated_at, k.change_status, management_ca.operational_state, ap.status, ap.certificate_sha256, ap.open_revocation_id, ap.revoked_at, ap.void_status, ap.voided_at, crl.crl_number, cs.renewal_due, cs.auto_renewal, pub.crl_number \
      FROM management_ca, management_certificate c, management_audit a, management_reader_scope, management_profile_draft p, \
      management_certificate_san s, management_history_bounds b, management_ca_proposal k, management_certificate_application ap, management_certificate_crl crl, management_crl_status cs, public_crl_latest pub LIMIT 0";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -581,7 +581,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.query(MANAGEMENT_VIEWS_CHECK, &[]).map(|_| ())
     })
     .await
-    .map_err(|_| "management views unavailable or older than migration 0034")?;
+    .map_err(|_| "management views unavailable or older than migration 0035")?;
     let isolated = query_db(
         database_url.clone(),
         database_slots.clone(),
@@ -608,7 +608,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("profile writer login is not limited to trust_profile_writer".into());
         }
     }
-    let app = router(AppState {
+    let state = AppState {
         verifier,
         database_url,
         writer_database_url,
@@ -620,7 +620,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .filter(|path| !path.is_empty())
             .map(std::path::PathBuf::from),
-    });
+    };
+    // Automatic CRL renewal (migration 0035, ADR-0021): off unless an
+    // interval is set, and only with the writer login and the signer.
+    if let Some(seconds) = env::var("TRUST_CRL_RENEWAL_INTERVAL_SECONDS")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        let seconds: u64 = seconds
+            .parse()
+            .ok()
+            .filter(|value| (30..=86_400).contains(value))
+            .ok_or("TRUST_CRL_RENEWAL_INTERVAL_SECONDS must be 30 to 86400")?;
+        if state.writer_database_url.is_none() || state.signer_socket.is_none() {
+            return Err(
+                "CRL renewal needs TRUST_WRITER_DATABASE_URL and TRUST_SIGNER_SOCKET".into(),
+            );
+        }
+        crl_publication::spawn_renewer(state.clone(), Duration::from_secs(seconds));
+        write_log(
+            serde_json::json!({"event":"crl_auto_renewal_enabled","interval_seconds":seconds}),
+        );
+    }
+    let app = router(state);
     let bind = env::var("TRUST_API_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     write_log(serde_json::json!({"event":"management_api_started","bind":bind}));
@@ -1027,6 +1049,7 @@ fn reader_isolation_active(db: &mut Client) -> Result<bool, postgres::Error> {
              AND management_crl_publication_version() = 1 \
              AND management_certificate_revocation_version() = 1 \
              AND management_application_void_version() = 1 \
+             AND management_crl_renewal_version() = 1 \
              AND NOT EXISTS (SELECT 1 FROM management_certificate_crl) \
              AND NOT EXISTS (SELECT 1 FROM management_crl_status) \
              AND NOT EXISTS (SELECT 1 FROM management_ca_proposal)",
@@ -4128,7 +4151,7 @@ mod tests {
         let key_dir = std::env::temp_dir().join(format!("trust-signer-test-{}", random_uuid()));
         std::fs::create_dir_all(&key_dir).unwrap();
         let socket = key_dir.join("signer.sock");
-        let app = router(AppState {
+        let state = AppState {
             verifier,
             database_url: reader_url,
             writer_database_url: Some(writer_url),
@@ -4137,7 +4160,8 @@ mod tests {
             readiness_slots: Arc::new(Semaphore::new(1)),
             readiness_cache: Arc::new(Mutex::new(ReadinessCache::default())),
             signer_socket: Some(socket.clone()),
-        });
+        };
+        let app = router(state.clone());
         let send =
             |method: &'static str, token: &str, path: String, body: Option<serde_json::Value>| {
                 let mut request = Request::builder()
@@ -4589,16 +4613,57 @@ mod tests {
                 .0,
             StatusCode::FORBIDDEN
         );
-        let (status, empty) = send("POST", &officer, crls.clone(), Some(json!({}))).await;
+        // The automatic renewer (migration 0035) publishes the first, empty
+        // CRL: none exists, so it is due. Without its grant it does nothing.
+        assert_eq!(crl_publication::renew_due_crls(&state).await, Ok(vec![]));
+        let owner_ca = ca.clone();
+        query_db(owner_url.clone(), Arc::new(Semaphore::new(1)), move |db| {
+            db.batch_execute(&format!(
+                "INSERT INTO management_role_grant (issuer, subject, ca_id, lifecycle_role) VALUES
+                    ('urn:trust-platform:system', 'crl-renewer', '{owner_ca}', 'crl-publisher');"
+            ))
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            crl_publication::renew_due_crls(&state).await,
+            Ok(vec![(ca.clone(), "PUBLISHED")])
+        );
+        // Now fresh: a second pass publishes nothing.
+        assert_eq!(crl_publication::renew_due_crls(&state).await, Ok(vec![]));
+        let (_, listed_crls) = send("GET", &officer, crls.clone(), None).await;
+        let first_crl = &listed_crls.as_array().unwrap()[0];
         assert_eq!(
             (
-                status,
-                empty["crl_number"].as_i64(),
-                empty["entry_count"].as_u64()
+                first_crl["crl_number"].as_i64(),
+                first_crl["entry_count"].as_i64()
             ),
-            (StatusCode::CREATED, Some(1), Some(0))
+            (Some(1), Some(0))
         );
-        assert!(crl_verifies(&crl_der(empty["crl_pem"].as_str().unwrap())));
+        let (status, _, empty_der) = {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{crls}/1"))
+                        .header("authorization", format!("Bearer {officer}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec();
+            (status, (), body)
+        };
+        assert_eq!(status, StatusCode::OK);
+        assert!(crl_verifies(&empty_der));
 
         // The requester asks, with a reason from the closed list only; an
         // officer approves; the requester cannot decide.
